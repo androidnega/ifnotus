@@ -141,37 +141,43 @@ const secondaryStats = computed(() => data.value?.stats.slice(4) ?? [])
       </section>
 
       <!-- Servers + Services -->
-      <section class="dashboard-grid xl:grid-cols-2" aria-label="Servers and services">
+      <section class="dashboard-grid items-start xl:grid-cols-2" aria-label="Servers and services">
         <Card
           title="Server Health"
           :subtitle="`${data?.servers.length ?? 0} nodes monitored`"
+          class="min-w-0"
         >
-          <div v-if="!data?.servers.length && !loading" class="py-4 text-sm text-surface-muted">
+          <div v-if="!data?.servers.length && !loading" class="dashboard-side-panel py-4 text-sm text-surface-muted">
             No server metrics available yet.
           </div>
-          <div v-else class="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-            <ServerHealthIndicator
-              v-for="server in data?.servers ?? []"
-              :key="server.id"
-              :server="server"
-            />
+          <div v-else class="dashboard-side-panel">
+            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+              <ServerHealthIndicator
+                v-for="server in data?.servers ?? []"
+                :key="server.id"
+                :server="server"
+              />
+            </div>
           </div>
         </Card>
 
         <Card
           title="Running Services"
           :subtitle="`${runningServices} of ${data?.services.length ?? 0} active`"
+          class="min-w-0"
         >
-          <div class="grid gap-2 sm:grid-cols-2">
-            <ServiceStatusCard
-              v-for="service in data?.services ?? []"
-              :key="service.id"
-              :service="service"
-            >
-              <template #icon>
-                <IconServer :size="16" class="text-brand-500" />
-              </template>
-            </ServiceStatusCard>
+          <div class="dashboard-side-panel">
+            <div class="dashboard-side-panel-scroll space-y-2">
+              <ServiceStatusCard
+                v-for="service in data?.services ?? []"
+                :key="service.id"
+                :service="service"
+              >
+                <template #icon>
+                  <IconServer :size="16" class="text-brand-500" />
+                </template>
+              </ServiceStatusCard>
+            </div>
           </div>
         </Card>
       </section>

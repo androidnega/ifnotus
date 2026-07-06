@@ -206,7 +206,7 @@ onMounted(refreshAll)
             message="Unable to load integration status."
             @retry="refreshIntegrations"
           />
-          <div v-else class="monitoring-side-panel space-y-2">
+          <div v-else class="dashboard-side-panel space-y-2">
             <div
               v-for="item in integrationEntries"
               :key="item.name"
@@ -236,9 +236,9 @@ onMounted(refreshAll)
         </Card>
 
         <Card title="Services" :subtitle="servicesSubtitle" class="min-w-0">
-          <div class="monitoring-side-panel relative">
+          <div class="dashboard-side-panel relative">
             <div
-              class="monitoring-side-panel-scroll space-y-2"
+              class="dashboard-side-panel-scroll space-y-2"
               role="list"
               aria-label="Operational services"
             >
@@ -265,23 +265,3 @@ onMounted(refreshAll)
     </div>
   </DashboardLayout>
 </template>
-
-<style scoped>
-/* Match Integrations + Services body height (8 integration rows) */
-.monitoring-side-panel {
-  height: 22.5rem;
-  min-height: 0;
-}
-
-.monitoring-side-panel-scroll {
-  height: 100%;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-
-.monitoring-side-panel-scroll::-webkit-scrollbar {
-  display: none;
-}
-</style>

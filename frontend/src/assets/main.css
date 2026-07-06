@@ -40,4 +40,21 @@
   .dashboard-grid {
     @apply grid gap-4 md:gap-5 lg:gap-6;
   }
+
+  .dashboard-side-panel {
+    height: 22.5rem;
+    min-height: 0;
+  }
+
+  .dashboard-side-panel-scroll {
+    height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .dashboard-side-panel-scroll::-webkit-scrollbar {
+    display: none;
+  }
 }
