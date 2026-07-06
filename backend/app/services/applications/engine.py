@@ -33,6 +33,8 @@ from app.services.applications.readers.nginx import NginxReader
 from app.services.applications.readers.services import SupervisorReader, SystemdReader
 from app.services.applications.readers.ssl import SSLReader
 from app.services.applications.types import get_adapter
+from app.schemas.inventory import AppReconciliationState
+from app.services.applications.discovery_runtime import RuntimeApplicationDiscovery
 from app.services.monitoring import MonitoringService
 
 
@@ -58,6 +60,7 @@ class ApplicationEngine:
         self._deployments = DeploymentHistoryReader()
         self._logs = ApplicationLogReader()
         self._metrics = ApplicationMetricsReader(monitoring)
+        self._runtime_discovery = RuntimeApplicationDiscovery(settings)
 
     def reload(self) -> list[ApplicationDefinition]:
         return self._repository.reload()
@@ -90,7 +93,24 @@ class ApplicationEngine:
             timestamp=datetime.now(UTC),
             total=len(summaries),
             applications=summaries,
+            **self._discovery_payload(),
         )
+
+    def _discovery_payload(self) -> dict:
+        inventory = self._runtime_discovery.discover()
+        discovered = [a for a in inventory if not a.registered]
+        issues = [
+            a
+            for a in inventory
+            if a.reconciliation_state
+            not in (AppReconciliationState.REGISTERED, AppReconciliationState.DISCOVERED_UNREGISTERED)
+        ]
+        return {
+            "discovered": discovered,
+            "discovered_total": len(discovered),
+            "unregistered_discovered": len(discovered),
+            "issues_count": len(issues),
+        }
 
     async def get_application(self, app_id: str) -> ApplicationDetailSchema:
         app = self._repository.get(app_id)

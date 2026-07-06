@@ -1,3 +1,5 @@
+import type { DiscoveredApplication, VpsInventorySummary } from '@/types/inventory'
+
 export type HealthStatus = 'healthy' | 'degraded' | 'unhealthy'
 export type ServiceStatus = 'running' | 'stopped' | 'degraded' | 'unknown'
 export type AlertSeverity = 'critical' | 'warning' | 'info'
@@ -148,6 +150,7 @@ export interface DashboardApiResponse {
   load_average: number[]
   network_throughput: { in: string; out: string }
   collectors: ApiCollectorHealth[]
+  inventory?: import('@/types/inventory').VpsInventorySummary | null
 }
 
 export interface ApiCollectorHealth {
@@ -235,6 +238,10 @@ export interface ApplicationListResponse {
   timestamp: string
   total: number
   applications: ApplicationSummary[]
+  discovered?: DiscoveredApplication[]
+  discovered_total?: number
+  unregistered_discovered?: number
+  issues_count?: number
 }
 
 export interface DeploymentRecord {
@@ -275,4 +282,5 @@ export interface DashboardData {
   loadAverage: number[]
   networkThroughput: { in: string; out: string }
   collectors: ApiCollectorHealth[]
+  inventory: VpsInventorySummary | null
 }

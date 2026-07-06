@@ -8,6 +8,7 @@ from pydantic import Field
 
 from app.schemas.common import SchemaBase
 from app.schemas.health import HealthStatus
+from app.schemas.inventory import DiscoveredApplicationSchema
 
 
 class ApplicationType(StrEnum):
@@ -161,6 +162,10 @@ class ApplicationListResponse(SchemaBase):
     timestamp: datetime
     total: int
     applications: list[ApplicationSummarySchema]
+    discovered: list[DiscoveredApplicationSchema] = Field(default_factory=list)
+    discovered_total: int = 0
+    unregistered_discovered: int = 0
+    issues_count: int = 0
 
 
 class ApplicationEnvironmentResponse(SchemaBase):

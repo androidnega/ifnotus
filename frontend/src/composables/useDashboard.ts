@@ -142,6 +142,7 @@ function mapDashboardResponse(
       : [...dashboard.load_average, 0, 0, 0].slice(0, 3)) as [number, number, number],
     networkThroughput: dashboard.network_throughput,
     collectors: dashboard.collectors,
+    inventory: dashboard.inventory ?? null,
   }
 }
 

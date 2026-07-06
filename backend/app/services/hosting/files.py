@@ -25,12 +25,14 @@ from app.schemas.hosting import (
     FileUploadInitResponse,
 )
 from app.schemas.operations import FileEntry, FileListResponse, OperationResult
+from app.services.applications.discovery_runtime import RuntimeApplicationDiscovery
 
 
 class FileManagerService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._apps = ApplicationRepository(settings)
+        self._runtime = RuntimeApplicationDiscovery(settings)
 
     def allowed_roots(self) -> list[Path]:
         roots: list[Path] = []
@@ -40,25 +42,64 @@ class FileManagerService:
             root = self._app_root(app)
             if root.exists():
                 roots.append(root)
+        for item in self._runtime.discover():
+            if not item.registered:
+                path = Path(item.root_path)
+                if path.exists():
+                    roots.append(path.resolve())
         if not roots:
             roots.append(Path.cwd().resolve())
         return list(dict.fromkeys(roots))
 
     async def list_roots(self) -> FileRootsResponse:
         roots: list[FileRootSchema] = []
-        for index, path in enumerate(self.allowed_roots()):
+        seen_paths: set[str] = set()
+
+        for index, path in enumerate(self._hosting_roots()):
             roots.append(
                 FileRootSchema(
                     id=f"root:{index}",
-                    label=path.name or str(path),
+                    label=f"Hosting: {path.name or str(path)}",
                     path=str(path),
                 )
             )
+            seen_paths.add(str(path))
+
         for app in self._apps.list_all():
             root = self._app_root(app)
-            if root.exists():
-                roots.append(FileRootSchema(id=app.id, label=app.name, path=str(root)))
+            if root.exists() and str(root) not in seen_paths:
+                roots.append(FileRootSchema(id=app.id, label=f"App: {app.name}", path=str(root)))
+                seen_paths.add(str(root))
+
+        for item in self._runtime.discover():
+            if item.registered:
+                continue
+            if item.root_path in seen_paths:
+                continue
+            roots.append(
+                FileRootSchema(
+                    id=f"discovered:{item.id}",
+                    label=f"Discovered: {item.name}",
+                    path=item.root_path,
+                )
+            )
+            seen_paths.add(item.root_path)
+
         return FileRootsResponse(timestamp=datetime.now(UTC), roots=roots)
+
+    def hosting_roots(self) -> list[Path]:
+        return self._hosting_roots()
+
+    def resolve_base(self, app_id: str | None, root_id: str | None = None) -> Path:
+        return self._resolve_base(app_id, root_id)
+
+    def _hosting_roots(self) -> list[Path]:
+        roots: list[Path] = []
+        for raw in self._settings.hosting_allowed_paths:
+            roots.append(Path(raw).resolve())
+        if not roots:
+            roots.append(Path.cwd().resolve())
+        return list(dict.fromkeys(roots))
 
     async def list_files(
         self,
@@ -289,9 +330,15 @@ class FileManagerService:
         if app_id:
             app = self._apps.get(app_id)
             return self._app_root(app)
+        if root_id and root_id.startswith("discovered:"):
+            slug = root_id.split(":", 1)[1]
+            for item in self._runtime.discover():
+                if item.id == slug:
+                    return Path(item.root_path).resolve()
+            raise AppException("Discovered application root not found.", code="invalid_root")
         if root_id and root_id.startswith("root:"):
             index = int(root_id.split(":", 1)[1])
-            roots = self.allowed_roots()
+            roots = self._hosting_roots()
             if index < 0 or index >= len(roots):
                 raise AppException("Invalid root.", code="invalid_root")
             return roots[index]

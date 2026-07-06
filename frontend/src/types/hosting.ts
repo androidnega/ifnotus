@@ -18,6 +18,9 @@ export interface DomainListResponse {
   timestamp: string
   total: number
   domains: Domain[]
+  discovered?: import('@/types/inventory').NginxDiscoveredDomain[]
+  discovered_total?: number
+  drift_count?: number
 }
 
 export interface DnsCheckResponse {
@@ -33,6 +36,9 @@ export interface SslCertificate {
   domain_id?: string | null
   domain: string
   configured: boolean
+  reconciliation_state?: import('@/types/inventory').SslReconciliationState | null
+  in_database?: boolean | null
+  nginx_bound?: boolean | null
   certificate_path?: string | null
   private_key_path?: string | null
   chain_path?: string | null
@@ -63,6 +69,9 @@ export interface SslListResponse {
   timestamp: string
   summary: SslSummary
   certificates: SslCertificate[]
+  discovered_total?: number
+  expiring_count?: number
+  missing_count?: number
 }
 
 export interface SslReadinessResponse {

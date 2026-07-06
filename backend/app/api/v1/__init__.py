@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.routers.v1 import alerts, applications, auth, dashboard, health, hosting, logs, monitoring, operations, processes, server, services
+from app.routers.v1 import alerts, applications, auth, dashboard, health, hosting, inventory, logs, monitoring, operations, processes, server, services
 
 api_v1_router = APIRouter()
 
@@ -18,3 +18,4 @@ api_v1_router.include_router(processes.router, prefix="/processes", tags=["proce
 api_v1_router.include_router(logs.router, prefix="/logs", tags=["logs"])
 api_v1_router.include_router(alerts.router, prefix="/alerts", tags=["alerts"])
 api_v1_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
+api_v1_router.include_router(inventory.router, prefix="/inventory", tags=["inventory"])

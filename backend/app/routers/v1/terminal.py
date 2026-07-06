@@ -26,7 +26,14 @@ async def execute_command(
     session: DbSession,
     user: CurrentUser,
 ) -> TerminalExecuteResponse:
-    return await _terminal(request, session).execute(user, body.command, body.cwd)
+    return await _terminal(request, session).execute(
+        user,
+        body.command,
+        body.cwd,
+        scope=body.scope,
+        app_id=body.app_id,
+        root_id=body.root_id,
+    )
 
 
 @router.get(

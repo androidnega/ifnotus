@@ -16,6 +16,9 @@ const canWrite = computed(() => can(Permission.SSL_WRITE))
 const loading = ref(true)
 const certs = ref<SslCertificate[]>([])
 const summary = ref<SslSummary | null>(null)
+const discoveredTotal = ref(0)
+const expiringCount = ref(0)
+const missingCount = ref(0)
 const actionKey = ref<string | null>(null)
 const message = ref<{ type: 'ok' | 'err'; text: string } | null>(null)
 const actionLog = ref<{ title: string; stdout?: string; stderr?: string } | null>(null)
@@ -55,6 +58,9 @@ async function load() {
     const { data } = await sslApi.list()
     certs.value = data.certificates
     summary.value = data.summary
+    discoveredTotal.value = data.discovered_total ?? 0
+    expiringCount.value = data.expiring_count ?? 0
+    missingCount.value = data.missing_count ?? 0
     for (const cert of data.certificates) {
       if (cert.document_root && !webrootOverrides.value[cert.domain]) {
         webrootOverrides.value[cert.domain] = cert.document_root
@@ -170,7 +176,10 @@ onMounted(load)
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 class="text-lg font-semibold text-slate-900 dark:text-white">SSL Certificates</h1>
-          <p class="text-sm text-surface-muted">Let's Encrypt issuance, renewal, inspection, and readiness</p>
+          <p class="text-sm text-surface-muted">
+            IFNOTUS-managed and VPS-discovered certificates
+            <span v-if="discoveredTotal"> · {{ discoveredTotal }} discovered</span>
+          </p>
         </div>
         <div class="flex flex-wrap gap-2">
           <RouterLink
@@ -199,13 +208,14 @@ onMounted(load)
         </div>
       </div>
 
-      <section v-if="summary" class="dashboard-grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
+      <section v-if="summary" class="dashboard-grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8">
         <Card padding="sm"><p class="text-xs text-surface-muted">Total</p><p class="text-xl font-semibold">{{ summary.total }}</p></Card>
         <Card padding="sm"><p class="text-xs text-surface-muted">Configured</p><p class="text-xl font-semibold">{{ summary.configured }}</p></Card>
         <Card padding="sm"><p class="text-xs text-surface-muted">Healthy</p><p class="text-xl font-semibold text-emerald-600">{{ summary.healthy }}</p></Card>
-        <Card padding="sm"><p class="text-xs text-surface-muted">Expiring</p><p class="text-xl font-semibold text-amber-600">{{ summary.expiring_soon }}</p></Card>
+        <Card padding="sm"><p class="text-xs text-surface-muted">Discovered</p><p class="text-xl font-semibold text-sky-600">{{ discoveredTotal }}</p></Card>
+        <Card padding="sm"><p class="text-xs text-surface-muted">Expiring</p><p class="text-xl font-semibold text-amber-600">{{ expiringCount || summary.expiring_soon }}</p></Card>
         <Card padding="sm"><p class="text-xs text-surface-muted">Expired</p><p class="text-xl font-semibold text-red-600">{{ summary.expired }}</p></Card>
-        <Card padding="sm"><p class="text-xs text-surface-muted">Missing</p><p class="text-xl font-semibold">{{ summary.missing }}</p></Card>
+        <Card padding="sm"><p class="text-xs text-surface-muted">Missing</p><p class="text-xl font-semibold">{{ missingCount || summary.missing }}</p></Card>
       </section>
 
       <Card padding="md">
@@ -262,7 +272,12 @@ onMounted(load)
           >
             <div class="flex items-center justify-between gap-2">
               <span class="font-medium text-slate-900 dark:text-white">{{ cert.domain }}</span>
-              <Badge :variant="statusVariant(cert)" size="sm">{{ statusLabel(cert) }}</Badge>
+              <div class="flex gap-1">
+                <Badge v-if="cert.reconciliation_state" size="sm" variant="info">
+                  {{ cert.reconciliation_state }}
+                </Badge>
+                <Badge :variant="statusVariant(cert)" size="sm">{{ statusLabel(cert) }}</Badge>
+              </div>
             </div>
             <p v-if="cert.issuer" class="mt-1 truncate text-xs text-surface-muted">{{ cert.issuer }}</p>
           </div>

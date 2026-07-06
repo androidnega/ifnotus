@@ -346,9 +346,23 @@ export const filesApi = {
   },
 }
 
+export const inventoryApi = {
+  get: () => apiClient.get<import('@/types/inventory').VpsInventoryResponse>('/inventory'),
+}
+
 export const terminalApi = {
-  execute: (command: string, cwd?: string) =>
-    apiClient.post<TerminalExecuteResponse>('/terminal/execute', { command, cwd }),
+  execute: (
+    command: string,
+    cwd?: string,
+    options?: { scope?: import('@/types/inventory').TerminalScope; appId?: string; rootId?: string },
+  ) =>
+    apiClient.post<TerminalExecuteResponse>('/terminal/execute', {
+      command,
+      cwd,
+      scope: options?.scope ?? 'ops',
+      app_id: options?.appId,
+      root_id: options?.rootId,
+    }),
 
   audit: (limit = 50) => apiClient.get<TerminalAuditEntry[]>('/terminal/audit', { params: { limit } }),
 }

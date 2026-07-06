@@ -8,6 +8,7 @@ from pydantic import Field
 
 from app.schemas.common import SchemaBase
 from app.schemas.health import HealthStatus
+from app.schemas.inventory import VpsInventorySummarySchema
 
 
 class CollectorStatus(StrEnum):
@@ -388,6 +389,7 @@ class DashboardResponse(SchemaBase):
     load_average: list[float]
     network_throughput: dict[str, str]
     collectors: list[CollectorHealthSchema]
+    inventory: VpsInventorySummarySchema | None = None
 
 
 # Legacy compatibility for /monitoring/metrics

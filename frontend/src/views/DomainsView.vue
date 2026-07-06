@@ -8,9 +8,12 @@ import { usePermissions } from '@/composables/usePermissions'
 import { Permission } from '@/lib/permissions'
 import type { ApplicationSummary } from '@/types/dashboard'
 import type { DnsCheckResponse, Domain } from '@/types/hosting'
+import type { NginxDiscoveredDomain } from '@/types/inventory'
 
 const loading = ref(true)
 const domains = ref<Domain[]>([])
+const discoveredDomains = ref<NginxDiscoveredDomain[]>([])
+const driftCount = ref(0)
 const apps = ref<ApplicationSummary[]>([])
 const message = ref<{ type: 'ok' | 'err'; text: string } | null>(null)
 const actionKey = ref<string | null>(null)
@@ -39,6 +42,8 @@ async function load() {
   try {
     const [d, a] = await Promise.all([domainsApi.list(), applicationsApi.list()])
     domains.value = d.data.domains
+    discoveredDomains.value = d.data.discovered ?? []
+    driftCount.value = d.data.drift_count ?? 0
     apps.value = a.data.applications
   } finally {
     loading.value = false
@@ -151,7 +156,10 @@ onMounted(load)
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 class="text-lg font-semibold text-slate-900 dark:text-white">Domains</h1>
-          <p class="text-sm text-surface-muted">Manage hostnames, DNS, and nginx linkage</p>
+          <p class="text-sm text-surface-muted">
+            IFNOTUS-managed domains and nginx-discovered hostnames
+            <span v-if="driftCount" class="text-amber-600"> · {{ driftCount }} drift</span>
+          </p>
         </div>
         <div class="flex gap-2">
           <button
@@ -263,16 +271,18 @@ onMounted(load)
 
       <div v-if="loading" class="text-sm text-surface-muted">Loading domains…</div>
 
-      <div v-else-if="!domains.length" class="rounded-xl border border-dashed border-surface-border p-8 text-center text-sm text-surface-muted">
+      <div v-else-if="!domains.length && !discoveredDomains.length" class="rounded-xl border border-dashed border-surface-border p-8 text-center text-sm text-surface-muted">
         No domains registered yet.
       </div>
 
-      <div v-else class="space-y-2">
-        <div
-          v-for="domain in domains"
-          :key="domain.id"
-          class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-surface-border bg-surface-raised px-4 py-3"
-        >
+      <div v-else class="space-y-6">
+        <div v-if="domains.length" class="space-y-2">
+          <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">Managed domains</h2>
+          <div
+            v-for="domain in domains"
+            :key="domain.id"
+            class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-surface-border bg-surface-raised px-4 py-3"
+          >
           <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-2">
               <span class="font-medium text-slate-900 dark:text-white">{{ domain.name }}</span>
@@ -324,6 +334,32 @@ onMounted(load)
             >
               Delete
             </button>
+          </div>
+        </div>
+        </div>
+
+        <div v-if="discoveredDomains.length" class="space-y-2">
+          <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">
+            Discovered from nginx ({{ discoveredDomains.length }})
+          </h2>
+          <div
+            v-for="site in discoveredDomains"
+            :key="site.server_name + site.site_path"
+            class="rounded-xl border border-dashed border-surface-border bg-surface-raised/50 px-4 py-3"
+          >
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="font-medium text-slate-900 dark:text-white">{{ site.server_name }}</span>
+              <Badge size="sm" variant="info">discovered</Badge>
+              <Badge :variant="site.enabled ? 'success' : 'warning'" size="sm">
+                nginx {{ site.enabled ? 'enabled' : 'disabled' }}
+              </Badge>
+              <Badge v-if="site.ssl_enabled" size="sm" variant="success">SSL</Badge>
+            </div>
+            <p class="mt-1 text-xs text-surface-muted">
+              <span v-if="site.document_root">root: {{ site.document_root }}</span>
+              <span v-if="site.proxy_pass"> · proxy: {{ site.proxy_pass }}</span>
+              <span v-if="site.site_path"> · {{ site.site_path }}</span>
+            </p>
           </div>
         </div>
       </div>

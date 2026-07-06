@@ -1,12 +1,14 @@
 """Hosting API schemas."""
 
 from datetime import datetime
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import Field, field_validator
 
 from app.schemas.common import SchemaBase
 from app.schemas.health import HealthStatus
+from app.schemas.inventory import NginxDiscoveredDomainSchema, SslReconciliationState
 
 
 class DomainCreate(SchemaBase):
@@ -51,6 +53,9 @@ class DomainListResponse(SchemaBase):
     timestamp: datetime
     total: int
     domains: list[DomainSchema]
+    discovered: list[NginxDiscoveredDomainSchema] = Field(default_factory=list)
+    discovered_total: int = 0
+    drift_count: int = 0
 
 
 class DnsCheckResponse(SchemaBase):
@@ -66,6 +71,9 @@ class SslCertificateSchema(SchemaBase):
     domain_id: UUID | None = None
     domain: str
     configured: bool
+    reconciliation_state: SslReconciliationState | None = None
+    in_database: bool | None = None
+    nginx_bound: bool | None = None
     certificate_path: str | None = None
     private_key_path: str | None = None
     chain_path: str | None = None
@@ -96,6 +104,9 @@ class SslListResponse(SchemaBase):
     timestamp: datetime
     summary: SslSummarySchema
     certificates: list[SslCertificateSchema]
+    discovered_total: int = 0
+    expiring_count: int = 0
+    missing_count: int = 0
 
 
 class SslActionRequest(SchemaBase):
@@ -222,9 +233,20 @@ class FileUploadCompleteRequest(SchemaBase):
     upload_id: str
 
 
+class TerminalScope(StrEnum):
+    """Terminal execution scope."""
+
+    OPS = "ops"
+    HOSTING = "hosting"
+    APP = "app"
+
+
 class TerminalExecuteRequest(SchemaBase):
     command: str = Field(min_length=1, max_length=4000)
     cwd: str | None = None
+    scope: TerminalScope = TerminalScope.OPS
+    app_id: str | None = None
+    root_id: str | None = None
 
 
 class TerminalExecuteResponse(SchemaBase):

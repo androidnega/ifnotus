@@ -22,7 +22,9 @@ from app.schemas.hosting import (
 from app.schemas.operations import OperationResult
 from app.services.applications.readers.nginx import NginxReader
 from app.services.applications.readers.ssl import SSLReader
+from app.schemas.inventory import DiscoveredCertificateSchema, SslReconciliationState
 from app.services.hosting.domains import DomainService
+from app.services.hosting.ssl_discovery import SslDiscoveryService
 from app.services.monitoring.subprocess_util import resolve_binary, run_command
 
 
@@ -33,12 +35,49 @@ class SslService:
         self._domain_service = DomainService(settings, session)
         self._reader = SSLReader()
         self._nginx = NginxReader()
+        self._ssl_discovery = SslDiscoveryService(settings)
 
     async def list_certificates(self) -> SslListResponse:
         domains = await self._domains.list_all()
         certs = [await self._build_certificate(domain) for domain in domains]
+        db_names = {d.name for d in domains}
+
+        for cert in certs:
+            cert.in_database = True
+            cert.nginx_bound = cert.nginx_ssl_enabled
+            cert.reconciliation_state = (
+                SslReconciliationState.MANAGED if cert.configured else SslReconciliationState.MISSING
+            )
+
+        discovered_certs = await self._ssl_discovery.scan_certificates()
+        discovered_only = 0
+        for disc in discovered_certs:
+            match = next((c for c in certs if c.domain == disc.domain), None)
+            if match:
+                match.nginx_bound = disc.nginx_bound
+                if disc.reconciliation_state in {
+                    SslReconciliationState.EXPIRING,
+                    SslReconciliationState.EXPIRED,
+                    SslReconciliationState.MISMATCH,
+                }:
+                    match.reconciliation_state = disc.reconciliation_state
+                elif match.configured:
+                    match.reconciliation_state = SslReconciliationState.MANAGED
+                continue
+            discovered_only += 1
+            certs.append(self._discovered_to_schema(disc))
+
         summary = self._build_summary(certs)
-        return SslListResponse(timestamp=datetime.now(UTC), summary=summary, certificates=certs)
+        expiring = sum(1 for c in certs if c.reconciliation_state == SslReconciliationState.EXPIRING)
+        missing = sum(1 for c in certs if c.reconciliation_state == SslReconciliationState.MISSING)
+        return SslListResponse(
+            timestamp=datetime.now(UTC),
+            summary=summary,
+            certificates=certs,
+            discovered_total=discovered_only,
+            expiring_count=expiring,
+            missing_count=missing,
+        )
 
     async def get_certificate(self, domain_name: str) -> SslCertificateSchema:
         entity = await self._domains.get_by_name(domain_name.lower().strip())
@@ -170,6 +209,24 @@ class SslService:
             domain_enabled=domain.enabled,
             nginx_ssl_enabled=nginx.ssl_enabled,
             message=status.message,
+        )
+
+    @staticmethod
+    def _discovered_to_schema(disc: DiscoveredCertificateSchema) -> SslCertificateSchema:
+        configured = bool(disc.certificate_path)
+        return SslCertificateSchema(
+            domain=disc.domain,
+            configured=configured,
+            certificate_path=disc.certificate_path,
+            issuer=disc.issuer,
+            valid_until=disc.valid_until,
+            days_remaining=disc.days_remaining,
+            status=disc.status,
+            sans=disc.sans,
+            in_database=False,
+            nginx_bound=disc.nginx_bound,
+            reconciliation_state=disc.reconciliation_state,
+            message=None if configured else "Certificate discovered in nginx but file missing.",
         )
 
     async def _run_certbot(

@@ -131,6 +131,15 @@ class Settings(BaseSettings):
     file_upload_chunk_size: int = 2_097_152
     file_upload_temp_dir: str = ".ifnotus/upload-sessions"
 
+    # VPS discovery (read-only scanning)
+    discovery_scan_paths: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["/srv/apps", "/var/www", "/opt"]
+    )
+    discovery_max_depth: int = 4
+    nginx_sites_enabled: str = "/etc/nginx/sites-enabled"
+    nginx_sites_available: str = "/etc/nginx/sites-available"
+    letsencrypt_live_dir: str = "/etc/letsencrypt/live"
+
     # Background workers
     worker_concurrency: int = 4
     worker_poll_interval_seconds: float = 1.0
@@ -162,6 +171,13 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [path.strip() for path in value.split(",") if path.strip()]
         return value
+
+    @field_validator("discovery_scan_paths", mode="before")
+    @classmethod
+    def parse_discovery_paths(cls, value: str | list[str]) -> list[str]:
+        if isinstance(value, str):
+            return [path.strip() for path in value.split(",") if path.strip()]
+        return value if isinstance(value, list) else ["/srv/apps", "/var/www", "/opt"]
 
     @property
     def is_production(self) -> bool:

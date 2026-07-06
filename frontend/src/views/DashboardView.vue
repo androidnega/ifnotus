@@ -64,6 +64,42 @@ const secondaryStats = computed(() => data.value?.stats.slice(4) ?? [])
         />
       </section>
 
+      <!-- VPS inventory -->
+      <section
+        v-if="data?.inventory"
+        class="dashboard-grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7"
+        aria-label="VPS inventory"
+      >
+        <Card padding="sm">
+          <p class="text-xs text-surface-muted">Registered apps</p>
+          <p class="text-xl font-semibold">{{ data.inventory.registered_apps }}</p>
+        </Card>
+        <Card padding="sm">
+          <p class="text-xs text-surface-muted">Discovered apps</p>
+          <p class="text-xl font-semibold text-sky-600">{{ data.inventory.discovered_apps }}</p>
+        </Card>
+        <Card padding="sm">
+          <p class="text-xs text-surface-muted">Unregistered</p>
+          <p class="text-xl font-semibold text-amber-600">{{ data.inventory.unregistered_discovered_apps }}</p>
+        </Card>
+        <Card padding="sm">
+          <p class="text-xs text-surface-muted">Domain drift</p>
+          <p class="text-xl font-semibold text-amber-600">{{ data.inventory.domains_with_drift }}</p>
+        </Card>
+        <Card padding="sm">
+          <p class="text-xs text-surface-muted">Certs expiring</p>
+          <p class="text-xl font-semibold text-amber-600">{{ data.inventory.certificates_expiring }}</p>
+        </Card>
+        <Card padding="sm">
+          <p class="text-xs text-surface-muted">Certs missing</p>
+          <p class="text-xl font-semibold text-red-600">{{ data.inventory.certificates_missing }}</p>
+        </Card>
+        <Card padding="sm">
+          <p class="text-xs text-surface-muted">Runtime issues</p>
+          <p class="text-xl font-semibold">{{ data.inventory.runtime_issues }}</p>
+        </Card>
+      </section>
+
       <section aria-label="Quick actions">
         <Card title="Quick Actions" padding="sm" class="min-w-0 overflow-hidden">
           <QuickActions :refreshing="refreshing" @refresh="refresh" />

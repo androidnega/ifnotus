@@ -21,6 +21,7 @@ from app.schemas.hosting import (
     DomainUpdate,
 )
 from app.services.applications.readers.nginx import NginxReader
+from app.services.hosting.nginx_discovery import NginxDiscoveryService
 
 
 class DomainService:
@@ -28,14 +29,36 @@ class DomainService:
         self._settings = settings
         self._repo = DomainRepository(session)
         self._nginx = NginxReader()
+        self._nginx_discovery = NginxDiscoveryService(settings)
 
     async def list_domains(self) -> DomainListResponse:
         domains = await self._repo.list_all()
         enriched = [await self._enrich(d) for d in domains]
+        nginx_sites = self._nginx_discovery.scan_sites()
+        db_names = {d.name for d in domains}
+
+        discovered = [s for s in nginx_sites if s.server_name not in db_names]
+        drift_count = 0
+        for entity in domains:
+            site = next((s for s in nginx_sites if s.server_name == entity.name), None)
+            if site is None:
+                drift_count += 1
+            elif not site.enabled:
+                drift_count += 1
+            elif (
+                entity.document_root
+                and site.document_root
+                and site.document_root != entity.document_root
+            ):
+                drift_count += 1
+
         return DomainListResponse(
             timestamp=datetime.now(UTC),
             total=len(enriched),
             domains=enriched,
+            discovered=discovered,
+            discovered_total=len(discovered),
+            drift_count=drift_count,
         )
 
     async def get_domain(self, domain_id: UUID) -> DomainSchema:
