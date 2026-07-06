@@ -25,20 +25,14 @@ from app.schemas.hosting import (
     FileUploadInitResponse,
 )
 from app.schemas.operations import FileEntry, FileListResponse, OperationResult
+from app.services.applications.path_scanner import ApplicationPathScanner
 
 
 class FileManagerService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._apps = ApplicationRepository(settings)
-        self._runtime = None
-
-    def _runtime_discovery(self):
-        if self._runtime is None:
-            from app.services.applications.discovery_runtime import RuntimeApplicationDiscovery
-
-            self._runtime = RuntimeApplicationDiscovery(self._settings)
-        return self._runtime
+        self._path_scanner = ApplicationPathScanner(settings)
 
     def allowed_roots(self) -> list[Path]:
         roots: list[Path] = []
@@ -48,11 +42,10 @@ class FileManagerService:
             root = self._app_root(app)
             if root.exists():
                 roots.append(root)
-        for item in self._runtime_discovery().discover():
-            if not item.registered:
-                path = Path(item.root_path)
-                if path.exists():
-                    roots.append(path.resolve())
+        for item in self._path_scanner.unregistered_file_roots():
+            path = Path(item.root_path)
+            if path.exists():
+                roots.append(path.resolve())
         if not roots:
             roots.append(Path.cwd().resolve())
         return list(dict.fromkeys(roots))
@@ -77,9 +70,7 @@ class FileManagerService:
                 roots.append(FileRootSchema(id=app.id, label=f"App: {app.name}", path=str(root)))
                 seen_paths.add(str(root))
 
-        for item in self._runtime_discovery().discover():
-            if item.registered:
-                continue
+        for item in self._path_scanner.unregistered_file_roots():
             if item.root_path in seen_paths:
                 continue
             roots.append(
@@ -338,10 +329,10 @@ class FileManagerService:
             return self._app_root(app)
         if root_id and root_id.startswith("discovered:"):
             slug = root_id.split(":", 1)[1]
-            for item in self._runtime_discovery().discover():
-                if item.id == slug:
-                    return Path(item.root_path).resolve()
-            raise AppException("Discovered application root not found.", code="invalid_root")
+            resolved = self._path_scanner.resolve_discovered_root(slug)
+            if resolved is None:
+                raise AppException("Discovered application root not found.", code="invalid_root")
+            return resolved
         if root_id and root_id.startswith("root:"):
             index = int(root_id.split(":", 1)[1])
             roots = self._hosting_roots()
