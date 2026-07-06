@@ -161,6 +161,16 @@ export interface ApiCollectorHealth {
   available: boolean
 }
 
+export type ServiceCategory =
+  | 'application'
+  | 'web'
+  | 'database'
+  | 'cache'
+  | 'queue'
+  | 'monitoring'
+  | 'security'
+  | 'system'
+
 export interface ApiManagedService {
   id: string
   name: string
@@ -170,6 +180,13 @@ export interface ApiManagedService {
   pid?: number | null
   uptime_seconds?: number | null
   memory_bytes?: number | null
+  unit_name?: string | null
+  display_name?: string | null
+  category?: ServiceCategory
+  relevant?: boolean
+  managed_by_ifnotus?: boolean
+  app_id?: string | null
+  ports?: number[]
 }
 
 export interface ListeningPort {
@@ -212,6 +229,10 @@ export interface ServicesResponse {
   timestamp: string
   services: ApiManagedService[]
   collectors: ApiCollectorHealth[]
+  mode?: string
+  category?: string | null
+  total_all?: number
+  total_relevant?: number
 }
 
 export interface AlertsResponse {

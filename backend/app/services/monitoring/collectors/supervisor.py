@@ -54,6 +54,7 @@ class SupervisorCollector(BaseCollector[list[ManagedService]]):
                 ManagedService(
                     id=f"supervisor-{name}",
                     name=name,
+                    unit_name=name,
                     status=self._map_state(state),
                     description=parts[2] if len(parts) > 2 else None,
                     source="supervisor",

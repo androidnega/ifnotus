@@ -71,7 +71,8 @@ export const serverApi = {
 
   ports: () => apiClient.get<PortsResponse>('/server/ports'),
 
-  services: () => apiClient.get<ServicesResponse>('/services'),
+  services: (params?: { mode?: 'relevant' | 'all'; category?: string }) =>
+    apiClient.get<ServicesResponse>('/services', { params }),
 }
 
 export const alertsApi = {

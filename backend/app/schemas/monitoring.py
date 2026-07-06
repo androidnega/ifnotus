@@ -30,6 +30,19 @@ class ServiceState(StrEnum):
     FAILED = "failed"
 
 
+class ServiceCategory(StrEnum):
+    """Operational classification for VPS services."""
+
+    APPLICATION = "application"
+    WEB = "web"
+    DATABASE = "database"
+    CACHE = "cache"
+    QUEUE = "queue"
+    MONITORING = "monitoring"
+    SECURITY = "security"
+    SYSTEM = "system"
+
+
 class AlertSeverity(StrEnum):
     """Alert severity level."""
 
@@ -157,6 +170,13 @@ class ManagedService(SchemaBase):
     uptime_seconds: float | None = None
     memory_bytes: int | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
+    unit_name: str | None = None
+    display_name: str | None = None
+    category: ServiceCategory = ServiceCategory.SYSTEM
+    relevant: bool = False
+    managed_by_ifnotus: bool = False
+    app_id: str | None = None
+    ports: list[int] = Field(default_factory=list)
 
 
 class DatabaseStats(SchemaBase):
@@ -338,11 +358,15 @@ class ServerNetworkResponse(SchemaBase):
 
 
 class ServicesResponse(SchemaBase):
-    """All managed and detected services."""
+    """Managed and detected services with classification metadata."""
 
     timestamp: datetime
     services: list[ManagedService]
     collectors: list[CollectorHealthSchema]
+    mode: str = "relevant"
+    category: str | None = None
+    total_all: int = 0
+    total_relevant: int = 0
 
 
 class ProcessesResponse(SchemaBase):

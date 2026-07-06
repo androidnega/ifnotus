@@ -43,6 +43,7 @@ from app.repositories.applications import ApplicationRepository
 from app.services.applications.readers.deployments import DeploymentHistoryReader
 from app.services.monitoring.history import MetricsHistory
 from app.services.monitoring.registry import CollectorRegistry
+from app.services.monitoring.service_classifier import ServiceClassifier
 
 
 def _format_bytes_per_sec(rate: float) -> str:
@@ -227,8 +228,29 @@ class MonitoringService:
             collectors=collectors,
         )
 
-    async def get_services(self) -> ServicesResponse:
+    async def get_services(
+        self,
+        *,
+        mode: str = "relevant",
+        category: str | None = None,
+    ) -> ServicesResponse:
         collectors_health = await self._registry.health_checks()
+        raw = await self._collect_raw_services()
+        classifier = ServiceClassifier(self._settings)
+        classified = classifier.classify(raw)
+        filtered = classifier.filter_services(classified, mode=mode, category=category)
+
+        return ServicesResponse(
+            timestamp=datetime.now(UTC),
+            services=filtered,
+            collectors=collectors_health,
+            mode=mode,
+            category=category,
+            total_all=len(classified),
+            total_relevant=sum(1 for s in classified if s.relevant),
+        )
+
+    async def _collect_raw_services(self) -> list[ManagedService]:
         results = await asyncio.gather(
             self._safe_collect_services("systemd"),
             self._safe_collect_services("supervisor"),
@@ -246,12 +268,7 @@ class MonitoringService:
                 services.extend(batch)
             elif batch is not None:
                 services.append(batch)
-
-        return ServicesResponse(
-            timestamp=datetime.now(UTC),
-            services=services,
-            collectors=collectors_health,
-        )
+        return services
 
     async def _safe_collect_services(self, name: str) -> list[ManagedService]:
         try:
@@ -272,6 +289,8 @@ class MonitoringService:
             return ManagedService(
                 id=name,
                 name=name,
+                unit_name=name,
+                display_name=name.replace("_", " ").title(),
                 status=status,
                 description=stats.version,
                 source=name,
@@ -290,6 +309,8 @@ class MonitoringService:
             return ManagedService(
                 id="netdata",
                 name="netdata",
+                unit_name="netdata",
+                display_name="Netdata",
                 status=ServiceState.RUNNING if info.connected else ServiceState.STOPPED,
                 description=info.version,
                 source="netdata",
@@ -464,7 +485,8 @@ class MonitoringService:
 
     async def get_dashboard(self) -> DashboardResponse:
         overview = await self.get_server_overview()
-        services_resp = await self.get_services()
+        services_resp = await self.get_services(mode="all")
+        relevant_services = [s for s in services_resp.services if s.relevant]
         alerts_resp = await self.get_alerts()
         processes = await self._registry.collect("processes")
 
@@ -504,7 +526,7 @@ class MonitoringService:
             version=self._settings.app_version,
             stats=stats,
             servers=servers,
-            services=services_resp.services,
+            services=relevant_services,
             applications=applications,
             alerts=alerts_resp.alerts,
             activities=activities,

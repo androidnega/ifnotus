@@ -49,7 +49,7 @@ const { data: health, refresh: refreshHealth } = usePolling(
 )
 
 const { data: services, refresh: refreshServices } = usePolling(
-  async () => (await serverApi.services()).data,
+  async () => (await serverApi.services({ mode: 'relevant' })).data,
   REALTIME_POLL_MS,
 )
 
@@ -65,11 +65,11 @@ function mapServiceStatus(status: string): ServiceStatus {
 }
 
 const serviceItems = computed<ServiceItem[]>(() =>
-  (services.value?.services ?? []).map((svc) => ({
+  (services.value?.services ?? []).slice(0, 8).map((svc) => ({
     id: svc.id,
-    name: svc.name,
+    name: svc.display_name || svc.name,
     status: mapServiceStatus(String(svc.status)),
-    description: svc.description ?? `${svc.source} service`,
+    description: svc.description ?? `${svc.category ?? svc.source} service`,
     uptime: svc.uptime_seconds
       ? `${Math.floor(svc.uptime_seconds / 3600)}h uptime`
       : undefined,
@@ -229,7 +229,10 @@ onMounted(refreshAll)
           </div>
         </Card>
 
-        <Card title="Services" :subtitle="`${serviceItems.length} detected`">
+        <Card
+          title="Services"
+          :subtitle="`${serviceItems.length} relevant · ${services?.total_relevant ?? 0} operational`"
+        >
           <div class="grid gap-2">
             <ServiceStatusCard
               v-for="service in serviceItems"

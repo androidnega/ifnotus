@@ -50,13 +50,14 @@ class SystemdCollector(BaseCollector[list[ManagedService]]):
                 ManagedService(
                     id=f"systemd-{name}",
                     name=name,
+                    unit_name=name,
                     status=status,
                     description=parts[4] if len(parts) > 4 else None,
                     source="systemd",
                 )
             )
 
-        return sorted(services, key=lambda s: s.name)[:100]
+        return sorted(services, key=lambda s: s.name)
 
     @staticmethod
     def _map_state(active: str, sub: str) -> ServiceState:
