@@ -34,17 +34,34 @@ export interface SslCertificate {
   domain: string
   configured: boolean
   certificate_path?: string | null
+  private_key_path?: string | null
+  chain_path?: string | null
+  subject?: string | null
   issuer?: string | null
   valid_from?: string | null
   valid_until?: string | null
   days_remaining?: number | null
   status?: string | null
   sans: string[]
+  fingerprint_sha256?: string | null
+  document_root?: string | null
+  domain_enabled?: boolean | null
+  nginx_ssl_enabled?: boolean | null
   message?: string | null
+}
+
+export interface SslSummary {
+  total: number
+  configured: number
+  healthy: number
+  expiring_soon: number
+  expired: number
+  missing: number
 }
 
 export interface SslListResponse {
   timestamp: string
+  summary: SslSummary
   certificates: SslCertificate[]
 }
 
@@ -53,6 +70,8 @@ export interface SslReadinessResponse {
   ready: boolean
   checks: Record<string, boolean>
   messages: string[]
+  document_root?: string | null
+  certificate_path?: string | null
 }
 
 export interface Mailbox {
@@ -94,6 +113,12 @@ export interface FileRoot {
 export interface FileRootsResponse {
   timestamp: string
   roots: FileRoot[]
+}
+
+export interface FileUploadInitResponse {
+  upload_id: string
+  chunk_size: number
+  total_chunks: number
 }
 
 export interface FileDetail {

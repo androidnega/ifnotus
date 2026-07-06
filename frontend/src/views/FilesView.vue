@@ -1,14 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { RouterLink, useRoute } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
+import FileTransferQueue from '@/components/files/FileTransferQueue.vue'
 import { filesApi } from '@/api'
+import { useFileTransferStore } from '@/stores/fileTransfers'
 import { usePermissions } from '@/composables/usePermissions'
 import { Permission } from '@/lib/permissions'
 import type { FileDetail, FileRoot } from '@/types/hosting'
 import type { FileEntry } from '@/types/operations'
 
+const route = useRoute()
+const transfers = useFileTransferStore()
 const { can } = usePermissions()
 const canWrite = computed(() => can(Permission.FILES_WRITE))
 
@@ -28,7 +33,6 @@ const editorMeta = ref<FileDetail | null>(null)
 
 const newFolderName = ref('')
 const chmodMode = ref('644')
-const uploadInput = ref<HTMLInputElement | null>(null)
 
 const infoPanel = ref<FileDetail | null>(null)
 const renameTarget = ref<FileEntry | null>(null)
@@ -44,10 +48,26 @@ const scope = computed(() => {
 
 const activeRoot = computed(() => roots.value.find((r) => r.id === selectedRoot.value))
 
+const uploadLink = computed(() => ({
+  name: 'files-upload',
+  query: {
+    root: selectedRoot.value,
+    path: currentPath.value,
+  },
+}))
+
+function downloadEntry(entry: FileEntry) {
+  if (entry.is_dir || entry.size_bytes == null) return
+  transfers.enqueueDownload(entry.path, entry.name, entry.size_bytes, scope.value)
+}
+
 async function loadRoots() {
   const { data } = await filesApi.roots()
   roots.value = data.roots
-  if (!selectedRoot.value && roots.value.length) {
+  const queryRoot = String(route.query.root ?? '')
+  if (queryRoot && roots.value.some((r) => r.id === queryRoot)) {
+    selectedRoot.value = queryRoot
+  } else if (!selectedRoot.value && roots.value.length) {
     selectedRoot.value = roots.value[0].id
   }
 }
@@ -153,16 +173,6 @@ async function unzip(entry: FileEntry) {
   await load(currentPath.value)
 }
 
-async function onUpload(ev: Event) {
-  const input = ev.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
-  const { data } = await filesApi.upload(currentPath.value, file, scope.value)
-  message.value = { type: data.success ? 'ok' : 'err', text: data.message }
-  input.value = ''
-  await load(currentPath.value)
-}
-
 function startRename(entry: FileEntry) {
   renameTarget.value = entry
   renameValue.value = entry.name
@@ -201,7 +211,8 @@ function formatBytes(n?: number) {
 
 onMounted(async () => {
   await loadRoots()
-  await load()
+  const queryPath = String(route.query.path ?? '.')
+  await load(queryPath || '.')
 })
 </script>
 
@@ -215,8 +226,12 @@ onMounted(async () => {
         </div>
         <div v-if="canWrite" class="flex gap-2">
           <button type="button" class="rounded-lg border border-surface-border px-3 py-2 text-sm" :disabled="parentPath === undefined" @click="goUp">Up</button>
-          <button type="button" class="rounded-lg border border-surface-border px-3 py-2 text-sm" @click="uploadInput?.click()">Upload</button>
-          <input ref="uploadInput" type="file" class="hidden" @change="onUpload" />
+          <RouterLink
+            :to="uploadLink"
+            class="rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700"
+          >
+            Upload
+          </RouterLink>
         </div>
         <button v-else type="button" class="rounded-lg border border-surface-border px-3 py-2 text-sm" :disabled="parentPath === undefined" @click="goUp">Up</button>
       </div>
@@ -288,6 +303,7 @@ onMounted(async () => {
               <td class="px-4 py-2">
                 <div class="flex flex-wrap gap-2 text-xs">
                   <button type="button" class="underline" @click="showInfo(entry)">info</button>
+                  <button v-if="!entry.is_dir" type="button" class="underline" @click="downloadEntry(entry)">download</button>
                   <template v-if="canWrite">
                     <button type="button" class="underline" @click="startRename(entry)">rename</button>
                     <button type="button" class="underline" @click="startMove(entry)">move</button>
@@ -348,6 +364,8 @@ onMounted(async () => {
           <button type="button" class="rounded-lg border border-surface-border px-3 py-2 text-sm" @click="editorOpen = false">Close</button>
         </div>
       </Card>
+
+      <FileTransferQueue />
     </div>
   </DashboardLayout>
 </template>

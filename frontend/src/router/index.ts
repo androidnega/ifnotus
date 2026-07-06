@@ -63,6 +63,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true, permission: 'mail:read' },
   },
   {
+    path: '/files/upload',
+    name: 'files-upload',
+    component: () => import('@/views/FileUploadView.vue'),
+    meta: { requiresAuth: true, permission: 'files:write' },
+  },
+  {
     path: '/files',
     name: 'files',
     component: () => import('@/views/FilesView.vue'),

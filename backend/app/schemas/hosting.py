@@ -67,17 +67,34 @@ class SslCertificateSchema(SchemaBase):
     domain: str
     configured: bool
     certificate_path: str | None = None
+    private_key_path: str | None = None
+    chain_path: str | None = None
+    subject: str | None = None
     issuer: str | None = None
     valid_from: datetime | None = None
     valid_until: datetime | None = None
     days_remaining: int | None = None
     status: HealthStatus | None = None
     sans: list[str] = Field(default_factory=list)
+    fingerprint_sha256: str | None = None
+    document_root: str | None = None
+    domain_enabled: bool | None = None
+    nginx_ssl_enabled: bool | None = None
     message: str | None = None
+
+
+class SslSummarySchema(SchemaBase):
+    total: int
+    configured: int
+    healthy: int
+    expiring_soon: int
+    expired: int
+    missing: int
 
 
 class SslListResponse(SchemaBase):
     timestamp: datetime
+    summary: SslSummarySchema
     certificates: list[SslCertificateSchema]
 
 
@@ -93,6 +110,8 @@ class SslReadinessResponse(SchemaBase):
     ready: bool
     checks: dict[str, bool]
     messages: list[str] = Field(default_factory=list)
+    document_root: str | None = None
+    certificate_path: str | None = None
 
 
 class MailboxCreate(SchemaBase):
@@ -184,6 +203,23 @@ class FileChmodRequest(SchemaBase):
 
 class FileMkdirRequest(SchemaBase):
     path: str
+
+
+class FileUploadInitRequest(SchemaBase):
+    filename: str = Field(min_length=1, max_length=512)
+    path: str = "."
+    size_bytes: int = Field(ge=1)
+    chunk_size: int | None = None
+
+
+class FileUploadInitResponse(SchemaBase):
+    upload_id: str
+    chunk_size: int
+    total_chunks: int
+
+
+class FileUploadCompleteRequest(SchemaBase):
+    upload_id: str
 
 
 class TerminalExecuteRequest(SchemaBase):

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import math
 import os
 import shutil
 import stat
+import uuid
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,7 +18,12 @@ from fastapi import UploadFile
 from app.core.config import Settings
 from app.core.exceptions import AppException, NotFoundError
 from app.repositories.applications import ApplicationRepository
-from app.schemas.hosting import FileDetailSchema, FileRootSchema, FileRootsResponse
+from app.schemas.hosting import (
+    FileDetailSchema,
+    FileRootSchema,
+    FileRootsResponse,
+    FileUploadInitResponse,
+)
 from app.schemas.operations import FileEntry, FileListResponse, OperationResult
 
 
@@ -161,9 +169,93 @@ class FileManagerService:
         if target.is_dir():
             target = target / (file.filename or "upload.bin")
         target.parent.mkdir(parents=True, exist_ok=True)
-        data = await file.read()
-        await asyncio.to_thread(target.write_bytes, data)
+        with target.open("wb") as out:
+            while chunk := await file.read(1024 * 1024):
+                out.write(chunk)
         return OperationResult(success=True, message=f"Uploaded to {target.relative_to(base)}")
+
+    async def init_chunked_upload(
+        self,
+        filename: str,
+        path: str,
+        size_bytes: int,
+        *,
+        app_id: str | None = None,
+        root_id: str | None = None,
+        chunk_size: int | None = None,
+    ) -> FileUploadInitResponse:
+        chunk = chunk_size or self._settings.file_upload_chunk_size
+        upload_id = str(uuid.uuid4())
+        session_dir = self._upload_session_dir(upload_id)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "filename": filename,
+            "path": path,
+            "size_bytes": size_bytes,
+            "chunk_size": chunk,
+            "app_id": app_id,
+            "root_id": root_id,
+        }
+        (session_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        total_chunks = max(1, math.ceil(size_bytes / chunk))
+        return FileUploadInitResponse(upload_id=upload_id, chunk_size=chunk, total_chunks=total_chunks)
+
+    async def upload_chunk(
+        self,
+        upload_id: str,
+        chunk_index: int,
+        data: bytes,
+    ) -> OperationResult:
+        session_dir = self._upload_session_dir(upload_id)
+        if not session_dir.exists():
+            raise NotFoundError("Upload session not found or expired.")
+        chunk_path = session_dir / f"chunk_{chunk_index:06d}"
+        await asyncio.to_thread(chunk_path.write_bytes, data)
+        return OperationResult(success=True, message=f"Chunk {chunk_index} stored.")
+
+    async def complete_chunked_upload(self, upload_id: str) -> OperationResult:
+        session_dir = self._upload_session_dir(upload_id)
+        meta_path = session_dir / "meta.json"
+        if not meta_path.exists():
+            raise NotFoundError("Upload session not found or expired.")
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        base = self._resolve_base(meta.get("app_id"), meta.get("root_id"))
+        dest_dir = self._safe_path(base, meta["path"])
+        if not dest_dir.is_dir():
+            dest_dir = dest_dir.parent
+        target = dest_dir / meta["filename"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        chunks = sorted(session_dir.glob("chunk_*"))
+        if not chunks:
+            raise AppException("No chunks received.", code="upload_incomplete")
+
+        with target.open("wb") as out:
+            for chunk_file in chunks:
+                out.write(chunk_file.read_bytes())
+
+        shutil.rmtree(session_dir, ignore_errors=True)
+        rel = target.relative_to(base)
+        return OperationResult(success=True, message=f"Uploaded to {rel}")
+
+    def resolve_download(
+        self,
+        path: str,
+        *,
+        app_id: str | None = None,
+        root_id: str | None = None,
+    ) -> tuple[Path, str]:
+        base = self._resolve_base(app_id, root_id)
+        target = self._safe_path(base, path)
+        if not target.exists() or target.is_dir():
+            raise NotFoundError("File not found.")
+        return target, target.name
+
+    def _upload_session_dir(self, upload_id: str) -> Path:
+        root = Path(self._settings.file_upload_temp_dir)
+        if not root.is_absolute():
+            root = Path.cwd() / root
+        return root / upload_id
 
     async def unzip(self, path: str, *, app_id: str | None = None, root_id: str | None = None) -> OperationResult:
         base = self._resolve_base(app_id, root_id)

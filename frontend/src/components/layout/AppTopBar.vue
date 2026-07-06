@@ -31,6 +31,7 @@ const titles: Record<string, string> = {
   ssl: 'SSL',
   mail: 'Mail',
   files: 'File Manager',
+  'files-upload': 'Upload Files',
   terminal: 'Terminal',
   servers: 'Servers',
   settings: 'Settings',

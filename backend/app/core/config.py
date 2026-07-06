@@ -128,6 +128,8 @@ class Settings(BaseSettings):
     mail_config_dir: str = ".ifnotus/mail"
     terminal_command_timeout: int = 30
     terminal_max_output_bytes: int = 65536
+    file_upload_chunk_size: int = 2_097_152
+    file_upload_temp_dir: str = ".ifnotus/upload-sessions"
 
     # Background workers
     worker_concurrency: int = 4

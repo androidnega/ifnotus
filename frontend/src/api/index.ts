@@ -1,4 +1,4 @@
-import apiClient from './client'
+import apiClient, { transferClient } from './client'
 import type { LoginRequest, TokenResponse, User } from '@/types/auth'
 import type {
   AlertsResponse,
@@ -19,9 +19,11 @@ import type {
   DomainListResponse,
   FileDetail,
   FileRootsResponse,
+  FileUploadInitResponse,
   MailAlias,
   MailDomainResponse,
   Mailbox,
+  SslCertificate,
   SslListResponse,
   SslReadinessResponse,
   TerminalAuditEntry,
@@ -188,6 +190,8 @@ export const domainsApi = {
 export const sslApi = {
   list: () => apiClient.get<SslListResponse>('/ssl'),
 
+  get: (domain: string) => apiClient.get<SslCertificate>(`/ssl/${encodeURIComponent(domain)}`),
+
   readiness: (domain: string) => apiClient.get<SslReadinessResponse>(`/ssl/readiness/${encodeURIComponent(domain)}`),
 
   issue: (body: { domain: string; email?: string; webroot?: string; dry_run?: boolean }) =>
@@ -198,6 +202,9 @@ export const sslApi = {
 
   reissue: (body: { domain: string; email?: string; webroot?: string; dry_run?: boolean }) =>
     apiClient.post<OperationResult>('/ssl/reissue', body),
+
+  renewAll: (dryRun = false, email?: string) =>
+    apiClient.post<OperationResult>('/ssl/renew-all', null, { params: { dry_run: dryRun, email } }),
 }
 
 export const mailApi = {
@@ -278,6 +285,65 @@ export const filesApi = {
     apiClient.get<FileDetail>('/files/stat', {
       params: { path, app_id: scope?.appId, root_id: scope?.rootId },
     }),
+
+  uploadChunked: async (
+    file: File,
+    targetPath: string,
+    scope?: { appId?: string; rootId?: string },
+    onProgress?: (percent: number) => void,
+  ) => {
+    const { data: init } = await transferClient.post<FileUploadInitResponse>(
+      '/files/upload/init',
+      {
+        filename: file.name,
+        path: targetPath,
+        size_bytes: file.size,
+      },
+      { params: { app_id: scope?.appId, root_id: scope?.rootId } },
+    )
+    const chunkSize = init.chunk_size
+    const totalChunks = init.total_chunks
+    let uploaded = 0
+
+    for (let index = 0; index < totalChunks; index += 1) {
+      const start = index * chunkSize
+      const end = Math.min(start + chunkSize, file.size)
+      const chunk = file.slice(start, end)
+      const form = new FormData()
+      form.append('file', chunk, file.name)
+      await transferClient.post('/files/upload/chunk', form, {
+        params: { upload_id: init.upload_id, chunk_index: index },
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      uploaded = end
+      onProgress?.(Math.round((uploaded / file.size) * 100))
+    }
+
+    return transferClient.post<OperationResult>('/files/upload/complete', {
+      upload_id: init.upload_id,
+    })
+  },
+
+  downloadQueued: async (
+    path: string,
+    filename: string,
+    scope?: { appId?: string; rootId?: string },
+    onProgress?: (percent: number) => void,
+  ) => {
+    const response = await transferClient.get<Blob>('/files/download', {
+      params: { path, app_id: scope?.appId, root_id: scope?.rootId },
+      responseType: 'blob',
+      onDownloadProgress: (ev) => {
+        if (ev.total) onProgress?.(Math.round((ev.loaded / ev.total) * 100))
+      },
+    })
+    const url = URL.createObjectURL(response.data)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    anchor.click()
+    URL.revokeObjectURL(url)
+  },
 }
 
 export const terminalApi = {

@@ -1,6 +1,7 @@
 """File manager endpoints."""
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
+from fastapi.responses import FileResponse
 
 from app.api.deps import CurrentUser, RequirePermission
 from app.core.permissions import Permission
@@ -10,6 +11,9 @@ from app.schemas.hosting import (
     FileMkdirRequest,
     FileMoveRequest,
     FileRootsResponse,
+    FileUploadCompleteRequest,
+    FileUploadInitRequest,
+    FileUploadInitResponse,
     FileWriteRequest,
 )
 from app.schemas.operations import FileListResponse, OperationResult
@@ -155,6 +159,72 @@ async def upload_file(
     file: UploadFile = File(...),
 ) -> OperationResult:
     return await _files(request).upload(path, file, **_root_params(app_id, root_id))
+
+
+@router.post(
+    "/upload/init",
+    response_model=FileUploadInitResponse,
+    dependencies=[Depends(RequirePermission(Permission.FILES_WRITE))],
+)
+async def init_chunked_upload(
+    body: FileUploadInitRequest,
+    request: Request,
+    _user: CurrentUser,
+    app_id: str | None = Query(default=None),
+    root_id: str | None = Query(default=None),
+) -> FileUploadInitResponse:
+    return await _files(request).init_chunked_upload(
+        body.filename,
+        body.path,
+        body.size_bytes,
+        app_id=app_id,
+        root_id=root_id,
+        chunk_size=body.chunk_size,
+    )
+
+
+@router.post(
+    "/upload/chunk",
+    response_model=OperationResult,
+    dependencies=[Depends(RequirePermission(Permission.FILES_WRITE))],
+)
+async def upload_chunk(
+    request: Request,
+    _user: CurrentUser,
+    upload_id: str = Query(...),
+    chunk_index: int = Query(..., ge=0),
+    file: UploadFile = File(...),
+) -> OperationResult:
+    data = await file.read()
+    return await _files(request).upload_chunk(upload_id, chunk_index, data)
+
+
+@router.post(
+    "/upload/complete",
+    response_model=OperationResult,
+    dependencies=[Depends(RequirePermission(Permission.FILES_WRITE))],
+)
+async def complete_chunked_upload(
+    body: FileUploadCompleteRequest,
+    request: Request,
+    _user: CurrentUser,
+) -> OperationResult:
+    return await _files(request).complete_chunked_upload(body.upload_id)
+
+
+@router.get(
+    "/download",
+    dependencies=[Depends(RequirePermission(Permission.FILES_READ))],
+)
+async def download_file(
+    request: Request,
+    _user: CurrentUser,
+    path: str = Query(...),
+    app_id: str | None = Query(default=None),
+    root_id: str | None = Query(default=None),
+) -> FileResponse:
+    file_path, filename = _files(request).resolve_download(path, **_root_params(app_id, root_id))
+    return FileResponse(path=file_path, filename=filename, media_type="application/octet-stream")
 
 
 @router.post(

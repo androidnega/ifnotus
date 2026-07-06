@@ -60,9 +60,11 @@ class SSLReader:
             not_before = self._parse_date(stdout, "notBefore")
             not_after = self._parse_date(stdout, "notAfter")
             issuer = self._extract_field(stdout, "issuer")
+            subject = self._extract_field(stdout, "subject")
             subject_cn = self._extract_cn(stdout, "subject") or domain
             days = (not_after - datetime.now(UTC)).days if not_after else None
             sans = await self._read_sans(path)
+            fingerprint = await self._read_fingerprint(path)
 
             if days is None:
                 status = HealthStatus.DEGRADED
@@ -76,12 +78,14 @@ class SSLReader:
             return SSLStatusSchema(
                 configured=True,
                 domain=subject_cn,
+                subject=subject,
                 issuer=issuer,
                 valid_from=not_before,
                 valid_until=not_after,
                 days_remaining=days,
                 status=status,
                 sans=sans,
+                fingerprint_sha256=fingerprint,
             )
         except Exception as exc:
             return SSLStatusSchema(
@@ -133,3 +137,20 @@ class SSLReader:
         for match in re.finditer(r"DNS:([^,\s]+)", stdout):
             sans.append(match.group(1).strip())
         return sans
+
+    async def _read_fingerprint(self, path: Path) -> str | None:
+        if not self._openssl:
+            return None
+        code, stdout, _ = await run_command(
+            self._openssl,
+            "x509",
+            "-in",
+            str(path),
+            "-noout",
+            "-fingerprint",
+            "-sha256",
+        )
+        if code != 0 or not stdout:
+            return None
+        match = re.search(r"SHA256 Fingerprint=(.+)", stdout.strip())
+        return match.group(1).strip() if match else stdout.strip()

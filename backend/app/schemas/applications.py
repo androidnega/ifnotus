@@ -49,12 +49,14 @@ class SSLStatusSchema(SchemaBase):
 
     configured: bool
     domain: str | None = None
+    subject: str | None = None
     issuer: str | None = None
     valid_from: datetime | None = None
     valid_until: datetime | None = None
     days_remaining: int | None = None
     status: HealthStatus | None = None
     sans: list[str] = Field(default_factory=list)
+    fingerprint_sha256: str | None = None
     message: str | None = None
 
 
