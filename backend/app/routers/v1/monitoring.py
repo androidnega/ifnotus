@@ -11,6 +11,31 @@ router = APIRouter()
 
 
 @router.get(
+    "",
+    summary="Monitoring overview",
+    dependencies=[Depends(RequirePermission(Permission.MONITORING_READ))],
+)
+async def monitoring_overview(
+    request: Request,
+    _user: CurrentUser,
+) -> dict:
+    """Return a lightweight monitoring overview and nested endpoint map."""
+    service = get_monitoring_service(request)
+    metrics = await service.get_system_metrics()
+    integrations = await service.get_integration_status()
+    return {
+        "timestamp": metrics.timestamp.isoformat(),
+        "metrics": metrics.model_dump(),
+        "integrations": integrations,
+        "endpoints": {
+            "metrics": "/api/v1/monitoring/metrics",
+            "integrations": "/api/v1/monitoring/integrations",
+            "dashboard": "/api/v1/dashboard",
+        },
+    }
+
+
+@router.get(
     "/metrics",
     response_model=SystemMetrics,
     summary="System metrics",

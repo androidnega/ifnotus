@@ -3,6 +3,7 @@ export type AppReconciliationState =
   | 'discovered_unregistered'
   | 'registry_missing_root'
   | 'registry_invalid_binding'
+  | 'registry_invalid_config'
   | 'orphaned_runtime'
   | 'orphaned_nginx_site'
 
@@ -39,6 +40,7 @@ export interface DiscoveredApplication {
   registered_id?: string | null
   reconciliation_state: AppReconciliationState
   runtime_status?: string | null
+  registry_errors?: string[]
 }
 
 export interface NginxDiscoveredDomain {

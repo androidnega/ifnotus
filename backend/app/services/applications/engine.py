@@ -86,6 +86,8 @@ class ApplicationEngine:
                     domain=app.ssl.domain or app.nginx.server_name,
                     root_path=str(app.root_path),
                     version=self._resolve_version(app),
+                    registry_valid=app.registry_valid,
+                    registry_errors=list(app.registry_errors),
                 )
             )
 

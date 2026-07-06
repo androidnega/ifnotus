@@ -253,6 +253,8 @@ export interface ApplicationSummary {
   domain?: string | null
   root_path?: string | null
   version?: string | null
+  registry_valid?: boolean
+  registry_errors?: string[]
 }
 
 export interface ApplicationListResponse {

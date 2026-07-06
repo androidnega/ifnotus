@@ -139,6 +139,8 @@ class ApplicationSummarySchema(SchemaBase):
     domain: str | None = None
     root_path: str | None = None
     version: str | None = None
+    registry_valid: bool = True
+    registry_errors: list[str] = Field(default_factory=list)
 
 
 class ApplicationDetailSchema(ApplicationSummarySchema):

@@ -21,11 +21,13 @@ const { data: readiness, refresh: refreshReadiness } = usePolling<ReadinessRespo
 const { data: ports, refresh: refreshPorts } = usePolling<PortsResponse>(
   async () => (await serverApi.ports()).data,
   REALTIME_POLL_MS,
+  { requiresAuth: true },
 )
 
 const { data: integrations, refresh: refreshIntegrations } = usePolling<IntegrationsResponse>(
   async () => (await monitoringApi.integrations()).data,
   REALTIME_POLL_MS,
+  { requiresAuth: true },
 )
 
 const integrationEntries = computed(() => {

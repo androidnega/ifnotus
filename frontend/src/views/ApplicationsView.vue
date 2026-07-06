@@ -17,8 +17,11 @@ const filter = ref<'all' | 'registered' | 'discovered' | 'issues'>('all')
 const reconciliationVariant = (state: string) => {
   if (state === 'registered') return 'success'
   if (state === 'discovered_unregistered') return 'info'
+  if (state === 'registry_invalid_config') return 'warning'
   return 'warning'
 }
+
+const registryIssueApps = computed(() => apps.value.filter((app) => app.registry_valid === false))
 
 const filteredDiscovered = computed(() => {
   if (filter.value === 'registered') return []
@@ -100,12 +103,47 @@ onMounted(async () => {
               <Badge :variant="app.enabled ? 'success' : 'neutral'" size="sm">
                 {{ app.enabled ? 'Enabled' : 'Disabled' }}
               </Badge>
+              <Badge v-if="app.registry_valid === false" variant="warning" size="sm">
+                registry issue
+              </Badge>
             </div>
+            <ul
+              v-if="app.registry_errors?.length"
+              class="mt-2 list-inside list-disc text-xs text-amber-700 dark:text-amber-300"
+            >
+              <li v-for="(err, idx) in app.registry_errors.slice(0, 3)" :key="idx">{{ err }}</li>
+            </ul>
           </RouterLink>
         </div>
         <p v-if="!apps.length && !loading && filter === 'registered'" class="text-sm text-surface-muted">
           No registered applications.
         </p>
+      </section>
+
+      <section v-if="filter === 'issues' && registryIssueApps.length" class="space-y-3">
+        <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">Registry configuration issues</h2>
+        <div class="dashboard-grid md:grid-cols-2 xl:grid-cols-3">
+          <RouterLink
+            v-for="app in registryIssueApps"
+            :key="'issue-' + app.id"
+            :to="`/applications/${app.id}`"
+            class="block rounded-xl border border-amber-500/40 bg-surface-raised p-4 shadow-card"
+          >
+            <div class="flex items-start justify-between gap-2">
+              <div>
+                <h2 class="font-semibold text-slate-900 dark:text-white">{{ app.name }}</h2>
+                <p class="text-xs text-surface-muted">{{ app.type }} · registered with YAML issues</p>
+              </div>
+              <Badge variant="warning" size="sm">registry issue</Badge>
+            </div>
+            <ul
+              v-if="app.registry_errors?.length"
+              class="mt-2 list-inside list-disc text-xs text-amber-700 dark:text-amber-300"
+            >
+              <li v-for="(err, idx) in app.registry_errors.slice(0, 4)" :key="idx">{{ err }}</li>
+            </ul>
+          </RouterLink>
+        </div>
       </section>
 
       <section v-if="filter !== 'registered'" class="space-y-3">
@@ -135,6 +173,12 @@ onMounted(async () => {
             <div class="mt-3 flex flex-wrap gap-1">
               <Badge v-for="signal in app.signals.slice(0, 4)" :key="signal" size="sm">{{ signal }}</Badge>
             </div>
+            <ul
+              v-if="app.registry_errors?.length"
+              class="mt-2 list-inside list-disc text-xs text-amber-700 dark:text-amber-300"
+            >
+              <li v-for="(err, idx) in app.registry_errors.slice(0, 3)" :key="idx">{{ err }}</li>
+            </ul>
           </Card>
         </div>
         <p v-if="!filteredDiscovered.length && !loading" class="text-sm text-surface-muted">

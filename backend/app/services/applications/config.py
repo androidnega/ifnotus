@@ -6,9 +6,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.schemas.applications import ApplicationType
+from app.services.applications.type_normalization import normalize_application_type, prepare_registry_dict
 
 
 class ApplicationPathsConfig(BaseModel):
@@ -96,6 +97,24 @@ class ApplicationDefinition(BaseModel):
     email: ApplicationEmailConfig = Field(default_factory=ApplicationEmailConfig)
 
     source_file: str | None = None
+    original_type: str | None = None
+    registry_valid: bool = True
+    registry_errors: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_registry(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            return prepare_registry_dict(data)
+        return data
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def coerce_type(cls, value: Any) -> ApplicationType:
+        if isinstance(value, ApplicationType):
+            return value
+        normalized = normalize_application_type(value, None)
+        return ApplicationType(normalized)
 
     @field_validator("id")
     @classmethod

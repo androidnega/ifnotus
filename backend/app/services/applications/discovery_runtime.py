@@ -14,6 +14,7 @@ from app.services.applications.path_scanner import (
     resolve_application_root,
     slugify_path_name,
 )
+from app.services.applications.config import ApplicationDefinition
 from app.services.hosting.nginx_discovery import NginxDiscoveryService
 
 logger = get_logger(__name__)
@@ -124,18 +125,14 @@ class RuntimeApplicationDiscovery:
             root = resolve_application_root(app)
             root_str = str(root.resolve()) if root.exists() else str(root)
             if not root.exists():
-                result.append(
-                    DiscoveredApplicationSchema(
-                        id=app_id,
-                        name=app.name,
-                        probable_type=app.type.value if hasattr(app.type, "value") else str(app.type),
-                        root_path=root_str,
-                        registered=True,
-                        registered_id=app_id,
-                        reconciliation_state=AppReconciliationState.REGISTRY_MISSING_ROOT,
-                        signals=[],
-                    )
+                item = self._registered_schema(
+                    app_id=app_id,
+                    app=app,
+                    root_path=root_str,
+                    reconciliation_state=AppReconciliationState.REGISTRY_MISSING_ROOT,
                 )
+                self._apply_registry_metadata(item, app)
+                result.append(item)
                 continue
             discovered = by_root.get(root_str)
             if discovered:
@@ -146,21 +143,19 @@ class RuntimeApplicationDiscovery:
                 discovered.reconciliation_state = AppReconciliationState.REGISTERED
                 if discovered.nginx_site_path is None and app.nginx.site:
                     discovered.reconciliation_state = AppReconciliationState.REGISTRY_INVALID_BINDING
+                self._apply_registry_metadata(discovered, app)
                 result.append(discovered)
             else:
-                result.append(
-                    DiscoveredApplicationSchema(
-                        id=app_id,
-                        name=app.name,
-                        probable_type=app.type.value if hasattr(app.type, "value") else str(app.type),
-                        root_path=root_str,
-                        server_names=[app.nginx.server_name] if app.nginx.server_name else [],
-                        registered=True,
-                        registered_id=app_id,
-                        reconciliation_state=AppReconciliationState.REGISTERED,
-                        signals=["yaml-registry"],
-                    )
+                item = self._registered_schema(
+                    app_id=app_id,
+                    app=app,
+                    root_path=root_str,
+                    server_names=[app.nginx.server_name] if app.nginx.server_name else [],
+                    reconciliation_state=AppReconciliationState.REGISTERED,
+                    signals=["yaml-registry"],
                 )
+                self._apply_registry_metadata(item, app)
+                result.append(item)
 
         registered_roots = {
             str(resolve_application_root(a).resolve())
@@ -173,3 +168,34 @@ class RuntimeApplicationDiscovery:
                 result.append(item)
 
         return result
+
+    @staticmethod
+    def _apply_registry_metadata(item: DiscoveredApplicationSchema, app: ApplicationDefinition) -> None:
+        if not app.registry_valid:
+            item.reconciliation_state = AppReconciliationState.REGISTRY_INVALID_CONFIG
+            item.registry_errors = list(app.registry_errors)
+        if app.original_type:
+            item.probable_type = f"{app.type.value} (legacy: {app.original_type})"
+
+    @staticmethod
+    def _registered_schema(
+        *,
+        app_id: str,
+        app: ApplicationDefinition,
+        root_path: str,
+        reconciliation_state: AppReconciliationState,
+        server_names: list[str] | None = None,
+        signals: list[str] | None = None,
+    ) -> DiscoveredApplicationSchema:
+        return DiscoveredApplicationSchema(
+            id=app_id,
+            name=app.name,
+            probable_type=app.type.value if hasattr(app.type, "value") else str(app.type),
+            root_path=root_path,
+            server_names=server_names or [],
+            registered=True,
+            registered_id=app_id,
+            reconciliation_state=reconciliation_state,
+            signals=signals or [],
+            registry_errors=list(app.registry_errors) if not app.registry_valid else [],
+        )

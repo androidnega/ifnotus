@@ -59,6 +59,8 @@ export const healthApi = {
 }
 
 export const monitoringApi = {
+  overview: () => apiClient.get<Record<string, unknown>>('/monitoring'),
+
   metrics: () => apiClient.get<SystemMetrics>('/monitoring/metrics'),
 
   integrations: () => apiClient.get<IntegrationsResponse>('/monitoring/integrations'),

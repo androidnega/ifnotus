@@ -25,17 +25,20 @@ const { data: dashboard, error: dashboardError, loading, refreshing, refresh: re
   usePolling<DashboardApiResponse>(
     async () => (await monitoringApi.dashboard()).data,
     REALTIME_POLL_MS,
+    { requiresAuth: true },
   )
 
 const { data: metrics, refresh: refreshMetrics } = usePolling<SystemMetrics>(
   async () => (await monitoringApi.metrics()).data,
   REALTIME_POLL_MS,
+  { requiresAuth: true },
 )
 
 const { data: integrations, error: integrationsError, refresh: refreshIntegrations } =
   usePolling<IntegrationsResponse>(
     async () => (await monitoringApi.integrations()).data,
     REALTIME_POLL_MS,
+    { requiresAuth: true },
   )
 
 const { data: readiness, refresh: refreshReadiness } = usePolling<ReadinessResponse>(
@@ -51,6 +54,7 @@ const { data: health, refresh: refreshHealth } = usePolling(
 const { data: services, refresh: refreshServices } = usePolling(
   async () => (await serverApi.services({ mode: 'relevant' })).data,
   REALTIME_POLL_MS,
+  { requiresAuth: true },
 )
 
 function mapServiceStatus(status: string): ServiceStatus {

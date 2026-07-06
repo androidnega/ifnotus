@@ -14,6 +14,7 @@ class AppReconciliationState(StrEnum):
     DISCOVERED_UNREGISTERED = "discovered_unregistered"
     REGISTRY_MISSING_ROOT = "registry_missing_root"
     REGISTRY_INVALID_BINDING = "registry_invalid_binding"
+    REGISTRY_INVALID_CONFIG = "registry_invalid_config"
     ORPHANED_RUNTIME = "orphaned_runtime"
     ORPHANED_NGINX_SITE = "orphaned_nginx_site"
 
@@ -53,6 +54,7 @@ class DiscoveredApplicationSchema(SchemaBase):
     registered_id: str | None = None
     reconciliation_state: AppReconciliationState
     runtime_status: str | None = None
+    registry_errors: list[str] = Field(default_factory=list)
 
 
 class ApplicationInventorySchema(SchemaBase):

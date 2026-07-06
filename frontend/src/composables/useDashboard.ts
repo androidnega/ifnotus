@@ -162,6 +162,11 @@ export function useDashboard() {
   )
 
   async function fetchDashboard(isRefresh = false) {
+    if (!localStorage.getItem('access_token')) {
+      loading.value = false
+      refreshing.value = false
+      return
+    }
     if (isRefresh) refreshing.value = true
     else loading.value = true
     error.value = null
@@ -194,6 +199,10 @@ export function useDashboard() {
   }
 
   onMounted(() => {
+    if (!localStorage.getItem('access_token')) {
+      loading.value = false
+      return
+    }
     fetchDashboard()
     timer = setInterval(() => fetchDashboard(true), REALTIME_POLL_MS)
   })

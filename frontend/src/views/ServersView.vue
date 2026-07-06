@@ -31,11 +31,16 @@ const categories: Array<{ id: string; label: string }> = [
 ]
 
 const { data: overview, error: overviewError, loading, refresh: refreshOverview } =
-  usePolling<ServerOverview>(async () => (await serverApi.overview()).data, REALTIME_POLL_MS)
+  usePolling<ServerOverview>(
+    async () => (await serverApi.overview()).data,
+    REALTIME_POLL_MS,
+    { requiresAuth: true },
+  )
 
 const { data: ports, error: portsError, refresh: refreshPorts } = usePolling<PortsResponse>(
   async () => (await serverApi.ports()).data,
   REALTIME_POLL_MS,
+  { requiresAuth: true },
 )
 
 const {
@@ -51,6 +56,7 @@ const {
       })
     ).data,
   REALTIME_POLL_MS,
+  { requiresAuth: true },
 )
 
 watch([viewMode, categoryFilter], () => refreshServices())
