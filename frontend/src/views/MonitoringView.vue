@@ -199,14 +199,14 @@ onMounted(refreshAll)
         </Card>
       </section>
 
-      <div class="dashboard-grid items-start lg:grid-cols-2">
+      <div class="dashboard-grid lg:grid-cols-2 lg:items-start">
         <Card title="Integrations" subtitle="Collector status" class="min-w-0">
           <ErrorState
             v-if="integrationsError"
             message="Unable to load integration status."
             @retry="refreshIntegrations"
           />
-          <div v-else class="space-y-2">
+          <div v-else class="monitoring-side-panel space-y-2">
             <div
               v-for="item in integrationEntries"
               :key="item.name"
@@ -235,10 +235,10 @@ onMounted(refreshAll)
           </div>
         </Card>
 
-        <Card title="Services" :subtitle="servicesSubtitle" class="flex min-h-0 min-w-0 flex-col">
-          <div class="relative min-h-0">
+        <Card title="Services" :subtitle="servicesSubtitle" class="min-w-0">
+          <div class="monitoring-side-panel relative">
             <div
-              class="services-scroll max-h-72 space-y-2 overflow-y-auto overscroll-y-contain pr-1"
+              class="monitoring-side-panel-scroll space-y-2"
               role="list"
               aria-label="Operational services"
             >
@@ -252,15 +252,10 @@ onMounted(refreshAll)
                 </template>
               </ServiceStatusCard>
             </div>
-            <div
-              v-if="serviceItems.length > 4"
-              class="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-surface-raised to-transparent"
-              aria-hidden="true"
-            />
+            <p v-if="!serviceItems.length && !loading" class="text-sm text-surface-muted">
+              No services detected on this host.
+            </p>
           </div>
-          <p v-if="!serviceItems.length && !loading" class="text-sm text-surface-muted">
-            No services detected on this host.
-          </p>
         </Card>
       </div>
 
@@ -272,17 +267,21 @@ onMounted(refreshAll)
 </template>
 
 <style scoped>
-.services-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: rgb(148 163 184 / 0.5) transparent;
+/* Match Integrations + Services body height (8 integration rows) */
+.monitoring-side-panel {
+  height: 22.5rem;
+  min-height: 0;
 }
 
-.services-scroll::-webkit-scrollbar {
-  width: 6px;
+.monitoring-side-panel-scroll {
+  height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
-.services-scroll::-webkit-scrollbar-thumb {
-  border-radius: 9999px;
-  background-color: rgb(148 163 184 / 0.45);
+.monitoring-side-panel-scroll::-webkit-scrollbar {
+  display: none;
 }
 </style>
