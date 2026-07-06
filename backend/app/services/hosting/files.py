@@ -25,14 +25,20 @@ from app.schemas.hosting import (
     FileUploadInitResponse,
 )
 from app.schemas.operations import FileEntry, FileListResponse, OperationResult
-from app.services.applications.discovery_runtime import RuntimeApplicationDiscovery
 
 
 class FileManagerService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._apps = ApplicationRepository(settings)
-        self._runtime = RuntimeApplicationDiscovery(settings)
+        self._runtime = None
+
+    def _runtime_discovery(self):
+        if self._runtime is None:
+            from app.services.applications.discovery_runtime import RuntimeApplicationDiscovery
+
+            self._runtime = RuntimeApplicationDiscovery(self._settings)
+        return self._runtime
 
     def allowed_roots(self) -> list[Path]:
         roots: list[Path] = []
@@ -42,7 +48,7 @@ class FileManagerService:
             root = self._app_root(app)
             if root.exists():
                 roots.append(root)
-        for item in self._runtime.discover():
+        for item in self._runtime_discovery().discover():
             if not item.registered:
                 path = Path(item.root_path)
                 if path.exists():
@@ -71,7 +77,7 @@ class FileManagerService:
                 roots.append(FileRootSchema(id=app.id, label=f"App: {app.name}", path=str(root)))
                 seen_paths.add(str(root))
 
-        for item in self._runtime.discover():
+        for item in self._runtime_discovery().discover():
             if item.registered:
                 continue
             if item.root_path in seen_paths:
@@ -332,7 +338,7 @@ class FileManagerService:
             return self._app_root(app)
         if root_id and root_id.startswith("discovered:"):
             slug = root_id.split(":", 1)[1]
-            for item in self._runtime.discover():
+            for item in self._runtime_discovery().discover():
                 if item.id == slug:
                     return Path(item.root_path).resolve()
             raise AppException("Discovered application root not found.", code="invalid_root")

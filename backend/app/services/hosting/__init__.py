@@ -1,15 +1,7 @@
-"""Hosting services package."""
+"""Hosting services package.
 
-from app.services.hosting.domains import DomainService
-from app.services.hosting.files import FileManagerService
-from app.services.hosting.mail import MailService
-from app.services.hosting.ssl import SslService
-from app.services.hosting.terminal import TerminalService
-
-__all__ = [
-    "DomainService",
-    "FileManagerService",
-    "MailService",
-    "SslService",
-    "TerminalService",
-]
+Import concrete services from their modules directly, e.g.
+``from app.services.hosting.files import FileManagerService``.
+This package intentionally avoids re-exporting services at import time
+to prevent circular imports with application discovery.
+"""
