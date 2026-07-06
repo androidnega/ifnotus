@@ -65,7 +65,7 @@ function mapServiceStatus(status: string): ServiceStatus {
 }
 
 const serviceItems = computed<ServiceItem[]>(() =>
-  (services.value?.services ?? []).slice(0, 8).map((svc) => ({
+  (services.value?.services ?? []).map((svc) => ({
     id: svc.id,
     name: svc.display_name || svc.name,
     status: mapServiceStatus(String(svc.status)),
@@ -75,6 +75,12 @@ const serviceItems = computed<ServiceItem[]>(() =>
       : undefined,
   })),
 )
+
+const servicesSubtitle = computed(() => {
+  const shown = serviceItems.value.length
+  const total = services.value?.total_relevant ?? shown
+  return `${shown} shown · ${total} operational`
+})
 
 const integrationEntries = computed(() => {
   if (!integrations.value) return []
@@ -193,8 +199,8 @@ onMounted(refreshAll)
         </Card>
       </section>
 
-      <div class="dashboard-grid lg:grid-cols-2">
-        <Card title="Integrations" subtitle="Collector status">
+      <div class="dashboard-grid items-start lg:grid-cols-2">
+        <Card title="Integrations" subtitle="Collector status" class="min-w-0">
           <ErrorState
             v-if="integrationsError"
             message="Unable to load integration status."
@@ -229,20 +235,28 @@ onMounted(refreshAll)
           </div>
         </Card>
 
-        <Card
-          title="Services"
-          :subtitle="`${serviceItems.length} relevant · ${services?.total_relevant ?? 0} operational`"
-        >
-          <div class="grid gap-2">
-            <ServiceStatusCard
-              v-for="service in serviceItems"
-              :key="service.id"
-              :service="service"
+        <Card title="Services" :subtitle="servicesSubtitle" class="flex min-h-0 min-w-0 flex-col">
+          <div class="relative min-h-0">
+            <div
+              class="services-scroll max-h-72 space-y-2 overflow-y-auto overscroll-y-contain pr-1"
+              role="list"
+              aria-label="Operational services"
             >
-              <template #icon>
-                <IconServer :size="16" class="text-brand-500" />
-              </template>
-            </ServiceStatusCard>
+              <ServiceStatusCard
+                v-for="service in serviceItems"
+                :key="service.id"
+                :service="service"
+              >
+                <template #icon>
+                  <IconServer :size="16" class="text-brand-500" />
+                </template>
+              </ServiceStatusCard>
+            </div>
+            <div
+              v-if="serviceItems.length > 4"
+              class="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-surface-raised to-transparent"
+              aria-hidden="true"
+            />
           </div>
           <p v-if="!serviceItems.length && !loading" class="text-sm text-surface-muted">
             No services detected on this host.
@@ -256,3 +270,19 @@ onMounted(refreshAll)
     </div>
   </DashboardLayout>
 </template>
+
+<style scoped>
+.services-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(148 163 184 / 0.5) transparent;
+}
+
+.services-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.services-scroll::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background-color: rgb(148 163 184 / 0.45);
+}
+</style>
