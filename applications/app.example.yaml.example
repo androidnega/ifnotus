@@ -1,0 +1,49 @@
+# Example application definition — copy and rename to register an app.
+# Files ending in .example are not loaded.
+
+id: example-api
+name: Example API
+type: fastapi
+environment: production
+enabled: false
+description: Example FastAPI application definition template
+version: "0.0.0"
+tags:
+  - example
+  - template
+
+paths:
+  root: /var/www/example-api
+  logs:
+    - /var/www/example-api/logs/app.log
+  env_file: /var/www/example-api/.env
+
+runtime:
+  supervisor: example-api
+  systemd: example-api.service
+  process_match: "uvicorn.*example-api"
+
+nginx:
+  site: /etc/nginx/sites-enabled/example-api
+  server_name: api.example.com
+
+git:
+  repository: /var/www/example-api
+
+ssl:
+  certificate: /etc/letsencrypt/live/api.example.com/fullchain.pem
+  domain: api.example.com
+
+deployment:
+  enabled: false
+  history_dir: /var/www/example-api/.ifnotus/deployments
+
+backup:
+  enabled: false
+
+domains:
+  enabled: false
+  domains: []
+
+email:
+  enabled: false

@@ -1,0 +1,375 @@
+IFNOTUS — VPS Production Deployment Readiness Audit
+====================================================
+Date: 2026-07-06
+Scope: Production deployment risk (not feature completeness)
+Target: Frontend static build behind Nginx + backend on same VPS, HTTPS, /api/ reverse proxy
+
+================================================================================
+A. SAFE-TO-DEPLOY VERDICT
+================================================================================
+
+Deployable with fixes
+
+The codebase can work on a VPS with Nginx serving frontend/dist and proxying
+/api/ to uvicorn on 127.0.0.1:8000, IF production build uses relative API URLs
+(/api/v1) and backend env is hardened. Deploying as-is (dev Vite server, baked-in
+localhost API URL, default admin, dev port monitoring) is NOT safe.
+
+================================================================================
+B. CRITICAL BLOCKERS
+================================================================================
+
+1. PRODUCTION BUILD CAN BAKE IN localhost API URL
+   - docker-compose.yml sets VITE_API_BASE_URL=http://localhost:8000/api/v1 for frontend
+   - frontend/.env.example recommends the same
+   - If npm run build runs with that env var, browser calls http://localhost:8000 from
+     users' machines → broken API, mixed content on HTTPS pages
+   - Fix: Build with VITE_API_BASE_URL=/api/v1 or unset (client.ts defaults to /api/v1)
+
+2. FRONTEND DOCKERFILE / COMPOSE RUN DEV SERVER, NOT STATIC BUILD
+   - frontend/Dockerfile: CMD npm run dev -- --host (port 5173)
+   - docker-compose frontend service maps 5173 and mounts source
+   - Production must serve frontend/dist via Nginx, not Vite dev
+
+3. DEFAULT ADMIN CREDENTIALS
+   - Makefile seed-admin: admin / admin123
+   - backend/app/cli/seed_admin.py defaults: admin / admin123
+   - Must use strong password in production; disable or protect seed CLI
+
+4. DEV SECRETS IN .env.example
+   - SECRET_KEY=change-me-to-a-random-string-at-least-32-chars-long
+   - ENVIRONMENT=development, DEBUG=true, RELOAD=true
+   - Deploying without overriding these is unsafe
+
+5. MONITORING EXPECTS DEV PORT 5173 IN PRODUCTION
+   - backend/app/core/config.py: monitoring_expected_ports default [8000, 5173, 5432, 6379]
+   - backend/app/services/monitoring/service.py: hardcoded port_labels includes 5173
+   - Static Nginx frontend does not listen on 5173 → constant false "Frontend not listening" alerts
+
+6. APPLICATION YAML paths.root IS CWD-RELATIVE (AMBIGUOUS ON VPS)
+   - applications/ifnotus-api.yaml: paths.root: "."
+   - applications/ifnotus-frontend.yaml: paths.root: "../frontend"
+   - ApplicationDefinition.root_path = Path(string) with no anchor to repo root or YAML dir
+   - DeploymentHistoryReader uses app.root_path / ".ifnotus" / "deployments"
+   - Wrong CWD in systemd unit → broken deployment history, git/nginx/ssl readers
+
+7. MULTI-WORKER BACKEND BREAKS IN-MEMORY MONITORING STATE
+   - MonitoringService, CollectorCache, MetricsHistory are in-process singletons
+   - uvicorn --workers N > 1 → inconsistent charts/cache per worker
+   - Must run WORKERS=1 until history/cache shared via Redis
+
+8. NO ACCESS TOKEN REFRESH ON FRONTEND
+   - refresh_token stored in localStorage but never used
+   - ACCESS_TOKEN_EXPIRE_MINUTES=30 → users forced to re-login every 30 minutes
+   - Not a deploy blocker but production UX/security gap
+
+9. BACKEND LISTENS ON 0.0.0.0:8000 BY DEFAULT
+   - config.py host=0.0.0.0 exposes API directly if port not firewalled
+   - Behind Nginx, bind 127.0.0.1:8000 and block public 8000
+
+10. MISSING .env.production FOR FRONTEND
+    - No frontend/.env.production committed or documented for build-time injection
+
+================================================================================
+C. REQUIRED FRONTEND FIXES BEFORE DEPLOYMENT
+================================================================================
+
+frontend/src/api/client.ts
+  Issue: Relies on VITE_API_BASE_URL at build time; wrong value breaks prod
+  Fix: Create frontend/.env.production with VITE_API_BASE_URL=/api/v1 (or omit entirely).
+       Never build with http://localhost:8000 in production CI/CD.
+
+frontend/.env.example
+  Issue: Documents dev-only absolute URL as the only example
+  Fix: Add comment: production build should use /api/v1 or leave unset
+
+frontend/vite.config.ts
+  Issue: server.proxy localhost:8000 is dev-only (OK) but no build.base documented
+  Fix: Confirm base defaults to '/' for root-domain deploy. If subpath deploy needed,
+       set base: '/subpath/' and matching Nginx alias.
+
+Missing: frontend/.env.production
+  Fix: Add file with VITE_API_BASE_URL=/api/v1
+
+frontend/Dockerfile
+  Issue: Runs npm run dev on 5173
+  Fix: Multi-stage build: npm run build, serve dist with nginx:alpine OR copy dist to VPS
+
+docker-compose.yml (frontend service)
+  Issue: VITE_API_BASE_URL=http://localhost:8000/api/v1, dev command
+  Fix: Not for production VPS; use compose only for local dev
+
+frontend/src/stores/auth.ts
+  Issue: refresh_token stored but /auth/refresh never called
+  Fix: Implement silent refresh before expiry or on 401 with refresh_token (optional pre-launch)
+
+frontend/src/router/index.ts
+  Issue: Auth guard checks token presence only, not expiry
+  Fix: Optional: validate token or attempt refresh on boot (reduces flash of protected routes)
+
+frontend/src/components/layout/AppTopBar.vue + usePolling composables
+  Issue: No bug for deploy, but polling starts per layout mount
+  Fix: Acceptable if intervals cleared on unmount (they are). Document load expectations.
+
+applications/ifnotus-frontend.yaml (runtime.process_match)
+  Issue: "vite.*5173|node.*vite" won't match production (static files)
+  Fix: Update process_match for prod (e.g. nginx worker) or disable ifnotus-frontend app entry
+
+No hardcoded localhost in frontend/src/*.vue|ts (verified) — good.
+
+================================================================================
+D. REQUIRED BACKEND FIXES BEFORE DEPLOYMENT
+================================================================================
+
+backend/app/core/config.py
+  Issue: cors_origins default ["http://localhost:5173"]
+  Fix: Set CORS_ORIGINS=https://your-domain.com in production IF frontend ever calls API
+       cross-origin. With same-origin Nginx /api/ proxy, browser same-origin requests
+       don't need CORS, but keep origin list correct if split later.
+
+  Issue: redis_url default redis://localhost:6379/0
+  Fix: Set REDIS_URL to VPS Redis socket/host in production .env
+
+  Issue: monitoring_expected_ports includes 5173
+  Fix: MONITORING_EXPECTED_PORTS=8000,5432,6379 (or 80,443 if monitoring edge ports)
+
+backend/app/services/monitoring/service.py (lines ~374-387)
+  Issue: Hardcoded port_labels {8000, 5173, 5432, 6379}
+  Fix: Derive labels from config or application registry; remove 5173 for static frontend
+
+.env / .env.example
+  Issue: ENVIRONMENT=development, DEBUG=true, RELOAD=true, weak SECRET_KEY
+  Fix: ENVIRONMENT=production, DEBUG=false, RELOAD=false, WORKERS=1 (until Redis history),
+       cryptographically random SECRET_KEY >= 32 chars
+
+backend/app/main.py
+  Issue: Docs disabled when is_production — good
+  Issue: No TrustedHostMiddleware
+  Fix: Add TrustedHostMiddleware with allowed production hostnames (optional but recommended)
+
+backend/app/cli/seed_admin.py + Makefile
+  Issue: Default admin123 password
+  Fix: Require explicit password arg in prod; never run seed with defaults on VPS
+
+applications/ifnotus-api.yaml
+  Issue: paths.root: "." — resolves relative to process CWD
+  Fix: Use absolute path e.g. /opt/ifnotus/backend or resolve paths relative to YAML file
+
+applications/ifnotus-api.yaml + ifnotus-frontend.yaml
+  Issue: nginx.server_name: localhost, ssl.domain: localhost
+  Fix: Set production domain in YAML for accurate nginx/ssl monitoring
+
+backend/Dockerfile
+  Issue: Single worker uvicorn OK; dev dependencies installed (.[dev])
+  Fix: Production image should pip install -e . without dev extras; no --reload
+
+Makefile backend target
+  Issue: --reload flag for local dev
+  Fix: Production systemd unit must not use --reload
+
+No rate limiting on /auth/login
+  Fix: Add rate limiting at Nginx or app layer before public exposure
+
+Logout endpoint
+  Issue: Token blacklist not implemented (auth.py comment)
+  Fix: Acceptable for MVP but stolen tokens valid until expiry
+
+Monitoring collectors on Linux VPS
+  Verify: psutil net_connections may need CAP_NET_ADMIN or run as appropriate user
+  Verify: MONITORING_LOG_PATHS=/var/log/syslog exists on target OS
+
+================================================================================
+E. REQUIRED NGINX / VPS ASSUMPTIONS
+================================================================================
+
+Production server must provide:
+
+1. Static frontend root
+   - Path: e.g. /var/www/ifnotus/dist (output of cd frontend && npm run build)
+   - NOT Vite dev server on 5173
+
+2. Backend upstream (internal only)
+   - uvicorn app.main:app --host 127.0.0.1 --port 8000
+   - Firewall: deny public access to 8000; only Nginx → backend
+
+3. /api/ reverse proxy
+   - Browser requests: https://your-domain.com/api/v1/...
+   - Nginx must proxy to http://127.0.0.1:8000/api/ (preserve /api/v1 prefix)
+   Example:
+     location /api/ {
+       proxy_pass http://127.0.0.1:8000/api/;
+       proxy_http_version 1.1;
+       proxy_set_header Host $host;
+       proxy_set_header X-Real-IP $remote_addr;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+     }
+
+4. WebSocket proxy
+   - NOT REQUIRED — no WebSocket/SSE usage in frontend/src (HTTP polling only)
+
+5. SPA fallback (required)
+   - Router uses createWebHistory (HTML5 history mode)
+   - Direct refresh of /monitoring, /servers, /settings must fall back to index.html
+   Example:
+     location / {
+       try_files $uri $uri/ /index.html;
+     }
+
+6. HTTPS
+   - Terminate TLS at Nginx
+   - Frontend must not call http:// API URLs (mixed content)
+
+7. Headers / cookies
+   - Auth is Bearer token in localStorage (not cookies)
+   - withCredentials NOT used — no cookie auth config needed
+   - CORS mostly irrelevant for same-origin /api/ proxy setup
+
+8. PostgreSQL + Redis
+   - Running on VPS or managed service; DATABASE_URL and REDIS_URL in backend .env
+
+9. systemd (recommended)
+   - WorkingDirectory=/opt/ifnotus (repo root) so applications/ and paths resolve consistently
+   - Run alembic upgrade head before first start
+   - Do not expose Makefile seed-admin defaults in prod
+
+================================================================================
+F. REQUIRED PRODUCTION ENVIRONMENT VARIABLES
+================================================================================
+
+Backend (.env on VPS):
+
+  APP_NAME=IFNOTUS
+  APP_VERSION=0.1.0
+  ENVIRONMENT=production
+  DEBUG=false
+
+  HOST=127.0.0.1
+  PORT=8000
+  WORKERS=1
+  RELOAD=false
+
+  SECRET_KEY=<random-64+-char-secret>
+  JWT_ALGORITHM=HS256
+  ACCESS_TOKEN_EXPIRE_MINUTES=30
+  REFRESH_TOKEN_EXPIRE_DAYS=7
+  CORS_ORIGINS=https://your-domain.com
+
+  DATABASE_URL=postgresql+asyncpg://user:pass@127.0.0.1:5432/ifnotus
+  REDIS_URL=redis://127.0.0.1:6379/0
+
+  LOG_LEVEL=INFO
+  LOG_JSON=true
+
+  APPLICATIONS_DIR=/opt/ifnotus/applications
+  MONITORING_EXPECTED_PORTS=8000,5432,6379
+  MONITORING_LOG_PATHS=/var/log/syslog
+  NGINX_CONFIG_PATH=/etc/nginx
+
+  PLUGINS_ENABLED=true
+  PLUGINS_DIR=plugins
+
+  Optional integrations:
+  NETDATA_URL=
+  MYSQL_URL=
+  SUPERVISOR_SOCKET=/var/run/supervisor.sock
+
+Frontend (build-time only — Vite embeds at npm run build):
+
+  VITE_API_BASE_URL=/api/v1
+  (or unset — client.ts defaults to /api/v1)
+
+  Do NOT set VITE_API_BASE_URL to http://localhost:8000 in production builds.
+
+================================================================================
+G. PERFORMANCE / POLLING RISK NOTES
+================================================================================
+
+Poll interval: REALTIME_POLL_MS = 5000 (frontend/src/config/polling.ts)
+
+Per authenticated user, approximate request rate:
+
+  Dashboard page (useDashboard):
+    Every 5s: GET /dashboard (HEAVY — multiple collectors)
+              GET /health, GET /health/ready
+              GET /applications
+              Up to 6x GET /applications/{id}/deployments
+    ≈ 9+ requests / 5s ≈ 108+ req/min
+    Plus AppTopBar: GET /alerts every 5s (+12 req/min)
+
+  Monitoring page:
+    6 independent usePolling hooks each firing every 5s
+    Includes another GET /dashboard (heavy duplicate)
+    ≈ 72 req/min minimum
+
+  Servers page: 3 polls × 12/min = 36 req/min
+  Settings page: 3 polls × 12/min = 36 req/min
+
+Backend collector cache TTL: 15s (monitoring_cache_ttl_seconds)
+  - Mitigates duplicate collector work within 15s window per worker
+  - get_dashboard() still orchestrates many collectors each call
+
+Verdict:
+  - Acceptable for 1–3 admin operators on a small VPS
+  - Risky for many concurrent users or small VPS (1 CPU): dashboard endpoint runs
+    CPU/memory/disk/network/processes/ports/services collectors
+  - Monitoring page double-fetches dashboard + metrics — wasteful
+  - Intervals DO clear on component unmount (usePolling, useDashboard, notifications)
+  - No WebSocket/SSE today; polling is simpler but heavier than push model
+  - Recommend before scale: increase poll interval to 10–15s in production, dedupe
+    MonitoringView dashboard+metrics calls, add If-None-Match or server-side throttle
+
+================================================================================
+H. FINAL DEPLOYMENT CHECKLIST
+================================================================================
+
+Pre-build
+  [ ] Set backend production .env (ENVIRONMENT=production, DEBUG=false, SECRET_KEY, DB, Redis)
+  [ ] Set HOST=127.0.0.1; firewall block public 8000
+  [ ] Update MONITORING_EXPECTED_PORTS (remove 5173)
+  [ ] Fix application YAML paths (absolute paths, production domain)
+  [ ] Change default admin password; do not use make seed-admin defaults
+
+Frontend build
+  [ ] Create frontend/.env.production with VITE_API_BASE_URL=/api/v1
+  [ ] Run: cd frontend && npm run build
+  [ ] Verify dist assets do NOT contain localhost:8000 (grep dist/)
+  [ ] Deploy dist/ to Nginx web root
+
+Nginx
+  [ ] HTTPS certificate configured
+  [ ] root → frontend/dist
+  [ ] location /api/ → proxy_pass http://127.0.0.1:8000/api/
+  [ ] location / { try_files $uri $uri/ /index.html; }
+  [ ] Optional: rate limit /api/v1/auth/login
+
+Backend
+  [ ] alembic upgrade head
+  [ ] uvicorn with WORKERS=1, no --reload
+  [ ] systemd WorkingDirectory = repo root
+  [ ] Postgres + Redis running and reachable
+  [ ] Verify /api/v1/health/ready returns healthy
+
+Smoke tests (production URL)
+  [ ] https://your-domain.com/ loads SPA
+  [ ] Hard refresh /monitoring, /servers, /settings — no 404
+  [ ] Login with production admin credentials
+  [ ] Network tab: API calls go to https://your-domain.com/api/v1/... (not localhost)
+  [ ] Dashboard populates; no mixed-content errors
+  [ ] Wait 35+ minutes OR shorten token TTL in test — confirm re-auth behavior acceptable
+  [ ] /docs and /openapi.json NOT publicly accessible (production disables them)
+
+Security
+  [ ] SECRET_KEY rotated from example
+  [ ] admin123 not in use
+  [ ] Database credentials not default ifnotus:ifnotus unless intentional
+  [ ] Only 443 (and 80 redirect) exposed publicly
+
+Post-deploy verify
+  [ ] No false "Frontend port 5173" alerts
+  [ ] Application registry discovers YAML from APPLICATIONS_DIR
+  [ ] Deployment history path resolves if using that feature
+
+================================================================================
+END OF AUDIT
+================================================================================

@@ -1,0 +1,39 @@
+id: ifnotus-api
+name: IFNOTUS API
+type: fastapi
+environment: development
+enabled: true
+description: IFNOTUS control plane backend API
+version: "0.1.0"
+tags:
+  - platform
+  - api
+
+paths:
+  root: .
+  logs: []
+  env_file: ../.env
+
+runtime:
+  process_match: "uvicorn.*app.main|uvicorn.*8000"
+
+nginx:
+  server_name: localhost
+
+git:
+  repository: ..
+
+ssl:
+  domain: localhost
+
+deployment:
+  enabled: false
+
+backup:
+  enabled: false
+
+domains:
+  enabled: false
+
+email:
+  enabled: false

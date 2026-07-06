@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-surface: #f8fafc;
+    --color-surface-raised: #ffffff;
+    --color-surface-overlay: #ffffff;
+    --color-border: #e2e8f0;
+    --color-text-muted: #64748b;
+    --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.06);
+    --shadow-elevated: 0 10px 15px -3px rgb(0 0 0 / 0.08), 0 4px 6px -4px rgb(0 0 0 / 0.08);
+  }
+
+  .dark {
+    --color-surface: #0b1120;
+    --color-surface-raised: #111827;
+    --color-surface-overlay: #1e293b;
+    --color-border: #1e293b;
+    --color-text-muted: #94a3b8;
+    --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.3), 0 1px 2px -1px rgb(0 0 0 / 0.3);
+    --shadow-elevated: 0 10px 15px -3px rgb(0 0 0 / 0.4), 0 4px 6px -4px rgb(0 0 0 / 0.4);
+  }
+
+  html {
+    @apply scroll-smooth;
+  }
+
+  body {
+    @apply bg-surface font-sans text-slate-900 antialiased transition-colors duration-300 dark:text-slate-100;
+  }
+
+  *:focus-visible {
+    @apply outline-none ring-2 ring-brand-500 ring-offset-2 ring-offset-surface;
+  }
+}
+
+@layer components {
+  .dashboard-grid {
+    @apply grid gap-4 md:gap-5 lg:gap-6;
+  }
+}

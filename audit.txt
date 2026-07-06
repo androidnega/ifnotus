@@ -1,0 +1,163 @@
+IFNOTUS Platform Audit
+======================
+Date: 2026-07-06
+Scope: Static/mock/placeholder data, live API wiring, UI responsiveness
+
+SUMMARY
+-------
+The platform is configured for live, API-driven data across dashboard, monitoring,
+servers, and settings views. Mock data, "Preview" badges, "Soon" placeholders, and
+seed notification data have been removed. All primary views poll the backend every
+5 seconds (REALTIME_POLL_MS = 5000).
+
+Admin credentials (seeded): admin / admin123 (superadmin)
+
+
+FRONTEND AUDIT
+--------------
+
+Pages and live data sources:
+
+  Dashboard (/dashboard)
+    - Stats, charts, servers, services, alerts     GET /api/v1/dashboard
+    - Health score, load average                    GET /api/v1/dashboard
+    - Applications list                             GET /api/v1/applications
+    - Deployments                                   GET /api/v1/applications + /deployments
+    - Health / readiness                            GET /api/v1/health, /health/ready
+    - Poll interval: 5s (useDashboard composable)
+
+  Monitoring (/monitoring)
+    - Platform status, metrics, charts              GET /api/v1/dashboard, /monitoring/metrics
+    - Integrations                                  GET /api/v1/monitoring/integrations
+    - Services                                      GET /api/v1/services
+    - Alerts                                        GET /api/v1/dashboard (alerts)
+    - Poll interval: 5s
+
+  Servers (/servers)
+    - Host overview                                 GET /api/v1/server/overview
+    - Listening ports                               GET /api/v1/server/ports
+    - Managed services                              GET /api/v1/services
+    - Poll interval: 5s
+
+  Settings (/settings)
+    - User profile                                  GET /api/v1/auth/me
+    - Readiness components                          GET /api/v1/health/ready
+    - Integrations                                  GET /api/v1/monitoring/integrations
+    - Monitored ports                               GET /api/v1/server/ports
+    - Poll interval: 5s
+
+  Notifications (bell)
+    - Active alerts                                 GET /api/v1/alerts
+    - Read state persisted in localStorage only (UI preference, not mock data)
+
+  Quick Actions (dashboard)
+    - Monitoring, Ports, Apps, Refresh, Settings
+    - Compact pill/chip layout, horizontal scroll on mobile, 5-col grid on desktop
+    - No subtitle ("Live navigation & refresh" removed)
+    - Apps action routes to /servers (no dedicated /applications page yet)
+
+Removed from frontend:
+  - "Preview" badges on StatCard, AlertList, ActivityTimeline
+  - "Awaiting integration" on ServiceStatusCard
+  - "Preview data" on ApplicationStatusCard, ServerHealthIndicator
+  - placeholder?: boolean fields from dashboard types
+  - Seed/fake notification data in notifications store
+  - Sidebar "Soon" disabled links (Servers, Settings now active)
+
+Remaining non-dynamic UI (acceptable):
+  - Login form input placeholder text ("admin") — UX hint only
+  - Empty-state fallbacks (?? [] when API returns nothing) — not mock data
+  - Page title map in AppTopBar (static labels for route names)
+
+Layout:
+  - DashboardLayout: h-screen overflow-hidden; sidebar fixed, main content scrolls
+  - AppSidebar: overflow-hidden, no sidebar scroll
+
+
+BACKEND AUDIT
+-------------
+
+Monitoring engine (collector-based):
+  Collectors: CPU, Memory, Disk, Network, Processes, System Info, Services
+              (systemd), Supervisor, Nginx, MySQL, PostgreSQL, Redis, Netdata, Ports
+
+  REST endpoints:
+    GET /api/v1/server/overview
+    GET /api/v1/server/resources
+    GET /api/v1/server/network
+    GET /api/v1/server/ports
+    GET /api/v1/services
+    GET /api/v1/processes
+    GET /api/v1/logs
+    GET /api/v1/alerts
+    GET /api/v1/dashboard
+    GET /api/v1/monitoring/metrics
+    GET /api/v1/monitoring/integrations
+
+Dynamic application registry:
+  - Applications loaded from applications/*.yaml (ApplicationRepository)
+  - Runtime status via process_match regex or systemd/supervisor bindings
+  - Replaced hardcoded process-name detection (uvicorn, nginx, postgres, etc.)
+
+Activity timeline:
+  - Live alerts, service state changes, deployment history from disk
+
+Charts:
+  - Built from in-memory MetricsHistory ring buffer (monitoring_history_points: 60)
+  - Empty until enough samples collected (~5s per cycle)
+
+Configuration defaults (env/config.py, not hardcoded UI):
+  - monitoring_expected_ports: 8000, 5173, 5432, 6379
+  - monitoring_log_paths: /var/log/syslog (macOS may need override)
+  - Alert thresholds: CPU 85%, Memory 85%, Disk 90%
+
+Port collector:
+  - psutil with macOS lsof fallback when net_connections() denied
+
+Auth fixes applied:
+  - Login accepts username or email
+  - User email schema uses str (admin@ifnotus.local valid)
+  - Password hashing via bcrypt (Python 3.14 compatible)
+
+
+REGISTERED APPLICATIONS
+-----------------------
+  applications/ifnotus-api.yaml      — IFNOTUS API (FastAPI, port 8000)
+  applications/ifnotus-frontend.yaml — IFNOTUS Frontend (Vite, port 5173)
+
+Note: ifnotus-api.yaml paths.root is "." — verify relative to applications/ dir
+      if git/ssl/nginx readers need repo root.
+
+
+KNOWN GAPS / FOLLOW-UPS
+-----------------------
+  1. Deployment history empty until .ifnotus/deployments/ JSON files exist per app
+  2. Chart history sparse until ring buffer fills (~5 min at 5s intervals)
+  3. No dedicated /applications route — Quick Actions "Apps" goes to /servers
+  4. monitoring_log_paths defaults to /var/log/syslog (Linux); adjust for macOS
+  5. Docker not in use — Postgres/Redis expected on localhost
+  6. Multiple Vite dev servers can cause stale UI — use http://localhost:5173 only
+     and hard refresh (Cmd+Shift+R) after frontend changes
+
+
+SERVICES & URLS
+---------------
+  Frontend:  http://localhost:5173/login
+  Backend:   http://localhost:8000/api/v1/health
+  API docs:  http://localhost:8000/docs
+
+Start commands (project root):
+  make setup-local   # once: migrate + seed admin
+  make backend       # port 8000
+  make frontend      # port 5173
+
+
+ERRORS RESOLVED (SESSION)
+-------------------------
+  Login 500 on /auth/me          → Email schema + auth error handling
+  Invalid credentials (misleading) → /auth/me failed after successful login
+  PluginRegistry DI error        → Removed settings= from container wiring
+  RedisDsn AttributeError          → str(settings.redis_url)
+  Port collector AccessDenied      → lsof fallback on macOS
+  make: backend is up to date      → .PHONY targets in Makefile
+  Circular imports                 → Lazy imports in repositories/services __init__

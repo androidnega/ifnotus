@@ -1,0 +1,36 @@
+id: ifnotus-frontend
+name: IFNOTUS Frontend
+type: nodejs
+environment: development
+enabled: true
+description: IFNOTUS control plane web UI
+version: "0.1.0"
+tags:
+  - platform
+  - frontend
+
+paths:
+  root: ../frontend
+  logs: []
+  env_file: ../frontend/.env
+
+runtime:
+  process_match: "vite.*5173|node.*vite"
+
+nginx:
+  server_name: localhost
+
+git:
+  repository: ..
+
+deployment:
+  enabled: false
+
+backup:
+  enabled: false
+
+domains:
+  enabled: false
+
+email:
+  enabled: false
