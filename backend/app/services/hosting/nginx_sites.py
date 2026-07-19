@@ -183,70 +183,77 @@ class NginxSiteManager:
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="robots" content="noindex, nofollow" />
-  <title>Unavailable — {safe_host}</title>
+  <title>We'll be right back</title>
   <style>
+    * {{ box-sizing: border-box; }}
     html, body {{
       height: 100%;
       margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-      background: #07110c;
-      color: #d1fae5;
+      background: #ffffff;
+      color: #1f2937;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }}
-    .wrap {{
-      min-height: 100%;
+    body {{
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 2rem;
-      background: radial-gradient(ellipse 70% 50% at 50% -10%, rgba(16, 185, 129, 0.14), transparent 55%);
+      padding: 2rem 1.25rem;
     }}
-    .card {{
-      max-width: 28rem;
+    main {{
       width: 100%;
-      border: 1px solid rgba(16, 185, 129, 0.25);
-      border-radius: 12px;
-      background: rgba(7, 17, 12, 0.92);
-      padding: 1.5rem 1.35rem;
-      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+      max-width: 28rem;
+      text-align: center;
     }}
-    .kicker {{
-      font-size: 11px;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: #34d399;
-      margin: 0 0 0.5rem;
+    .mark {{
+      width: 3rem;
+      height: 3rem;
+      margin: 0 auto 1.25rem;
+      border-radius: 999px;
+      background: #f3f4f6;
+      color: #6b7280;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }}
+    .mark svg {{
+      width: 1.35rem;
+      height: 1.35rem;
     }}
     h1 {{
-      font-size: 1.25rem;
-      margin: 0 0 0.55rem;
-      color: #ecfdf5;
+      margin: 0 0 0.65rem;
+      font-size: 1.5rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      color: #111827;
     }}
     p {{
       margin: 0;
-      color: rgba(167, 243, 208, 0.78);
-      line-height: 1.5;
-      font-size: 0.95rem;
+      font-size: 1rem;
+      line-height: 1.6;
+      color: #6b7280;
     }}
-    .meta {{
-      margin-top: 1rem;
-      font-size: 12px;
-      color: rgba(110, 231, 183, 0.55);
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    .hint {{
+      margin-top: 1.5rem;
+      font-size: 0.875rem;
+      color: #9ca3af;
     }}
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="card">
-      <p class="kicker">IFNOTUS</p>
-      <h1>This application is temporarily offline</h1>
-      <p>
-        The site has been stopped by the server operator.
-        Please try again later or contact the site administrator.
-      </p>
-      <p class="meta">host: {safe_host} · status: 503</p>
+  <main>
+    <div class="mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 7v5l3 2" />
+      </svg>
     </div>
-  </div>
+    <h1>We'll be right back</h1>
+    <p>
+      This website is temporarily unavailable for maintenance.
+      Please check back again soon.
+    </p>
+    <p class="hint">{safe_host}</p>
+  </main>
 </body>
 </html>
 """
