@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.models.hosting import TerminalAuditLog
 from app.repositories.base import BaseRepository
@@ -25,3 +25,9 @@ class TerminalAuditRepository(BaseRepository[TerminalAuditLog]):
         )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def clear_all(self) -> int:
+        """Delete all terminal audit rows. Returns number of rows removed."""
+        result = await self._session.execute(delete(TerminalAuditLog))
+        await self._session.flush()
+        return int(result.rowcount or 0)

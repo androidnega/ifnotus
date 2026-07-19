@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from app.api.deps import CurrentUser, DbSession, RequirePermission
 from app.core.permissions import Permission
 from app.schemas.hosting import TerminalAuditSchema, TerminalExecuteRequest, TerminalExecuteResponse
+from app.schemas.operations import OperationResult
 from app.services.hosting.terminal import TerminalService
 
 router = APIRouter()
@@ -48,3 +49,22 @@ async def audit_log(
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[TerminalAuditSchema]:
     return await _terminal(request, session).list_audit(limit)
+
+
+@router.delete(
+    "/audit",
+    response_model=OperationResult,
+    summary="Clear terminal audit logs",
+    dependencies=[Depends(RequirePermission(Permission.TERMINAL_EXECUTE))],
+)
+async def clear_audit_log(
+    request: Request,
+    session: DbSession,
+    _user: CurrentUser,
+) -> OperationResult:
+    deleted = await _terminal(request, session).clear_audit()
+    return OperationResult(
+        success=True,
+        message=f"Cleared {deleted} terminal audit log{'s' if deleted != 1 else ''}.",
+        details={"deleted": deleted},
+    )

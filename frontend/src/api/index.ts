@@ -407,4 +407,6 @@ export const terminalApi = {
     }),
 
   audit: (limit = 50) => apiClient.get<TerminalAuditEntry[]>('/terminal/audit', { params: { limit } }),
+
+  clearAudit: () => apiClient.delete<OperationResult>('/terminal/audit'),
 }

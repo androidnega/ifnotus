@@ -17,7 +17,8 @@ const cwd = ref('')
 const running = ref(false)
 const result = ref<TerminalExecuteResponse | null>(null)
 const audit = ref<TerminalAuditEntry[]>([])
-const message = ref<string | null>(null)
+const message = ref<{ ok: boolean; text: string } | null>(null)
+const clearing = ref(false)
 
 const history = ref<string[]>([])
 
@@ -33,7 +34,7 @@ async function run() {
     if (history.value.length > 20) history.value.pop()
     await loadAudit()
   } catch (e) {
-    message.value = getApiErrorMessage(e, 'Command failed')
+    message.value = { ok: false, text: getApiErrorMessage(e, 'Command failed') }
   } finally {
     running.value = false
   }
@@ -45,6 +46,23 @@ async function loadAudit() {
     audit.value = data
   } catch {
     audit.value = []
+  }
+}
+
+async function clearLogs() {
+  if (!confirm('Clear all terminal audit logs? This cannot be undone.')) return
+  clearing.value = true
+  message.value = null
+  try {
+    const { data } = await terminalApi.clearAudit()
+    audit.value = []
+    result.value = null
+    history.value = []
+    message.value = { ok: data.success, text: data.message }
+  } catch (e) {
+    message.value = { ok: false, text: getApiErrorMessage(e, 'Failed to clear terminal logs') }
+  } finally {
+    clearing.value = false
   }
 }
 
@@ -61,9 +79,20 @@ onMounted(loadAudit)
 <template>
   <DashboardLayout @refresh="loadAudit">
     <div class="animate-fade-in space-y-5">
-      <div>
-        <h1 class="text-lg font-semibold text-slate-900 dark:text-white">Terminal</h1>
-        <p class="text-sm text-surface-muted">Controlled command execution with audit logging</p>
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 class="text-lg font-semibold text-slate-900 dark:text-white">Terminal</h1>
+          <p class="text-sm text-surface-muted">Controlled command execution with audit logging</p>
+        </div>
+        <button
+          v-if="canExecute"
+          type="button"
+          class="rounded-lg border border-surface-border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50 dark:hover:bg-slate-800"
+          :disabled="clearing || (!audit.length && !result)"
+          @click="clearLogs"
+        >
+          {{ clearing ? 'Clearing…' : 'Clear logs' }}
+        </button>
       </div>
 
       <Card v-if="!canExecute" padding="md">
@@ -94,7 +123,13 @@ onMounted(loadAudit)
           >
             {{ running ? 'Running…' : 'Execute' }}
           </button>
-          <p v-if="message" class="mt-2 text-sm text-red-600">{{ message }}</p>
+          <p
+            v-if="message"
+            class="mt-2 text-sm"
+            :class="message.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-600'"
+          >
+            {{ message.text }}
+          </p>
         </Card>
 
         <Card v-if="result" padding="md">
@@ -107,16 +142,32 @@ onMounted(loadAudit)
         </Card>
 
         <Card padding="md">
-          <h2 class="mb-3 text-sm font-semibold">Recent commands</h2>
+          <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 class="text-sm font-semibold">Recent commands</h2>
+            <button
+              type="button"
+              class="rounded-lg border border-surface-border px-2.5 py-1 text-xs hover:bg-slate-50 disabled:opacity-50 dark:hover:bg-slate-800"
+              :disabled="clearing || !audit.length"
+              @click="clearLogs"
+            >
+              {{ clearing ? 'Clearing…' : 'Clear logs' }}
+            </button>
+          </div>
           <div v-if="!audit.length" class="text-sm text-surface-muted">No audit entries yet.</div>
-          <div v-for="entry in audit" :key="entry.id" class="border-t border-surface-border py-2 text-sm">
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="font-mono text-xs">{{ entry.username }}</span>
-              <Badge :variant="entry.success ? 'success' : 'danger'" size="sm">{{ entry.exit_code ?? '—' }}</Badge>
-              <span class="text-xs text-surface-muted">{{ entry.executed_at }}</span>
+          <div v-else class="max-h-[min(50vh,24rem)] overflow-auto rounded-lg border border-surface-border/60">
+            <div
+              v-for="entry in audit"
+              :key="entry.id"
+              class="border-b border-surface-border px-3 py-2 text-sm last:border-b-0"
+            >
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="font-mono text-xs">{{ entry.username }}</span>
+                <Badge :variant="entry.success ? 'success' : 'danger'" size="sm">{{ entry.exit_code ?? '—' }}</Badge>
+                <span class="text-xs text-surface-muted">{{ entry.executed_at }}</span>
+              </div>
+              <p class="mt-1 font-mono text-xs">{{ entry.command }}</p>
+              <p v-if="entry.output_preview" class="mt-1 truncate text-xs text-surface-muted">{{ entry.output_preview }}</p>
             </div>
-            <p class="mt-1 font-mono text-xs">{{ entry.command }}</p>
-            <p v-if="entry.output_preview" class="mt-1 truncate text-xs text-surface-muted">{{ entry.output_preview }}</p>
           </div>
         </Card>
       </template>

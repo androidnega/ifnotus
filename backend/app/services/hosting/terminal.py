@@ -158,3 +158,7 @@ class TerminalService:
             )
             for log in logs
         ]
+
+    async def clear_audit(self) -> int:
+        """Remove all terminal audit log entries."""
+        return await self._audit.clear_all()
