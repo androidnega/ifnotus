@@ -10,12 +10,6 @@ const auth = useAuthStore()
 const email = ref('')
 const password = ref('')
 const emailInput = ref<HTMLInputElement | null>(null)
-const bootLines = ref([
-  'IFNOTUS control plane v0.1.0',
-  'host: ifnotus.space',
-  'session: unauthenticated',
-  'awaiting credentials…',
-])
 
 onMounted(() => {
   nextTick(() => emailInput.value?.focus())
@@ -30,43 +24,37 @@ async function handleLogin() {
 </script>
 
 <template>
-  <div class="login-terminal relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-10">
+  <div class="login-terminal relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-8">
     <div class="login-terminal__grid pointer-events-none absolute inset-0" aria-hidden="true" />
     <div class="login-terminal__scan pointer-events-none absolute inset-0" aria-hidden="true" />
 
     <form
-      class="relative z-10 w-full max-w-md overflow-hidden rounded-lg border border-emerald-500/25 bg-[#07110c]/92 shadow-[0_0_0_1px_rgba(16,185,129,0.08),0_24px_60px_rgba(0,0,0,0.55)] backdrop-blur-sm"
+      class="relative z-10 w-full max-w-sm overflow-hidden rounded-lg border border-emerald-500/25 bg-[#07110c]/92 shadow-[0_0_0_1px_rgba(16,185,129,0.08),0_24px_60px_rgba(0,0,0,0.55)] backdrop-blur-sm"
       @submit.prevent="handleLogin"
     >
-      <div class="flex items-center gap-2 border-b border-emerald-500/20 bg-[#0a1810] px-4 py-2.5">
-        <span class="h-2.5 w-2.5 rounded-full bg-red-500/80" />
-        <span class="h-2.5 w-2.5 rounded-full bg-amber-400/80" />
-        <span class="h-2.5 w-2.5 rounded-full bg-emerald-400/80" />
+      <div class="flex items-center gap-2 border-b border-emerald-500/20 bg-[#0a1810] px-3 py-2">
+        <span class="h-2 w-2 rounded-full bg-red-500/80" />
+        <span class="h-2 w-2 rounded-full bg-amber-400/80" />
+        <span class="h-2 w-2 rounded-full bg-emerald-400/80" />
         <p class="ml-2 truncate font-mono text-[11px] tracking-wide text-emerald-300/70">
           root@ifnotus:~ — auth
         </p>
       </div>
 
-      <div class="space-y-5 px-5 py-6 font-mono text-sm text-emerald-100/90 sm:px-6">
-        <div class="space-y-1 text-[12px] leading-relaxed text-emerald-400/80">
-          <p v-for="(line, i) in bootLines" :key="i" class="animate-fade-in">
-            <span class="text-emerald-600">$</span> {{ line }}
-          </p>
-        </div>
-
+      <div class="space-y-3 px-4 py-4 font-mono text-sm text-emerald-100/90">
         <div>
-          <h1 class="text-lg font-semibold tracking-tight text-emerald-50">
-            IFNOTUS<span class="login-cursor ml-0.5 inline-block h-4 w-2 translate-y-0.5 bg-emerald-400 align-middle" />
+          <h1 class="text-base font-semibold tracking-tight text-emerald-50">
+            IFNOTUS<span class="login-cursor ml-0.5 inline-block h-3.5 w-1.5 translate-y-0.5 bg-emerald-400 align-middle" />
           </h1>
-          <p class="mt-1 text-[12px] text-emerald-500/70">server access · authorized operators only</p>
+          <p class="mt-0.5 text-[11px] text-emerald-500/70">authorized operators only</p>
         </div>
 
-        <div class="space-y-3">
+        <div class="space-y-2.5">
           <label class="block">
-            <span class="mb-1.5 block text-[11px] uppercase tracking-[0.14em] text-emerald-500/80">
+            <span class="mb-1 block text-[10px] uppercase tracking-[0.14em] text-emerald-500/80">
               login
             </span>
-            <div class="flex items-center gap-2 rounded border border-emerald-500/20 bg-black/35 px-3 py-2 focus-within:border-emerald-400/50">
+            <div class="flex items-center gap-2 rounded border border-emerald-500/20 bg-black/35 px-3 py-1.5 focus-within:border-emerald-400/50">
               <span class="shrink-0 text-emerald-500">$</span>
               <input
                 ref="emailInput"
@@ -74,17 +62,17 @@ async function handleLogin() {
                 type="text"
                 autocomplete="username"
                 required
-                placeholder="admin@ifnotus.local"
+                placeholder="email"
                 class="w-full bg-transparent text-sm text-emerald-100 placeholder:text-emerald-800 focus:outline-none"
               />
             </div>
           </label>
 
           <label class="block">
-            <span class="mb-1.5 block text-[11px] uppercase tracking-[0.14em] text-emerald-500/80">
+            <span class="mb-1 block text-[10px] uppercase tracking-[0.14em] text-emerald-500/80">
               password
             </span>
-            <div class="flex items-center gap-2 rounded border border-emerald-500/20 bg-black/35 px-3 py-2 focus-within:border-emerald-400/50">
+            <div class="flex items-center gap-2 rounded border border-emerald-500/20 bg-black/35 px-3 py-1.5 focus-within:border-emerald-400/50">
               <span class="shrink-0 text-emerald-500">#</span>
               <input
                 v-model="password"
@@ -98,22 +86,18 @@ async function handleLogin() {
           </label>
         </div>
 
-        <p v-if="auth.error" class="rounded border border-red-500/30 bg-red-950/40 px-3 py-2 text-[12px] text-red-300">
+        <p v-if="auth.error" class="rounded border border-red-500/30 bg-red-950/40 px-3 py-1.5 text-[12px] text-red-300">
           error: {{ auth.error }}
         </p>
 
         <button
           type="submit"
           :disabled="auth.loading"
-          class="group flex w-full items-center justify-between rounded border border-emerald-400/40 bg-emerald-500/15 px-4 py-2.5 text-left text-sm font-medium text-emerald-100 transition hover:bg-emerald-500/25 disabled:opacity-50"
+          class="group flex w-full items-center justify-between rounded border border-emerald-400/40 bg-emerald-500/15 px-3 py-2 text-left text-sm font-medium text-emerald-100 transition hover:bg-emerald-500/25 disabled:opacity-50"
         >
           <span>{{ auth.loading ? './auth --wait' : './auth --login' }}</span>
           <span class="text-emerald-400 transition group-hover:translate-x-0.5">↵</span>
         </button>
-
-        <p class="text-[11px] text-emerald-700">
-          tip: use email <span class="text-emerald-500">admin@ifnotus.local</span>
-        </p>
       </div>
     </form>
   </div>

@@ -152,20 +152,20 @@ function formatUptime(seconds: number) {
       >
         <div
           v-if="ports?.missing_ports?.length"
-          class="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300"
+          class="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300"
         >
           Missing expected ports:
           <span class="font-mono font-medium">{{ ports.missing_ports.join(', ') }}</span>
         </div>
 
-        <div class="overflow-x-auto">
+        <div class="max-h-72 overflow-auto rounded-lg border border-surface-border/60">
           <table class="w-full text-left text-sm">
-            <thead class="text-xs text-surface-muted">
+            <thead class="sticky top-0 z-10 border-b border-surface-border bg-surface-raised text-xs text-surface-muted">
               <tr>
-                <th class="pb-2 pr-4">Port</th>
-                <th class="pb-2 pr-4">Process</th>
-                <th class="pb-2 pr-4">Address</th>
-                <th class="pb-2">Protocol</th>
+                <th class="px-3 py-2 pr-4 font-medium">Port</th>
+                <th class="px-3 py-2 pr-4 font-medium">Process</th>
+                <th class="px-3 py-2 pr-4 font-medium">Address</th>
+                <th class="px-3 py-2 font-medium">Protocol</th>
               </tr>
             </thead>
             <tbody>
@@ -174,7 +174,7 @@ function formatUptime(seconds: number) {
                 :key="`${port.port}-${port.address}-${port.protocol}`"
                 class="border-t border-surface-border"
               >
-                <td class="py-2 pr-4 font-mono">
+                <td class="px-3 py-2 pr-4 font-mono">
                   {{ port.port }}
                   <Badge
                     v-if="ports?.expected_ports?.includes(port.port)"
@@ -184,9 +184,9 @@ function formatUptime(seconds: number) {
                     monitored
                   </Badge>
                 </td>
-                <td class="py-2 pr-4">{{ port.process_name ?? '—' }}</td>
-                <td class="py-2 pr-4 font-mono text-xs">{{ port.address }}</td>
-                <td class="py-2 uppercase">{{ port.protocol }}</td>
+                <td class="px-3 py-2 pr-4">{{ port.process_name ?? '—' }}</td>
+                <td class="px-3 py-2 pr-4 font-mono text-xs">{{ port.address }}</td>
+                <td class="px-3 py-2 uppercase">{{ port.protocol }}</td>
               </tr>
             </tbody>
           </table>
