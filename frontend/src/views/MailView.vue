@@ -4,6 +4,7 @@ import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import { domainsApi, mailApi } from '@/api'
+import { getApiErrorMessage } from '@/lib/apiError'
 import { usePermissions } from '@/composables/usePermissions'
 import { Permission } from '@/lib/permissions'
 import type { Domain, MailAlias, Mailbox, MailDomainResponse } from '@/types/hosting'
@@ -41,17 +42,23 @@ async function loadMail() {
     return
   }
   actionKey.value = 'load'
+  mailData.value = null
   try {
     const { data } = await mailApi.getDomain(selectedId.value)
     mailData.value = data
   } catch (e) {
-    message.value = { type: 'err', text: e instanceof Error ? e.message : 'Failed to load mail config' }
+    mailData.value = null
+    message.value = { type: 'err', text: getApiErrorMessage(e, 'Failed to load mail config') }
   } finally {
     actionKey.value = null
   }
 }
 
 async function createMailbox() {
+  if (!mailboxForm.value.password || mailboxForm.value.password.length < 8) {
+    message.value = { type: 'err', text: 'Password must be at least 8 characters.' }
+    return
+  }
   actionKey.value = 'mb-create'
   try {
     await mailApi.createMailbox(selectedId.value, mailboxForm.value)
@@ -59,7 +66,7 @@ async function createMailbox() {
     message.value = { type: 'ok', text: 'Mailbox created.' }
     await loadMail()
   } catch (e) {
-    message.value = { type: 'err', text: e instanceof Error ? e.message : 'Create failed' }
+    message.value = { type: 'err', text: getApiErrorMessage(e, 'Create failed') }
   } finally {
     actionKey.value = null
   }
@@ -92,8 +99,13 @@ async function resetMbPassword(mb: Mailbox) {
 
 async function deleteMailbox(mb: Mailbox) {
   if (!confirm(`Delete ${mb.email}?`)) return
-  await mailApi.deleteMailbox(selectedId.value, mb.id)
-  await loadMail()
+  try {
+    await mailApi.deleteMailbox(selectedId.value, mb.id)
+    message.value = { type: 'ok', text: 'Mailbox deleted.' }
+    await loadMail()
+  } catch (e) {
+    message.value = { type: 'err', text: getApiErrorMessage(e, 'Delete failed') }
+  }
 }
 
 async function createAlias() {
@@ -104,15 +116,20 @@ async function createAlias() {
     message.value = { type: 'ok', text: 'Alias created.' }
     await loadMail()
   } catch (e) {
-    message.value = { type: 'err', text: e instanceof Error ? e.message : 'Create failed' }
+    message.value = { type: 'err', text: getApiErrorMessage(e, 'Create failed') }
   } finally {
     actionKey.value = null
   }
 }
 
 async function deleteAlias(alias: MailAlias) {
-  await mailApi.deleteAlias(selectedId.value, alias.id)
-  await loadMail()
+  try {
+    await mailApi.deleteAlias(selectedId.value, alias.id)
+    message.value = { type: 'ok', text: 'Alias deleted.' }
+    await loadMail()
+  } catch (e) {
+    message.value = { type: 'err', text: getApiErrorMessage(e, 'Delete failed') }
+  }
 }
 
 watch(selectedId, loadMail)

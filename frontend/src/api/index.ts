@@ -182,7 +182,7 @@ export const domainsApi = {
     notes?: string
   }) => apiClient.post<Domain>('/domains', body),
 
-  update: (id: string, body: Partial<Pick<Domain, 'application_id' | 'document_root' | 'enabled' | 'notes'>>) =>
+  update: (id: string, body: Partial<{ application_id: string | null; document_root: string | null; enabled: boolean; notes: string | null }>) =>
     apiClient.patch<Domain>(`/domains/${id}`, body),
 
   delete: (id: string) => apiClient.delete<OperationResult>(`/domains/${id}`),

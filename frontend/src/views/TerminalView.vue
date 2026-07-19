@@ -4,6 +4,7 @@ import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import { terminalApi } from '@/api'
+import { getApiErrorMessage } from '@/lib/apiError'
 import { usePermissions } from '@/composables/usePermissions'
 import { Permission } from '@/lib/permissions'
 import type { TerminalAuditEntry, TerminalExecuteResponse } from '@/types/hosting'
@@ -32,7 +33,7 @@ async function run() {
     if (history.value.length > 20) history.value.pop()
     await loadAudit()
   } catch (e) {
-    message.value = e instanceof Error ? e.message : 'Command failed'
+    message.value = getApiErrorMessage(e, 'Command failed')
   } finally {
     running.value = false
   }

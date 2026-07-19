@@ -203,7 +203,7 @@ function formatUptime(seconds: number) {
               <span v-else>total</span>
               services
               <span v-if="services?.total_relevant != null">
-                · {{ services.total_relevant }} operational of {{ services.total_all }} on host
+                · {{ services.total_relevant }} relevant of {{ services.total_all }} on host
               </span>
             </p>
           </div>

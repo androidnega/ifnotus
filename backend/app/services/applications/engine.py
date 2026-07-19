@@ -71,8 +71,6 @@ class ApplicationEngine:
         summaries: list[ApplicationSummarySchema] = []
 
         for app in apps:
-            if not app.enabled:
-                continue
             health = await self.get_health(app.id)
             summaries.append(
                 ApplicationSummarySchema(

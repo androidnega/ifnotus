@@ -24,7 +24,9 @@ const pendingFiles = ref<File[]>([])
 
 const scope = computed(() => {
   if (!selectedRoot.value) return {}
-  if (selectedRoot.value.startsWith('root:')) return { rootId: selectedRoot.value }
+  if (selectedRoot.value.startsWith('root:') || selectedRoot.value.startsWith('discovered:')) {
+    return { rootId: selectedRoot.value }
+  }
   return { appId: selectedRoot.value }
 })
 

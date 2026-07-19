@@ -4,6 +4,7 @@ import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import { applicationsApi, domainsApi } from '@/api'
+import { getApiErrorMessage } from '@/lib/apiError'
 import { usePermissions } from '@/composables/usePermissions'
 import { Permission } from '@/lib/permissions'
 import type { ApplicationSummary } from '@/types/dashboard'
@@ -127,15 +128,15 @@ async function saveEdit() {
   actionKey.value = `edit-${editingDomain.value.id}`
   try {
     await domainsApi.update(editingDomain.value.id, {
-      application_id: editForm.value.application_id || undefined,
-      document_root: editForm.value.document_root || undefined,
-      notes: editForm.value.notes || undefined,
+      application_id: editForm.value.application_id ? editForm.value.application_id : null,
+      document_root: editForm.value.document_root ? editForm.value.document_root : null,
+      notes: editForm.value.notes ? editForm.value.notes : null,
     })
     message.value = { type: 'ok', text: 'Domain updated.' }
     editingDomain.value = null
     await load()
   } catch (e) {
-    message.value = { type: 'err', text: e instanceof Error ? e.message : 'Update failed' }
+    message.value = { type: 'err', text: getApiErrorMessage(e, 'Update failed') }
   } finally {
     actionKey.value = null
   }

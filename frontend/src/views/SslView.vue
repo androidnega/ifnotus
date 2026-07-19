@@ -5,6 +5,7 @@ import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import { sslApi } from '@/api'
+import { getApiErrorMessage } from '@/lib/apiError'
 import { usePermissions } from '@/composables/usePermissions'
 import { Permission } from '@/lib/permissions'
 import type { SslCertificate, SslReadinessResponse, SslSummary } from '@/types/hosting'
@@ -78,6 +79,8 @@ async function openDetail(cert: SslCertificate) {
   try {
     const { data } = await sslApi.get(cert.domain)
     selectedCert.value = data
+  } catch (e) {
+    message.value = { type: 'err', text: getApiErrorMessage(e, 'Failed to load certificate detail') }
   } finally {
     actionKey.value = null
   }

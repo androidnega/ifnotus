@@ -93,13 +93,13 @@ class DomainService:
         entity = await self._repo.get_by_id(domain_id)
         if entity is None:
             raise NotFoundError("Domain not found.")
-        if body.application_id is not None:
+        if "application_id" in body.model_fields_set:
             entity.application_id = body.application_id
-        if body.document_root is not None:
+        if "document_root" in body.model_fields_set:
             entity.document_root = body.document_root
         if body.enabled is not None:
             entity.enabled = body.enabled
-        if body.notes is not None:
+        if "notes" in body.model_fields_set:
             entity.notes = body.notes
         await self._repo.update(entity)
         return await self._enrich(entity)

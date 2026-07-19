@@ -6,6 +6,7 @@ import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import FileTransferQueue from '@/components/files/FileTransferQueue.vue'
 import { filesApi } from '@/api'
+import { getApiErrorMessage } from '@/lib/apiError'
 import { useFileTransferStore } from '@/stores/fileTransfers'
 import { usePermissions } from '@/composables/usePermissions'
 import { Permission } from '@/lib/permissions'
@@ -42,7 +43,10 @@ const moveDestination = ref('')
 
 const scope = computed(() => {
   if (!selectedRoot.value) return {}
-  if (selectedRoot.value.startsWith('root:')) return { rootId: selectedRoot.value }
+  // Hosting roots and discovered VPS paths use root_id; only registered app IDs use app_id.
+  if (selectedRoot.value.startsWith('root:') || selectedRoot.value.startsWith('discovered:')) {
+    return { rootId: selectedRoot.value }
+  }
   return { appId: selectedRoot.value }
 })
 
@@ -57,8 +61,8 @@ const uploadLink = computed(() => ({
 }))
 
 function downloadEntry(entry: FileEntry) {
-  if (entry.is_dir || entry.size_bytes == null) return
-  transfers.enqueueDownload(entry.path, entry.name, entry.size_bytes, scope.value)
+  if (entry.is_dir) return
+  transfers.enqueueDownload(entry.path, entry.name, entry.size_bytes ?? 0, scope.value)
 }
 
 async function loadRoots() {
@@ -82,7 +86,7 @@ async function load(path = '.') {
     currentPath.value = data.path
     parentPath.value = data.parent
   } catch (e) {
-    message.value = { type: 'err', text: e instanceof Error ? e.message : 'Failed to list files' }
+    message.value = { type: 'err', text: getApiErrorMessage(e, 'Failed to list files') }
   } finally {
     loading.value = false
   }

@@ -5,6 +5,7 @@ import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import { applicationsApi, operationsApi } from '@/api'
+import { getApiErrorMessage } from '@/lib/apiError'
 import type { ApplicationSummary } from '@/types/dashboard'
 import type {
   BackupEntry,
@@ -18,6 +19,7 @@ import type {
 } from '@/types/operations'
 
 const loading = ref(true)
+const loadError = ref<string | null>(null)
 const actionLoading = ref<string | null>(null)
 const actionMessage = ref<{ type: 'ok' | 'err'; text: string } | null>(null)
 const overview = ref<OperationsOverview | null>(null)
@@ -62,8 +64,9 @@ async function loadFiles(path = '.') {
 
 async function refreshAll() {
   loading.value = true
+  loadError.value = null
   try {
-    const [ov, appList, env, bk, cr, st, ssl, db, logs, queue] = await Promise.all([
+    const results = await Promise.allSettled([
       operationsApi.overview(),
       applicationsApi.list(),
       operationsApi.environment(envRevealed.value),
@@ -75,17 +78,49 @@ async function refreshAll() {
       operationsApi.hostLogs(80),
       operationsApi.queueStatus(),
     ])
-    overview.value = ov.data
-    apps.value = appList.data.applications
-    envVars.value = env.data.variables
-    backups.value = bk.data.backups
-    cronJobs.value = cr.data.jobs
-    storage.value = st.data.volumes
-    sslApps.value = ssl.data
-    databases.value = db.data.databases
-    hostLogs.value = logs.data.entries ?? []
-    queueDepth.value = queue.data[0]?.depth ?? 0
-    await loadFiles(filePath.value)
+
+    const fulfilled = <T>(i: number): T | null => {
+      const result = results[i]
+      if (result.status !== 'fulfilled') return null
+      return result.value.data as T
+    }
+
+    const ov = fulfilled<OperationsOverview>(0)
+    const appList = fulfilled<{ applications: ApplicationSummary[] }>(1)
+    const env = fulfilled<{ variables: EnvVariable[] }>(2)
+    const bk = fulfilled<{ backups: BackupEntry[] }>(3)
+    const cr = fulfilled<{ jobs: CronJob[] }>(4)
+    const st = fulfilled<{ volumes: StorageVolume[] }>(5)
+    const ssl = fulfilled<SslAppStatus[]>(6)
+    const db = fulfilled<{ databases: DatabaseStatus[] }>(7)
+    const logs = fulfilled<{ entries: Array<{ message: string; level?: string; source?: string }> }>(8)
+    const queue = fulfilled<Array<{ queue: string; depth: number }>>(9)
+
+    if (ov) overview.value = ov
+    if (appList) apps.value = appList.applications
+    if (env) envVars.value = env.variables
+    if (bk) backups.value = bk.backups
+    if (cr) cronJobs.value = cr.jobs
+    if (st) storage.value = st.volumes
+    if (ssl) sslApps.value = ssl
+    if (db) databases.value = db.databases
+    if (logs) hostLogs.value = logs.entries ?? []
+    queueDepth.value = ov?.worker_queue_depth ?? queue?.[0]?.depth ?? 0
+
+    const failed = results.filter((r) => r.status === 'rejected').length
+    if (failed && !ov) {
+      loadError.value = 'Failed to load operations data.'
+    } else if (failed) {
+      loadError.value = `${failed} operations section(s) failed to load.`
+    }
+
+    try {
+      await loadFiles(filePath.value)
+    } catch {
+      /* file browser is optional on this page */
+    }
+  } catch (e) {
+    loadError.value = getApiErrorMessage(e, 'Failed to load operations.')
   } finally {
     loading.value = false
   }
@@ -105,7 +140,9 @@ function formatBytes(n?: number) {
   return `${n} B`
 }
 
-const enabledApps = computed(() => apps.value.filter((a) => a.enabled).length)
+const enabledApps = computed(
+  () => overview.value?.applications_enabled ?? apps.value.filter((a) => a.enabled).length,
+)
 
 onMounted(refreshAll)
 </script>
@@ -113,6 +150,12 @@ onMounted(refreshAll)
 <template>
   <DashboardLayout @refresh="refreshAll">
     <div class="animate-fade-in space-y-5">
+      <p
+        v-if="loadError"
+        class="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200"
+      >
+        {{ loadError }}
+      </p>
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 class="text-lg font-semibold text-slate-900 dark:text-white">Operations</h1>

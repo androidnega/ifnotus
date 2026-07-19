@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import ErrorState from '@/components/ui/ErrorState.vue'
 import { applicationsApi } from '@/api'
+import { getApiErrorMessage } from '@/lib/apiError'
 import type { ApplicationDetail, DeploymentRecord } from '@/types/operations'
 
 const route = useRoute()
@@ -16,23 +17,29 @@ const deployments = ref<DeploymentRecord[]>([])
 const logs = ref<Array<{ message?: string; level?: string }>>([])
 const envVars = ref<Record<string, string>>({})
 const loading = ref(true)
+const error = ref<string | null>(null)
 const actionLoading = ref<string | null>(null)
 const message = ref<{ ok: boolean; text: string } | null>(null)
 const activeTab = ref<'overview' | 'deployments' | 'logs' | 'environment' | 'services'>('overview')
 
 async function load() {
   loading.value = true
+  error.value = null
   try {
-    const [detail, deps, logRes, env] = await Promise.all([
-      applicationsApi.get(appId.value),
+    const detail = await applicationsApi.get(appId.value)
+    app.value = detail.data
+
+    const [deps, logRes, env] = await Promise.allSettled([
       applicationsApi.deployments(appId.value),
       applicationsApi.logs(appId.value, 120),
       applicationsApi.environment(appId.value),
     ])
-    app.value = detail.data
-    deployments.value = deps.data.deployments as DeploymentRecord[]
-    logs.value = logRes.data.entries
-    envVars.value = env.data.variables
+    deployments.value = deps.status === 'fulfilled' ? (deps.value.data.deployments as DeploymentRecord[]) : []
+    logs.value = logRes.status === 'fulfilled' ? logRes.value.data.entries : []
+    envVars.value = env.status === 'fulfilled' ? env.value.data.variables : {}
+  } catch (e) {
+    app.value = null
+    error.value = getApiErrorMessage(e, 'Failed to load application.')
   } finally {
     loading.value = false
   }
@@ -46,15 +53,19 @@ async function run(key: string, fn: () => Promise<{ data: { success: boolean; me
     message.value = { ok: data.success, text: data.message }
     await load()
   } catch (e) {
-    message.value = { ok: false, text: e instanceof Error ? e.message : 'Failed' }
+    message.value = { ok: false, text: getApiErrorMessage(e, 'Action failed') }
   } finally {
     actionLoading.value = null
   }
 }
 
 async function revealEnv() {
-  const { data } = await applicationsApi.revealEnvironment(appId.value)
-  envVars.value = data
+  try {
+    const { data } = await applicationsApi.revealEnvironment(appId.value)
+    envVars.value = data
+  } catch (e) {
+    message.value = { ok: false, text: getApiErrorMessage(e, 'Failed to reveal environment') }
+  }
 }
 
 const tabs = [
@@ -65,12 +76,12 @@ const tabs = [
   { id: 'services', label: 'Services' },
 ] as const
 
-onMounted(load)
+watch(appId, load, { immediate: true })
 </script>
 
 <template>
   <DashboardLayout @refresh="load">
-    <ErrorState v-if="!app && !loading" message="Application not found." @retry="load" />
+    <ErrorState v-if="error && !app && !loading" :message="error" @retry="load" />
 
     <div v-else-if="app" class="animate-fade-in space-y-5">
       <div class="flex flex-wrap items-start justify-between gap-3">
