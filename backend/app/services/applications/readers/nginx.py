@@ -9,6 +9,7 @@ from app.schemas.applications import NginxSiteSchema
 
 NGINX_SITES_ENABLED = Path("/etc/nginx/sites-enabled")
 NGINX_SITES_AVAILABLE = Path("/etc/nginx/sites-available")
+STUB_MARKER = "# managed-by-ifnotus: disabled-stub"
 
 
 class NginxReader:
@@ -84,13 +85,22 @@ class NginxReader:
     def _is_enabled(path: Path) -> bool:
         name = path.name
         enabled = NGINX_SITES_ENABLED / name
-        if enabled.exists():
+        if enabled.exists() or enabled.is_symlink():
+            try:
+                # Disabled apps leave a 503 stub in sites-enabled — treat as off.
+                if not enabled.is_symlink():
+                    head = enabled.read_text(encoding="utf-8", errors="replace")[:240]
+                    if STUB_MARKER in head:
+                        return False
+            except OSError:
+                pass
             return True
         if path.resolve().parent == NGINX_SITES_ENABLED.resolve():
             return True
-        return path.is_symlink() or (NGINX_SITES_ENABLED.exists() and any(
-            p.resolve() == path.resolve() for p in NGINX_SITES_ENABLED.iterdir() if p.exists()
-        ))
+        return path.is_symlink() or (
+            NGINX_SITES_ENABLED.exists()
+            and any(p.resolve() == path.resolve() for p in NGINX_SITES_ENABLED.iterdir() if p.exists())
+        )
 
     @staticmethod
     def _extract_server_names(content: str) -> list[str]:

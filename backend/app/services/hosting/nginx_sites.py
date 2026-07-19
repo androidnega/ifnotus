@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from app.core.config import Settings
 from app.schemas.operations import OperationResult
 from app.services.applications.config import ApplicationDefinition
 from app.services.monitoring.subprocess_util import resolve_binary, run_command
+
+STUB_MARKER = "# managed-by-ifnotus: disabled-stub"
 
 
 class NginxSiteManager:
@@ -33,7 +36,22 @@ class NginxSiteManager:
         if not name:
             return False
         link = self._enabled_dir / name
-        return link.exists() or link.is_symlink()
+        if not (link.exists() or link.is_symlink()):
+            return False
+        return not self.is_disabled_stub(link)
+
+    @staticmethod
+    def is_disabled_stub(path: Path) -> bool:
+        try:
+            if not path.exists() and not path.is_symlink():
+                return False
+            # Follow symlink only if checking content of real file; stubs are real files.
+            target = path
+            if path.is_symlink():
+                return False
+            return STUB_MARKER in target.read_text(encoding="utf-8", errors="replace")[:240]
+        except OSError:
+            return False
 
     async def set_site_enabled(self, app: ApplicationDefinition, enabled: bool) -> OperationResult:
         name = self.resolve_site_name(app)
@@ -52,14 +70,7 @@ class NginxSiteManager:
 
         try:
             if enabled:
-                self._ensure_available(enabled_path, available_path)
-                if not (enabled_path.exists() or enabled_path.is_symlink()):
-                    if not available_path.exists():
-                        return OperationResult(
-                            success=False,
-                            message=f"Nginx site config not found in sites-available: {available_path}",
-                        )
-                    enabled_path.symlink_to(available_path)
+                self._enable_site(enabled_path, available_path)
             else:
                 self._disable_site(enabled_path, available_path)
         except OSError as exc:
@@ -76,22 +87,86 @@ class NginxSiteManager:
             details={"site": name, "enabled": enabled},
         )
 
+    def _enable_site(self, enabled_path: Path, available_path: Path) -> None:
+        self._ensure_available(enabled_path, available_path)
+        if not available_path.exists():
+            raise FileNotFoundError(f"Nginx site config not found in sites-available: {available_path}")
+        # Remove stub or stale link, then restore symlink to real config.
+        if enabled_path.exists() or enabled_path.is_symlink():
+            enabled_path.unlink()
+        enabled_path.symlink_to(available_path)
+
     def _ensure_available(self, enabled_path: Path, available_path: Path) -> None:
         """If the only copy lives in sites-enabled, move it to sites-available."""
         if available_path.exists():
             return
-        if enabled_path.exists() and not enabled_path.is_symlink():
+        if enabled_path.exists() and not enabled_path.is_symlink() and not self.is_disabled_stub(enabled_path):
             shutil.move(str(enabled_path), str(available_path))
 
     def _disable_site(self, enabled_path: Path, available_path: Path) -> None:
-        if enabled_path.is_symlink() or enabled_path.exists():
-            if enabled_path.exists() and not enabled_path.is_symlink() and not available_path.exists():
+        # Preserve real config under sites-available.
+        if enabled_path.exists() and not enabled_path.is_symlink() and not self.is_disabled_stub(enabled_path):
+            if not available_path.exists():
                 shutil.move(str(enabled_path), str(available_path))
             else:
-                enabled_path.unlink(missing_ok=True)
-            return
-        # Already disabled
-        return
+                enabled_path.unlink()
+        elif enabled_path.is_symlink() or enabled_path.exists():
+            enabled_path.unlink()
+
+        if not available_path.exists():
+            raise FileNotFoundError(f"Cannot disable — missing config at {available_path}")
+
+        stub = self._build_disabled_stub(available_path)
+        enabled_path.write_text(stub, encoding="utf-8")
+
+    def _build_disabled_stub(self, available_path: Path) -> str:
+        content = available_path.read_text(encoding="utf-8", errors="replace")
+        names = self._extract_server_names(content)
+        if not names:
+            names = [available_path.name]
+        cert = self._extract_directive(content, "ssl_certificate")
+        key = self._extract_directive(content, "ssl_certificate_key")
+
+        blocks: list[str] = [STUB_MARKER, "# Application temporarily disabled by IFNOTUS.", ""]
+        names_line = " ".join(names)
+
+        blocks.append("server {")
+        blocks.append("    listen 80;")
+        blocks.append("    listen [::]:80;")
+        blocks.append(f"    server_name {names_line};")
+        blocks.append('    return 503 "Application temporarily disabled.\\n";')
+        blocks.append("    add_header Retry-After 3600 always;")
+        blocks.append("}")
+        blocks.append("")
+
+        if cert and key:
+            blocks.append("server {")
+            blocks.append("    listen 443 ssl;")
+            blocks.append("    listen [::]:443 ssl;")
+            blocks.append(f"    server_name {names_line};")
+            blocks.append(f"    ssl_certificate {cert};")
+            blocks.append(f"    ssl_certificate_key {key};")
+            blocks.append('    return 503 "Application temporarily disabled.\\n";')
+            blocks.append("    add_header Retry-After 3600 always;")
+            blocks.append("}")
+            blocks.append("")
+
+        return "\n".join(blocks)
+
+    @staticmethod
+    def _extract_server_names(content: str) -> list[str]:
+        names: list[str] = []
+        for match in re.finditer(r"server_name\s+([^;]+);", content):
+            for name in match.group(1).split():
+                name = name.strip()
+                if name and name not in names:
+                    names.append(name)
+        return names
+
+    @staticmethod
+    def _extract_directive(content: str, name: str) -> str | None:
+        match = re.search(rf"{name}\s+([^;]+);", content)
+        return match.group(1).strip() if match else None
 
     async def reload(self) -> OperationResult:
         nginx = resolve_binary("nginx", self._settings.nginx_binary)
