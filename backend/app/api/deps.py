@@ -12,6 +12,7 @@ from app.core.exceptions import AuthenticationError, AuthorizationError
 from app.core.permissions import Permission
 from app.repositories.user import UserRepository
 from app.schemas.auth import AuthenticatedUser
+from app.services.access_control import AccessControlService
 from app.services.auth import AuthService
 
 security_scheme = HTTPBearer(auto_error=False)
@@ -38,7 +39,13 @@ async def get_auth_service(
     session: Annotated[AsyncSession, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> AuthService:
-    return AuthService(settings, UserRepository(session))
+    return AuthService(settings, UserRepository(session), AccessControlService(session))
+
+
+async def get_access_control(
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> AccessControlService:
+    return AccessControlService(session)
 
 
 async def get_current_user(
@@ -69,4 +76,5 @@ def require_permission(permission: Permission):
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
+AccessControlDep = Annotated[AccessControlService, Depends(get_access_control)]
 RequirePermission = require_permission  # usage: Depends(RequirePermission(Permission.X))

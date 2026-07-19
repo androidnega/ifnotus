@@ -1,23 +1,59 @@
-"""Authentication endpoints — skeleton."""
+"""Authentication endpoints."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
-from app.api.deps import CurrentUser, DbSession, get_auth_service
-from app.schemas.auth import LoginRequest, RefreshTokenRequest, TokenResponse
+from app.api.deps import AccessControlDep, CurrentUser, DbSession, get_auth_service
+from app.schemas.auth import AccessProbeRequest, LoginRequest, RefreshTokenRequest, TokenResponse
 from app.schemas.common import MessageResponse
 from app.schemas.user import UserResponse
+from app.services.access_control import AccessContext
 from app.services.auth import AuthService
 
 router = APIRouter()
 
 
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _access_context(request: Request, fingerprint: str | None = None) -> AccessContext:
+    return AccessContext(
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+        device_fingerprint=fingerprint or request.headers.get("x-device-fingerprint"),
+        request_id=request.headers.get("x-request-id"),
+    )
+
+
 @router.post("/login", response_model=TokenResponse, summary="Authenticate user")
 async def login(
     body: LoginRequest,
+    request: Request,
     auth_service: AuthService = Depends(get_auth_service),
 ) -> TokenResponse:
     """Exchange credentials for JWT access and refresh tokens."""
-    return await auth_service.login(body)
+    ctx = _access_context(request, body.device_fingerprint)
+    return await auth_service.login(body, ctx)
+
+
+@router.post("/probe", response_model=MessageResponse, summary="Record anonymous access probe")
+async def access_probe(
+    body: AccessProbeRequest,
+    request: Request,
+    access: AccessControlDep,
+) -> MessageResponse:
+    """Trace visitors hitting the login page (device fingerprint + IP)."""
+    ctx = _access_context(request, body.device_fingerprint)
+    await access.record_probe(ctx)
+    return MessageResponse(message="Access recorded.")
 
 
 @router.post("/refresh", response_model=TokenResponse, summary="Refresh tokens")

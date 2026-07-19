@@ -12,6 +12,13 @@ class LoginRequest(SchemaBase):
 
     email: str = Field(min_length=1, max_length=320, description="Email address or username")
     password: str = Field(min_length=8, max_length=128)
+    device_fingerprint: str | None = Field(default=None, max_length=128)
+
+
+class AccessProbeRequest(SchemaBase):
+    """Anonymous access probe from the login page."""
+
+    device_fingerprint: str | None = Field(default=None, max_length=128)
 
 
 class TokenResponse(SchemaBase):

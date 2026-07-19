@@ -1,6 +1,10 @@
 import apiClient, { transferClient } from './client'
 import type { LoginRequest, TokenResponse, User } from '@/types/auth'
 import type {
+  AccessAttemptEntry,
+  IpBlacklistEntry,
+} from '@/types/security'
+import type {
   AlertsResponse,
   ApplicationDeploymentsResponse,
   ApplicationListResponse,
@@ -47,9 +51,27 @@ export const authApi = {
   login: (credentials: LoginRequest) =>
     apiClient.post<TokenResponse>('/auth/login', credentials),
 
+  probe: (body: { device_fingerprint?: string }) =>
+    apiClient.post<{ message: string }>('/auth/probe', body),
+
   me: () => apiClient.get<User>('/auth/me'),
 
   logout: () => apiClient.post('/auth/logout'),
+}
+
+export const securityApi = {
+  blacklist: (activeOnly = true) =>
+    apiClient.get<{ total: number; entries: IpBlacklistEntry[] }>('/security/blacklist', {
+      params: { active_only: activeOnly },
+    }),
+
+  unlock: (id: string, note?: string) =>
+    apiClient.post<{ message: string }>(`/security/blacklist/${id}/unlock`, { note }),
+
+  attempts: (limit = 100) =>
+    apiClient.get<{ total: number; attempts: AccessAttemptEntry[] }>('/security/attempts', {
+      params: { limit },
+    }),
 }
 
 export const healthApi = {

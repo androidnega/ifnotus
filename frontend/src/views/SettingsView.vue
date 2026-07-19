@@ -1,17 +1,22 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
-import { healthApi, monitoringApi, serverApi } from '@/api'
+import { healthApi, monitoringApi, securityApi, serverApi } from '@/api'
 import { REALTIME_POLL_MS } from '@/config/polling'
 import { useAuthStore } from '@/stores/auth'
 import { usePolling } from '@/composables/usePolling'
+import { Permission } from '@/lib/permissions'
+import { usePermissions } from '@/composables/usePermissions'
 import type { IntegrationsResponse, PortsResponse, ReadinessResponse } from '@/types/dashboard'
+import type { AccessAttemptEntry, IpBlacklistEntry } from '@/types/security'
 
 const router = useRouter()
 const auth = useAuthStore()
+const { can } = usePermissions()
+const canManageSecurity = computed(() => can(Permission.SYSTEM_ADMIN) || !!auth.user?.is_superuser)
 
 const { data: readiness, refresh: refreshReadiness } = usePolling<ReadinessResponse>(
   async () => (await healthApi.readiness()).data,
@@ -29,6 +34,11 @@ const { data: integrations, refresh: refreshIntegrations } = usePolling<Integrat
   REALTIME_POLL_MS,
   { requiresAuth: true },
 )
+
+const blacklist = ref<IpBlacklistEntry[]>([])
+const attempts = ref<AccessAttemptEntry[]>([])
+const securityMessage = ref<string | null>(null)
+const securityLoading = ref(false)
 
 const integrationEntries = computed(() => {
   if (!integrations.value) return []
@@ -64,6 +74,35 @@ async function loadProfile() {
   }
 }
 
+async function loadSecurity() {
+  if (!canManageSecurity.value) return
+  securityLoading.value = true
+  try {
+    const [b, a] = await Promise.all([
+      securityApi.blacklist(true),
+      securityApi.attempts(40),
+    ])
+    blacklist.value = b.data.entries
+    attempts.value = a.data.attempts
+  } catch {
+    blacklist.value = []
+    attempts.value = []
+  } finally {
+    securityLoading.value = false
+  }
+}
+
+async function unlockIp(entry: IpBlacklistEntry) {
+  securityMessage.value = null
+  try {
+    const { data } = await securityApi.unlock(entry.id, 'Unlocked from Settings')
+    securityMessage.value = data.message
+    await loadSecurity()
+  } catch (e) {
+    securityMessage.value = e instanceof Error ? e.message : 'Unlock failed'
+  }
+}
+
 async function handleLogout() {
   await auth.logout()
   await router.replace({ name: 'login' })
@@ -74,6 +113,7 @@ function refreshAll() {
   refreshPorts()
   refreshIntegrations()
   loadProfile()
+  loadSecurity()
 }
 
 onMounted(refreshAll)
@@ -213,6 +253,88 @@ onMounted(refreshAll)
               </Badge>
             </div>
           </div>
+        </div>
+      </Card>
+
+      <Card
+        v-if="canManageSecurity"
+        title="Access security"
+        subtitle="IP blacklist and access traces"
+      >
+        <p v-if="securityMessage" class="mb-3 text-sm text-emerald-700 dark:text-emerald-300">
+          {{ securityMessage }}
+        </p>
+
+        <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-surface-muted">
+          Blacklisted IPs
+        </h3>
+        <div v-if="securityLoading" class="text-sm text-surface-muted">Loading…</div>
+        <div v-else-if="!blacklist.length" class="mb-4 text-sm text-surface-muted">
+          No active IP blocks.
+        </div>
+        <div v-else class="mb-5 max-h-48 space-y-2 overflow-y-auto">
+          <div
+            v-for="entry in blacklist"
+            :key="entry.id"
+            class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-surface-border px-3 py-2 text-sm"
+          >
+            <div>
+              <p class="font-mono font-medium">{{ entry.ip_address }}</p>
+              <p class="text-xs text-surface-muted">
+                {{ entry.reason }} · {{ entry.failed_attempt_count }} fails ·
+                {{ new Date(entry.blocked_at).toLocaleString() }}
+              </p>
+              <p v-if="entry.last_device_fingerprint" class="truncate text-[10px] text-surface-muted">
+                fp {{ entry.last_device_fingerprint.slice(0, 16) }}…
+              </p>
+            </div>
+            <button
+              type="button"
+              class="rounded-lg border border-surface-border px-2.5 py-1 text-xs hover:bg-slate-50 dark:hover:bg-slate-800"
+              @click="unlockIp(entry)"
+            >
+              Unlock IP
+            </button>
+          </div>
+        </div>
+
+        <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-surface-muted">
+          Recent access attempts
+        </h3>
+        <div class="max-h-56 overflow-auto rounded-lg border border-surface-border">
+          <table class="w-full text-left text-xs">
+            <thead class="sticky top-0 bg-surface-raised text-surface-muted">
+              <tr>
+                <th class="px-2 py-1.5">When</th>
+                <th class="px-2 py-1.5">IP</th>
+                <th class="px-2 py-1.5">Event</th>
+                <th class="px-2 py-1.5">Identity</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in attempts"
+                :key="row.id"
+                class="border-t border-surface-border"
+              >
+                <td class="px-2 py-1.5 whitespace-nowrap">
+                  {{ new Date(row.attempted_at).toLocaleString() }}
+                </td>
+                <td class="px-2 py-1.5 font-mono">{{ row.ip_address }}</td>
+                <td class="px-2 py-1.5">
+                  <Badge
+                    :variant="row.success ? 'success' : row.event_type === 'access_probe' ? 'neutral' : 'warning'"
+                    size="sm"
+                  >
+                    {{ row.event_type }}
+                  </Badge>
+                </td>
+                <td class="max-w-[8rem] truncate px-2 py-1.5">
+                  {{ row.username_or_email || '—' }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </Card>
 

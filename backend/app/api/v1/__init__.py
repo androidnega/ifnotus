@@ -2,12 +2,13 @@
 
 from fastapi import APIRouter
 
-from app.routers.v1 import alerts, applications, auth, dashboard, health, hosting, inventory, logs, monitoring, operations, processes, server, services
+from app.routers.v1 import alerts, applications, auth, dashboard, health, hosting, inventory, logs, monitoring, operations, processes, security, server, services
 
 api_v1_router = APIRouter()
 
 api_v1_router.include_router(health.router, tags=["health"])
 api_v1_router.include_router(auth.router, prefix="/auth", tags=["auth"])
+api_v1_router.include_router(security.router, prefix="/security", tags=["security"])
 api_v1_router.include_router(applications.router, prefix="/applications", tags=["applications"])
 api_v1_router.include_router(hosting.hosting_router, tags=["hosting"])
 api_v1_router.include_router(operations.router, prefix="/operations", tags=["operations"])

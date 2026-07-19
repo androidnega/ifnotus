@@ -1,6 +1,7 @@
 export interface LoginRequest {
   email: string
   password: string
+  device_fingerprint?: string
 }
 
 export interface TokenResponse {

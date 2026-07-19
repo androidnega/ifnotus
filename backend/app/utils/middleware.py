@@ -33,4 +33,5 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         )
 
         response.headers["X-Request-ID"] = request_id
+        response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
         return response

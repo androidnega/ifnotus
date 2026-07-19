@@ -25,6 +25,7 @@ apiClient.interceptors.response.use(
     const onLoginPage = window.location.pathname.startsWith('/login')
     const isAuthFlow =
       requestUrl.includes('/auth/login') ||
+      requestUrl.includes('/auth/probe') ||
       requestUrl.includes('/auth/me') ||
       requestUrl.includes('/auth/logout')
 

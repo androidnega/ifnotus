@@ -12,7 +12,7 @@ from app.core.config import get_settings
 from app.core.database import Base
 
 # Import all models so Alembic can detect them
-from app.models import User  # noqa: F401
+from app.models import AccessAttempt, IpBlacklist, User  # noqa: F401
 
 config = context.config
 settings = get_settings()

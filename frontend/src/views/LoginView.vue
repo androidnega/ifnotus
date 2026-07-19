@@ -2,6 +2,8 @@
 import { nextTick, onMounted, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { authApi } from '@/api'
+import { getDeviceFingerprint } from '@/lib/deviceFingerprint'
 
 const router = useRouter()
 const route = useRoute()
@@ -10,13 +12,24 @@ const auth = useAuthStore()
 const email = ref('')
 const password = ref('')
 const emailInput = ref<HTMLInputElement | null>(null)
+const fingerprint = ref<string | null>(null)
 
-onMounted(() => {
+onMounted(async () => {
   nextTick(() => emailInput.value?.focus())
+  try {
+    fingerprint.value = await getDeviceFingerprint()
+    await authApi.probe({ device_fingerprint: fingerprint.value })
+  } catch {
+    /* probe is best-effort */
+  }
 })
 
 async function handleLogin() {
-  const ok = await auth.login({ email: email.value, password: password.value })
+  const ok = await auth.login({
+    email: email.value,
+    password: password.value,
+    device_fingerprint: fingerprint.value ?? undefined,
+  })
   if (!ok) return
   const redirect = (route.query.redirect as string) || '/'
   router.push(redirect)
@@ -46,7 +59,15 @@ async function handleLogin() {
           <h1 class="text-base font-semibold tracking-tight text-emerald-50">
             IFNOTUS<span class="login-cursor ml-0.5 inline-block h-3.5 w-1.5 translate-y-0.5 bg-emerald-400 align-middle" />
           </h1>
-          <p class="mt-0.5 text-[11px] text-emerald-500/70">authorized operators only</p>
+          <p class="mt-1 text-[10px] uppercase tracking-[0.12em] text-amber-400/90">
+            Secure server access only
+          </p>
+          <p class="mt-1 text-[11px] leading-snug text-emerald-500/70">
+            Authorized personnel only. All access is monitored and logged.
+          </p>
+          <p class="mt-2 text-[10px] text-emerald-700">
+            HOST:ifnotus-server · IP:ifnotus.space · PORT:443
+          </p>
         </div>
 
         <div class="space-y-2.5">
