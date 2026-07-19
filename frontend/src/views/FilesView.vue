@@ -274,15 +274,15 @@ onMounted(async () => {
 
       <div v-if="loading" class="text-sm text-surface-muted">Loading…</div>
 
-      <div v-else class="overflow-hidden rounded-xl border border-surface-border">
+      <div v-else class="max-h-[min(70vh,36rem)] overflow-auto rounded-xl border border-surface-border">
         <table class="w-full text-left text-sm">
-          <thead class="border-b border-surface-border bg-slate-50/50 text-xs text-surface-muted dark:bg-slate-900/50">
+          <thead class="sticky top-0 z-10 border-b border-surface-border bg-surface-raised text-xs text-surface-muted">
             <tr>
-              <th class="px-4 py-2">Name</th>
-              <th class="px-4 py-2">Size</th>
-              <th class="px-4 py-2">Perms</th>
-              <th class="px-4 py-2">Owner</th>
-              <th class="px-4 py-2">Actions</th>
+              <th class="px-4 py-2 font-medium">Name</th>
+              <th class="px-4 py-2 font-medium">Size</th>
+              <th class="px-4 py-2 font-medium">Perms</th>
+              <th class="px-4 py-2 font-medium">Owner</th>
+              <th class="px-4 py-2 font-medium">Actions</th>
             </tr>
           </thead>
           <tbody>
