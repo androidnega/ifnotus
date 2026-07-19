@@ -35,6 +35,7 @@ class AccessContext:
 
 class AccessControlService:
     def __init__(self, session: AsyncSession) -> None:
+        self._session = session
         self._attempts = AccessAttemptRepository(session)
         self._blacklist = IpBlacklistRepository(session)
 
@@ -50,6 +51,7 @@ class AccessControlService:
                 unlocked_by=None,
                 note="system auto-expiry",
             )
+            await self._session.commit()
             logger.info("ip_auto_unlocked", ip=ctx.ip_address)
             return
 
@@ -130,6 +132,7 @@ class AccessControlService:
             fingerprint=ctx.device_fingerprint,
             user_agent=ctx.user_agent,
         )
+        await self._session.commit()
         logger.warning(
             "ip_blacklisted",
             ip=ctx.ip_address,
@@ -159,6 +162,7 @@ class AccessControlService:
             request_id=ctx.request_id,
         )
         saved = await self._attempts.create(attempt)
+        await self._session.commit()
         logger.info(
             "access_trace",
             event_type=event_type,
@@ -187,11 +191,13 @@ class AccessControlService:
             from app.core.exceptions import NotFoundError
 
             raise NotFoundError("Blacklist entry not found.")
-        return await self._blacklist.unlock(
+        entry = await self._blacklist.unlock(
             entry,
             unlocked_by=unlocked_by,
             note=note or "unlocked by administrator",
         )
+        await self._session.commit()
+        return entry
 
     async def list_attempts(self, *, limit: int = 100):
         return await self._attempts.list_recent(limit=limit)
