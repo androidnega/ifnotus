@@ -116,13 +116,16 @@ class InventoryService:
                 state = DomainReconciliationState.DISABLED_IN_NGINX
                 drift_count += 1
             elif site.proxy_pass:
-                state = DomainReconciliationState.PROXY_TARGET_DETECTED
+                # Reverse-proxy backends are normal for app domains — not drift.
+                state = DomainReconciliationState.MANAGED
             elif site.document_root and entity.document_root and site.document_root != entity.document_root:
                 state = DomainReconciliationState.DRIFTED
                 drift_count += 1
             elif site.document_root and not Path(site.document_root).exists():
                 state = DomainReconciliationState.MISSING_DOCUMENT_ROOT
                 drift_count += 1
+            else:
+                state = DomainReconciliationState.MANAGED
 
             item = NginxDiscoveredDomainSchema(
                 server_name=entity.name,
