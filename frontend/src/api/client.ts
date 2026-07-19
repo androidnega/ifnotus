@@ -23,7 +23,10 @@ apiClient.interceptors.response.use(
     const status = error.response?.status
     const requestUrl = String(error.config?.url ?? '')
     const onLoginPage = window.location.pathname.startsWith('/login')
-    const isAuthFlow = requestUrl.includes('/auth/login') || requestUrl.includes('/auth/me')
+    const isAuthFlow =
+      requestUrl.includes('/auth/login') ||
+      requestUrl.includes('/auth/me') ||
+      requestUrl.includes('/auth/logout')
 
     if (status === 401 && !onLoginPage && !isAuthFlow) {
       localStorage.removeItem('access_token')

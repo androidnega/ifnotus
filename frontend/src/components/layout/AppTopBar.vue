@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useNotificationStore } from '@/stores/notifications'
 import { useThemeStore } from '@/stores/theme'
@@ -17,9 +17,11 @@ defineEmits<{
 }>()
 
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
 const notifications = useNotificationStore()
 const theme = useThemeStore()
+const menuOpen = ref(false)
 
 const titles: Record<string, string> = {
   dashboard: 'Control Plane',
@@ -39,15 +41,30 @@ const titles: Record<string, string> = {
 
 const pageTitle = computed(() => titles[String(route.name)] || 'IFNOTUS')
 
+async function handleLogout() {
+  menuOpen.value = false
+  await auth.logout()
+  await router.replace({ name: 'login' })
+}
+
+function onDocClick(event: MouseEvent) {
+  const target = event.target as HTMLElement | null
+  if (!target?.closest('[data-user-menu]')) {
+    menuOpen.value = false
+  }
+}
+
 onMounted(() => {
   if (auth.isAuthenticated) {
     auth.fetchUser().catch(() => undefined)
     notifications.startPolling()
   }
+  document.addEventListener('click', onDocClick)
 })
 
 onUnmounted(() => {
   notifications.stopPolling()
+  document.removeEventListener('click', onDocClick)
 })
 </script>
 
@@ -110,19 +127,48 @@ onUnmounted(() => {
         <NotificationCenter />
       </div>
 
-      <div
-        class="ml-1 hidden items-center gap-2 rounded-lg border border-surface-border px-2.5 py-1.5 sm:flex"
-      >
-        <div
-          class="flex h-7 w-7 items-center justify-center rounded-full bg-brand-500/15 text-xs font-semibold text-brand-700 dark:text-brand-300"
+      <div class="relative ml-1" data-user-menu>
+        <button
+          type="button"
+          class="flex items-center gap-2 rounded-lg border border-surface-border px-2.5 py-1.5 transition hover:bg-slate-50 dark:hover:bg-slate-800"
+          :aria-expanded="menuOpen"
+          aria-haspopup="menu"
+          @click.stop="menuOpen = !menuOpen"
         >
-          {{ (auth.user?.username || 'U').charAt(0).toUpperCase() }}
-        </div>
-        <div class="hidden md:block">
-          <p class="text-xs font-medium text-slate-900 dark:text-white">
-            {{ auth.user?.username || 'Operator' }}
-          </p>
-          <p class="text-[10px] text-surface-muted">{{ auth.user?.email || '—' }}</p>
+          <div
+            class="flex h-7 w-7 items-center justify-center rounded-full bg-brand-500/15 text-xs font-semibold text-brand-700 dark:text-brand-300"
+          >
+            {{ (auth.user?.username || 'U').charAt(0).toUpperCase() }}
+          </div>
+          <div class="hidden text-left md:block">
+            <p class="text-xs font-medium text-slate-900 dark:text-white">
+              {{ auth.user?.username || 'Operator' }}
+            </p>
+            <p class="text-[10px] text-surface-muted">{{ auth.user?.email || '—' }}</p>
+          </div>
+        </button>
+
+        <div
+          v-if="menuOpen"
+          class="absolute right-0 z-50 mt-2 w-48 overflow-hidden rounded-lg border border-surface-border bg-surface-raised shadow-elevated"
+          role="menu"
+        >
+          <button
+            type="button"
+            class="block w-full px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
+            role="menuitem"
+            @click="menuOpen = false; router.push({ name: 'settings' })"
+          >
+            Settings
+          </button>
+          <button
+            type="button"
+            class="block w-full border-t border-surface-border px-3 py-2 text-left text-sm font-medium text-red-600 transition hover:bg-red-500/10 dark:text-red-400"
+            role="menuitem"
+            @click="handleLogout"
+          >
+            Sign out
+          </button>
         </div>
       </div>
     </div>

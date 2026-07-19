@@ -66,7 +66,7 @@ async function loadProfile() {
 
 async function handleLogout() {
   await auth.logout()
-  router.push({ name: 'login' })
+  await router.replace({ name: 'login' })
 }
 
 function refreshAll() {
@@ -83,8 +83,8 @@ onMounted(refreshAll)
   <DashboardLayout @refresh="refreshAll">
     <div class="animate-fade-in space-y-5">
       <Card padding="none">
-        <div v-if="auth.user" class="divide-y divide-surface-border">
-          <div class="flex items-center gap-4 p-4 md:p-5">
+        <div class="divide-y divide-surface-border">
+          <div v-if="auth.user" class="flex items-center gap-4 p-4 md:p-5">
             <div
               class="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-brand-500/15 text-lg font-semibold text-brand-700 dark:text-brand-300"
               aria-hidden="true"
@@ -108,8 +108,11 @@ onMounted(refreshAll)
               </div>
             </div>
           </div>
+          <div v-else class="p-5">
+            <p class="text-sm text-surface-muted">Loading profile…</p>
+          </div>
 
-          <dl class="divide-y divide-surface-border text-sm">
+          <dl v-if="auth.user" class="divide-y divide-surface-border text-sm">
             <div class="grid grid-cols-[6.5rem_1fr] items-center gap-x-4 px-4 py-3 md:px-5">
               <dt class="text-surface-muted">Username</dt>
               <dd class="font-medium text-slate-900 dark:text-white">{{ auth.user.username }}</dd>
@@ -139,10 +142,6 @@ onMounted(refreshAll)
               Sign out
             </button>
           </div>
-        </div>
-
-        <div v-else class="p-5">
-          <p class="text-sm text-surface-muted">Loading profile…</p>
         </div>
       </Card>
 

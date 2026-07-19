@@ -54,6 +54,6 @@ async def me(user: CurrentUser, session: DbSession) -> UserResponse:
 
 
 @router.post("/logout", response_model=MessageResponse, summary="Logout")
-async def logout(_user: CurrentUser) -> MessageResponse:
-    """Invalidate session — token blacklist to be implemented."""
+async def logout() -> MessageResponse:
+    """Client-side logout — JWT is discarded by the client; no server session store yet."""
     return MessageResponse(message="Logged out successfully.")

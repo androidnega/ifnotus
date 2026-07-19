@@ -10,6 +10,13 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isAuthenticated = computed(() => !!localStorage.getItem('access_token'))
 
+  function clearSession() {
+    localStorage.removeItem('access_token')
+    localStorage.removeItem('refresh_token')
+    user.value = null
+    error.value = null
+  }
+
   async function login(credentials: LoginRequest): Promise<boolean> {
     loading.value = true
     error.value = null
@@ -20,8 +27,7 @@ export const useAuthStore = defineStore('auth', () => {
       try {
         await fetchUser()
       } catch {
-        localStorage.removeItem('access_token')
-        localStorage.removeItem('refresh_token')
+        clearSession()
         throw new Error('Signed in but failed to load your profile. Please try again.')
       }
     } catch (e: unknown) {
@@ -42,14 +48,23 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function logout() {
+    // Clear local session first so navigation/guards cannot bounce back into the app.
+    const hadToken = !!localStorage.getItem('access_token')
+    clearSession()
+    try {
+      const { useNotificationStore } = await import('@/stores/notifications')
+      useNotificationStore().stopPolling()
+      useNotificationStore().closePanel()
+    } catch {
+      /* optional */
+    }
+    if (!hadToken) return
     try {
       await authApi.logout()
-    } finally {
-      localStorage.removeItem('access_token')
-      localStorage.removeItem('refresh_token')
-      user.value = null
+    } catch {
+      /* Server logout is best-effort; local session is already cleared. */
     }
   }
 
-  return { user, loading, error, isAuthenticated, login, fetchUser, logout }
+  return { user, loading, error, isAuthenticated, login, fetchUser, logout, clearSession }
 })

@@ -102,20 +102,24 @@ router.beforeEach(async (to) => {
     return { name: 'dashboard' }
   }
 
-  const requiredPermission = to.meta.permission as string | undefined
-  if (requiredPermission && token) {
+  if (token && to.meta.requiresAuth) {
     const { useAuthStore } = await import('@/stores/auth')
     const auth = useAuthStore()
     if (!auth.user) {
       try {
         await auth.fetchUser()
       } catch {
+        auth.clearSession()
         return { name: 'login', query: { redirect: to.fullPath } }
       }
     }
-    const perms = auth.user?.permissions ?? []
-    if (!auth.user?.is_superuser && !perms.includes(requiredPermission)) {
-      return { name: 'dashboard' }
+
+    const requiredPermission = to.meta.permission as string | undefined
+    if (requiredPermission) {
+      const perms = auth.user?.permissions ?? []
+      if (!auth.user?.is_superuser && !perms.includes(requiredPermission)) {
+        return { name: 'dashboard' }
+      }
     }
   }
 })
