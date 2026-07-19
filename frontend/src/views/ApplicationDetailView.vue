@@ -76,6 +76,38 @@ const tabs = [
   { id: 'services', label: 'Services' },
 ] as const
 
+const serviceActions = ['start', 'stop', 'restart', 'enable', 'disable'] as const
+
+const serviceRunning = computed(() => {
+  const status = String(app.value?.status ?? '').toLowerCase()
+  if (status === 'running') return true
+  if (status === 'stopped' || status === 'failed') return false
+  const nginx = app.value?.nginx as { enabled?: boolean } | undefined
+  if (nginx?.enabled === true) return true
+  if (nginx?.enabled === false) return false
+  return !!app.value?.enabled
+})
+
+const serviceEnabled = computed(() => {
+  const nginx = app.value?.nginx as { enabled?: boolean } | undefined
+  if (typeof nginx?.enabled === 'boolean') return nginx.enabled
+  return !!app.value?.enabled
+})
+
+function isServiceActionActive(action: (typeof serviceActions)[number]) {
+  if (actionLoading.value === action) return true
+  if (action === 'start') return serviceRunning.value
+  if (action === 'stop') return !serviceRunning.value
+  if (action === 'enable') return serviceEnabled.value
+  if (action === 'disable') return !serviceEnabled.value
+  return false
+}
+
+function serviceActionLabel(action: (typeof serviceActions)[number]) {
+  if (actionLoading.value === action) return `${action}…`
+  return action
+}
+
 watch(appId, load, { immediate: true })
 </script>
 
@@ -239,20 +271,33 @@ watch(appId, load, { immediate: true })
 
       <div v-if="activeTab === 'services'" class="dashboard-grid lg:grid-cols-2">
         <Card title="Service control">
+          <div class="mb-3 flex flex-wrap gap-2">
+            <Badge :variant="serviceRunning ? 'success' : 'warning'" size="sm">
+              {{ serviceRunning ? 'running' : 'stopped' }}
+            </Badge>
+            <Badge :variant="serviceEnabled ? 'success' : 'neutral'" size="sm">
+              {{ serviceEnabled ? 'enabled' : 'disabled' }}
+            </Badge>
+          </div>
           <div class="flex flex-wrap gap-2">
             <button
-              v-for="action in ['start', 'stop', 'restart', 'enable', 'disable']"
+              v-for="action in serviceActions"
               :key="action"
               type="button"
               class="action-btn capitalize"
+              :class="{
+                'action-btn-active': isServiceActionActive(action) && actionLoading !== action,
+                'action-btn-busy': actionLoading === action,
+              }"
               :disabled="!!actionLoading"
+              :aria-pressed="isServiceActionActive(action)"
               @click="run(action, () => applicationsApi.serviceAction(appId, action))"
             >
-              {{ action }}
+              {{ serviceActionLabel(action) }}
             </button>
           </div>
           <p class="mt-3 text-xs text-surface-muted">
-            Uses systemd, supervisor, or the app nginx site when no process unit is configured.
+            Active controls reflect the current runtime and nginx/service state.
           </p>
         </Card>
         <Card title="Bindings">
@@ -288,5 +333,11 @@ watch(appId, load, { immediate: true })
 }
 .action-btn-primary {
   @apply rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50;
+}
+.action-btn-active {
+  @apply border-brand-500 bg-brand-500/15 font-medium text-brand-800 ring-1 ring-brand-500/30 dark:text-brand-200;
+}
+.action-btn-busy {
+  @apply border-amber-500/50 bg-amber-500/15 font-medium text-amber-800 ring-1 ring-amber-500/30 dark:text-amber-200;
 }
 </style>
