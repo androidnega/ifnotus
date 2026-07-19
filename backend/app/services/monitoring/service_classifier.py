@@ -60,6 +60,21 @@ NOISE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"^apparmor",
         r"^ufw\.service$",
         r"^ufw$",
+        r"^zfs-",
+        r"^rbdmap",
+        r"^ovsdb-",
+        r"^openvswitch",
+        r"^nftables",
+        r"^iptables",
+        r"^ip6tables",
+        r"^ipset",
+        r"^kbd$",
+        r"^iscsi-",
+        r"^ua-",
+        r"^ubuntu-advantage",
+        r"^sysstat",
+        r"^systemd-vconsole",
+        r"^systemd-oomd",
     )
 )
 

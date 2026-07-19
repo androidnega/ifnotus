@@ -514,7 +514,7 @@ class MonitoringService:
         ]
 
         applications = await self._registered_applications(processes, services_resp.services)
-        activities = await self._build_activities(alerts_resp.alerts, services_resp.services)
+        activities = await self._build_activities(alerts_resp.alerts, relevant_services)
         charts = self._build_charts()
 
         return DashboardResponse(
@@ -614,7 +614,9 @@ class MonitoringService:
                 )
             )
         for svc in services:
-            if svc.status in {ServiceState.FAILED, ServiceState.DEGRADED, ServiceState.STOPPED}:
+            # Only surface failed/degraded relevant services — inactive oneshots
+            # (zfs-mount, ua-auto-attach, etc.) are noise on the control plane.
+            if svc.status in {ServiceState.FAILED, ServiceState.DEGRADED}:
                 activities.append(
                     ActivitySchema(
                         id=f"act-svc-{svc.id}",
@@ -626,11 +628,11 @@ class MonitoringService:
                     )
                 )
 
-        for definition in self._app_repository.list_all():
+        for definition in self._app_repository.list_all()[:8]:
             if not definition.enabled:
                 continue
             deployments = await self._deployment_reader.read(definition)
-            for dep in deployments[:3]:
+            for dep in deployments[:2]:
                 activities.append(
                     ActivitySchema(
                         id=f"act-dep-{definition.id}-{dep.id}",
@@ -643,7 +645,7 @@ class MonitoringService:
                 )
 
         activities.sort(key=lambda a: a.timestamp, reverse=True)
-        return activities[:15]
+        return activities[:12]
 
     def _build_charts(self) -> dict[str, ChartData]:
         if self._history.is_empty():

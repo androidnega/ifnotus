@@ -204,13 +204,21 @@ const secondaryStats = computed(() => data.value?.stats.slice(4) ?? [])
       </section>
 
       <!-- Deployments + Activity -->
-      <section class="dashboard-grid min-w-0 xl:grid-cols-2" aria-label="Deployments and activity">
+      <section class="dashboard-grid min-w-0 items-start xl:grid-cols-2" aria-label="Deployments and activity">
         <Card title="Recent Deployments" class="min-w-0 overflow-hidden">
-          <DeploymentList :deployments="data?.deployments ?? []" :loading="loading" />
+          <div class="dashboard-side-panel">
+            <div class="dashboard-side-panel-scroll">
+              <DeploymentList :deployments="data?.deployments ?? []" :loading="loading" />
+            </div>
+          </div>
         </Card>
 
-        <Card title="Activity Timeline" class="min-w-0 overflow-hidden">
-          <ActivityTimeline :items="data?.activities ?? []" :loading="loading" />
+        <Card title="Activity Timeline" subtitle="Operational events" class="min-w-0 overflow-hidden">
+          <div class="dashboard-side-panel">
+            <div class="dashboard-side-panel-scroll">
+              <ActivityTimeline :items="data?.activities ?? []" :loading="loading" />
+            </div>
+          </div>
         </Card>
       </section>
 

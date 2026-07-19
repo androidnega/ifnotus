@@ -67,7 +67,7 @@ async function fetchRegisteredApplications(): Promise<ApplicationItem[]> {
 async function fetchRecentDeployments(): Promise<DeploymentItem[]> {
   try {
     const { data: list } = await applicationsApi.list()
-    const enabled = list.applications.filter((app) => app.enabled).slice(0, 6)
+    const enabled = list.applications.filter((app) => app.enabled).slice(0, 4)
     const batches = await Promise.allSettled(
       enabled.map((app) => applicationsApi.deployments(app.id)),
     )
@@ -76,7 +76,7 @@ async function fetchRecentDeployments(): Promise<DeploymentItem[]> {
     batches.forEach((result, index) => {
       if (result.status !== 'fulfilled') return
       const app = enabled[index]
-      for (const dep of result.value.data.deployments.slice(0, 5)) {
+      for (const dep of result.value.data.deployments.slice(0, 3)) {
         deployments.push({
           id: dep.id,
           application: app.name,
@@ -91,7 +91,7 @@ async function fetchRecentDeployments(): Promise<DeploymentItem[]> {
 
     return deployments
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-      .slice(0, 10)
+      .slice(0, 8)
   } catch {
     return []
   }
@@ -152,6 +152,7 @@ export function useDashboard() {
   const refreshing = ref(false)
   const error = ref<string | null>(null)
   let timer: ReturnType<typeof setInterval> | null = null
+  let pollCount = 0
 
   const runningServices = computed(
     () => data.value?.services.filter((s) => s.status === 'running').length ?? 0,
@@ -161,7 +162,20 @@ export function useDashboard() {
     () => data.value?.applications.filter((a) => a.status === 'running').length ?? 0,
   )
 
-  async function fetchDashboard(isRefresh = false) {
+  async function loadExtras() {
+    const [deployments, applications] = await Promise.all([
+      fetchRecentDeployments(),
+      fetchRegisteredApplications(),
+    ])
+    if (!data.value) return
+    data.value = {
+      ...data.value,
+      deployments,
+      applications,
+    }
+  }
+
+  async function fetchDashboard(isRefresh = false, { withExtras = true } = {}) {
     if (!localStorage.getItem('access_token')) {
       loading.value = false
       refreshing.value = false
@@ -172,24 +186,25 @@ export function useDashboard() {
     error.value = null
 
     try {
-      const [dashboardRes, healthRes, readinessRes, deployments, applications] = await Promise.all([
+      // Paint core dashboard first — do not block on N+1 deployment fan-out.
+      const [dashboardRes, healthRes, readinessRes] = await Promise.all([
         monitoringApi.dashboard(),
         healthApi.liveness().catch(() => null),
         healthApi.readiness().catch(() => null),
-        fetchRecentDeployments(),
-        fetchRegisteredApplications(),
       ])
-
-      const health = healthRes?.data ?? null
-      const readiness = readinessRes?.data ?? null
 
       data.value = mapDashboardResponse(
         dashboardRes.data,
-        health,
-        readiness,
-        deployments,
-        applications,
+        healthRes?.data ?? null,
+        readinessRes?.data ?? null,
+        data.value?.deployments ?? [],
+        data.value?.applications ?? [],
       )
+      loading.value = false
+
+      if (withExtras) {
+        await loadExtras()
+      }
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to load dashboard data.'
     } finally {
@@ -203,8 +218,12 @@ export function useDashboard() {
       loading.value = false
       return
     }
-    fetchDashboard()
-    timer = setInterval(() => fetchDashboard(true), REALTIME_POLL_MS)
+    fetchDashboard(false, { withExtras: true })
+    timer = setInterval(() => {
+      pollCount += 1
+      // Refresh extras every 6th poll (~30s) to keep the 5s loop light.
+      fetchDashboard(true, { withExtras: pollCount % 6 === 0 })
+    }, REALTIME_POLL_MS)
   })
 
   onUnmounted(() => {
@@ -218,6 +237,6 @@ export function useDashboard() {
     error,
     runningServices,
     activeApplications,
-    refresh: () => fetchDashboard(true),
+    refresh: () => fetchDashboard(true, { withExtras: true }),
   }
 }
