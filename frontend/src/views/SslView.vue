@@ -260,40 +260,60 @@ onMounted(load)
         No domains registered. <RouterLink to="/domains" class="text-brand-600 underline">Add domains</RouterLink> first.
       </div>
 
-      <div v-else class="grid gap-4 lg:grid-cols-5">
-        <div class="space-y-2 lg:col-span-2">
+      <div v-else class="grid gap-4 lg:grid-cols-5 lg:items-start">
+        <div
+          class="max-h-[min(70vh,36rem)] overflow-auto rounded-xl border border-surface-border/60 lg:col-span-2"
+        >
           <div
-            v-for="cert in filteredCerts"
-            :key="cert.domain"
-            class="cursor-pointer rounded-xl border px-4 py-3 transition"
-            :class="
-              selectedCert?.domain === cert.domain
-                ? 'border-brand-500 bg-brand-500/5'
-                : 'border-surface-border bg-surface-raised hover:border-brand-500/30'
-            "
-            @click="openDetail(cert)"
+            class="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-surface-border bg-surface-raised px-4 py-2.5"
           >
-            <div class="flex items-center justify-between gap-2">
-              <span class="font-medium text-slate-900 dark:text-white">{{ cert.domain }}</span>
-              <div class="flex gap-1">
-                <Badge v-if="cert.reconciliation_state" size="sm" variant="info">
-                  {{ cert.reconciliation_state }}
-                </Badge>
-                <Badge :variant="statusVariant(cert)" size="sm">{{ statusLabel(cert) }}</Badge>
+            <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">Certificates</h2>
+            <span class="text-xs text-surface-muted">
+              {{ filteredCerts.length }}{{ search.trim() ? ` / ${certs.length}` : '' }}
+            </span>
+          </div>
+          <div class="space-y-2 p-2">
+            <div
+              v-for="cert in filteredCerts"
+              :key="cert.domain"
+              class="cursor-pointer rounded-xl border px-4 py-3 transition"
+              :class="
+                selectedCert?.domain === cert.domain
+                  ? 'border-brand-500 bg-brand-500/5'
+                  : 'border-surface-border bg-surface-raised hover:border-brand-500/30'
+              "
+              @click="openDetail(cert)"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <span class="font-medium text-slate-900 dark:text-white">{{ cert.domain }}</span>
+                <div class="flex gap-1">
+                  <Badge v-if="cert.reconciliation_state" size="sm" variant="info">
+                    {{ cert.reconciliation_state }}
+                  </Badge>
+                  <Badge :variant="statusVariant(cert)" size="sm">{{ statusLabel(cert) }}</Badge>
+                </div>
               </div>
+              <p v-if="cert.issuer" class="mt-1 truncate text-xs text-surface-muted">{{ cert.issuer }}</p>
             </div>
-            <p v-if="cert.issuer" class="mt-1 truncate text-xs text-surface-muted">{{ cert.issuer }}</p>
+            <p
+              v-if="!filteredCerts.length"
+              class="px-2 py-6 text-center text-sm text-surface-muted"
+            >
+              No certificates match this search.
+            </p>
           </div>
         </div>
 
-        <div class="lg:col-span-3">
+        <div class="max-h-[min(70vh,36rem)] overflow-auto lg:col-span-3">
           <Card v-if="!selectedCert" padding="md">
             <p class="text-sm text-surface-muted">Select a domain to inspect certificate details and run actions.</p>
           </Card>
 
           <div v-else class="space-y-4">
             <Card padding="md">
-              <div class="flex flex-wrap items-start justify-between gap-3">
+              <div
+                class="sticky top-0 z-10 -mx-1 mb-1 flex flex-wrap items-start justify-between gap-3 rounded-lg bg-surface-raised/95 px-1 py-2 backdrop-blur-sm"
+              >
                 <div>
                   <h2 class="text-base font-semibold">{{ selectedCert.domain }}</h2>
                   <div class="mt-2 flex flex-wrap gap-2">
