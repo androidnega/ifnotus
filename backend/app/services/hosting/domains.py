@@ -7,6 +7,7 @@ import socket
 from datetime import UTC, datetime
 from uuid import UUID
 
+import psutil
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -22,6 +23,9 @@ from app.schemas.hosting import (
 )
 from app.services.applications.readers.nginx import NginxReader
 from app.services.hosting.nginx_discovery import NginxDiscoveryService
+
+# Preferred range for reverse-proxy app backends (avoid system / nginx 80/443).
+_APP_PORT_RANGE = range(8000, 9101)
 
 
 class DomainService:
@@ -52,6 +56,8 @@ class DomainService:
             ):
                 drift_count += 1
 
+        listening, available = self._port_inventory(domains)
+
         return DomainListResponse(
             timestamp=datetime.now(UTC),
             total=len(enriched),
@@ -59,6 +65,8 @@ class DomainService:
             discovered=discovered,
             discovered_total=len(discovered),
             drift_count=drift_count,
+            listening_ports=listening,
+            available_ports=available,
         )
 
     async def get_domain(self, domain_id: UUID) -> DomainSchema:
@@ -77,12 +85,16 @@ class DomainService:
             if parent is None:
                 raise NotFoundError("Parent domain not found.")
 
+        if body.proxy_port is not None:
+            await self._assert_proxy_port_free(body.proxy_port)
+
         entity = Domain(
             name=body.name.lower(),
             domain_type=body.domain_type,
             parent_domain_id=body.parent_domain_id,
             application_id=body.application_id,
             document_root=body.document_root,
+            proxy_port=body.proxy_port,
             enabled=body.enabled,
             notes=body.notes,
         )
@@ -97,6 +109,10 @@ class DomainService:
             entity.application_id = body.application_id
         if "document_root" in body.model_fields_set:
             entity.document_root = body.document_root
+        if "proxy_port" in body.model_fields_set:
+            if body.proxy_port is not None:
+                await self._assert_proxy_port_free(body.proxy_port, exclude_id=domain_id)
+            entity.proxy_port = body.proxy_port
         if body.enabled is not None:
             entity.enabled = body.enabled
         if "notes" in body.model_fields_set:
@@ -143,6 +159,31 @@ class DomainService:
             message=message,
         )
 
+    async def _assert_proxy_port_free(self, port: int, exclude_id: UUID | None = None) -> None:
+        domains = await self._repo.list_all()
+        for d in domains:
+            if exclude_id and d.id == exclude_id:
+                continue
+            if d.proxy_port == port:
+                raise ConflictError(f"Port {port} is already assigned to domain '{d.name}'.")
+        listening, _ = self._port_inventory(domains)
+        if port in listening:
+            raise ConflictError(f"Port {port} is already in use on this server.")
+
+    def _port_inventory(self, domains: list[Domain]) -> tuple[list[int], list[int]]:
+        listening: set[int] = set()
+        try:
+            for conn in psutil.net_connections(kind="inet"):
+                if conn.status == psutil.CONN_LISTEN and conn.laddr:
+                    listening.add(int(conn.laddr.port))
+        except (psutil.Error, PermissionError, OSError):
+            pass
+
+        reserved = {d.proxy_port for d in domains if d.proxy_port}
+        taken = listening | reserved
+        available = [p for p in _APP_PORT_RANGE if p not in taken][:24]
+        return sorted(listening), available
+
     async def _enrich(self, entity: Domain) -> DomainSchema:
         nginx = await asyncio.to_thread(self._nginx.read, None, entity.name)
         return DomainSchema(
@@ -152,6 +193,7 @@ class DomainService:
             parent_domain_id=entity.parent_domain_id,
             application_id=entity.application_id,
             document_root=entity.document_root,
+            proxy_port=entity.proxy_port,
             enabled=entity.enabled,
             dns_points_here=entity.dns_points_here,
             nginx_enabled=nginx.enabled if nginx.configured else None,

@@ -17,6 +17,7 @@ class DomainCreate(SchemaBase):
     parent_domain_id: UUID | None = None
     application_id: str | None = None
     document_root: str | None = None
+    proxy_port: int | None = Field(default=None, ge=1, le=65535)
     enabled: bool = True
     notes: str | None = None
 
@@ -29,6 +30,7 @@ class DomainCreate(SchemaBase):
 class DomainUpdate(SchemaBase):
     application_id: str | None = None
     document_root: str | None = None
+    proxy_port: int | None = Field(default=None, ge=1, le=65535)
     enabled: bool | None = None
     notes: str | None = None
 
@@ -40,6 +42,7 @@ class DomainSchema(SchemaBase):
     parent_domain_id: UUID | None = None
     application_id: str | None = None
     document_root: str | None = None
+    proxy_port: int | None = None
     enabled: bool
     dns_points_here: bool | None = None
     nginx_enabled: bool | None = None
@@ -56,6 +59,8 @@ class DomainListResponse(SchemaBase):
     discovered: list[NginxDiscoveredDomainSchema] = Field(default_factory=list)
     discovered_total: int = 0
     drift_count: int = 0
+    listening_ports: list[int] = Field(default_factory=list)
+    available_ports: list[int] = Field(default_factory=list)
 
 
 class DnsCheckResponse(SchemaBase):

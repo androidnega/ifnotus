@@ -178,12 +178,21 @@ export const domainsApi = {
     parent_domain_id?: string
     application_id?: string
     document_root?: string
+    proxy_port?: number
     enabled?: boolean
     notes?: string
   }) => apiClient.post<Domain>('/domains', body),
 
-  update: (id: string, body: Partial<{ application_id: string | null; document_root: string | null; enabled: boolean; notes: string | null }>) =>
-    apiClient.patch<Domain>(`/domains/${id}`, body),
+  update: (
+    id: string,
+    body: Partial<{
+      application_id: string | null
+      document_root: string | null
+      proxy_port: number | null
+      enabled: boolean
+      notes: string | null
+    }>,
+  ) => apiClient.patch<Domain>(`/domains/${id}`, body),
 
   delete: (id: string) => apiClient.delete<OperationResult>(`/domains/${id}`),
 

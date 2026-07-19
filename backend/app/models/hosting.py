@@ -23,6 +23,7 @@ class Domain(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     application_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     document_root: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    proxy_port: Mapped[int | None] = mapped_column(nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     dns_points_here: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     nginx_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)

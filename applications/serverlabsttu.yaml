@@ -20,7 +20,7 @@ runtime:
 
 nginx:
   server_name: serverlabsttu.space
-  site: /etc/nginx/sites-enabled/serverlabsttu.space
+  site: /etc/nginx/sites-available/serverlabsttu.space
 
 git:
   repository: /srv/apps/serverlabsttu/public

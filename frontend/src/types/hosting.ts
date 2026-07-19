@@ -5,6 +5,7 @@ export interface Domain {
   parent_domain_id?: string | null
   application_id?: string | null
   document_root?: string | null
+  proxy_port?: number | null
   enabled: boolean
   dns_points_here?: boolean | null
   nginx_enabled?: boolean | null
@@ -21,6 +22,8 @@ export interface DomainListResponse {
   discovered?: import('@/types/inventory').NginxDiscoveredDomain[]
   discovered_total?: number
   drift_count?: number
+  listening_ports?: number[]
+  available_ports?: number[]
 }
 
 export interface DnsCheckResponse {

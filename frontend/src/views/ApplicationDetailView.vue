@@ -166,13 +166,25 @@ watch(appId, load, { immediate: true })
             <div class="flex justify-between"><dt class="text-surface-muted">Commit</dt><dd class="font-mono">{{ app.git.commit || '—' }}</dd></div>
             <div class="flex justify-between"><dt class="text-surface-muted">Dirty</dt><dd>{{ app.git.dirty ? 'Yes' : 'No' }}</dd></div>
           </dl>
+          <p v-if="app.git.message" class="mt-2 text-xs text-amber-700 dark:text-amber-300">{{ app.git.message }}</p>
         </Card>
         <Card v-if="app.ssl" title="SSL">
           <p class="text-sm">{{ app.ssl.domain || '—' }}</p>
           <Badge v-if="app.ssl.status" class="mt-2" size="sm">{{ app.ssl.status }}</Badge>
+          <p v-if="app.ssl.message" class="mt-2 text-xs text-surface-muted">{{ app.ssl.message }}</p>
         </Card>
         <Card v-if="app.nginx" title="Nginx">
           <p class="text-sm">{{ (app.nginx.server_names as string[])?.join(', ') || '—' }}</p>
+          <div class="mt-2 flex flex-wrap gap-2">
+            <Badge :variant="app.nginx.enabled ? 'success' : 'warning'" size="sm">
+              site {{ app.nginx.enabled ? 'enabled' : 'disabled' }}
+            </Badge>
+            <Badge v-if="app.nginx.ssl_enabled" size="sm">ssl</Badge>
+          </div>
+          <p v-if="app.nginx.root" class="mt-2 truncate text-xs text-surface-muted" :title="String(app.nginx.root)">
+            root {{ app.nginx.root }}
+          </p>
+          <p v-if="app.nginx.message" class="mt-2 text-xs text-surface-muted">{{ app.nginx.message }}</p>
         </Card>
       </div>
 
@@ -239,7 +251,9 @@ watch(appId, load, { immediate: true })
               {{ action }}
             </button>
           </div>
-          <p class="mt-3 text-xs text-surface-muted">Uses systemd or supervisor binding from app YAML.</p>
+          <p class="mt-3 text-xs text-surface-muted">
+            Uses systemd, supervisor, or the app nginx site when no process unit is configured.
+          </p>
         </Card>
         <Card title="Bindings">
           <dl class="space-y-2 text-sm">
@@ -251,6 +265,16 @@ watch(appId, load, { immediate: true })
               <dt class="text-surface-muted">supervisor</dt>
               <dd>{{ app.supervisor.name }} · {{ app.supervisor.status }}</dd>
             </div>
+            <div v-if="app.nginx?.configured">
+              <dt class="text-surface-muted">nginx site</dt>
+              <dd>{{ app.nginx.enabled ? 'enabled' : 'disabled' }} · {{ app.nginx.site_path || '—' }}</dd>
+            </div>
+            <p
+              v-if="!app.systemd?.name && !app.supervisor?.name && !app.nginx?.configured"
+              class="text-xs text-surface-muted"
+            >
+              No service bindings configured in YAML.
+            </p>
           </dl>
         </Card>
       </div>

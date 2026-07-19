@@ -298,18 +298,28 @@ class ApplicationEngine:
         process_count: int,
         nginx: NginxSiteSchema,
     ) -> ApplicationRuntimeStatus:
+        if not app.enabled:
+            return ApplicationRuntimeStatus.STOPPED
+
         if supervisor.configured and supervisor.status:
             return supervisor.status
         if systemd.configured and systemd.status:
             return systemd.status
+
+        # Nginx-bound sites: disabled site means the app is offline even if
+        # shared php-fpm/nginx processes are still running on the host.
+        if nginx.configured and nginx.enabled is False:
+            return ApplicationRuntimeStatus.STOPPED
+
         if process_count > 0:
             return ApplicationRuntimeStatus.RUNNING
 
-        # Static sites have no dedicated app process — nginx + files mean "running".
-        if app.type == ApplicationType.STATIC_SITE:
+        # Static / PHP web roots have no dedicated app process — nginx + files mean "running".
+        if app.type in {ApplicationType.STATIC_SITE, ApplicationType.LARAVEL}:
             root_ok = app.root_path.exists()
             has_index = (
                 (app.root_path / "index.html").exists()
+                or (app.root_path / "index.php").exists()
                 or (app.root_path / "dist" / "index.html").exists()
             )
             nginx_ok = bool(nginx.configured and nginx.enabled)

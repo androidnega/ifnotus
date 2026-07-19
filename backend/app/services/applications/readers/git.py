@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from app.schemas.applications import GitStatusSchema
-from app.services.monitoring.subprocess_util import run_command
+from app.services.applications.git_util import run_git
 
 
 class GitReader:
@@ -22,30 +21,26 @@ class GitReader:
             return GitStatusSchema(available=False, message=f"No git repository at {path}")
 
         try:
-            branch_code, branch_out, _ = await run_command(
-                "git", "-C", str(path), "rev-parse", "--abbrev-ref", "HEAD"
-            )
-            commit_code, commit_out, _ = await run_command(
-                "git", "-C", str(path), "rev-parse", "--short", "HEAD"
-            )
-            msg_code, msg_out, _ = await run_command(
-                "git", "-C", str(path), "log", "-1", "--pretty=%s"
-            )
-            dirty_code, dirty_out, _ = await run_command(
-                "git", "-C", str(path), "status", "--porcelain"
-            )
-            remote_code, remote_out, _ = await run_command(
-                "git", "-C", str(path), "remote", "get-url", "origin"
-            )
+            branch_code, branch_out, branch_err = await run_git(path, "rev-parse", "--abbrev-ref", "HEAD")
+            commit_code, commit_out, _ = await run_git(path, "rev-parse", "--short", "HEAD")
+            msg_code, msg_out, _ = await run_git(path, "log", "-1", "--pretty=%s")
+            dirty_code, dirty_out, _ = await run_git(path, "status", "--porcelain")
+            remote_code, remote_out, _ = await run_git(path, "remote", "get-url", "origin")
 
             ahead = behind = None
-            ab_code, ab_out, _ = await run_command(
-                "git", "-C", str(path), "rev-list", "--left-right", "--count", "@{upstream}...HEAD"
+            ab_code, ab_out, _ = await run_git(
+                path, "rev-list", "--left-right", "--count", "@{upstream}...HEAD"
             )
             if ab_code == 0 and ab_out:
                 parts = ab_out.split()
                 if len(parts) == 2:
                     behind, ahead = int(parts[0]), int(parts[1])
+
+            if branch_code != 0 and commit_code != 0:
+                return GitStatusSchema(
+                    available=False,
+                    message=(branch_err or branch_out or "Unable to read git repository.").strip(),
+                )
 
             return GitStatusSchema(
                 available=True,

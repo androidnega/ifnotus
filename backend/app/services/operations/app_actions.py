@@ -18,6 +18,8 @@ from app.schemas.operations import OperationResult
 from app.services.applications.config import ApplicationDefinition
 from app.services.applications.readers.deployments import DeploymentHistoryReader
 from app.services.applications.readers.git import GitReader
+from app.services.applications.git_util import run_git
+from app.services.hosting.nginx_sites import NginxSiteManager
 from app.services.monitoring.subprocess_util import resolve_binary, run_command
 
 
@@ -29,6 +31,7 @@ class ApplicationActionsService:
         self._repository = ApplicationRepository(settings)
         self._git = GitReader()
         self._deployments = DeploymentHistoryReader()
+        self._nginx_sites = NginxSiteManager(settings)
 
     def _get_app(self, app_id: str) -> ApplicationDefinition:
         return self._repository.get(app_id)
@@ -54,7 +57,7 @@ class ApplicationActionsService:
         if not (path / ".git").exists():
             return OperationResult(success=False, message=f"No git repository at {path}")
 
-        code, stdout, stderr = await run_command("git", "-C", str(path), "pull", "--ff-only", timeout=120)
+        code, stdout, stderr = await run_git(path, "pull", "--ff-only", timeout=120)
         if code != 0:
             return OperationResult(success=False, message=stderr or stdout or "Git pull failed")
 
@@ -150,9 +153,17 @@ class ApplicationActionsService:
         if app.runtime.supervisor:
             return await self._supervisor_action(app.runtime.supervisor, "restart", triggered_by)
 
+        if self._nginx_sites.resolve_site_name(app):
+            reload_result = await self._nginx_sites.reload()
+            return OperationResult(
+                success=reload_result.success,
+                message=reload_result.message if reload_result.success else reload_result.message,
+                details={"nginx_reload": True, "triggered_by": triggered_by},
+            )
+
         return OperationResult(
             success=True,
-            message="No systemd/supervisor binding configured — restart skipped.",
+            message="No systemd/supervisor/nginx binding configured — restart skipped.",
             details={"skipped": True, "triggered_by": triggered_by},
         )
 
@@ -176,6 +187,14 @@ class ApplicationActionsService:
         if app.runtime.supervisor and action in {"start", "stop", "restart"}:
             return await self._supervisor_action(app.runtime.supervisor, action, triggered_by)
 
+        if self._nginx_sites.resolve_site_name(app):
+            if action in {"enable", "start"}:
+                return await self._nginx_sites.set_site_enabled(app, True)
+            if action in {"disable", "stop"}:
+                return await self._nginx_sites.set_site_enabled(app, False)
+            if action == "restart":
+                return await self._nginx_sites.reload()
+
         return OperationResult(success=False, message=f"Cannot {action} — no service binding configured.")
 
     async def set_enabled(self, app_id: str, enabled: bool) -> OperationResult:
@@ -191,9 +210,36 @@ class ApplicationActionsService:
         path.write_text(yaml.dump(raw, default_flow_style=False, sort_keys=False), encoding="utf-8")
         self._repository.reload()
 
+        details: dict = {"app_id": app_id, "enabled": enabled}
+        messages = [f"Application '{app_id}' {'enabled' if enabled else 'disabled'}."]
+
+        # Keep nginx site in sync so Disable actually takes the website offline.
+        nginx_result = await self._nginx_sites.set_site_enabled(app, enabled)
+        if not nginx_result.details.get("skipped"):
+            details["nginx"] = nginx_result.details
+            messages.append(nginx_result.message)
+            if not nginx_result.success:
+                return OperationResult(
+                    success=False,
+                    message=" ".join(messages),
+                    details=details,
+                )
+
+        # Best-effort process stop/start when a dedicated unit exists.
+        if app.runtime.systemd or app.runtime.supervisor:
+            svc = await self.service_control(
+                app_id,
+                "start" if enabled else "stop",
+                triggered_by="set_enabled",
+            )
+            details["service"] = svc.details
+            if svc.message:
+                messages.append(svc.message)
+
         return OperationResult(
             success=True,
-            message=f"Application '{app_id}' {'enabled' if enabled else 'disabled'}.",
+            message=" ".join(messages),
+            details=details,
         )
 
     async def reveal_environment(self, app_id: str) -> dict[str, str]:

@@ -15,6 +15,8 @@ const loading = ref(true)
 const domains = ref<Domain[]>([])
 const discoveredDomains = ref<NginxDiscoveredDomain[]>([])
 const driftCount = ref(0)
+const availablePorts = ref<number[]>([])
+const listeningPorts = ref<number[]>([])
 const apps = ref<ApplicationSummary[]>([])
 const message = ref<{ type: 'ok' | 'err'; text: string } | null>(null)
 const actionKey = ref<string | null>(null)
@@ -27,6 +29,7 @@ const form = ref({
   parent_domain_id: '',
   application_id: '',
   document_root: '',
+  proxy_port: '' as string | number,
   notes: '',
 })
 
@@ -36,7 +39,7 @@ const { can } = usePermissions()
 const canWrite = computed(() => can(Permission.DOMAINS_WRITE))
 
 const editingDomain = ref<Domain | null>(null)
-const editForm = ref({ application_id: '', document_root: '', notes: '' })
+const editForm = ref({ application_id: '', document_root: '', proxy_port: '' as string | number, notes: '' })
 
 async function load() {
   loading.value = true
@@ -45,6 +48,8 @@ async function load() {
     domains.value = d.data.domains
     discoveredDomains.value = d.data.discovered ?? []
     driftCount.value = d.data.drift_count ?? 0
+    availablePorts.value = d.data.available_ports ?? []
+    listeningPorts.value = d.data.listening_ports ?? []
     apps.value = a.data.applications
   } finally {
     loading.value = false
@@ -55,20 +60,32 @@ async function createDomain() {
   actionKey.value = 'create'
   message.value = null
   try {
+    const portRaw = form.value.proxy_port
+    const proxyPort =
+      portRaw === '' || portRaw === null || portRaw === undefined ? undefined : Number(portRaw)
     await domainsApi.create({
       name: form.value.name,
       domain_type: form.value.domain_type,
       parent_domain_id: form.value.parent_domain_id || undefined,
       application_id: form.value.application_id || undefined,
       document_root: form.value.document_root || undefined,
+      proxy_port: Number.isFinite(proxyPort) ? proxyPort : undefined,
       notes: form.value.notes || undefined,
     })
     message.value = { type: 'ok', text: 'Domain created.' }
     showForm.value = false
-    form.value = { name: '', domain_type: 'primary', parent_domain_id: '', application_id: '', document_root: '', notes: '' }
+    form.value = {
+      name: '',
+      domain_type: 'primary',
+      parent_domain_id: '',
+      application_id: '',
+      document_root: '',
+      proxy_port: '',
+      notes: '',
+    }
     await load()
   } catch (e) {
-    message.value = { type: 'err', text: e instanceof Error ? e.message : 'Failed to create domain' }
+    message.value = { type: 'err', text: getApiErrorMessage(e, 'Failed to create domain') }
   } finally {
     actionKey.value = null
   }
@@ -119,6 +136,7 @@ function startEdit(domain: Domain) {
   editForm.value = {
     application_id: domain.application_id ?? '',
     document_root: domain.document_root ?? '',
+    proxy_port: domain.proxy_port ?? '',
     notes: domain.notes ?? '',
   }
 }
@@ -127,9 +145,13 @@ async function saveEdit() {
   if (!editingDomain.value) return
   actionKey.value = `edit-${editingDomain.value.id}`
   try {
+    const portRaw = editForm.value.proxy_port
+    const proxyPort =
+      portRaw === '' || portRaw === null || portRaw === undefined ? null : Number(portRaw)
     await domainsApi.update(editingDomain.value.id, {
       application_id: editForm.value.application_id ? editForm.value.application_id : null,
       document_root: editForm.value.document_root ? editForm.value.document_root : null,
+      proxy_port: Number.isFinite(proxyPort as number) ? (proxyPort as number) : null,
       notes: editForm.value.notes ? editForm.value.notes : null,
     })
     message.value = { type: 'ok', text: 'Domain updated.' }
@@ -223,6 +245,19 @@ onMounted(load)
             <span class="text-surface-muted">Document root</span>
             <input v-model="form.document_root" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2" placeholder="/var/www/example" />
           </label>
+          <label class="block text-sm md:col-span-2">
+            <span class="text-surface-muted">Backend proxy port (optional)</span>
+            <select v-model="form.proxy_port" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2">
+              <option value="">None — static / PHP via nginx only</option>
+              <option v-for="port in availablePorts" :key="port" :value="port">
+                {{ port }} (available)
+              </option>
+            </select>
+            <p class="mt-1 text-xs text-surface-muted">
+              Pick a free local port so reverse-proxy apps do not collide.
+              <span v-if="listeningPorts.length"> In use: {{ listeningPorts.slice(0, 12).join(', ') }}{{ listeningPorts.length > 12 ? '…' : '' }}</span>
+            </p>
+          </label>
         </div>
         <div class="mt-4 flex gap-2">
           <button
@@ -250,6 +285,19 @@ onMounted(load)
           <label class="block text-sm md:col-span-2">
             <span class="text-surface-muted">Document root</span>
             <input v-model="editForm.document_root" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2" />
+          </label>
+          <label class="block text-sm md:col-span-2">
+            <span class="text-surface-muted">Backend proxy port</span>
+            <select v-model="editForm.proxy_port" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2">
+              <option value="">None</option>
+              <option
+                v-if="editingDomain?.proxy_port && !availablePorts.includes(editingDomain.proxy_port)"
+                :value="editingDomain.proxy_port"
+              >
+                {{ editingDomain.proxy_port }} (current)
+              </option>
+              <option v-for="port in availablePorts" :key="port" :value="port">{{ port }} (available)</option>
+            </select>
           </label>
           <label class="block text-sm md:col-span-2">
             <span class="text-surface-muted">Notes</span>
@@ -296,6 +344,7 @@ onMounted(load)
             </div>
             <p class="mt-1 text-xs text-surface-muted">
               <span v-if="domain.application_id">app: {{ domain.application_id }}</span>
+              <span v-if="domain.proxy_port"> · port {{ domain.proxy_port }}</span>
               <span v-if="domain.document_root"> · {{ domain.document_root }}</span>
             </p>
           </div>
