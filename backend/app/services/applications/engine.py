@@ -17,6 +17,7 @@ from app.schemas.applications import (
     ApplicationMetricsSchema,
     ApplicationRuntimeStatus,
     ApplicationSummarySchema,
+    ApplicationType,
     GitStatusSchema,
     NginxSiteSchema,
     ServiceBindingSchema,
@@ -154,7 +155,13 @@ class ApplicationEngine:
         git, nginx, ssl, supervisor, systemd = await self._gather_bindings(app)
         metrics = await self._metrics.read(app)
 
-        runtime_status = self._resolve_runtime_status(supervisor, systemd, metrics.process_count)
+        runtime_status = self._resolve_runtime_status(
+            app,
+            supervisor,
+            systemd,
+            metrics.process_count,
+            nginx,
+        )
         checks: dict[str, HealthStatus] = {}
         messages: list[str] = []
         score = 100
@@ -287,9 +294,11 @@ class ApplicationEngine:
 
     @staticmethod
     def _resolve_runtime_status(
+        app: ApplicationDefinition,
         supervisor: ServiceBindingSchema,
         systemd: ServiceBindingSchema,
         process_count: int,
+        nginx: NginxSiteSchema,
     ) -> ApplicationRuntimeStatus:
         if supervisor.configured and supervisor.status:
             return supervisor.status
@@ -297,6 +306,21 @@ class ApplicationEngine:
             return systemd.status
         if process_count > 0:
             return ApplicationRuntimeStatus.RUNNING
+
+        # Static sites have no dedicated app process — nginx + files mean "running".
+        if app.type == ApplicationType.STATIC_SITE:
+            root_ok = app.root_path.exists()
+            has_index = (
+                (app.root_path / "index.html").exists()
+                or (app.root_path / "dist" / "index.html").exists()
+            )
+            nginx_ok = bool(nginx.configured and nginx.enabled)
+            if root_ok and (nginx_ok or has_index):
+                return ApplicationRuntimeStatus.RUNNING
+            if root_ok:
+                return ApplicationRuntimeStatus.DEGRADED
+            return ApplicationRuntimeStatus.STOPPED
+
         return ApplicationRuntimeStatus.STOPPED
 
     @staticmethod

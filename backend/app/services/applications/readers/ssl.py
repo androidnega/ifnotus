@@ -18,10 +18,20 @@ class SSLReader:
         self._openssl = resolve_binary("openssl")
 
     async def read(self, certificate_path: str | None, domain: str | None = None) -> SSLStatusSchema:
-        if not certificate_path:
-            return SSLStatusSchema(configured=False, message="SSL certificate not configured.")
+        resolved = certificate_path
+        if not resolved and domain:
+            candidate = Path(f"/etc/letsencrypt/live/{domain}/fullchain.pem")
+            if candidate.exists():
+                resolved = str(candidate)
 
-        path = Path(certificate_path)
+        if not resolved:
+            return SSLStatusSchema(
+                configured=False,
+                domain=domain,
+                message="SSL certificate not configured.",
+            )
+
+        path = Path(resolved)
         if not path.exists():
             return SSLStatusSchema(
                 configured=True,

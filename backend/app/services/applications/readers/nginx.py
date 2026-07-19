@@ -7,19 +7,27 @@ from pathlib import Path
 
 from app.schemas.applications import NginxSiteSchema
 
+NGINX_SITES_ENABLED = Path("/etc/nginx/sites-enabled")
+NGINX_SITES_AVAILABLE = Path("/etc/nginx/sites-available")
+
 
 class NginxReader:
     """Parses Nginx site configuration files."""
 
     def read(self, site_path: str | None, configured_server_name: str | None = None) -> NginxSiteSchema:
-        if not site_path:
-            return NginxSiteSchema(configured=False, message="Nginx site not configured.")
+        path = self._resolve_site_path(site_path, configured_server_name)
+        if path is None:
+            return NginxSiteSchema(
+                configured=False,
+                server_names=[configured_server_name] if configured_server_name else [],
+                message="Nginx site not configured.",
+            )
 
-        path = Path(site_path)
         if not path.exists():
             return NginxSiteSchema(
                 configured=True,
                 site_path=str(path),
+                server_names=[configured_server_name] if configured_server_name else [],
                 enabled=False,
                 message=f"Nginx site file not found: {path}",
             )
@@ -31,12 +39,13 @@ class NginxReader:
                 server_names.insert(0, configured_server_name)
             root = self._extract_root(content)
             ssl_enabled = "ssl" in content.lower() or "listen 443" in content
+            enabled = self._is_enabled(path)
 
             return NginxSiteSchema(
                 configured=True,
                 site_path=str(path),
                 server_names=server_names,
-                enabled=path.is_symlink() or path.exists(),
+                enabled=enabled,
                 ssl_enabled=ssl_enabled,
                 root=root,
             )
@@ -46,6 +55,42 @@ class NginxReader:
                 site_path=str(path),
                 message=str(exc),
             )
+
+    def _resolve_site_path(self, site_path: str | None, server_name: str | None) -> Path | None:
+        if site_path:
+            return Path(site_path)
+        if not server_name:
+            return None
+
+        for directory in (NGINX_SITES_ENABLED, NGINX_SITES_AVAILABLE):
+            direct = directory / server_name
+            if direct.exists():
+                return direct
+
+        # Scan enabled sites for a matching server_name directive.
+        if NGINX_SITES_ENABLED.exists():
+            for candidate in NGINX_SITES_ENABLED.iterdir():
+                if not candidate.is_file() and not candidate.is_symlink():
+                    continue
+                try:
+                    content = candidate.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                if server_name in self._extract_server_names(content):
+                    return candidate
+        return None
+
+    @staticmethod
+    def _is_enabled(path: Path) -> bool:
+        name = path.name
+        enabled = NGINX_SITES_ENABLED / name
+        if enabled.exists():
+            return True
+        if path.resolve().parent == NGINX_SITES_ENABLED.resolve():
+            return True
+        return path.is_symlink() or (NGINX_SITES_ENABLED.exists() and any(
+            p.resolve() == path.resolve() for p in NGINX_SITES_ENABLED.iterdir() if p.exists()
+        ))
 
     @staticmethod
     def _extract_server_names(content: str) -> list[str]:
