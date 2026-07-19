@@ -163,7 +163,15 @@ class RuntimeApplicationDiscovery:
             if resolve_application_root(a).exists()
         }
         for item in items:
-            if item.root_path not in registered_roots and item not in result:
+            if item.root_path in registered_roots:
+                continue
+            if any(
+                item.root_path.startswith(root.rstrip("/") + "/")
+                for root in registered_roots
+            ):
+                # Nested path under a registered app (e.g. votebridge/frontend)
+                continue
+            if item not in result:
                 item.reconciliation_state = AppReconciliationState.DISCOVERED_UNREGISTERED
                 result.append(item)
 

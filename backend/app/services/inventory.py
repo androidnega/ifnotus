@@ -74,6 +74,11 @@ class InventoryService:
         all_items = self._runtime.discover()
         registered = [a for a in all_items if a.registered]
         discovered = [a for a in all_items if not a.registered]
+        on_disk = [
+            a
+            for a in all_items
+            if a.reconciliation_state != AppReconciliationState.REGISTRY_MISSING_ROOT
+        ]
         issues = [
             a
             for a in all_items
@@ -83,7 +88,7 @@ class InventoryService:
         return ApplicationInventorySchema(
             timestamp=now,
             registered_total=len(registered),
-            discovered_total=len(discovered),
+            discovered_total=len(on_disk),
             unregistered_discovered=len(discovered),
             issues_count=len(issues),
             registered=registered,

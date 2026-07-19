@@ -75,6 +75,7 @@ NOISE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"^sysstat",
         r"^systemd-vconsole",
         r"^systemd-oomd",
+        r"^phpsessionclean",
     )
 )
 
@@ -157,7 +158,9 @@ class ServiceClassifier:
             seen.add(key)
             classified.append(self._classify_one(svc, bindings))
 
-        return sorted(classified, key=lambda s: (not s.relevant, s.category.value, s.display_name or s.name))
+        return self._dedupe_families(
+            sorted(classified, key=lambda s: (not s.relevant, s.category.value, s.display_name or s.name))
+        )
 
     def filter_services(
         self,
@@ -175,7 +178,55 @@ class ServiceClassifier:
                 items = [s for s in items if s.category == cat]
             except ValueError:
                 pass
+        # Drop inactive oneshot/timer noise even if somehow marked relevant
+        items = [s for s in items if not self._is_inactive_oneshot(s)]
         return items
+
+    @staticmethod
+    def _is_inactive_oneshot(svc: ManagedService) -> bool:
+        unit = (svc.unit_name or svc.name or "").lower()
+        if unit in {"phpsessionclean", "logrotate", "man-db", "apt-daily", "apt-daily-upgrade"}:
+            return svc.status.value in {"stopped", "unknown", "failed"}
+        return False
+
+    @classmethod
+    def _service_family(cls, svc: ManagedService) -> str:
+        unit = cls._normalize_unit(svc.unit_name or svc.name)
+        source = (svc.source or "").lower()
+        if unit.startswith("postgresql") or source == "postgresql":
+            return "postgresql"
+        if unit in {"redis", "redis-server"} or source == "redis":
+            return "redis"
+        if unit == "nginx" or source == "nginx":
+            return "nginx"
+        if unit in {"mysql", "mysqld", "mariadb"} or source == "mysql":
+            return "mysql"
+        if unit == "netdata" or source == "netdata":
+            return "netdata"
+        return f"{source}:{unit}"
+
+    @classmethod
+    def _dedupe_families(cls, services: list[ManagedService]) -> list[ManagedService]:
+        """Collapse redis/redis-server, nginx duplicates, postgresql meta vs cluster."""
+        best: dict[str, ManagedService] = {}
+        for svc in services:
+            family = cls._service_family(svc)
+            current = best.get(family)
+            if current is None or cls._service_rank(svc) > cls._service_rank(current):
+                best[family] = svc
+        return list(best.values())
+
+    @staticmethod
+    def _service_rank(svc: ManagedService) -> tuple:
+        unit = (svc.unit_name or svc.name or "").lower()
+        status = svc.status.value if hasattr(svc.status, "value") else str(svc.status)
+        return (
+            1 if status == "running" else 0,
+            1 if svc.relevant else 0,
+            1 if "@" in unit else 0,  # prefer postgresql@16-main over postgresql
+            1 if svc.source == "systemd" else 0,
+            len(unit),
+        )
 
     def _app_bindings(self) -> dict[str, AppBinding]:
         bindings: dict[str, AppBinding] = {}

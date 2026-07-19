@@ -101,6 +101,11 @@ class ApplicationEngine:
     def _discovery_payload(self) -> dict:
         inventory = self._runtime_discovery.discover()
         discovered = [a for a in inventory if not a.registered]
+        on_disk = [
+            a
+            for a in inventory
+            if a.reconciliation_state != AppReconciliationState.REGISTRY_MISSING_ROOT
+        ]
         issues = [
             a
             for a in inventory
@@ -109,7 +114,7 @@ class ApplicationEngine:
         ]
         return {
             "discovered": discovered,
-            "discovered_total": len(discovered),
+            "discovered_total": len(on_disk),
             "unregistered_discovered": len(discovered),
             "issues_count": len(issues),
         }

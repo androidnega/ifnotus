@@ -2,11 +2,40 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from app.core.config import Settings
 from app.schemas.monitoring import NetdataInfo
 from app.services.monitoring.base import BaseCollector, CollectorUnavailableError
+
+
+def _count_hosts(value: Any) -> int:
+    """Netdata returns hosts-available as int or list depending on version."""
+    if value is None:
+        return 1
+    if isinstance(value, int):
+        return max(value, 1)
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) or 1
+    try:
+        return max(int(value), 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _count_alarms(payload: Any) -> int | None:
+    if not isinstance(payload, dict):
+        return None
+    alarms = payload.get("alarms", {})
+    if isinstance(alarms, dict):
+        return len(alarms)
+    if isinstance(alarms, list):
+        return len(alarms)
+    if isinstance(alarms, int):
+        return alarms
+    return None
 
 
 class NetdataCollector(BaseCollector[NetdataInfo]):
@@ -33,13 +62,13 @@ class NetdataCollector(BaseCollector[NetdataInfo]):
             try:
                 alarm_resp = await client.get(f"{base}/api/v1/alarms")
                 if alarm_resp.status_code == 200:
-                    alarms = len(alarm_resp.json().get("alarms", {}))
+                    alarms = _count_alarms(alarm_resp.json())
             except Exception:
                 pass
 
         return NetdataInfo(
             connected=True,
             version=info.get("version"),
-            hosts=len(info.get("hosts-available", [])) or 1,
+            hosts=_count_hosts(info.get("hosts-available")),
             alarms=alarms,
         )

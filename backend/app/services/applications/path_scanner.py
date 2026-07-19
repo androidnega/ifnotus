@@ -30,7 +30,30 @@ SKIP_DIR_NAMES = frozenset(
         ".ifnotus",
         "dist",
         "build",
+        "storage",
+        "bootstrap",
+        "public",
+        "static",
+        "assets",
+        "media",
+        "uploads",
+        "tmp",
+        "temp",
+        "logs",
+        "log",
+        "coverage",
+        ".cache",
     }
+)
+
+SKIP_NAME_MARKERS = (
+    ".broken",
+    ".bak",
+    ".backup",
+    "_backup",
+    ".old",
+    ".disabled",
+    ".save",
 )
 
 
@@ -69,22 +92,21 @@ class ApplicationPathScanner:
         discovered: list[DiscoveredFileRoot] = []
         seen: set[str] = set()
 
-        for scan_root in self.scan_roots():
-            if not scan_root.exists():
+        for path in self.walk_all_app_paths():
+            root_str = str(path.resolve())
+            if root_str in seen:
                 continue
-            for path in self.walk_app_candidates(scan_root):
-                root_str = str(path.resolve())
-                if root_str in seen:
-                    continue
-                seen.add(root_str)
-                discovered.append(
-                    DiscoveredFileRoot(
-                        id=slugify_path_name(path.name),
-                        name=path.name,
-                        root_path=root_str,
-                        registered=root_str in registered_paths,
-                    )
+            if any(root_str.startswith(reg.rstrip("/") + "/") for reg in registered_paths):
+                continue
+            seen.add(root_str)
+            discovered.append(
+                DiscoveredFileRoot(
+                    id=slugify_path_name(path.name),
+                    name=path.name,
+                    root_path=root_str,
+                    registered=root_str in registered_paths,
                 )
+            )
         return discovered
 
     def unregistered_file_roots(self) -> list[DiscoveredFileRoot]:
@@ -107,7 +129,7 @@ class ApplicationPathScanner:
                 if key not in seen:
                     seen.add(key)
                     paths.append(path)
-        return paths
+        return prune_nested_paths(paths)
 
     def scan_roots(self) -> list[Path]:
         roots: list[Path] = []
@@ -128,6 +150,8 @@ class ApplicationPathScanner:
         def walk(current: Path, depth: int) -> None:
             if depth > max_depth:
                 return
+            if should_skip_path_name(current.name):
+                return
             try:
                 entries = list(current.iterdir())
             except OSError:
@@ -137,6 +161,8 @@ class ApplicationPathScanner:
                 return
             for child in entries:
                 if not child.is_dir() or child.name in SKIP_DIR_NAMES:
+                    continue
+                if should_skip_path_name(child.name):
                     continue
                 walk(child, depth + 1)
 
@@ -150,6 +176,23 @@ class ApplicationPathScanner:
             if root.exists():
                 paths.add(str(root.resolve()))
         return paths
+
+
+def should_skip_path_name(name: str) -> bool:
+    lowered = name.lower()
+    return any(marker in lowered for marker in SKIP_NAME_MARKERS)
+
+
+def prune_nested_paths(paths: list[Path]) -> list[Path]:
+    """Keep shallowest app roots; drop children of another discovered root."""
+    resolved = sorted({p.resolve() for p in paths}, key=lambda p: (len(p.parts), str(p)))
+    kept: list[Path] = []
+    for path in resolved:
+        path_str = str(path)
+        if any(path_str.startswith(str(parent) + "/") for parent in kept):
+            continue
+        kept.append(path)
+    return kept
 
 
 def collect_signals(path: Path) -> list[str]:
