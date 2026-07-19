@@ -8,6 +8,7 @@ import ErrorState from '@/components/ui/ErrorState.vue'
 import { serverApi } from '@/api'
 import { REALTIME_POLL_MS } from '@/config/polling'
 import { usePolling } from '@/composables/usePolling'
+import { getApiErrorMessage } from '@/lib/apiError'
 import type {
   PortsResponse,
   ServerOverview,
@@ -99,6 +100,26 @@ function formatUptime(seconds: number) {
   if (days > 0) return `${days}d ${hours}h`
   return `${hours}h`
 }
+
+const cacheBusy = ref(false)
+const cacheMessage = ref<{ ok: boolean; text: string } | null>(null)
+
+async function clearServerCache(reloadNginx = false) {
+  cacheBusy.value = true
+  cacheMessage.value = null
+  try {
+    const { data } = await serverApi.clearCache(reloadNginx)
+    cacheMessage.value = { ok: data.success, text: data.message }
+    refreshAll()
+  } catch (e) {
+    cacheMessage.value = {
+      ok: false,
+      text: getApiErrorMessage(e, 'Failed to clear server cache'),
+    }
+  } finally {
+    cacheBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -107,6 +128,31 @@ function formatUptime(seconds: number) {
 
     <div v-else class="animate-fade-in space-y-5">
       <Card title="Host Overview" :subtitle="overview?.hostname">
+        <div class="mb-4 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            class="rounded-lg border border-surface-border px-3 py-1.5 text-xs hover:bg-slate-50 disabled:opacity-50 dark:hover:bg-slate-800"
+            :disabled="cacheBusy"
+            @click="clearServerCache(false)"
+          >
+            {{ cacheBusy ? 'Clearing…' : 'Clear cache & refresh' }}
+          </button>
+          <button
+            type="button"
+            class="rounded-lg border border-surface-border px-3 py-1.5 text-xs hover:bg-slate-50 disabled:opacity-50 dark:hover:bg-slate-800"
+            :disabled="cacheBusy"
+            @click="clearServerCache(true)"
+          >
+            Clear cache + reload nginx
+          </button>
+          <p
+            v-if="cacheMessage"
+            class="text-xs"
+            :class="cacheMessage.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-600'"
+          >
+            {{ cacheMessage.text }}
+          </p>
+        </div>
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div>
             <p class="text-xs text-surface-muted">Status</p>

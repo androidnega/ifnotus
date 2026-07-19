@@ -74,7 +74,10 @@ class ApplicationMetricsReader:
             cmd = (proc.cmdline or "").lower()
             name = (proc.name or "").lower()
 
-            if pattern and re.search(pattern, cmd, re.IGNORECASE):
+            if pattern and (
+                re.search(pattern, cmd, re.IGNORECASE)
+                or re.search(pattern, name, re.IGNORECASE)
+            ):
                 matched.append(proc)
                 continue
 

@@ -197,6 +197,42 @@ async def redeploy_application(
 
 
 @router.post(
+    "/{app_id}/refresh",
+    response_model=OperationResult,
+    summary="Refresh application status (reload registry + live health)",
+    dependencies=[Depends(RequirePermission(Permission.APPS_READ))],
+)
+async def refresh_application(
+    app_id: str,
+    request: Request,
+    _user: CurrentUser,
+) -> OperationResult:
+    engine = get_application_engine(request)
+    engine.reload()
+
+    try:
+        from app.api.monitoring import get_monitoring_service
+
+        get_monitoring_service(request).clear_cache()
+    except Exception:
+        pass
+
+    detail = await engine.get_application(app_id)
+    return OperationResult(
+        success=True,
+        message=f"Application '{app_id}' refreshed.",
+        details={
+            "id": detail.id,
+            "enabled": detail.enabled,
+            "status": detail.status.value if hasattr(detail.status, "value") else str(detail.status),
+            "health": detail.health.value if hasattr(detail.health, "value") else str(detail.health),
+            "health_score": detail.health_score,
+            "nginx_enabled": detail.nginx.enabled if detail.nginx else None,
+        },
+    )
+
+
+@router.post(
     "/{app_id}/restart",
     response_model=OperationResult,
     dependencies=[Depends(RequirePermission(Permission.SERVERS_WRITE))],

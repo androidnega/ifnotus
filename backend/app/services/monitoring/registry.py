@@ -66,6 +66,10 @@ class CollectorRegistry:
         data, _ = await self._cache.get_or_collect(collector, force=force)
         return data
 
+    def clear_cache(self, name: str | None = None) -> None:
+        """Drop cached collector results (all, or one collector)."""
+        self._cache.invalidate(name)
+
     async def health_checks(self) -> list[CollectorHealthSchema]:
         results = await asyncio.gather(
             *(c.health_check() for c in self._collectors.values()),

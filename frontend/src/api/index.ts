@@ -97,6 +97,11 @@ export const serverApi = {
 
   services: (params?: { mode?: 'relevant' | 'all'; category?: string }) =>
     apiClient.get<ServicesResponse>('/services', { params }),
+
+  clearCache: (reloadNginx = false) =>
+    apiClient.post<OperationResult>('/server/cache/clear', null, {
+      params: { reload_nginx: reloadNginx },
+    }),
 }
 
 export const alertsApi = {
@@ -141,6 +146,9 @@ export const applicationsApi = {
 
   setEnabled: (appId: string, enabled: boolean) =>
     apiClient.patch<OperationResult>(`/applications/${appId}`, { enabled }),
+
+  refresh: (appId: string) =>
+    apiClient.post<OperationResult>(`/applications/${appId}/refresh`),
 }
 
 export const operationsApi = {

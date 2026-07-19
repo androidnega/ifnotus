@@ -75,6 +75,11 @@ class MonitoringService:
         self._app_repository = ApplicationRepository(settings)
         self._deployment_reader = DeploymentHistoryReader()
 
+    def clear_cache(self, collector: str | None = None) -> dict:
+        """Invalidate monitoring collector cache."""
+        self._registry.clear_cache(collector)
+        return {"cleared": collector or "all"}
+
     async def _core_metrics(self) -> tuple[CPUData, MemoryData, DiskData, NetworkData, object]:
         cpu, memory, disk, network, system_info = await asyncio.gather(
             self._registry.collect("cpu"),

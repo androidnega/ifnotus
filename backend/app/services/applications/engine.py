@@ -314,12 +314,17 @@ class ApplicationEngine:
         if process_count > 0:
             return ApplicationRuntimeStatus.RUNNING
 
-        # Static / PHP web roots have no dedicated app process — nginx + files mean "running".
+        # Shared-stack sites (PHP/nginx, static): no dedicated process — site + files = running.
+        if nginx.configured and nginx.enabled and app.root_path.exists():
+            return ApplicationRuntimeStatus.RUNNING
+
+        # Static / PHP web roots often have no dedicated app process — nginx + files mean "running".
         if app.type in {ApplicationType.STATIC_SITE, ApplicationType.LARAVEL}:
             root_ok = app.root_path.exists()
             has_index = (
                 (app.root_path / "index.html").exists()
                 or (app.root_path / "index.php").exists()
+                or (app.root_path / "public" / "index.php").exists()
                 or (app.root_path / "dist" / "index.html").exists()
             )
             nginx_ok = bool(nginx.configured and nginx.enabled)

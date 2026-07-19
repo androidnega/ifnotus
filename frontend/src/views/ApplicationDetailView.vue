@@ -127,6 +127,14 @@ watch(appId, load, { immediate: true })
             type="button"
             class="action-btn"
             :disabled="!!actionLoading"
+            @click="run('refresh', () => applicationsApi.refresh(appId))"
+          >
+            Refresh status
+          </button>
+          <button
+            type="button"
+            class="action-btn"
+            :disabled="!!actionLoading"
             @click="run('pull', () => applicationsApi.gitPull(appId))"
           >
             Git pull
