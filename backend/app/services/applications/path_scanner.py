@@ -160,9 +160,14 @@ class ApplicationPathScanner:
                 candidates.append(current)
                 return
             for child in entries:
-                if not child.is_dir() or child.name in SKIP_DIR_NAMES:
+                if not child.is_dir():
                     continue
                 if should_skip_path_name(child.name):
+                    continue
+                # Still discover apps that live under common web roots (e.g. …/public).
+                if child.name in SKIP_DIR_NAMES:
+                    if looks_like_app(child):
+                        candidates.append(child)
                     continue
                 walk(child, depth + 1)
 
@@ -204,11 +209,16 @@ def collect_signals(path: Path) -> list[str]:
         signals.append(".git")
     if (path / ".env").exists():
         signals.append(".env")
+    if (path / "index.php").exists():
+        signals.append("index.php")
+    if (path / "index.html").exists():
+        signals.append("index.html")
     return signals
 
 
 def looks_like_app(path: Path) -> bool:
     signals = collect_signals(path)
     return len(signals) >= 2 or any(
-        marker in signals for marker in ("manage.py", "artisan", "package.json", "pyproject.toml")
+        marker in signals
+        for marker in ("manage.py", "artisan", "package.json", "pyproject.toml", "index.php")
     )

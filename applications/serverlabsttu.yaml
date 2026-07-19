@@ -1,0 +1,41 @@
+id: serverlabsttu
+name: Server Labs TTU
+type: php
+environment: production
+enabled: true
+description: Server Labs TTU PHP application served by Nginx and PHP-FPM
+version: "1.0.0"
+tags:
+  - php
+  - nginx
+  - production
+
+paths:
+  root: /srv/apps/serverlabsttu/public
+  logs: []
+  env_file: null
+
+runtime:
+  process_match: "php-fpm|nginx"
+
+nginx:
+  server_name: serverlabsttu.space
+  site: /etc/nginx/sites-enabled/serverlabsttu.space
+
+git:
+  repository: /srv/apps/serverlabsttu/public
+
+ssl:
+  domain: serverlabsttu.space
+
+deployment:
+  enabled: true
+
+backup:
+  enabled: true
+
+domains:
+  enabled: true
+
+email:
+  enabled: false

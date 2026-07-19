@@ -41,21 +41,53 @@ class RuntimeApplicationDiscovery:
             if item:
                 discovered[key] = item
 
+        # Nginx document roots are authoritative live sites — include even when
+        # the filesystem walk skipped common webroot folder names like "public".
+        for site in nginx_sites.values():
+            if not site.document_root:
+                continue
+            path = Path(site.document_root).resolve()
+            if not path.is_dir():
+                continue
+            key = str(path)
+            if key in discovered:
+                continue
+            item = self._inspect_path(path, nginx_sites, require_signals=False)
+            if item:
+                discovered[key] = item
+
         registered = {a.id: a for a in self._apps.list_all()}
         return self._reconcile(list(discovered.values()), registered)
 
-    def _inspect_path(self, path: Path, nginx_sites: dict) -> DiscoveredApplicationSchema | None:
+    def _inspect_path(
+        self,
+        path: Path,
+        nginx_sites: dict,
+        *,
+        require_signals: bool = True,
+    ) -> DiscoveredApplicationSchema | None:
         signals = collect_signals(path)
-        if not signals:
+        if require_signals and not signals:
             return None
+        if not signals:
+            signals = ["nginx-document-root"]
 
         slug = slugify_path_name(path.name)
+        # Prefer the hosting directory name over "public"/"dist" for display.
+        display_name = path.name
+        if path.name in {"public", "dist", "html", "www"} and path.parent.name:
+            slug = slugify_path_name(path.parent.name)
+            display_name = path.parent.name
+
         server_names: list[str] = []
         nginx_site_path = None
+        path_resolved = path.resolve()
         for name, site in nginx_sites.items():
-            if site.document_root and Path(site.document_root).resolve() == path.resolve():
-                server_names.append(name)
-                nginx_site_path = site.site_path
+            if site.document_root:
+                doc = Path(site.document_root).resolve()
+                if doc == path_resolved or str(doc).startswith(str(path_resolved) + "/"):
+                    server_names.append(name)
+                    nginx_site_path = site.site_path
             elif site.proxy_pass and str(path) in site.proxy_pass:
                 server_names.append(name)
                 nginx_site_path = site.site_path
@@ -69,9 +101,9 @@ class RuntimeApplicationDiscovery:
 
         return DiscoveredApplicationSchema(
             id=slug,
-            name=path.name,
+            name=display_name,
             probable_type=self._infer_type(path, signals),
-            root_path=str(path.resolve()),
+            root_path=str(path_resolved),
             git_path=str(path / ".git") if (path / ".git").exists() else None,
             environment=None,
             server_names=server_names,
@@ -88,6 +120,8 @@ class RuntimeApplicationDiscovery:
             return "django"
         if (path / "artisan").exists() or (path / "composer.json").exists():
             return "laravel"
+        if (path / "index.php").exists():
+            return "php"
         if (path / "package.json").exists():
             return "nodejs"
         if (path / "pyproject.toml").exists():
