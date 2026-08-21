@@ -1,4 +1,4 @@
-; Fragment included by install-serverlabsttu-zone.sh into /etc/bind/named.conf.local
+// Student / project hostname zone (static wildcard — not customer-managed)
 zone "serverlabsttu.space" {
     type master;
     file "/etc/bind/zones/db.serverlabsttu.space";
