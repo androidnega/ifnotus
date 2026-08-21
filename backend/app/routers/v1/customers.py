@@ -158,6 +158,9 @@ def _env_response(env, plan=None) -> EnvironmentResponse:
             "capabilities": capabilities_for(plan),
             "entitlements": effective_entitlements(plan),
             "provisioning_step": getattr(env, "provisioning_step", None),
+            "unix_username": getattr(env, "unix_username", None),
+            "unix_uid": getattr(env, "unix_uid", None),
+            "unix_gid": getattr(env, "unix_gid", None),
         }
     )
 

@@ -273,6 +273,10 @@ class EnvironmentResponse(SchemaBase):
     capabilities: dict = Field(default_factory=dict)
     entitlements: dict = Field(default_factory=dict)
     provisioning_step: str | None = None
+    # PHASE 20/21 — identity visible for smoke verification (not a secret)
+    unix_username: str | None = None
+    unix_uid: int | None = None
+    unix_gid: int | None = None
 
 
 class EnvironmentDatabaseResponse(SchemaBase):
