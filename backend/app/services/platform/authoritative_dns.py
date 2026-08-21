@@ -151,12 +151,23 @@ class AuthoritativeDnsService:
         return today + 1
 
     def _existing_customer_zones(self) -> dict[str, Path]:
+        """Map of customer zone files — never includes platform/student apex zones."""
+        from app.services.platform.student_hostname import (
+            resolve_legacy_student_zone,
+            resolve_student_zone,
+        )
+
+        protected = {
+            "ifnotus.space",
+            resolve_student_zone(self._settings),
+            resolve_legacy_student_zone(self._settings),
+        }
         zones: dict[str, Path] = {}
         if not self._zones_dir.exists():
             return zones
         for path in self._zones_dir.glob("db.*"):
             name = path.name[3:] if path.name.startswith("db.") else path.name
-            if not name or name == "ifnotus.space":
+            if not name or name in protected:
                 continue
             zones[name] = path
         return zones

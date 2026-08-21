@@ -168,6 +168,24 @@ class EnvironmentLifecycleService:
             UnixIdentityService(self._settings, self._session).remove_identity(env, actor="lifecycle")
         except Exception:  # noqa: BLE001
             pass
+        # PHASE 23 — reclaim student hostname nginx/LE; wildcard DNS stays (no per-label BIND delete)
+        if env.domain:
+            try:
+                from app.services.platform.student_hostname import is_student_hostname
+
+                if is_student_hostname(env.domain, settings=self._settings):
+                    from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
+
+                    await DomainNginxProvisioner(self._settings).remove(env.domain, remove_files=True)
+                    from app.models.hosting import Domain
+
+                    result = await self._session.execute(
+                        select(Domain).where(Domain.name == env.domain)
+                    )
+                    for row in result.scalars().all():
+                        await self._session.delete(row)
+            except Exception:  # noqa: BLE001
+                pass
         # Retention: mark terminated; physical destroy is a follow-up job
         env.status = "terminated"
         env.health_status = "critical"

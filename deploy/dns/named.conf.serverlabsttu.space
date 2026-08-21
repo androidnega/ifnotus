@@ -1,0 +1,7 @@
+; Fragment included by install-serverlabsttu-zone.sh into /etc/bind/named.conf.local
+zone "serverlabsttu.space" {
+    type master;
+    file "/etc/bind/zones/db.serverlabsttu.space";
+    allow-transfer { none; };
+    allow-update { none; };
+};

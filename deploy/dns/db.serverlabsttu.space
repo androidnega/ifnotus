@@ -1,6 +1,6 @@
 $TTL 1800
 @   IN SOA ns1.ifnotus.space. hostmaster.ifnotus.space. (
-        2026082101 ; serial
+        2026082115 ; serial
         3600       ; refresh
         900        ; retry
         604800     ; expire
@@ -12,11 +12,25 @@ $TTL 1800
     IN MX  10 mail.ifnotus.space.
     IN TXT "v=spf1 ip4:80.241.223.82 a:mail.ifnotus.space ~all"
 
-; Student/project hostnames: surname.serverlabsttu.space
+; Student/project hostnames: surname.serverlabsttu.space (wildcard)
 * IN A      80.241.223.82
 * IN AAAA   2a02:c207:2337:9516::1
 
-www IN A    80.241.223.82
-mail IN A   80.241.223.82
+; Explicit platform labels (also blocked from student allocation in code)
+www        IN A 80.241.223.82
+mail       IN A 80.241.223.82
+ftp        IN A 80.241.223.82
+ssh        IN A 80.241.223.82
+api        IN A 80.241.223.82
+account    IN A 80.241.223.82
+panel      IN A 80.241.223.82
+admin      IN A 80.241.223.82
+status     IN A 80.241.223.82
+support    IN A 80.241.223.82
+billing    IN A 80.241.223.82
+cpanel     IN A 80.241.223.82
+webmail    IN A 80.241.223.82
+ns1        IN A 80.241.223.82
+ns2        IN A 80.241.223.82
 
 _dmarc IN TXT "v=DMARC1; p=none; rua=mailto:postmaster@ifnotus.space"
