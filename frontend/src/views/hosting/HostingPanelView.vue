@@ -3,6 +3,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { customersApi } from '@/api'
 import PortalShell from '@/components/portal/PortalShell.vue'
+import PortalSitePanel from '@/components/portal/PortalSitePanel.vue'
+import { usePortalSiteTools, type PortalSiteTab } from '@/composables/usePortalSiteTools'
 import { getApiErrorMessage } from '@/lib/apiError'
 import { formatCpu, formatRamGb } from '@/lib/planResources'
 import type { CustomerDashboard, CustomerEnvironment, HostingPlan } from '@/types/platform'
@@ -30,6 +32,16 @@ const TABS: Array<{ id: HostingTab; label: string }> = [
   { id: 'logs', label: 'Logs' },
 ]
 
+const HOSTING_TO_SITE: Record<Exclude<HostingTab, 'overview' | 'backups'>, PortalSiteTab> = {
+  files: 'files',
+  databases: 'database',
+  domains: 'protect',
+  email: 'mail',
+  transfer: 'ftp',
+  apps: 'stack',
+  logs: 'logs',
+}
+
 const route = useRoute()
 const router = useRouter()
 
@@ -41,11 +53,83 @@ const tab = ref<HostingTab>('overview')
 
 const environmentId = computed(() => String(route.params.environmentId || ''))
 
-const env = computed<CustomerEnvironment | null>(() => {
-  const id = environmentId.value
-  if (!id || !dash.value) return null
-  return dash.value.environments.find((e) => e.id === id) || null
-})
+const {
+  activeEnv,
+  dbCanWrite,
+  filePath,
+  fileEntries,
+  fileContent,
+  editingFile,
+  fileMsg,
+  dbInfo,
+  dbCreds,
+  dbSchema,
+  dbRows,
+  dbStudioBusy,
+  dbStudioMsg,
+  dbSelectedTable,
+  dbRowOffset,
+  dbSql,
+  ftpInfo,
+  ftpCreds,
+  sshCreds,
+  usageInfo,
+  logEntries,
+  logMsg,
+  logBusy,
+  usagePct,
+  healthInfo,
+  dnsInfo,
+  dnsData,
+  sslMsg,
+  backups,
+  backupMsg,
+  stackMsg,
+  stackBusy,
+  stackProgress,
+  stackOutcome,
+  selectedStack,
+  stacks,
+  currentStack,
+  cronJobs,
+  cronSchedule,
+  cronCommand,
+  cronMsg,
+  cronBusy,
+  setActiveEnvId,
+  selectEnv,
+  hydrateActiveEnv,
+  loadFiles,
+  openEntry,
+  goUp,
+  saveFile,
+  loadDb,
+  loadDbSchema,
+  loadDbRows,
+  runDbQuery,
+  loadFtp,
+  loadSsh,
+  ensureSsh,
+  ensureFtp,
+  repairFs,
+  loadDns,
+  ensureDns,
+  attachCustomDomain,
+  unassignCustomDomain,
+  issueSsl,
+  loadBackups,
+  createBackup,
+  restoreBackup,
+  installStack,
+  clearStack,
+  loadLogs,
+  addCron,
+  toggleCron,
+  runCron,
+  deleteCron,
+} = usePortalSiteTools(dash, { lockEnvId: environmentId })
+
+const env = computed<CustomerEnvironment | null>(() => activeEnv.value)
 
 const plan = computed(() => {
   const e = env.value
@@ -65,30 +149,35 @@ const spec = computed(() => {
   }
 })
 
-function accountTool(path: string, extraQuery: Record<string, string> = {}) {
-  const id = environmentId.value
-  const q = new URLSearchParams({ env: id, ...extraQuery })
-  return `${path}?${q.toString()}`
-}
+const siteInitialTab = computed<PortalSiteTab>(() => {
+  if (tab.value === 'overview' || tab.value === 'backups') return ''
+  return HOSTING_TO_SITE[tab.value] || 'stack'
+})
 
-function hostingHref(next: HostingTab) {
-  if (next === 'overview') return `/hosting/${environmentId.value}`
-  if (next === 'files') return `/hosting/${environmentId.value}/files`
-  return `/hosting/${environmentId.value}?tab=${next}`
+const showSitePanel = computed(() => tab.value !== 'overview' && tab.value !== 'backups')
+
+function resolveTabFromRoute(): HostingTab {
+  if (route.name === 'hosting-files' || route.meta.hostingTab === 'files') return 'files'
+  const raw = typeof route.query.tab === 'string' ? route.query.tab : ''
+  if (TABS.some((t) => t.id === raw)) return raw as HostingTab
+  return 'overview'
 }
 
 function goTab(next: HostingTab) {
+  tab.value = next
   if (next === 'files') {
     void router.push({ name: 'hosting-files', params: { environmentId: environmentId.value } })
     return
   }
-  tab.value = next
   const query = next === 'overview' ? {} : { tab: next }
   void router.replace({ name: 'hosting-panel', params: { environmentId: environmentId.value }, query })
 }
 
-function openLegacy(path: string, extraQuery: Record<string, string> = {}) {
-  window.location.href = accountTool(path, extraQuery)
+function formatBytes(n?: number | null) {
+  if (n == null || Number.isNaN(n)) return '—'
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
 async function load() {
@@ -103,6 +192,8 @@ async function load() {
       error.value = 'This hosting service is not on your account.'
       return
     }
+    setActiveEnvId(environmentId.value)
+    await hydrateActiveEnv()
   } catch (e: unknown) {
     error.value = getApiErrorMessage(e, 'Could not load hosting panel.')
   } finally {
@@ -111,20 +202,19 @@ async function load() {
 }
 
 watch(
-  () => route.query.tab,
-  (raw) => {
-    const value = typeof raw === 'string' ? raw : ''
-    if (TABS.some((t) => t.id === value)) {
-      tab.value = value as HostingTab
-    } else {
-      tab.value = 'overview'
-    }
+  () => [route.name, route.query.tab, route.meta.hostingTab] as const,
+  () => {
+    tab.value = resolveTabFromRoute()
   },
   { immediate: true },
 )
 
 watch(environmentId, () => {
   void load()
+})
+
+watch(tab, (next) => {
+  if (next === 'backups' && env.value) void loadBackups()
 })
 
 onMounted(() => {
@@ -171,8 +261,12 @@ onMounted(() => {
             <p class="muted">
               {{ spec.cpu }} vCPU · {{ spec.ram }} · {{ spec.disk }} GB disk · Status {{ env.status || '—' }}
             </p>
+            <p v-if="usageInfo || healthInfo" class="muted status-line">
+              {{ usageInfo || healthInfo }}
+              <span v-if="usagePct" class="disk-pct"> · Disk {{ Math.min(100, Math.round(usagePct)) }}%</span>
+            </p>
             <div class="actions">
-              <a class="btn-primary" :href="accountTool('/account/files')">Open files</a>
+              <button type="button" class="btn-primary" @click="goTab('files')">Open files</button>
               <a
                 v-if="env.domain"
                 class="btn-ghost"
@@ -180,95 +274,123 @@ onMounted(() => {
                 target="_blank"
                 rel="noopener"
               >Open site</a>
-              <RouterLink
-                class="btn-ghost"
-                :to="{ name: 'portal-dashboard', query: { panel: 'site', tab: 'ftp', env: environmentId } }"
-              >
-                FTP login
-              </RouterLink>
+              <button type="button" class="btn-ghost" @click="goTab('transfer')">FTP login</button>
             </div>
           </article>
 
           <div class="quick">
-            <a v-for="item in TABS.filter((t) => t.id !== 'overview')" :key="item.id" :href="hostingHref(item.id)">
+            <button
+              v-for="item in TABS.filter((t) => t.id !== 'overview')"
+              :key="item.id"
+              type="button"
+              @click="goTab(item.id)"
+            >
               {{ item.label }}
-            </a>
+            </button>
           </div>
         </section>
 
-        <section v-else class="panel p-card">
-          <p class="kicker">{{ TABS.find((t) => t.id === tab)?.label }}</p>
-          <h2>{{ TABS.find((t) => t.id === tab)?.label }} for this site</h2>
-          <p class="muted">
-            Opening the existing account tool with this environment selected. Full hosting screens will land here next.
-          </p>
+        <section v-else-if="tab === 'backups'" class="panel p-card">
+          <p class="kicker">Backups</p>
+          <h2>Restore points</h2>
+          <p class="muted">{{ backupMsg || 'Save a restore point of your site files.' }}</p>
           <div class="actions">
-            <button
-              v-if="tab === 'files'"
-              type="button"
-              class="btn-primary"
-              @click="openLegacy('/account/files')"
-            >
-              Open file manager
-            </button>
-            <button
-              v-else-if="tab === 'databases'"
-              type="button"
-              class="btn-primary"
-              @click="openLegacy('/account/database/studio')"
-            >
-              Open database studio
-            </button>
-            <button
-              v-else-if="tab === 'domains'"
-              type="button"
-              class="btn-primary"
-              @click="openLegacy('/account', { panel: 'site', tab: 'protect' })"
-            >
-              Open domain tools
-            </button>
-            <button
-              v-else-if="tab === 'email'"
-              type="button"
-              class="btn-primary"
-              @click="openLegacy('/account', { panel: 'site', tab: 'mail' })"
-            >
-              Open email tools
-            </button>
-            <button
-              v-else-if="tab === 'transfer'"
-              type="button"
-              class="btn-primary"
-              @click="openLegacy('/account', { panel: 'site', tab: 'ftp' })"
-            >
-              Open FTP / transfer
-            </button>
-            <button
-              v-else-if="tab === 'apps'"
-              type="button"
-              class="btn-primary"
-              @click="openLegacy('/account', { panel: 'site', tab: 'stack' })"
-            >
-              Open apps / stacks
-            </button>
-            <button
-              v-else-if="tab === 'backups'"
-              type="button"
-              class="btn-primary"
-              @click="openLegacy('/account', { panel: 'site', tab: 'stack' })"
-            >
-              Open backups
-            </button>
-            <button
-              v-else
-              type="button"
-              class="btn-primary"
-              @click="openLegacy('/account', { panel: 'site', tab: 'logs' })"
-            >
-              Open logs
-            </button>
+            <button type="button" class="btn-ghost" @click="loadBackups">Refresh</button>
+            <button type="button" class="btn-primary" @click="createBackup">Back up now</button>
           </div>
+          <ul v-if="backups.length" class="backup-list">
+            <li v-for="b in backups" :key="b.id">
+              <span>{{ b.status }} · {{ formatBytes(b.file_size) }} · {{ b.filename }}</span>
+              <button
+                v-if="b.status === 'success'"
+                type="button"
+                class="btn-ghost"
+                @click="restoreBackup(b.id)"
+              >
+                Restore
+              </button>
+            </li>
+          </ul>
         </section>
+
+        <PortalSitePanel
+          v-else-if="showSitePanel"
+          hide-subnav
+          :environments="[env]"
+          :active-env="env"
+          :active-plan="plan"
+          :initial-tab="siteInitialTab"
+          :file-path="filePath"
+          :file-entries="fileEntries"
+          :file-content="fileContent"
+          :editing-file="editingFile"
+          :file-msg="fileMsg"
+          :stacks="stacks"
+          v-model:selected-stack="selectedStack"
+          :current-stack="currentStack"
+          :stack-busy="stackBusy"
+          :stack-msg="stackMsg"
+          :stack-progress="stackProgress"
+          :stack-outcome="stackOutcome"
+          :cron-jobs="cronJobs"
+          v-model:cron-schedule="cronSchedule"
+          v-model:cron-command="cronCommand"
+          :cron-busy="cronBusy"
+          :cron-msg="cronMsg"
+          :db-info="dbInfo"
+          :db-creds="dbCreds"
+          :db-schema="dbSchema"
+          :db-rows="dbRows"
+          :db-studio-busy="dbStudioBusy"
+          :db-studio-msg="dbStudioMsg"
+          :db-selected-table="dbSelectedTable"
+          :db-row-offset="dbRowOffset"
+          :db-sql="dbSql"
+          :db-can-write="dbCanWrite"
+          :ftp-info="ftpInfo"
+          :ftp-creds="ftpCreds"
+          :ssh-creds="sshCreds"
+          :dns-info="dnsInfo"
+          :dns-data="dnsData"
+          :ssl-msg="sslMsg"
+          :backups="backups"
+          :backup-msg="backupMsg"
+          :log-entries="logEntries"
+          :log-msg="logMsg"
+          :log-busy="logBusy"
+          @select-env="selectEnv"
+          @load-files="loadFiles"
+          @load-logs="loadLogs"
+          @go-up="goUp"
+          @open-entry="openEntry"
+          @save-file="saveFile"
+          @install-stack="installStack"
+          @clear-stack="clearStack"
+          @add-cron="addCron"
+          @run-cron="runCron"
+          @toggle-cron="toggleCron"
+          @delete-cron="deleteCron"
+          @load-db="loadDb"
+          @load-db-schema="loadDbSchema"
+          @load-db-rows="loadDbRows"
+          @run-db-query="runDbQuery"
+          @update-db-sql="(v) => (dbSql = v)"
+          @load-ftp="loadFtp"
+          @ensure-ftp="ensureFtp"
+          @load-ssh="loadSsh"
+          @ensure-ssh="ensureSsh"
+          @repair-fs="repairFs"
+          @load-dns="loadDns"
+          @ensure-dns="ensureDns"
+          @attach-custom="attachCustomDomain"
+          @unassign-custom="unassignCustomDomain"
+          @issue-ssl="issueSsl"
+          @load-backups="loadBackups"
+          @create-backup="createBackup"
+          @restore-backup="restoreBackup"
+          @open-support="router.push({ name: 'portal-support' })"
+          @update:file-content="(v) => (fileContent = v)"
+        />
       </template>
     </div>
   </PortalShell>
@@ -310,6 +432,12 @@ h1 {
   color: var(--p-muted);
   font-size: 0.9rem;
   line-height: 1.45;
+}
+.status-line {
+  margin-top: 0.55rem;
+}
+.disk-pct {
+  white-space: nowrap;
 }
 .plan-chip {
   margin: 0;
@@ -403,7 +531,7 @@ h2 {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
-.quick a {
+.quick button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -414,6 +542,27 @@ h2 {
   color: var(--p-ink);
   font-size: 0.84rem;
   font-weight: 650;
-  text-decoration: none;
+  cursor: pointer;
+}
+.backup-list {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.backup-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--p-border);
+  border-radius: 0.85rem;
+  background: var(--p-surface);
+  font-size: 0.86rem;
+  color: var(--p-ink);
 }
 </style>

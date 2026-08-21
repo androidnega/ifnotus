@@ -16,6 +16,8 @@ declare module 'vue-router' {
     /** staff = WHM host panel; portal = customer product panel */
     panel?: 'staff' | 'portal' | 'public'
     permission?: string
+    /** Hosting panel deep-link tab (e.g. files route) */
+    hostingTab?: 'files'
   }
 }
 
@@ -113,10 +115,8 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/hosting/:environmentId/files',
     name: 'hosting-files',
-    redirect: (to) => ({
-      name: 'portal-files',
-      query: { ...to.query, env: String(to.params.environmentId) },
-    }),
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'files' },
   },
   {
     path: '/forgot-password',
