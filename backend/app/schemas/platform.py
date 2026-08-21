@@ -100,16 +100,26 @@ class CustomerPhoneOtpRequestResponse(SchemaBase):
 
 
 class CustomerCompleteProfileRequest(SchemaBase):
-    full_name: str = Field(min_length=2, max_length=255)
+    """Legacy one-shot profile completion (still supported). Prefer PATCH /me."""
+
+    full_name: str | None = Field(default=None, min_length=2, max_length=255)
+    first_name: str | None = Field(default=None, min_length=1, max_length=120)
+    last_name: str | None = Field(default=None, min_length=2, max_length=120)
     email: EmailStr
     company: str | None = None
     password: str | None = Field(default=None, min_length=8, max_length=128)
 
 
 class CustomerProfileUpdateRequest(SchemaBase):
+    """Incremental profile patch — only send fields unlocking the next action."""
+
     full_name: str | None = Field(default=None, min_length=2, max_length=255)
+    first_name: str | None = Field(default=None, min_length=1, max_length=120)
+    last_name: str | None = Field(default=None, min_length=2, max_length=120)
+    email: EmailStr | None = None
     phone: str | None = Field(default=None, min_length=9, max_length=32)
     company: str | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=128)
 
 
 class CustomerPasswordChangeRequest(SchemaBase):
@@ -136,11 +146,19 @@ class CustomerResponse(SchemaBase):
     id: UUID
     email: str
     full_name: str
+    first_name: str | None = None
+    last_name: str | None = None
     phone: str | None = None
     company: str | None = None
     email_verified: bool
     phone_verified: bool = False
     profile_complete: bool = False
+    onboarding_stage: str = "phone_verified"
+    onboarding_completed_at: datetime | None = None
+    can_order: bool = False
+    can_student_hostname: bool = False
+    missing_for_order: list[str] = Field(default_factory=list)
+    missing_for_student: list[str] = Field(default_factory=list)
     two_factor_enabled: bool
     created_at: datetime
     last_login_at: datetime | None = None

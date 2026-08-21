@@ -78,15 +78,20 @@ class OrderService:
             meta["domain_kind"] = "student"
             meta["include_domain"] = False
             svc = StudentHostnameService(self._session, self._settings)
-            if (body.student_surname or "").strip():
-                domain_name = await svc.allocate(body.student_surname or "")
-                meta["student_surname"] = normalize_surname(body.student_surname or "")
+            surname = (body.student_surname or "").strip()
+            if not surname:
+                from app.services.platform.customers import CustomerService
+
+                surname = CustomerService.resolved_last_name(customer) or ""
+            if surname:
+                domain_name = await svc.allocate(surname)
+                meta["student_surname"] = normalize_surname(surname)
             elif is_student_hostname(domain_name or "", settings=self._settings):
                 domain_name = await svc.claim(domain_name or "")
                 meta["student_surname"] = normalize_surname((domain_name or "").split(".", 1)[0])
             else:
                 raise ValidationError(
-                    "Enter your surname for the student address.",
+                    "Enter your family name for the student address.",
                     code="student_surname_required",
                 )
             extension = student_zone_extension(self._settings)

@@ -343,8 +343,8 @@ async def update_customer_me(
     _require_customer_user(user)
     svc = CustomerService(settings, session)
     customer = await svc.require_for_user(user.id)
-    customer = await svc.update_profile(customer, body)
     row = await _db_user(session, user)
+    customer = await svc.update_profile(customer, body, user=row)
     return CustomerService.to_response(customer, row)
 
 
@@ -510,8 +510,12 @@ async def create_order(
     _require_customer_user(user)
     svc = CustomerService(settings, session)
     customer = await svc.require_for_user(user.id)
-    if not CustomerService.is_profile_complete(customer):
-        raise ValidationError("Complete your profile (name, email, phone) before ordering.")
+    if not CustomerService.can_order(customer):
+        missing = ", ".join(CustomerService.missing_for_order(customer)) or "profile details"
+        raise ValidationError(
+            f"Add your {missing.replace('_', ' ')} before ordering.",
+            code="profile_incomplete_for_order",
+        )
     data = await OrderService(settings, session).create_order(customer, body)
     return CreateOrderResponse(**data)
 

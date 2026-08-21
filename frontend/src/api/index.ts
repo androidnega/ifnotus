@@ -879,7 +879,9 @@ export const customersApi = {
     apiClient.post<import('@/types/auth').LoginResponse>('/customers/phone/verify-otp', body),
 
   completeProfile: (body: {
-    full_name: string
+    full_name?: string
+    first_name?: string
+    last_name?: string
     email: string
     company?: string | null
     password?: string
@@ -891,8 +893,15 @@ export const customersApi = {
 
   me: () => apiClient.get<import('@/types/platform').CustomerProfile>('/customers/me'),
 
-  updateMe: (body: { full_name?: string; phone?: string; company?: string | null }) =>
-    apiClient.patch<import('@/types/platform').CustomerProfile>('/customers/me', body),
+  updateMe: (body: {
+    full_name?: string
+    first_name?: string
+    last_name?: string
+    email?: string
+    phone?: string
+    company?: string | null
+    password?: string
+  }) => apiClient.patch<import('@/types/platform').CustomerProfile>('/customers/me', body),
 
   changePassword: (body: { current_password: string; new_password: string }) =>
     apiClient.post('/customers/me/password', body),

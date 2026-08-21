@@ -26,10 +26,14 @@ def _customer(**kwargs):
         "id": uuid4(),
         "email": "buyer@example.com",
         "full_name": "Ama Mensah",
+        "first_name": "Ama",
+        "last_name": "Mensah",
         "phone": "+233541069241",
         "phone_verified": True,
         "email_verified": False,
         "company": None,
+        "onboarding_stage": "done",
+        "onboarding_completed_at": None,
     }
     base.update(kwargs)
     return SimpleNamespace(**base)
@@ -69,17 +73,24 @@ def test_profile_complete_requires_real_email_name_phone() -> None:
         )
         is False
     )
-    assert CustomerService.is_profile_complete(_customer(full_name="Customer")) is False
-    assert CustomerService.is_profile_complete(_customer(full_name="  ")) is False
+    assert CustomerService.is_profile_complete(_customer(full_name="Customer", first_name=None, last_name=None)) is False
+    assert CustomerService.is_profile_complete(_customer(full_name="  ", first_name=None, last_name=None)) is False
     assert CustomerService.is_profile_complete(_customer(phone="")) is False
 
 
 def test_create_order_route_gate_matches_profile_complete() -> None:
     """Router rejects incomplete profiles before OrderService.create_order."""
-    incomplete = _customer(full_name="Customer", email=f"p1@{PENDING_EMAIL_DOMAIN}")
+    incomplete = _customer(
+        full_name="Customer",
+        first_name=None,
+        last_name=None,
+        email=f"p1@{PENDING_EMAIL_DOMAIN}",
+    )
     assert CustomerService.is_profile_complete(incomplete) is False
-    complete = _customer()
+    assert CustomerService.can_order(incomplete) is False
+    complete = _customer(first_name="Ama", last_name="Mensah", full_name="Ama Mensah")
     assert CustomerService.is_profile_complete(complete) is True
+    assert CustomerService.can_order(complete) is True
 
 
 @pytest.mark.asyncio

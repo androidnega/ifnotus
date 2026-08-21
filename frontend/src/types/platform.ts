@@ -19,11 +19,19 @@ export type CustomerProfile = {
   id: string
   email: string
   full_name: string
+  first_name?: string | null
+  last_name?: string | null
   phone?: string | null
   company?: string | null
   email_verified: boolean
   phone_verified?: boolean
   profile_complete?: boolean
+  onboarding_stage?: string
+  onboarding_completed_at?: string | null
+  can_order?: boolean
+  can_student_hostname?: boolean
+  missing_for_order?: string[]
+  missing_for_student?: string[]
   two_factor_enabled: boolean
   created_at: string
   last_login_at?: string | null

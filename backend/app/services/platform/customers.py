@@ -29,6 +29,13 @@ from app.schemas.platform import (
 
 PENDING_EMAIL_DOMAIN = "phone.pending.ifnotus"
 
+# Progressive onboarding stages (do not use one global blocker for everything).
+STAGE_PHONE = "phone_verified"
+STAGE_FIRST = "first_name"
+STAGE_LAST = "last_name"
+STAGE_EMAIL = "email"
+STAGE_DONE = "done"
+
 
 class CustomerService:
     def __init__(self, settings: Settings, session: AsyncSession) -> None:
@@ -47,19 +54,120 @@ class CustomerService:
             raise ValidationError("Enter a valid mobile number.")
         return phone
 
+    @staticmethod
+    def _is_pending_email(email: str | None) -> bool:
+        return (email or "").lower().endswith(f"@{PENDING_EMAIL_DOMAIN}")
+
+    @staticmethod
+    def _clean_name(value: str | None) -> str | None:
+        text = (value or "").strip()
+        if not text:
+            return None
+        if text.lower() in {"customer", "new customer"}:
+            return None
+        return text
+
+    @classmethod
+    def display_name(cls, customer: Customer) -> str:
+        first = cls._clean_name(getattr(customer, "first_name", None))
+        last = cls._clean_name(getattr(customer, "last_name", None))
+        if first and last:
+            return f"{first} {last}"
+        if first:
+            return first
+        if last:
+            return last
+        full = cls._clean_name(customer.full_name)
+        return full or "Customer"
+
+    @classmethod
+    def sync_full_name(cls, customer: Customer) -> None:
+        customer.full_name = cls.display_name(customer)
+
+    @classmethod
+    def has_usable_first_name(cls, customer: Customer) -> bool:
+        return bool(cls.resolved_first_name(customer))
+
+    @classmethod
+    def resolved_first_name(cls, customer: Customer) -> str | None:
+        first = cls._clean_name(getattr(customer, "first_name", None))
+        if first:
+            return first
+        full = cls._clean_name(customer.full_name)
+        if not full:
+            return None
+        return full.split()[0]
+
+    @classmethod
+    def resolved_last_name(cls, customer: Customer) -> str | None:
+        last = cls._clean_name(getattr(customer, "last_name", None))
+        if last and len(last) >= 2:
+            return last
+        full = cls._clean_name(customer.full_name)
+        if not full or " " not in full:
+            return None
+        rest = full.split(" ", 1)[1].strip()
+        return rest if len(rest) >= 2 else None
+
+    @classmethod
+    def has_real_email(cls, customer: Customer) -> bool:
+        return bool(customer.email) and not cls._is_pending_email(customer.email)
+
+    @classmethod
+    def can_student_hostname(cls, customer: Customer) -> bool:
+        return bool(cls.resolved_last_name(customer))
+
+    @classmethod
+    def can_order(cls, customer: Customer) -> bool:
+        phone = (customer.phone or "").strip()
+        return bool(
+            phone
+            and cls.has_real_email(customer)
+            and cls.resolved_first_name(customer)
+            and cls.resolved_last_name(customer)
+        )
+
+    @classmethod
+    def missing_for_order(cls, customer: Customer) -> list[str]:
+        missing: list[str] = []
+        if not cls.resolved_first_name(customer):
+            missing.append("first_name")
+        if not cls.resolved_last_name(customer):
+            missing.append("last_name")
+        if not cls.has_real_email(customer):
+            missing.append("email")
+        if not (customer.phone or "").strip():
+            missing.append("phone")
+        return missing
+
+    @classmethod
+    def missing_for_student(cls, customer: Customer) -> list[str]:
+        return [] if cls.can_student_hostname(customer) else ["last_name"]
+
+    @classmethod
+    def compute_onboarding_stage(cls, customer: Customer) -> str:
+        if cls.can_order(customer):
+            return STAGE_DONE
+        if cls.has_real_email(customer):
+            return STAGE_EMAIL
+        if cls.resolved_last_name(customer):
+            return STAGE_LAST
+        if cls.resolved_first_name(customer):
+            return STAGE_FIRST
+        return STAGE_PHONE
+
     @classmethod
     def is_profile_complete(cls, customer: Customer) -> bool:
-        email = (customer.email or "").lower()
-        if email.endswith(f"@{PENDING_EMAIL_DOMAIN}"):
-            return False
-        name = (customer.full_name or "").strip().lower()
-        if len(name) < 2 or name in {"customer", "new customer"}:
-            return False
-        phone = (customer.phone or "").strip()
-        if not phone:
-            return False
-        # Phone OTP path marks phone_verified; legacy email signup counts once phone+email exist.
-        return True
+        """Backward-compatible alias: profile is complete when checkout is allowed."""
+        return cls.can_order(customer)
+
+    def refresh_onboarding(self, customer: Customer) -> None:
+        stage = self.compute_onboarding_stage(customer)
+        customer.onboarding_stage = stage
+        if stage == STAGE_DONE and customer.onboarding_completed_at is None:
+            customer.onboarding_completed_at = datetime.now(UTC)
+        if stage != STAGE_DONE:
+            customer.onboarding_completed_at = None
 
     async def request_phone_otp(self, body: CustomerPhoneOtpRequest) -> CustomerPhoneOtpRequestResponse:
         from app.services.platform import phone_otp
@@ -121,36 +229,92 @@ class CustomerService:
     async def complete_profile(
         self, customer: Customer, user: User, body: CustomerCompleteProfileRequest
     ) -> Customer:
-        email = body.email.lower().strip()
-        if email.endswith(f"@{PENDING_EMAIL_DOMAIN}"):
-            from app.core.exceptions import ValidationError
+        """Legacy one-shot endpoint — still works; prefers first/last when provided."""
+        from app.core.exceptions import ValidationError
 
-            raise ValidationError("Enter a real email address.")
+        first = (body.first_name or "").strip() or None
+        last = (body.last_name or "").strip() or None
+        if body.full_name and not (first and last):
+            parts = body.full_name.strip().split(None, 1)
+            first = first or (parts[0] if parts else None)
+            last = last or (parts[1] if len(parts) > 1 else None)
+        if not first or not last:
+            raise ValidationError("Enter your first and family name.")
+        patch = type(
+            "Patch",
+            (),
+            {
+                "first_name": first,
+                "last_name": last,
+                "full_name": None,
+                "email": body.email,
+                "phone": None,
+                "company": body.company,
+                "password": body.password,
+            },
+        )()
+        return await self.update_profile(customer, patch, user=user)
 
-        existing = await self._session.execute(
-            select(User).where(User.email == email, User.id != user.id, User.deleted_at.is_(None))
-        )
-        if existing.scalar_one_or_none():
-            raise ConflictError("An account with this email already exists.")
+    async def update_profile(
+        self, customer: Customer, body, *, user: User | None = None
+    ) -> Customer:
+        from app.core.exceptions import ValidationError
 
-        other = await self._session.execute(
-            select(Customer).where(Customer.email == email, Customer.id != customer.id)
-        )
-        if other.scalar_one_or_none():
-            raise ConflictError("An account with this email already exists.")
+        row = user or await self._session.get(User, customer.user_id)
+        if row is None:
+            raise ValidationError("Account not found.")
 
-        customer.full_name = body.full_name.strip()
-        customer.email = email
-        if body.company is not None:
-            customer.company = body.company.strip() or None
-        customer.email_verified = False
+        if getattr(body, "first_name", None) is not None:
+            cleaned = self._clean_name(body.first_name) or (body.first_name or "").strip()
+            if cleaned and cleaned.lower() not in {"customer", "new customer"}:
+                customer.first_name = cleaned[:120]
+        if getattr(body, "last_name", None) is not None:
+            cleaned = (body.last_name or "").strip()
+            if len(cleaned) < 2:
+                raise ValidationError("Enter your family name (at least 2 letters).")
+            customer.last_name = cleaned[:120]
+        if getattr(body, "full_name", None):
+            parts = body.full_name.strip().split(None, 1)
+            if parts:
+                customer.first_name = parts[0][:120]
+            if len(parts) > 1:
+                customer.last_name = parts[1][:120]
+            elif not customer.last_name:
+                # Keep single token as first name only (soft).
+                pass
 
-        user.email = email
-        user.full_name = customer.full_name
-        user.username = self._username_from_email(email)
-        if body.password:
-            user.hashed_password = hash_password(body.password)
+        email = getattr(body, "email", None)
+        if email:
+            email = str(email).lower().strip()
+            if email.endswith(f"@{PENDING_EMAIL_DOMAIN}"):
+                raise ValidationError("Enter a real email address.")
+            existing = await self._session.execute(
+                select(User).where(User.email == email, User.id != row.id, User.deleted_at.is_(None))
+            )
+            if existing.scalar_one_or_none():
+                raise ConflictError("An account with this email already exists.")
+            other = await self._session.execute(
+                select(Customer).where(Customer.email == email, Customer.id != customer.id)
+            )
+            if other.scalar_one_or_none():
+                raise ConflictError("An account with this email already exists.")
+            customer.email = email
+            customer.email_verified = False
+            row.email = email
+            row.username = self._username_from_email(email)
 
+        if getattr(body, "phone", None):
+            customer.phone = self.normalize_phone(body.phone)
+
+        if getattr(body, "company", None) is not None:
+            customer.company = (body.company or "").strip() or None
+
+        if getattr(body, "password", None):
+            row.hashed_password = hash_password(body.password)
+
+        self.sync_full_name(customer)
+        row.full_name = customer.full_name
+        self.refresh_onboarding(customer)
         await self._session.flush()
         return customer
 
@@ -192,10 +356,14 @@ class CustomerService:
             user_id=user.id,
             email=email,
             full_name="Customer",
+            first_name=None,
+            last_name=None,
             phone=phone,
             company=None,
             email_verified=False,
             phone_verified=True,
+            onboarding_stage=STAGE_PHONE,
+            onboarding_completed_at=None,
         )
         self._session.add(customer)
         await self._session.flush()
@@ -235,15 +403,22 @@ class CustomerService:
         await self._session.flush()
 
         phone = self.normalize_phone(body.phone) if body.phone else None
+        full = body.full_name.strip()
+        parts = full.split(None, 1)
         customer = Customer(
             user_id=user.id,
             email=email,
-            full_name=body.full_name.strip(),
+            full_name=full,
+            first_name=parts[0][:120] if parts else None,
+            last_name=parts[1][:120] if len(parts) > 1 else None,
             phone=phone,
             company=body.company,
             email_verified=False,
             phone_verified=False,
+            onboarding_stage=STAGE_PHONE,
         )
+        self.sync_full_name(customer)
+        self.refresh_onboarding(customer)
         self._session.add(customer)
         await self._session.flush()
 
@@ -340,8 +515,18 @@ class CustomerService:
         data = CustomerResponse.model_validate(customer)
         data = data.model_copy(
             update={
+                "full_name": cls.display_name(customer),
+                "first_name": cls.resolved_first_name(customer),
+                "last_name": cls.resolved_last_name(customer),
                 "phone_verified": bool(getattr(customer, "phone_verified", False)),
                 "profile_complete": cls.is_profile_complete(customer),
+                "onboarding_stage": getattr(customer, "onboarding_stage", None)
+                or cls.compute_onboarding_stage(customer),
+                "onboarding_completed_at": getattr(customer, "onboarding_completed_at", None),
+                "can_order": cls.can_order(customer),
+                "can_student_hostname": cls.can_student_hostname(customer),
+                "missing_for_order": cls.missing_for_order(customer),
+                "missing_for_student": cls.missing_for_student(customer),
             }
         )
         if user is None:
@@ -355,19 +540,6 @@ class CustomerService:
                 ),
             }
         )
-
-    async def update_profile(self, customer: Customer, body) -> Customer:
-        if body.full_name:
-            customer.full_name = body.full_name.strip()
-            user = await self._session.get(User, customer.user_id)
-            if user:
-                user.full_name = customer.full_name
-        if body.phone:
-            customer.phone = body.phone.strip()
-        if body.company is not None:
-            customer.company = body.company.strip() or None
-        await self._session.flush()
-        return customer
 
     async def change_password(self, user: User, current_password: str, new_password: str) -> None:
         if not verify_password(current_password, user.hashed_password):
