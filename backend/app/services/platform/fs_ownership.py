@@ -1,10 +1,8 @@
-"""Ensure customer site trees are writable by PHP-FPM (www-data).
+"""Ensure customer site trees have safe ownership and modes.
 
-PHASE 8 — Tenant Unix identity:
-- ``allocate_unix_ids`` maps each environment to a deterministic uid/gid in
-  20000–49999 for future per-tenant system users.
-- Until those users exist on the host, ownership stays on www-data while the
-  intended ids are stored on ``CustomerEnvironment``.
+PHASE 20 — Prefer tenant ``unix_uid``/``unix_gid`` when those users exist on the
+host. Never use chmod 777. Fallback to ``web_run_user`` only when the OS
+identity has not been provisioned yet.
 """
 
 from __future__ import annotations

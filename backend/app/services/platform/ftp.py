@@ -20,7 +20,6 @@ from app.core.exceptions import AppException
 from app.core.logging import get_logger
 from app.models.platform import CustomerEnvironment
 from app.services.hosting.databases import DatabaseManagerService
-from app.services.platform.fs_ownership import fix_web_ownership
 
 logger = get_logger(__name__)
 
@@ -156,30 +155,33 @@ class EnvironmentFtpService:
         except KeyError:
             return False
 
-    def _create_system_user(self, username: str, home: Path, password: str) -> None:
+    def _create_system_user(
+        self,
+        username: str,
+        home: Path,
+        password: str,
+        *,
+        primary_group: str | None = None,
+    ) -> None:
         home.mkdir(parents=True, exist_ok=True)
-        # Primary group must be the web user: vsftpd does not apply supplementary groups,
-        # so FTP writes fail on www-data:www-data trees otherwise.
+        # PHASE 20 — prefer tenant primary group; keep www-data supplementary for PHP/nginx.
         web_group = self._settings.web_run_user
+        group = primary_group or web_group
         if not self._system_user_exists(username):
-            proc = subprocess.run(
-                [
-                    "useradd",
-                    "-d",
-                    str(home),
-                    "-s",
-                    "/usr/sbin/nologin",
-                    "-g",
-                    web_group,
-                    "-G",
-                    web_group,
-                    "-M",
-                    username,
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            cmd = [
+                "useradd",
+                "-d",
+                str(home),
+                "-s",
+                "/usr/sbin/nologin",
+                "-g",
+                group,
+                "-G",
+                web_group,
+                "-M",
+                username,
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
             if proc.returncode != 0 and "already exists" not in (proc.stderr or ""):
                 raise AppException(
                     f"Could not create FTP user: {(proc.stderr or '')[-300:]}",
@@ -187,7 +189,7 @@ class EnvironmentFtpService:
                 )
         else:
             subprocess.run(
-                ["usermod", "-d", str(home), "-g", web_group, "-G", web_group, "-U", username],
+                ["usermod", "-d", str(home), "-g", group, "-G", web_group, "-U", username],
                 capture_output=True,
                 check=False,
             )
@@ -221,7 +223,16 @@ class EnvironmentFtpService:
         self._ensure_ftp_shell_allowed()
         home = self._assert_tenant_home(env, Path(env.document_root))
         home.mkdir(parents=True, exist_ok=True)
-        fix_web_ownership(home, user=self._settings.web_run_user)
+
+        from app.services.platform.unix_identity import UnixIdentityService
+
+        unix = UnixIdentityService(self._settings, self._session)
+        try:
+            unix.ensure_identity(env, actor="ftp")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ftp_unix_identity_deferred", error=str(exc))
+        # Ownership via tenant identity (no 777).
+        unix.apply_ownership(env, prepare_sftp_jail=False)
 
         username = self._username_for(env)
         password: str | None = None
@@ -232,10 +243,12 @@ class EnvironmentFtpService:
             password = self._crypto._decrypt(env.ftp_password_encrypted)
 
         if not password:
-            password = DatabaseManagerService._strong_password(20)
-            env.ftp_password_encrypted = self._crypto._encrypt(password)
+            raise AppException("FTP password missing.", code="ftp_password_missing")
 
-        self._create_system_user(username, home, password)
+        # Separate FTP OS user (keeps password distinct from SFTP), but primary
+        # group is the tenant group so files share tenant ownership.
+        tenant_group = env.unix_username if env.unix_username else None
+        self._create_system_user(username, home, password, primary_group=tenant_group)
         env.ftp_username = username
         env.ftp_home = str(home)
         env.ftp_enabled = True
@@ -247,14 +260,9 @@ class EnvironmentFtpService:
         except Exception as exc:  # noqa: BLE001
             logger.warning("ssh_sync_after_ftp_failed", error=str(exc)[:300])
 
-        return {
-            "username": username,
-            "password": password,
-            "home": str(home),
-            "host": self._public_host(),
-            "wordpress_host": WORDPRESS_FTP_HOSTNAME,
-            "port": self._settings.ftp_port,
-        }
+        payload = self.status_payload(env, reveal=True)
+        payload["password"] = password
+        return payload
 
     def _ensure_ftp_shell_allowed(self) -> None:
         """vsftpd PAM includes pam_shells.so — nologin must be listed in /etc/shells."""

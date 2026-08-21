@@ -145,6 +145,15 @@ class ProvisioningEngine:
         self._nginx.ensure_document_root(doc_root)
         self._touch_created(job, doc_root=doc_root)
 
+        # PHASE 20 — allocate ids early so isolation/processes can use tenant uid:gid.
+        from app.services.platform.fs_ownership import allocate_unix_ids
+
+        if getattr(env, "unix_uid", None) is None or getattr(env, "unix_gid", None) is None:
+            uid, gid = allocate_unix_ids(env.id)
+            env.unix_uid = uid
+            env.unix_gid = gid
+            await self._session.flush()
+
         # --- CREATING_ISOLATION ---
         await self._set_step(job, env, "CREATING_ISOLATION")
         configured_mode = (self._settings.customer_isolation_mode or "docker").lower()
@@ -170,6 +179,8 @@ class ProvisioningEngine:
                 cpu=plan.cpu_cores,
                 ram_gb=plan.ram_gb,
                 port=container_port,
+                uid=env.unix_uid,
+                gid=env.unix_gid,
             )
             if not container_id:
                 raise RuntimeError(
@@ -184,6 +195,8 @@ class ProvisioningEngine:
                 cpu=plan.cpu_cores,
                 ram_gb=plan.ram_gb,
                 port=container_port,
+                uid=env.unix_uid,
+                gid=env.unix_gid,
             )
             if not container_id:
                 # Plan does not require docker — filesystem is OK
@@ -238,30 +251,23 @@ class ProvisioningEngine:
         # --- CONFIGURING_TRANSFER ---
         await self._set_step(job, env, "CONFIGURING_TRANSFER")
         try:
-            from app.services.platform.fs_ownership import allocate_unix_ids, fix_web_ownership
             from app.services.platform.ftp import EnvironmentFtpService
+            from app.services.platform.unix_identity import UnixIdentityService
 
-            # PHASE 8 — store intended tenant unix ids; chown prefers them when present on host.
-            if getattr(env, "unix_uid", None) is None or getattr(env, "unix_gid", None) is None:
-                uid, gid = allocate_unix_ids(env.id)
-                env.unix_uid = uid
-                env.unix_gid = gid
-            fix_web_ownership(
-                doc_root,
-                user=self._settings.web_run_user,
-                uid=env.unix_uid,
-                gid=env.unix_gid,
-            )
+            # PHASE 20 — always create real OS user/group before transfer/web ownership.
+            unix = UnixIdentityService(self._settings, self._session)
+            identity = unix.ensure_identity(env, actor="provisioning")
+            job.result = {**(job.result or {}), "unix_identity": identity}
+            await self._session.flush()
+
             if feature_included(plan, "sftp"):
                 await EnvironmentFtpService(self._settings, self._session).ensure_account(env)
                 from app.services.platform.sftp_access import EnvironmentSftpService
 
                 await EnvironmentSftpService(self._settings, self._session).ensure_account(env)
         except Exception as exc:  # noqa: BLE001
-            # Transfer is best-effort for non-sftp plans; sftp entitled → fail
-            if feature_included(plan, "sftp"):
-                raise RuntimeError(f"transfer/SFTP provision failed: {exc}") from exc
-            logger.warning("ftp_provision_skipped", error=str(exc), env=str(env.id))
+            # Unix identity is required for every provisioned site.
+            raise RuntimeError(f"unix identity / transfer provision failed: {exc}") from exc
 
         # DNS (non-fatal for ACTIVE if custom; still useful)
         live_name = hostname

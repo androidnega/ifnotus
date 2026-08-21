@@ -54,6 +54,8 @@ class IsolationService:
         cpu: float | int | Decimal,
         ram_gb: float | int | Decimal,
         port: int,
+        uid: int | None = None,
+        gid: int | None = None,
     ) -> str | None:
         if not self.docker_available:
             return None
@@ -65,20 +67,27 @@ class IsolationService:
             "docker",
             "run",
             "-d",
-            "--name",
-            name,
-            "--restart",
-            "unless-stopped",
-            "--cpus",
-            docker_cpus(cpu),
-            "--memory",
-            docker_memory(ram_gb),
-            "-p",
-            f"127.0.0.1:{port}:80",
-            "-v",
-            f"{document_root}:/usr/share/nginx/html:ro",
-            "nginx:alpine",
         ]
+        # PHASE 20 — run container as tenant when ids exist (read-only mount still).
+        if uid is not None and gid is not None:
+            cmd.extend(["--user", f"{int(uid)}:{int(gid)}"])
+        cmd.extend(
+            [
+                "--name",
+                name,
+                "--restart",
+                "unless-stopped",
+                "--cpus",
+                docker_cpus(cpu),
+                "--memory",
+                docker_memory(ram_gb),
+                "-p",
+                f"127.0.0.1:{port}:80",
+                "-v",
+                f"{document_root}:/usr/share/nginx/html:ro",
+                "nginx:alpine",
+            ]
+        )
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=90, check=False)
         if result.returncode != 0:
             logger.warning("docker_start_failed", name=name, error=(result.stderr or result.stdout)[:400])

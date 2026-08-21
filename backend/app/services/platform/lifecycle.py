@@ -69,12 +69,9 @@ class EnvironmentLifecycleService:
         except Exception:  # noqa: BLE001
             pass
         try:
-            from app.services.platform.ssh_access import EnvironmentSshService
+            from app.services.platform.unix_identity import UnixIdentityService
 
-            # Drop interactive SSH group membership when suspended.
-            ssh = EnvironmentSshService(self._settings, self._session)
-            if env.ftp_username:
-                ssh._set_shell(env.ftp_username, enable=False)
+            UnixIdentityService(self._settings, self._session).lock(env, actor="lifecycle")
         except Exception:  # noqa: BLE001
             pass
         IsolationService(self._settings).stop_container(env.container_id, env_id=str(env.id))
@@ -121,6 +118,12 @@ class EnvironmentLifecycleService:
         except Exception:  # noqa: BLE001
             pass
         try:
+            from app.services.platform.unix_identity import UnixIdentityService
+
+            UnixIdentityService(self._settings, self._session).unlock(env, actor="lifecycle")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             from app.services.platform.sftp_access import EnvironmentSftpService
 
             await EnvironmentSftpService(self._settings, self._session).enable(env, actor="lifecycle")
@@ -150,7 +153,19 @@ class EnvironmentLifecycleService:
         try:
             from app.services.platform.ftp import EnvironmentFtpService
 
-            await EnvironmentFtpService(self._settings, self._session).disable(env)
+            ftp = EnvironmentFtpService(self._settings, self._session)
+            await ftp.disable(env)
+            # PHASE 20 — remove orphaned FTP OS user on terminate
+            if env.ftp_username and ftp._system_user_exists(env.ftp_username):
+                import subprocess
+
+                subprocess.run(["userdel", "-f", env.ftp_username], capture_output=True, check=False)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from app.services.platform.unix_identity import UnixIdentityService
+
+            UnixIdentityService(self._settings, self._session).remove_identity(env, actor="lifecycle")
         except Exception:  # noqa: BLE001
             pass
         # Retention: mark terminated; physical destroy is a follow-up job

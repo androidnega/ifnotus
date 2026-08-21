@@ -24,7 +24,6 @@ from app.core.exceptions import AppException, ValidationError
 from app.core.logging import get_logger
 from app.models.platform import CustomerEnvironment, HostingPlan, PlatformAuditLog, Subscription
 from app.services.hosting.databases import DatabaseManagerService
-from app.services.platform.fs_ownership import allocate_unix_ids
 
 logger = get_logger(__name__)
 
@@ -412,33 +411,40 @@ class EnvironmentSftpService:
         if not allowed:
             raise AppException("SFTP is not included on this package.", code="sftp_not_entitled")
 
-        home_raw = Path(env.document_root or "")
-        if not home_raw.as_posix():
-            raise AppException("This site has no document root yet.", code="sftp_no_docroot")
-        home = self._assert_tenant_home(env, home_raw)
+        from app.services.platform.unix_identity import UnixIdentityService
 
-        if env.unix_uid is None or env.unix_gid is None:
-            uid, gid = allocate_unix_ids(env.id)
-            env.unix_uid = uid
-            env.unix_gid = gid
-        uid = int(env.unix_uid)
-        gid = int(env.unix_gid)
-
-        username = self.username_for(env)
+        unix = UnixIdentityService(self._settings, self._session)
+        identity = unix.ensure_identity(env, actor=actor)
+        username = identity["username"]
         env.sftp_username = username
+        home = Path(identity["home"])
+        home = self._assert_tenant_home(env, home)
+
         password: str | None = None
         if enable_password:
             password = self.ensure_password(env, reset=reset_password)
 
+        self._ensure_group()
         self._write_sshd_dropin()
-        self._create_or_update_user(
-            username=username,
-            home=home,
-            uid=uid,
-            gid=gid,
-            password=password if enable_password else None,
-            enable=True,
-        )
+        # Attach SFTP Match group; keep shell nologin (no interactive access from SFTP alone).
+        subprocess.run(["usermod", "-aG", SFTP_GROUP, username], capture_output=True, check=False)
+        subprocess.run(["usermod", "-U", username], capture_output=True, check=False)
+        if password:
+            proc = subprocess.run(
+                ["chpasswd"],
+                input=f"{username}:{password}\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if proc.returncode != 0:
+                raise AppException(
+                    f"Could not set SFTP password: {(proc.stderr or '')[-300:]}",
+                    code="sftp_password_failed",
+                )
+        # OpenSSH chroot: root-owned jail root, tenant-owned contents.
+        unix.apply_ownership(env, prepare_sftp_jail=True)
+
         env.sftp_enabled = True
         self._write_authorized_keys(username, self._keys_list(env))
         self._audit(
@@ -450,11 +456,13 @@ class EnvironmentSftpService:
         return self.status_payload(env, allowed=True, reveal=True, password=password)
 
     async def disable(self, env: CustomerEnvironment, *, actor: str = "system") -> None:
-        username = env.sftp_username
+        username = env.sftp_username or env.unix_username
         env.sftp_enabled = False
         if username and self._user_exists(username):
             subprocess.run(["gpasswd", "-d", username, SFTP_GROUP], capture_output=True, check=False)
-            subprocess.run(["usermod", "-L", username], capture_output=True, check=False)
+        from app.services.platform.unix_identity import UnixIdentityService
+
+        UnixIdentityService(self._settings, self._session).lock(env, actor=actor)
         self._audit(env, "sftp.disable", detail={"username": username, "actor": actor})
         await self._session.flush()
 
@@ -463,22 +471,21 @@ class EnvironmentSftpService:
             return
         if env.status != "active":
             return
-        username = env.sftp_username
+        username = env.sftp_username or env.unix_username
         if username and self._user_exists(username):
             subprocess.run(["usermod", "-aG", SFTP_GROUP, username], capture_output=True, check=False)
-            subprocess.run(["usermod", "-U", username], capture_output=True, check=False)
+            from app.services.platform.unix_identity import UnixIdentityService
+
+            UnixIdentityService(self._settings, self._session).unlock(env, actor=actor)
             env.sftp_enabled = True
             self._audit(env, "sftp.enable", detail={"username": username, "actor": actor})
             await self._session.flush()
 
     async def remove_access(self, env: CustomerEnvironment, *, actor: str = "system") -> None:
-        """Disable and remove OS user + keys on termination."""
-        username = env.sftp_username
+        """Detach SFTP group/keys. OS user removal is owned by UnixIdentityService."""
+        username = env.sftp_username or env.unix_username
         if username and self._user_exists(username):
             subprocess.run(["gpasswd", "-d", username, SFTP_GROUP], capture_output=True, check=False)
-            # Kill sessions best-effort then delete user
-            subprocess.run(["pkill", "-u", username], capture_output=True, check=False)
-            subprocess.run(["userdel", "-f", username], capture_output=True, check=False)
         if username:
             key_path = self._keys_path(username)
             if key_path.exists():

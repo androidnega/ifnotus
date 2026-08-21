@@ -1026,14 +1026,18 @@ main{{max-width:32rem;padding:2rem}} .a{{color:#ff6c2c;font-weight:700}}</style>
         node = shutil.which("node") or "node"
         log = root / ".ifnotus" / "node.log"
         log.parent.mkdir(parents=True, exist_ok=True)
-        proc = subprocess.Popen(
-            [node, "server.js"],
-            cwd=str(root),
-            env={**os.environ, "PORT": str(port)},
-            stdout=log.open("a", encoding="utf-8"),
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+        popen_kwargs: dict = {
+            "cwd": str(root),
+            "env": {**os.environ, "PORT": str(port)},
+            "stdout": log.open("a", encoding="utf-8"),
+            "stderr": subprocess.STDOUT,
+            "start_new_session": True,
+        }
+        # PHASE 20 — drop privileges to tenant when running as root and ids exist.
+        if env.unix_uid is not None and env.unix_gid is not None and hasattr(os, "geteuid") and os.geteuid() == 0:
+            popen_kwargs["user"] = env.unix_uid
+            popen_kwargs["group"] = env.unix_gid
+        proc = subprocess.Popen([node, "server.js"], **popen_kwargs)
         self._node_pid_file(env).write_text(str(proc.pid), encoding="utf-8")
 
     async def _wp_core_install(self, env: CustomerEnvironment, root: Path) -> dict[str, Any]:
