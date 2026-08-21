@@ -87,6 +87,7 @@ const palettes = [
   { label: 'Security', to: '/security', hint: 'firewall' },
   { label: 'Customers', to: '/platform/customers', hint: 'accounts' },
   { label: 'Plans', to: '/platform/plans', hint: 'packages' },
+  { label: 'Capacity', to: '/platform/capacity', hint: 'shared node' },
   { label: 'Support', to: '/support', hint: 'tickets' },
 ]
 

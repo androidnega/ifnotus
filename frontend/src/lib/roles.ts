@@ -36,6 +36,7 @@ export function isStaffPath(path: string): boolean {
     path.startsWith('/portal') ||
     path.startsWith('/billing') ||
     path.startsWith('/account') ||
+    path.startsWith('/hosting') ||
     path.startsWith('/login') ||
     path.startsWith('/signup') ||
     path.startsWith('/plans') ||
@@ -52,6 +53,7 @@ export function isPortalPath(path: string): boolean {
     path.startsWith('/portal') ||
     path.startsWith('/billing') ||
     path.startsWith('/account') ||
+    path.startsWith('/hosting') ||
     path === '/signup'
   )
 }

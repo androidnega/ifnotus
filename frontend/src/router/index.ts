@@ -105,6 +105,20 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true, panel: 'portal' },
   },
   {
+    path: '/hosting/:environmentId',
+    name: 'hosting-panel',
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    meta: { requiresAuth: true, panel: 'portal' },
+  },
+  {
+    path: '/hosting/:environmentId/files',
+    name: 'hosting-files',
+    redirect: (to) => ({
+      name: 'portal-files',
+      query: { ...to.query, env: String(to.params.environmentId) },
+    }),
+  },
+  {
     path: '/forgot-password',
     name: 'forgot-password',
     component: () => import('@/views/ForgotPasswordView.vue'),
@@ -162,6 +176,12 @@ const routes: RouteRecordRaw[] = [
     path: '/platform/orders',
     name: 'platform-orders',
     component: () => import('@/views/PlatformOrdersView.vue'),
+    meta: { requiresAuth: true, panel: 'staff', permission: 'platform:read' },
+  },
+  {
+    path: '/platform/capacity',
+    name: 'platform-capacity',
+    component: () => import('@/views/PlatformCapacityView.vue'),
     meta: { requiresAuth: true, panel: 'staff', permission: 'platform:read' },
   },
   {

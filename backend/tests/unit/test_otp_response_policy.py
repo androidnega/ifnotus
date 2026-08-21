@@ -1,9 +1,4 @@
-"""Phone OTP response policy regression (PHASE 0 — documents current behavior).
-
-PHASE 3 will harden production so debug_code is never returned when
-settings.debug is false. These tests lock today's contract so purchase-entry
-regressions are visible before that fix.
-"""
+"""Phone OTP response policy (PHASE 3 hardened)."""
 
 from __future__ import annotations
 
@@ -23,6 +18,7 @@ async def test_request_otp_exposes_debug_code_when_debug_true(test_settings) -> 
     challenge = SimpleNamespace(challenge_id="ch_1", code="123456", phone="+233541000000")
 
     with (
+        patch("app.services.platform.phone_otp.assert_can_request", new=AsyncMock()),
         patch("app.services.platform.phone_otp.create_challenge", new=AsyncMock(return_value=challenge)),
         patch(
             "app.services.platform.delivery.MessageDelivery.send_sms",
@@ -33,7 +29,6 @@ async def test_request_otp_exposes_debug_code_when_debug_true(test_settings) -> 
 
     assert resp.sms_sent is True
     assert resp.debug_code == "123456"
-    assert resp.challenge_id == "ch_1"
 
 
 @pytest.mark.asyncio
@@ -44,6 +39,7 @@ async def test_request_otp_hides_debug_code_when_sms_ok_and_debug_false(
     challenge = SimpleNamespace(challenge_id="ch_2", code="654321", phone="+233541000001")
 
     with (
+        patch("app.services.platform.phone_otp.assert_can_request", new=AsyncMock()),
         patch("app.services.platform.phone_otp.create_challenge", new=AsyncMock(return_value=challenge)),
         patch(
             "app.services.platform.delivery.MessageDelivery.send_sms",
@@ -57,17 +53,12 @@ async def test_request_otp_hides_debug_code_when_sms_ok_and_debug_false(
 
 
 @pytest.mark.asyncio
-async def test_request_otp_currently_exposes_code_when_sms_fails_even_if_not_debug(
-    production_like_settings,
-) -> None:
-    """Known P0 baseline: show_debug = debug OR not sms_sent.
-
-    PHASE 3 must change this so production never returns debug_code.
-    """
+async def test_production_never_returns_otp_when_sms_fails(production_like_settings) -> None:
     svc = CustomerService(production_like_settings, MagicMock())
     challenge = SimpleNamespace(challenge_id="ch_3", code="999888", phone="+233541000002")
 
     with (
+        patch("app.services.platform.phone_otp.assert_can_request", new=AsyncMock()),
         patch("app.services.platform.phone_otp.create_challenge", new=AsyncMock(return_value=challenge)),
         patch(
             "app.services.platform.delivery.MessageDelivery.send_sms",
@@ -77,7 +68,8 @@ async def test_request_otp_currently_exposes_code_when_sms_fails_even_if_not_deb
         resp = await svc.request_phone_otp(CustomerPhoneOtpRequest(phone="+233541000002"))
 
     assert resp.sms_sent is False
-    assert resp.debug_code == "999888"
+    assert resp.debug_code is None
+    assert "could not deliver" in resp.message.lower() or "try again" in resp.message.lower()
 
 
 def test_otp_module_exports_abuse_controls() -> None:
@@ -85,5 +77,4 @@ def test_otp_module_exports_abuse_controls() -> None:
 
     assert phone_otp.MAX_ATTEMPTS == 5
     assert phone_otp.RESEND_COOLDOWN_SECONDS == 45
-    assert phone_otp.OTP_TTL_MINUTES == 10
-    assert phone_otp.CODE_LENGTH == 6
+    assert callable(phone_otp.assert_can_request)

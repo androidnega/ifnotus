@@ -22,6 +22,7 @@ CRITICAL_FRONTEND_PATHS = (
     "/signup",
     "/account",
     "/panel",
+    "/hosting/:environmentId",
 )
 
 CRITICAL_API_PATHS = {

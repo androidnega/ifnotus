@@ -92,6 +92,7 @@ const props = defineProps<{
     password?: string | null
     home?: string | null
     connection_type?: string
+    sftp_coming_note?: string | null
     hint?: string
     message?: string | null
     error?: string
@@ -855,6 +856,12 @@ function formatBytes(n?: number | null) {
             <p class="cred-label">Connection type</p>
             <p class="cred-value">{{ ftpCreds.connection_type || 'FTP' }}</p>
             <p class="hint">Port {{ ftpCreds.port || 21 }}. Choose FTP (not FTPS) unless we enable SSL later.</p>
+            <p
+              v-if="(ftpCreds.connection_type || 'FTP').toUpperCase() === 'FTP'"
+              class="hint"
+            >
+              {{ ftpCreds.sftp_coming_note || 'SFTP coming for entitled plans' }}
+            </p>
           </div>
         </div>
         <p v-if="ftpCreds.message || ftpCreds.hint" class="hint mt">

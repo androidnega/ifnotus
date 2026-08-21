@@ -592,7 +592,7 @@ class EnvironmentBackupService:
             }
 
     async def _prune_old(self, customer_id: UUID, environment_id: UUID) -> None:
-        keep = int(getattr(self._settings, "backup_retention_count", 7) or 7)
+        keep = await self._retention_keep(environment_id)
         result = await self._session.execute(
             select(EnvironmentBackup)
             .where(
@@ -610,6 +610,34 @@ class EnvironmentBackupService:
             except OSError:
                 pass
             await self._session.delete(old)
+
+    async def _retention_keep(self, environment_id: UUID) -> int:
+        """Entitlement check: plan features.retention_days (or retention_count) when set.
+
+        Same-VPS backups are convenience snapshots — not disaster recovery.
+        See docs/phase14-backups.md.
+        """
+        default = int(getattr(self._settings, "backup_retention_count", 7) or 7)
+        env = await self._session.get(CustomerEnvironment, environment_id)
+        if env is None:
+            return default
+        from app.models.platform import HostingPlan, Subscription
+        from app.services.platform.plan_matrix import features_for
+
+        sub = await self._session.get(Subscription, env.subscription_id)
+        plan = await self._session.get(HostingPlan, sub.plan_id) if sub else None
+        feats = features_for(plan)
+        # retention_days ≈ keep N daily backups when present on plan features.
+        for key in ("retention_count", "retention_days"):
+            raw = feats.get(key)
+            if raw is None and isinstance(getattr(plan, "features", None), dict):
+                raw = plan.features.get(key)
+            if raw is not None:
+                try:
+                    return max(1, int(raw))
+                except (TypeError, ValueError):
+                    pass
+        return default
 
     @staticmethod
     def _sha256(path: Path) -> str:

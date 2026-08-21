@@ -1214,6 +1214,7 @@ export const customersApi = {
       password_set: boolean
       password?: string | null
       connection_type?: string
+      sftp_coming_note?: string | null
       hint?: string
       message?: string | null
     }>(`/customers/environments/${environmentId}/ftp`, { params: { reveal } }),
@@ -1230,11 +1231,55 @@ export const customersApi = {
       password_set: boolean
       password?: string | null
       connection_type?: string
+      sftp_coming_note?: string | null
       hint?: string
       message?: string | null
     }>(`/customers/environments/${environmentId}/ftp/ensure`, {}, {
       params: { reset_password: resetPassword },
     }),
+
+  listEnvApplications: (environmentId: string) =>
+    apiClient.get<
+      Array<{
+        id: string
+        environment_id: string
+        name: string
+        stack: string
+        status: string
+        port?: number | null
+        message?: string | null
+      }>
+    >(`/customers/environments/${environmentId}/applications`),
+
+  createEnvApplication: (
+    environmentId: string,
+    body: { name: string; stack: string; git_url?: string | null },
+  ) =>
+    apiClient.post<{
+      id: string
+      environment_id: string
+      name: string
+      stack: string
+      status: string
+      port?: number | null
+      message?: string | null
+    }>(`/customers/environments/${environmentId}/applications`, body),
+
+  listEnvDatabasesV2: (environmentId: string) =>
+    apiClient.get<
+      Array<{
+        id: string
+        environment_id: string
+        engine?: string | null
+        name?: string | null
+        username?: string | null
+        host?: string | null
+        port?: number | null
+        password_set?: boolean
+        legacy?: boolean
+        message?: string | null
+      }>
+    >(`/customers/environments/${environmentId}/databases-v2`),
 
   getEnvMail: (environmentId: string) =>
     apiClient.get<{
@@ -1686,6 +1731,25 @@ export const platformAdminApi = {
 
   listOrders: (params?: { payment_status?: string; limit?: number }) =>
     apiClient.get<import('@/types/staffPlatform').StaffOrderItem[]>('/platform/orders', { params }),
+
+  listCapacity: () =>
+    apiClient.get<
+      Array<{
+        node_id: string
+        hostname: string
+        cpu_total: number
+        ram_total_gb: number
+        storage_total_gb: number
+        cpu_reserved_pct: number
+        cpu_used: number
+        ram_used: number
+        storage_used: number
+        cpu_free: number
+        ram_free: number
+        storage_free: number
+        status: string
+      }>
+    >('/customers/capacity'),
 
   confirmOrderPayment: (orderId: string, body?: { amount_received?: number; notes?: string }) =>
     apiClient.post(`/platform/orders/${orderId}/confirm-payment`, body || {}),

@@ -79,6 +79,9 @@ from app.schemas.platform import (
     TotpConfirmRequest,
     TotpSetupResponse,
     EnvironmentDatabaseResponse,
+    EnvironmentDatabaseV2Response,
+    ApplicationInstanceCreateRequest,
+    ApplicationInstanceResponse,
     EnvironmentDnsResponse,
     EnvironmentBackupResponse,
     EnvironmentBackupRestoreResponse,
@@ -139,6 +142,7 @@ def _require_customer_user(user) -> None:
 
 
 def _env_response(env, plan=None) -> EnvironmentResponse:
+    from app.services.platform.entitlements import effective_entitlements
     from app.services.platform.plan_matrix import capabilities_for
 
     data = EnvironmentResponse.model_validate(env)
@@ -149,6 +153,8 @@ def _env_response(env, plan=None) -> EnvironmentResponse:
             "document_root": None,
             "container_port": None,
             "capabilities": capabilities_for(plan),
+            "entitlements": effective_entitlements(plan),
+            "provisioning_step": getattr(env, "provisioning_step", None),
         }
     )
 
@@ -856,6 +862,167 @@ async def get_env_database(
     )
 
 
+@router.get(
+    "/environments/{environment_id}/databases-v2",
+    response_model=list[EnvironmentDatabaseV2Response],
+)
+async def list_env_databases_v2(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> list[EnvironmentDatabaseV2Response]:
+    """PHASE 11 stub: EnvironmentDatabase registry + legacy db_* as synthetic rows."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    rows: list[EnvironmentDatabaseV2Response] = []
+
+    try:
+        from app.models.platform import EnvironmentDatabase  # type: ignore[attr-defined]
+
+        result = await session.execute(
+            select(EnvironmentDatabase).where(EnvironmentDatabase.environment_id == env.id)
+        )
+        for item in result.scalars().all():
+            rows.append(
+                EnvironmentDatabaseV2Response(
+                    id=str(getattr(item, "id", "")),
+                    environment_id=env.id,
+                    engine=getattr(item, "engine", None),
+                    name=getattr(item, "name", None),
+                    username=getattr(item, "username", None),
+                    host=_customer_db_host(getattr(item, "host", None)),
+                    port=getattr(item, "port", None),
+                    password_set=bool(getattr(item, "password_encrypted", None)),
+                    legacy=False,
+                )
+            )
+    except ImportError:
+        rows = []
+
+    if env.db_name or env.db_engine:
+        legacy_id = str(getattr(env, "db_registry_id", None) or f"legacy-{env.id}")
+        if not any(r.id == legacy_id or (r.name == env.db_name and r.legacy) for r in rows):
+            rows.append(
+                EnvironmentDatabaseV2Response(
+                    id=legacy_id,
+                    environment_id=env.id,
+                    engine=env.db_engine,
+                    name=env.db_name,
+                    username=env.db_username,
+                    host=_customer_db_host(env.db_host),
+                    port=env.db_port,
+                    password_set=bool(env.db_password_encrypted),
+                    legacy=True,
+                    message="Migrated from environment db_* fields.",
+                )
+            )
+    return rows
+
+
+@router.get(
+    "/environments/{environment_id}/applications",
+    response_model=list[ApplicationInstanceResponse],
+)
+async def list_env_applications(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> list[ApplicationInstanceResponse]:
+    """PHASE 10 stub: list ApplicationInstance rows (empty until model ships)."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+
+    try:
+        from app.models.platform import ApplicationInstance  # type: ignore[attr-defined]
+
+        result = await session.execute(
+            select(ApplicationInstance).where(ApplicationInstance.environment_id == env.id)
+        )
+        out: list[ApplicationInstanceResponse] = []
+        for item in result.scalars().all():
+            out.append(
+                ApplicationInstanceResponse(
+                    id=str(getattr(item, "id", "")),
+                    environment_id=env.id,
+                    name=str(getattr(item, "name", "") or "app"),
+                    stack=str(getattr(item, "stack", "") or "static"),
+                    status=str(getattr(item, "status", "pending") or "pending"),
+                    port=getattr(item, "port", None),
+                )
+            )
+        return out
+    except ImportError:
+        return []
+
+
+@router.post(
+    "/environments/{environment_id}/applications",
+    response_model=ApplicationInstanceResponse,
+)
+async def create_env_application(
+    environment_id: UUID,
+    body: ApplicationInstanceCreateRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> ApplicationInstanceResponse:
+    """PHASE 10 stub: entitlement-checked application create."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    tenant = TenantService(session)
+    env = await tenant.get_owned_environment(customer.id, environment_id)
+    plan = await tenant.plan_for_environment(env)
+
+    from app.services.platform.plan_matrix import pack_denied_message, stack_allowed
+
+    stack = body.stack.strip().lower()
+    if not stack_allowed(plan, stack):
+        raise AppException(pack_denied_message(f"Stack '{stack}'"), code="pack_feature")
+
+    try:
+        from uuid import uuid4
+
+        from app.models.platform import ApplicationInstance  # type: ignore[attr-defined]
+
+        item = ApplicationInstance(
+            id=uuid4(),
+            environment_id=env.id,
+            name=body.name.strip(),
+            stack=stack,
+            status="pending",
+            git_url=body.git_url,
+        )
+        session.add(item)
+        await session.flush()
+        return ApplicationInstanceResponse(
+            id=str(item.id),
+            environment_id=env.id,
+            name=item.name,
+            stack=item.stack,
+            status=getattr(item, "status", "pending"),
+            port=getattr(item, "port", None),
+            message="Application registered.",
+        )
+    except ImportError:
+        return ApplicationInstanceResponse(
+            id=f"pending-{environment_id}-{stack}",
+            environment_id=env.id,
+            name=body.name.strip(),
+            stack=stack,
+            status="pending",
+            message="Application runtime registry is not provisioned yet; entitlement check passed.",
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise AppException(
+            f"Could not create application: {str(exc)[:240]}",
+            code="application_create_failed",
+        ) from exc
+
+
 def _env_db_id(env) -> str:
     rid = getattr(env, "db_registry_id", None)
     if not rid:
@@ -1045,7 +1212,12 @@ async def ensure_env_ftp(
     from app.services.platform.fs_ownership import fix_web_ownership
 
     if env.document_root:
-        fix_web_ownership(env.document_root, user=settings.web_run_user)
+        fix_web_ownership(
+            env.document_root,
+            user=settings.web_run_user,
+            uid=getattr(env, "unix_uid", None),
+            gid=getattr(env, "unix_gid", None),
+        )
     svc = EnvironmentFtpService(settings, session)
     created = await svc.ensure_account(env, reset_password=reset_password)
     data = svc.status_payload(env, reveal=True)
@@ -1068,14 +1240,13 @@ async def get_env_ssh(
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
-    from app.services.platform.ftp import EnvironmentFtpService
     from app.services.platform.ssh_access import EnvironmentSshService
 
     ssh = EnvironmentSshService(settings, session)
     allowed = await ssh.ssh_allowed(env)
     password = None
     if reveal and allowed:
-        password = EnvironmentFtpService(settings, session).reveal_password(env)
+        password = ssh.reveal_password(env)
     return EnvironmentSshResponse(**ssh.status_payload(env, allowed=allowed, reveal=reveal, password=password))
 
 
@@ -1119,7 +1290,7 @@ async def create_env_mailbox(
     from app.models.platform import HostingPlan, Subscription
     from app.services.hosting.mail import MailService
     from app.services.platform.dns import EnvironmentDnsService
-    from app.services.platform.plan_matrix import features_for
+    from app.services.platform.plan_matrix import capabilities_for, features_for
 
     if not env.hosting_domain_id:
         if not env.domain:
@@ -1131,7 +1302,11 @@ async def create_env_mailbox(
 
     sub = await session.get(Subscription, env.subscription_id)
     plan = await session.get(HostingPlan, sub.plan_id) if sub else None
-    limit = features_for(plan).get("mailboxes")
+    # Prefer capabilities.mailboxes (plan_matrix); fall back to features key.
+    caps = capabilities_for(plan)
+    limit = caps.get("mailboxes")
+    if limit is None:
+        limit = features_for(plan).get("mailboxes")
     if limit is not None:
         try:
             cap = int(limit)
@@ -1168,13 +1343,11 @@ async def ensure_env_ssh(
     if not env.ftp_username:
         await ftp.ensure_account(env)
     ssh = EnvironmentSshService(settings, session)
-    await ssh.sync_from_environment(env)
-    allowed = await ssh.ssh_allowed(env)
-    password = ftp.reveal_password(env) if allowed else None
-    data = ssh.status_payload(env, allowed=allowed, reveal=True, password=password)
-    if allowed:
+    data = await ssh.ensure_access(env)
+    if data.get("ssh_allowed"):
         data["message"] = (
-            "Jailed SSH is ready. Same password as FTP. This is not root and not the operator IP."
+            "Jailed SSH is ready. SSH password is separate from FTP "
+            "(passwords_differ_from_ftp=true). This is not root and not the operator IP."
         )
     return EnvironmentSshResponse(**data)
 
@@ -1200,7 +1373,12 @@ async def repair_env_filesystem(
     if not env.document_root:
         raise AppException("No site folder yet.")
     root = Path(env.document_root)
-    fix_web_ownership(root, user=settings.web_run_user)
+    fix_web_ownership(
+        root,
+        user=settings.web_run_user,
+        uid=getattr(env, "unix_uid", None),
+        gid=getattr(env, "unix_gid", None),
+    )
     cfg = root / "wp-config.php"
     if cfg.exists():
         text = cfg.read_text(encoding="utf-8", errors="replace")
@@ -1212,7 +1390,12 @@ async def repair_env_filesystem(
             else:
                 text += "\n" + inject
             cfg.write_text(text, encoding="utf-8")
-            fix_web_ownership(cfg, user=settings.web_run_user)
+            fix_web_ownership(
+                cfg,
+                user=settings.web_run_user,
+                uid=getattr(env, "unix_uid", None),
+                gid=getattr(env, "unix_gid", None),
+            )
     return MessageResponse(message="Site folder permissions repaired. Try WordPress again.")
 
 
@@ -1918,6 +2101,71 @@ async def env_unassign_custom_domain(
     response = EnvironmentDnsResponse.model_validate(payload)
     response.message = str(result.get("message") or response.message)
     return response
+
+
+@router.get(
+    "/environments/{environment_id}/ssl",
+    response_model=EnvironmentSslResponse,
+)
+async def env_ssl_status(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> EnvironmentSslResponse:
+    """List SSL status for an environment — prefer live certificate notAfter when present."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    if not env.domain:
+        raise AppException("Environment has no domain.")
+
+    from pathlib import Path
+
+    from app.services.applications.readers.ssl import SSLReader
+
+    expiry = env.ssl_expiry
+    expiry_source: str | None = "estimate" if expiry else None
+    ssl_status = (getattr(env, "ssl_status", None) or "").strip().lower() or None
+    message = "No certificate on file yet."
+    success = False
+
+    cert_path = Path(f"/etc/letsencrypt/live/{env.domain}/fullchain.pem")
+    reader = SSLReader(getattr(settings, "letsencrypt_live_dir", "/etc/letsencrypt/live"))
+    cert = await reader.read(
+        str(cert_path) if cert_path.exists() else None,
+        env.domain,
+    )
+    if cert.configured and getattr(cert, "valid_until", None):
+        expiry = cert.valid_until
+        expiry_source = "certificate"
+        success = True
+        ssl_status = "active"
+        message = cert.message or "Certificate loaded from disk."
+        env.ssl_expiry = expiry
+    elif cert.configured:
+        success = True
+        message = cert.message or "Certificate present."
+        ssl_status = ssl_status or "active"
+        if expiry:
+            expiry_source = expiry_source or "estimate"
+    elif expiry:
+        success = True
+        message = "Using stored expiry estimate (certificate not readable)."
+        expiry_source = "estimate"
+        ssl_status = ssl_status or "active"
+
+    return EnvironmentSslResponse(
+        environment_id=env.id,
+        domain=env.domain,
+        success=success,
+        queued=False,
+        job_id=None,
+        message=message,
+        ssl_expiry=expiry,
+        ssl_status=ssl_status,
+        expiry_source=expiry_source,
+    )
 
 
 @router.post(
@@ -2915,6 +3163,21 @@ async def capacity(
     out: list[CapacityNodeResponse] = []
     for node in await mgr.list_nodes():
         snap = await mgr.snapshot(node)
-        public = {**snap.__dict__, "hostname": "ifnotus-1"}
-        out.append(CapacityNodeResponse(**public))
+        out.append(
+            CapacityNodeResponse(
+                node_id=snap.node_id,
+                hostname="ifnotus-1",
+                cpu_total=snap.cpu_total,
+                ram_total_gb=snap.ram_total_gb,
+                storage_total_gb=snap.storage_total_gb,
+                cpu_reserved_pct=snap.cpu_reserved_pct,
+                cpu_used=snap.cpu_used,
+                ram_used=snap.ram_used,
+                storage_used=snap.storage_used,
+                cpu_free=snap.cpu_free,
+                ram_free=snap.ram_free,
+                storage_free=snap.storage_free,
+                status=snap.status,
+            )
+        )
     return out

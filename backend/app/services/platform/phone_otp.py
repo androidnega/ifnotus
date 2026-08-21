@@ -116,7 +116,44 @@ async def _redis():
         return None
 
 
-async def create_challenge(phone: str) -> PhoneOtpChallenge:
+async def assert_can_request(phone: str, *, settings: object | None = None) -> None:
+    """Enforce resend cooldown; fail closed in production if Redis is down."""
+    from app.core.config import Environment
+    from app.core.exceptions import AppException, ValidationError
+
+    redis = await _redis()
+    is_prod = False
+    if settings is not None:
+        env = getattr(settings, "environment", None)
+        is_prod = env == Environment.PRODUCTION or str(env) == "production"
+
+    if redis is None:
+        if is_prod:
+            raise AppException(
+                "Verification is temporarily unavailable. Please try again shortly.",
+                code="otp_store_unavailable",
+            )
+        return
+
+    try:
+        key = f"{KEY_PREFIX}cooldown:{phone}"
+        if await redis.exists(key):
+            raise ValidationError(
+                f"Please wait {RESEND_COOLDOWN_SECONDS} seconds before requesting another code.",
+                code="otp_cooldown",
+            )
+        await redis.setex(key, RESEND_COOLDOWN_SECONDS, "1")
+    finally:
+        try:
+            await redis.aclose()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def create_challenge(phone: str, *, settings: object | None = None) -> PhoneOtpChallenge:
+    from app.core.config import Environment
+    from app.core.exceptions import AppException
+
     now = datetime.now(UTC)
     ch = PhoneOtpChallenge(
         challenge_id=_new_id(),
@@ -126,6 +163,11 @@ async def create_challenge(phone: str) -> PhoneOtpChallenge:
         expires_at=(now + timedelta(minutes=OTP_TTL_MINUTES)).isoformat(),
     )
     redis = await _redis()
+    is_prod = False
+    if settings is not None:
+        env = getattr(settings, "environment", None)
+        is_prod = env == Environment.PRODUCTION or str(env) == "production"
+
     if redis is not None:
         try:
             key = f"{KEY_PREFIX}{ch.challenge_id}"
@@ -140,6 +182,16 @@ async def create_challenge(phone: str) -> PhoneOtpChallenge:
                 await redis.aclose()
             except Exception:  # noqa: BLE001
                 pass
+            if is_prod:
+                raise AppException(
+                    "Verification is temporarily unavailable. Please try again shortly.",
+                    code="otp_store_unavailable",
+                ) from exc
+    elif is_prod:
+        raise AppException(
+            "Verification is temporarily unavailable. Please try again shortly.",
+            code="otp_store_unavailable",
+        )
 
     with _lock:
         data = _load_file()

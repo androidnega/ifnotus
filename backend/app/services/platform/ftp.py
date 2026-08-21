@@ -327,8 +327,10 @@ class EnvironmentFtpService:
             "password_set": bool(env.ftp_password_encrypted),
             "password": password,
             "connection_type": "FTP",
+            "sftp_coming_note": "SFTP coming for entitled plans",
             "hint": (
-                f"In FileZilla use host {self._public_host()} and port {self._settings.ftp_port}. "
+                f"In FileZilla use host {self._public_host()} and port {self._settings.ftp_port} "
+                f"with protocol FTP (not SFTP). "
                 f"If WordPress asks for a hostname, enter {WORDPRESS_FTP_HOSTNAME}."
             ),
         }

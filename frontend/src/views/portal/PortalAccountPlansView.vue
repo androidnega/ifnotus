@@ -169,7 +169,7 @@ async function checkout() {
     :plan-accent="packageAccent"
   >
     <template #sidebar>
-      <PortalAccountNav :has-env="!!dash?.environments?.length" active="plans" />
+      <PortalAccountNav :has-env="!!dash?.environments?.length" :environment-id="dash?.environments?.[0]?.id" active="plans" />
     </template>
 
     <div class="mx-auto w-full max-w-5xl">

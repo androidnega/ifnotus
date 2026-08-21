@@ -559,6 +559,10 @@ class OrderService:
         self._session.add(sub)
         await self._session.flush()
 
+        from app.services.platform.entitlements import snapshot_for_subscription
+
+        await snapshot_for_subscription(self._session, sub, plan)
+
         credits = await self._session.execute(
             select(AiCreditAccount).where(AiCreditAccount.customer_id == order.customer_id)
         )
@@ -598,6 +602,7 @@ class OrderService:
                 expiry_date=datetime.now(UTC) + timedelta(days=365),
                 auto_renew=True,
                 dns_records=[],
+                status="pending_verification",
                 ssl_status="pending",
             )
             self._session.add(domain_row)

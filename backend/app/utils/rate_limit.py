@@ -24,6 +24,8 @@ _AUTH_RULES: list[tuple[str, set[str] | None, int, int]] = [
     ("/api/v1/customers/login", {"POST"}, 20, 60),
     ("/api/v1/customers/register", {"POST"}, 10, 60),
     ("/api/v1/customers/verify-email", {"POST"}, 15, 60),
+    ("/api/v1/customers/phone/request-otp", {"POST"}, 8, 60),
+    ("/api/v1/customers/phone/verify-otp", {"POST"}, 20, 60),
 ]
 
 

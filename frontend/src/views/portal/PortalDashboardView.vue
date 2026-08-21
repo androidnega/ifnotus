@@ -73,6 +73,7 @@ const ftpCreds = ref<{
   password?: string | null
   home?: string | null
   connection_type?: string
+  sftp_coming_note?: string | null
   hint?: string
   message?: string | null
   error?: string
@@ -284,7 +285,12 @@ async function loadAccount() {
     }
     const { data } = await customersApi.dashboard()
     dash.value = data
-    if (data.environments[0]) activeEnvId.value = data.environments[0].id
+    const envFromQuery = typeof route.query.env === 'string' ? route.query.env : ''
+    if (envFromQuery && data.environments.some((e) => e.id === envFromQuery)) {
+      activeEnvId.value = envFromQuery
+    } else if (data.environments[0]) {
+      activeEnvId.value = data.environments[0].id
+    }
     if (data.plans?.length) {
       plans.value = data.plans
       if (!selectedPlanId.value) selectedPlanId.value = data.plans[0].id
@@ -1164,9 +1170,12 @@ function goNav(next: 'home' | 'billing' | 'ai' | 'support' | 'site', tab?: strin
 }
 
 watch(
-  () => [route.name, route.query.panel, route.query.tab] as const,
-  ([name, qPanel, qTab]) => {
+  () => [route.name, route.query.panel, route.query.tab, route.query.env] as const,
+  ([name, qPanel, qTab, qEnv]) => {
     if (name !== 'portal-dashboard') return
+    if (typeof qEnv === 'string' && dash.value?.environments.some((e) => e.id === qEnv)) {
+      activeEnvId.value = qEnv
+    }
     let p = typeof qPanel === 'string' ? qPanel : 'home'
     // AI lives inside the file editor now — no standalone account tab.
     if (p === 'ai') {
@@ -1194,6 +1203,7 @@ watch(
     <template #sidebar>
       <PortalAccountNav
         :has-env="!!activeEnv"
+        :environment-id="activeEnv?.id"
         :active="panel"
       />
     </template>

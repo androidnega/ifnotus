@@ -70,6 +70,7 @@ class HostingPlan(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     features: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
 class Order(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -194,8 +195,70 @@ class CustomerEnvironment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     ftp_password_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     ftp_home: Mapped[str | None] = mapped_column(String(512), nullable=True)
     ftp_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    unix_uid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    unix_gid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    provisioning_step: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ssh_password_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     subscription: Mapped[Subscription] = relationship(back_populates="environments")
+
+
+class SubscriptionEntitlementSnapshot(Base, UUIDPrimaryKeyMixin):
+    """Frozen entitlements for a subscription at purchase / plan change."""
+
+    __tablename__ = "subscription_entitlement_snapshots"
+
+    subscription_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    plan_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    entitlements_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ApplicationInstance(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Managed application runtime attached to a customer environment (PHASE 10)."""
+
+    __tablename__ = "application_instances"
+
+    environment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("customer_environments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    runtime: Mapped[str] = mapped_column(String(64), nullable=False)
+    framework: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    allocated_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_limit_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    worker_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    deployment_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    config_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class EnvironmentDatabase(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Per-environment database registry (PHASE 11). Legacy env.db_* retained for compatibility."""
+
+    __tablename__ = "environment_databases"
+
+    environment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("customer_environments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    engine: Mapped[str] = mapped_column(String(24), nullable=False)
+    logical_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    db_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    username: Mapped[str] = mapped_column(String(128), nullable=False)
+    credential_secret_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    host_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    storage_limit_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    remote_access_mode: Mapped[str] = mapped_column(String(24), nullable=False, default="off")
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="active")
 
 
 class CustomerDomain(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -216,6 +279,8 @@ class CustomerDomain(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     expiry_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     auto_renew: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     dns_records: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # pending_verification | active | failed | detached (PHASE 12 domain lifecycle)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending_verification")
     ssl_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     ssl_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

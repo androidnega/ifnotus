@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 const props = defineProps<{
   hasEnv?: boolean
+  environmentId?: string | null
   active?: string
 }>()
 
@@ -16,9 +17,10 @@ const panel = computed(() => {
   if (route.name === 'portal-account-settings') return 'settings'
   if (route.name === 'portal-support') return 'support'
   if (route.name === 'portal-invoice') return 'billing'
+  if (String(route.name || '').startsWith('hosting')) return 'hosting'
   const q = String(route.query.panel || 'home')
   if (q === 'plans') return 'billing'
-  if (q === 'ai') return 'site'
+  if (q === 'ai' || q === 'site') return 'hosting'
   return q
 })
 
@@ -27,11 +29,20 @@ function go(next: string) {
     void router.push({ name: 'portal-support' })
     return
   }
+  if (next === 'settings') {
+    void router.push({ name: 'portal-account-settings' })
+    return
+  }
   if (next === 'home') {
     void router.push({ name: 'portal-dashboard' })
     return
   }
-  if (next === 'site') {
+  if (next === 'hosting') {
+    const id = props.environmentId
+    if (id) {
+      void router.push({ name: 'hosting-panel', params: { environmentId: id } })
+      return
+    }
     void router.push({ name: 'portal-dashboard', query: { panel: 'site', tab: 'stack' } })
     return
   }
@@ -45,12 +56,14 @@ function go(next: string) {
     <button
       v-if="hasEnv"
       type="button"
-      :class="{ on: panel === 'site' }"
-      @click="go('site')"
+      :class="{ on: panel === 'hosting' || panel === 'site' }"
+      @click="go('hosting')"
     >
-      Site
+      Hosting services
     </button>
     <button type="button" :class="{ on: panel === 'billing' }" @click="go('billing')">Billing</button>
+    <button type="button" :class="{ on: panel === 'support' }" @click="go('support')">Support</button>
+    <button type="button" :class="{ on: panel === 'settings' }" @click="go('settings')">Settings</button>
   </nav>
 </template>
 

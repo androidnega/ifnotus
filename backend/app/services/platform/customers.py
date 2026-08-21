@@ -170,20 +170,34 @@ class CustomerService:
             customer.onboarding_completed_at = None
 
     async def request_phone_otp(self, body: CustomerPhoneOtpRequest) -> CustomerPhoneOtpRequestResponse:
+        from app.core.exceptions import AppException, ValidationError
         from app.services.platform import phone_otp
         from app.services.platform.delivery import MessageDelivery
 
         phone = self.normalize_phone(body.phone)
-        challenge = await phone_otp.create_challenge(phone)
+        # Resend / request cooldown by phone (and production fails closed without Redis).
+        try:
+            await phone_otp.assert_can_request(phone, settings=self._settings)
+        except ValidationError:
+            raise
+        except AppException:
+            raise
+
+        challenge = await phone_otp.create_challenge(phone, settings=self._settings)
         sms_body = f"IFNOTUS code: {challenge.code}. Valid for {phone_otp.OTP_TTL_MINUTES} minutes."
         delivery = MessageDelivery(self._settings).send_sms(to=phone, body=sms_body)
         sms_sent = bool(delivery.get("ok"))
-        show_debug = bool(self._settings.debug) or not sms_sent
-        message = (
-            "We sent a code by SMS."
-            if sms_sent
-            else "SMS is not configured yet — use the code shown on this page."
-        )
+        # PHASE 3: never expose OTP unless settings.debug is explicitly true.
+        show_debug = bool(self._settings.debug)
+        if sms_sent:
+            message = "We sent a code by SMS."
+        elif show_debug:
+            message = "SMS is not configured yet — use the code shown on this page."
+        else:
+            message = (
+                "We could not deliver the SMS right now. Wait a minute and try again, "
+                "or contact support if it keeps failing."
+            )
         return CustomerPhoneOtpRequestResponse(
             challenge_id=challenge.challenge_id,
             phone=phone,

@@ -1,4 +1,4 @@
-"""Resource manager — capacity checks and 20% safety reserve."""
+"""Resource manager — capacity checks with separate CPU/RAM/storage reserves."""
 
 from __future__ import annotations
 
@@ -42,18 +42,34 @@ class ResourceManager:
         return list(result.scalars().all())
 
     async def ensure_primary_node(self, settings) -> InfrastructureNode:
-        """Create or refresh the start-node row so checkout can succeed."""
+        """Create or refresh the start-node row so checkout can succeed.
+
+        ``ip_address`` is a management address (loopback, or ``server_public_ip`` when
+        set). Customer-facing / public reachability is tracked separately — do not treat
+        this as the sole public service IP.
+        """
         hostname = getattr(settings, "infra_hostname", None) or "ifnotus-1"
         cpu = int(getattr(settings, "infra_cpu_total", 12) or 12)
         ram = int(getattr(settings, "infra_ram_total_gb", 48) or 48)
-        storage = int(getattr(settings, "infra_storage_total_gb", 200) or 200)
+        storage = int(getattr(settings, "infra_storage_total_gb", 256) or 256)
         reserved = int(getattr(settings, "infra_cpu_reserved_pct", 20) or 20)
-        notes = "Primary shared-hosting node. Do not show this address to customers."
+        public_ip = (getattr(settings, "server_public_ip", None) or "").strip() or None
+        # Management address: prefer configured public IP when set, else loopback.
+        management_ip = public_ip or "127.0.0.1"
+        notes = (
+            "Primary shared-hosting node (management address). "
+            "Public customer IP is separate — do not show this address to customers."
+        )
+        if public_ip:
+            notes = (
+                f"{notes} Configured server_public_ip={public_ip} "
+                "(recorded on ip_address for ops; not a dedicated management_ip column)."
+            )
         nodes = await self.list_nodes()
         if nodes:
             node = nodes[0]
             node.hostname = hostname
-            node.ip_address = "127.0.0.1"
+            node.ip_address = management_ip
             node.cpu_total = cpu
             node.ram_total_gb = ram
             node.storage_total_gb = storage
@@ -64,7 +80,7 @@ class ResourceManager:
             return node
         node = InfrastructureNode(
             hostname=hostname,
-            ip_address="127.0.0.1",
+            ip_address=management_ip,
             cpu_total=cpu,
             ram_total_gb=ram,
             storage_total_gb=storage,
@@ -77,24 +93,34 @@ class ResourceManager:
         return node
 
     async def pick_node_for_plan(self, plan: HostingPlan) -> InfrastructureNode:
+        from app.core.config import get_settings
+        from app.services.platform.abuse import evaluate_disk_pressure, should_block_provisioning
+
+        settings = get_settings()
+        pressure = evaluate_disk_pressure(settings)
+        if should_block_provisioning(settings, pressure=pressure):
+            raise RuntimeError(
+                "Host disk pressure is critical — provisioning is paused until space is freed."
+            )
         nodes = await self.list_nodes()
         if not nodes:
-            from app.core.config import get_settings
-
-            await self.ensure_primary_node(get_settings())
+            await self.ensure_primary_node(settings)
             nodes = await self.list_nodes()
         healthy = [n for n in nodes if n.status in {"healthy", "warning"}]
         if not healthy:
             raise RuntimeError("No healthy infrastructure nodes available.")
 
+        min_free = int(getattr(settings, "infra_min_free_storage_gb", 20) or 20)
+        need_storage = int(plan.storage_gb) + min_free
+
         best: InfrastructureNode | None = None
         best_free = -1.0
         for node in healthy:
-            snap = await self.snapshot(node)
+            snap = await self.snapshot(node, settings=settings)
             if (
                 snap.cpu_free >= float(plan.cpu_cores)
                 and snap.ram_free >= float(plan.ram_gb)
-                and snap.storage_free >= plan.storage_gb
+                and snap.storage_free >= need_storage
             ):
                 free_score = snap.cpu_free + snap.ram_free + snap.storage_free
                 if free_score > best_free:
@@ -106,10 +132,23 @@ class ResourceManager:
             )
         return best
 
-    async def snapshot(self, node: InfrastructureNode) -> CapacitySnapshot:
-        reserved_cpu = max(1, int(node.cpu_total * node.cpu_reserved_pct / 100))
-        reserved_ram = max(1, int(node.ram_total_gb * node.cpu_reserved_pct / 100))
-        reserved_storage = max(1, int(node.storage_total_gb * node.cpu_reserved_pct / 100))
+    async def snapshot(self, node: InfrastructureNode, *, settings=None) -> CapacitySnapshot:
+        if settings is None:
+            from app.core.config import get_settings
+
+            settings = get_settings()
+
+        cpu_pct = int(
+            getattr(node, "cpu_reserved_pct", None)
+            or getattr(settings, "infra_cpu_reserved_pct", 20)
+            or 20
+        )
+        ram_pct = int(getattr(settings, "infra_ram_reserved_pct", 20) or 20)
+        storage_pct = int(getattr(settings, "infra_storage_reserved_pct", 15) or 15)
+
+        reserved_cpu = max(1, int(node.cpu_total * cpu_pct / 100))
+        reserved_ram = max(1, int(node.ram_total_gb * ram_pct / 100))
+        reserved_storage = max(1, int(node.storage_total_gb * storage_pct / 100))
 
         cpu_alloc = node.cpu_total - reserved_cpu
         ram_alloc = node.ram_total_gb - reserved_ram
@@ -136,7 +175,7 @@ class ResourceManager:
             cpu_total=node.cpu_total,
             ram_total_gb=node.ram_total_gb,
             storage_total_gb=node.storage_total_gb,
-            cpu_reserved_pct=node.cpu_reserved_pct,
+            cpu_reserved_pct=cpu_pct,
             cpu_allocatable=float(cpu_alloc),
             ram_allocatable=float(ram_alloc),
             storage_allocatable=storage_alloc,

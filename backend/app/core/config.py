@@ -248,8 +248,11 @@ class Settings(BaseSettings):
     infra_hostname: str = "ifnotus-1"
     infra_cpu_total: int = 12
     infra_ram_total_gb: int = 48
-    infra_storage_total_gb: int = 200
+    infra_storage_total_gb: int = 256
     infra_cpu_reserved_pct: int = 20
+    infra_ram_reserved_pct: int = 20
+    infra_storage_reserved_pct: int = 15
+    infra_min_free_storage_gb: int = 20
     customer_isolation_mode: str = "docker"  # docker | filesystem
     web_run_user: str = "www-data"
     ftp_enabled: bool = True

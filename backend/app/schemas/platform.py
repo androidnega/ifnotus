@@ -24,6 +24,7 @@ class HostingPlanSchema(SchemaBase):
     features: dict
     sort_order: int
     is_active: bool
+    version: int = 1
 
     @field_validator("features", mode="before")
     @classmethod
@@ -270,6 +271,8 @@ class EnvironmentResponse(SchemaBase):
     db_password_set: bool = False
     created_at: datetime
     capabilities: dict = Field(default_factory=dict)
+    entitlements: dict = Field(default_factory=dict)
+    provisioning_step: str | None = None
 
 
 class EnvironmentDatabaseResponse(SchemaBase):
@@ -296,6 +299,7 @@ class EnvironmentFtpResponse(SchemaBase):
     password: str | None = None
     connection_type: str = "FTP"
     hint: str = "Use ftp.ifnotus.space in FileZilla. If WordPress asks for a hostname, enter localhost."
+    sftp_coming_note: str | None = "SFTP coming for entitled plans"
     message: str | None = None
 
 
@@ -309,6 +313,7 @@ class EnvironmentSshResponse(SchemaBase):
     port: int = 22
     password_set: bool = False
     password: str | None = None
+    passwords_differ_from_ftp: bool = True
     command: str | None = None
     min_price_ghs: int = 300
     hint: str = ""
@@ -526,6 +531,8 @@ class EnvironmentSslResponse(SchemaBase):
     job_id: UUID | None = None
     message: str
     ssl_expiry: datetime | None = None
+    ssl_status: str | None = None
+    expiry_source: str | None = None  # "certificate" | "estimate" | None
 
 
 class EnvironmentBackupResponse(SchemaBase):
@@ -680,11 +687,11 @@ class CapacityNodeResponse(SchemaBase):
     ram_total_gb: int
     storage_total_gb: int
     cpu_reserved_pct: int
-    cpu_used: int
-    ram_used: int
+    cpu_used: float
+    ram_used: float
     storage_used: int
-    cpu_free: int
-    ram_free: int
+    cpu_free: float
+    ram_free: float
     storage_free: int
     status: str
 
@@ -713,3 +720,32 @@ class DomainAvailabilityResponse(SchemaBase):
     currency: str = "GHS"
     message: str
     provider: str = "local"
+
+
+class ApplicationInstanceCreateRequest(SchemaBase):
+    name: str = Field(min_length=1, max_length=120)
+    stack: str = Field(min_length=1, max_length=64)
+    git_url: str | None = Field(default=None, max_length=512)
+
+
+class ApplicationInstanceResponse(SchemaBase):
+    id: str
+    environment_id: UUID
+    name: str
+    stack: str
+    status: str = "pending"
+    port: int | None = None
+    message: str | None = None
+
+
+class EnvironmentDatabaseV2Response(SchemaBase):
+    id: str
+    environment_id: UUID
+    engine: str | None = None
+    name: str | None = None
+    username: str | None = None
+    host: str | None = None
+    port: int | None = None
+    password_set: bool = False
+    legacy: bool = False
+    message: str | None = None

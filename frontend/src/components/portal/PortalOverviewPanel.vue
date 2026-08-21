@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useRouter } from 'vue-router'
 import type { CustomerDashboard, CustomerEnvironment, HostingPlan } from '@/types/platform'
 import { formatCpu, formatRamGb } from '@/lib/planResources'
 import { IconDatabase, IconDeploy, IconFolder, IconGlobe } from '@/components/icons'
+
+const router = useRouter()
 
 const props = defineProps<{
   dash: CustomerDashboard
@@ -68,6 +71,15 @@ function openFilesManager() {
   }
   const href = `/account/files?env=${encodeURIComponent(id)}`
   window.open(href, `ifnotus-files-${id}`)
+}
+
+function openHostingPanel() {
+  const id = env.value?.id
+  if (!id) {
+    openSite('stack')
+    return
+  }
+  void router.push({ name: 'hosting-panel', params: { environmentId: id } })
 }
 
 const spec = computed(() => {
@@ -168,7 +180,7 @@ const expiresLabel = computed(() => {
           <p class="hint">{{ usageInfo || healthInfo || 'Your site is ready.' }}</p>
 
           <div class="actions">
-            <button type="button" class="btn-primary" @click="openSite('stack')">Manage site</button>
+            <button type="button" class="btn-primary" @click="openHostingPanel">Manage Hosting</button>
             <a
               v-if="env.domain"
               class="btn-ghost"

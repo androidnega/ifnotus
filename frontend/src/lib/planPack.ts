@@ -37,7 +37,7 @@ export function publicPackItems(plan: HostingPlan): PackItem[] {
       detail: domains >= 999 ? 'Unlimited professional domains*' : `${domains} professional domain${domains === 1 ? '' : 's'}`,
     },
     { id: 'ssh', label: 'SSH', detail: sshHeadline(plan) },
-    { id: 'ftp', label: 'FTP / SFTP', detail: matrix.sftp === 'no' ? 'Not on this pack' : 'File access included' },
+    { id: 'ftp', label: 'FTP', detail: matrix.sftp === 'no' ? 'Not on this pack' : 'File access included (SFTP coming for entitled plans)' },
     { id: 'stacks', label: 'Included stacks', detail: stacks.slice(0, 8).join(', ') || 'Upgrade for more runtimes' },
   ]
   if (limited.length) {

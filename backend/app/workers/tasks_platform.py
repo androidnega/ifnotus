@@ -58,8 +58,24 @@ class ProvisionEnvironmentTask(BaseTask):
                     data={"environment_id": str(env.id), "domain": env.domain},
                 )
             except Exception as exc:
-                await session.rollback()
                 logger.exception("provision_task_failed")
+                # Prefer committing failure markers (job failed / env provisioning_failed)
+                # and compensating metadata rather than rolling them away.
+                try:
+                    await session.commit()
+                except Exception:  # noqa: BLE001
+                    await session.rollback()
+                    if job_id:
+                        try:
+                            async with self._session_factory() as fail_session:
+                                failed = await fail_session.get(PlatformJob, UUID(str(job_id)))
+                                if failed is not None:
+                                    failed.status = "failed"
+                                    failed.error_info = str(exc)[:2000]
+                                    failed.completed_at = datetime.now(UTC)
+                                    await fail_session.commit()
+                        except Exception:  # noqa: BLE001
+                            logger.warning("provision_fail_marker_persist_failed", job_id=str(job_id))
                 return TaskResult(status=TaskStatus.FAILED, error=str(exc))
 
 

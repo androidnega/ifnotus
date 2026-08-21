@@ -74,6 +74,7 @@ const navGroups: NavGroup[] = [
       { to: '/platform/customers', name: 'platform-customers', label: 'Customers', icon: IconApp, permission: Permission.PLATFORM_READ },
       { to: '/platform/plans', name: 'platform-plans', label: 'Plans', icon: IconDeploy, permission: Permission.PLATFORM_READ },
       { to: '/platform/orders', name: 'platform-orders', label: 'Orders', icon: IconGlobe, permission: Permission.PLATFORM_READ },
+      { to: '/platform/capacity', name: 'platform-capacity', label: 'Capacity', icon: IconServer, permission: Permission.PLATFORM_READ },
       { to: '/support', name: 'support', label: 'Support', icon: IconMail, permission: Permission.SUPPORT_READ },
     ],
   },

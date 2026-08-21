@@ -172,6 +172,10 @@ class SubscriptionBillingService:
         sub.ram_allocated = plan.ram_gb
         sub.storage_allocated = plan.storage_gb
 
+        from app.services.platform.entitlements import snapshot_for_subscription
+
+        await snapshot_for_subscription(self._session, sub, plan)
+
         envs = await self._envs(sub.id)
         for env in envs:
             env.cpu_limit = plan.cpu_cores

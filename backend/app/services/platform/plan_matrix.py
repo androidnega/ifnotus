@@ -124,6 +124,8 @@ def _row(
     firewall: Level = NO,
     root: Level = NO,
     priority_support: Level = NO,
+    retention_days: int | None = None,
+    marketing_blurb: str | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
     data: dict[str, Any] = {
@@ -165,6 +167,8 @@ def _row(
         "firewall": firewall,
         "root": root,
         "priority_support": priority_support,
+        "retention_days": retention_days,
+        "marketing_blurb": marketing_blurb,
         "stacks": stacks,
     }
     data.update(extra)
@@ -217,6 +221,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         gh_deploys="20/mo", auto_deploy=YES, webhooks=YES,
         branch_auto=2, deploy_history=YES, deploy_logs=YES, app_logs=YES, rollback=YES,
         custom_build=YES, preview=LIM, staging=LIM, db_backups=YES, auto_backups=LIM,
+        retention_days=7,
         monitoring=YES, uptime=YES, ai_errors=YES, priority_support=LIM,
     ),
     "student-pro": _row(
@@ -235,6 +240,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         custom_build=YES, preview=YES, staging=YES, db_backups=YES, auto_backups=YES,
         monitoring=YES, uptime=YES, ai_errors=YES, ai_server=LIM, firewall=NO,
         priority_support=LIM,
+        retention_days=7,
     ),
     "student-elite": _row(
         kind="managed",
@@ -252,6 +258,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         custom_build=YES, preview=YES, staging=YES, db_backups=YES, auto_backups=YES,
         monitoring=YES, uptime=YES, ai_errors=YES, ai_server=LIM, firewall=LIM,
         priority_support=YES,
+        retention_days=14,
     ),
     "business-pro": _row(
         kind="managed",
@@ -269,6 +276,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         custom_build=YES, preview=YES, staging=YES, db_backups=YES, auto_backups=YES,
         monitoring=YES, uptime=YES, ai_errors=YES, ai_server=YES, firewall=LIM,
         priority_support=YES,
+        retention_days=14,
     ),
     "macho-power": _row(
         kind="managed",
@@ -283,6 +291,9 @@ MATRIX: dict[str, dict[str, Any]] = {
         custom_build=YES, preview=YES, staging=YES, db_backups=YES, auto_backups=YES,
         monitoring=YES, uptime=YES, ai_errors=YES, ai_server=YES, firewall=YES,
         priority_support=YES,
+        retention_days=14,
+        # Sellable on shared node — keep catalog copy calm (no hype).
+        marketing_blurb="High-capacity managed hosting for busy production sites.",
     ),
     "monster-cloud": _row(
         kind="managed",
@@ -295,7 +306,11 @@ MATRIX: dict[str, dict[str, Any]] = {
         custom_build=YES, preview=YES, staging=YES, db_backups=YES, auto_backups=YES,
         monitoring=YES, uptime=YES, ai_errors=YES, ai_server=YES, firewall=YES,
         priority_support=YES,
+        retention_days=30,
+        marketing_blurb="Top-tier managed pack on the shared platform — large sites, calm ops.",
     ),
+    # Cloud VPS / VDS: kind=vps|vds → sellable_on_shared_node() is False.
+    # Do not offer checkout against Shared Node capacity; they need their own VM.
     "cloud-vps": _row(
         kind="vps",
         custom_domains=None,
@@ -308,6 +323,8 @@ MATRIX: dict[str, dict[str, Any]] = {
         monitoring=YES, uptime=YES, ai_errors=YES, ai_server=YES, firewall=YES, root=YES,
         priority_support=YES, vcpu=4, ram_gb=8, storage_gb=100, storage_kind="SSD",
         dedicated_cpu=NO, cpanel=YES,
+        retention_days=7,
+        marketing_blurb="Dedicated virtual server (own VM) — not provisioned on the shared node.",
     ),
     "cloud-vds": _row(
         kind="vds",
@@ -321,6 +338,8 @@ MATRIX: dict[str, dict[str, Any]] = {
         monitoring=YES, uptime=YES, ai_errors=YES, ai_server=YES, firewall=YES, root=YES,
         priority_support=YES, vcpu=None, ram_gb=24, storage_gb=180, storage_kind="NVMe",
         dedicated_cpu=YES, cpanel=YES,
+        retention_days=14,
+        marketing_blurb="Dedicated virtual dedicated server — separate from shared hosting capacity.",
     ),
 }
 
@@ -431,7 +450,11 @@ def catalog_features(plan: HostingPlan | None) -> dict[str, Any]:
 
 
 def sellable_on_shared_node(plan: HostingPlan | None) -> bool:
-    """Cloud VPS/VDS need their own VM — do not sell them off this shared disk."""
+    """Cloud VPS/VDS need their own VM — do not sell them off this shared disk.
+
+    MATRIX entries with kind ``vps`` / ``vds`` (cloud-vps, cloud-vds) return False.
+    Managed packs including macho-power / monster-cloud remain True.
+    """
     kind = str(features_for(plan).get("kind") or "managed").lower()
     return kind not in {"vps", "vds"}
 

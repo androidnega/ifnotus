@@ -28,6 +28,40 @@ from app.services.platform.registrar import DomainRegistrar
 
 logger = get_logger(__name__)
 
+# PHASE 12 — CustomerDomain.status values used in attach / verify / detach flows.
+DOMAIN_STATUS_PENDING = "pending_verification"
+DOMAIN_STATUS_ACTIVE = "active"
+DOMAIN_STATUS_FAILED = "failed"
+DOMAIN_STATUS_DETACHED = "detached"
+DOMAIN_LIFECYCLE_STATUSES = frozenset(
+    {
+        DOMAIN_STATUS_PENDING,
+        DOMAIN_STATUS_ACTIVE,
+        DOMAIN_STATUS_FAILED,
+        DOMAIN_STATUS_DETACHED,
+    }
+)
+
+
+def domain_lifecycle_status(row: CustomerDomain) -> str:
+    """Normalize CustomerDomain.status (or infer from attachment)."""
+    raw = (getattr(row, "status", None) or "").strip().lower()
+    if raw in DOMAIN_LIFECYCLE_STATUSES:
+        return raw
+    if row.environment_id is None:
+        return DOMAIN_STATUS_DETACHED
+    return DOMAIN_STATUS_PENDING
+
+
+def set_domain_lifecycle_status(row: CustomerDomain, status: str) -> None:
+    value = (status or "").strip().lower()
+    if value not in DOMAIN_LIFECYCLE_STATUSES:
+        raise ValidationError(
+            f"Invalid domain status '{status}'.",
+            code="domain_status_invalid",
+        )
+    row.status = value
+
 
 class EnvironmentDnsService:
     def __init__(self, settings: Settings, session: AsyncSession) -> None:
@@ -141,8 +175,14 @@ class EnvironmentDnsService:
         nameservers: list[str],
     ) -> dict:
         """Plain-English DNS / HTTPS checklist. Never returns the VPS IP."""
-        ssl_status = (env.ssl_status or "").strip().lower() or None
-        ssl_ready = ssl_status in {"active", "issued", "valid", "ok"} or bool(env.ssl_expiry)
+        # SSL readiness: prefer explicit status / expiry on the environment.
+        # (CustomerEnvironment may not have ssl_status; getattr keeps this safe.)
+        ssl_status = (getattr(env, "ssl_status", None) or "").strip().lower() or None
+        ssl_ready = ssl_status in {"active", "issued", "valid", "ok"} or bool(
+            getattr(env, "ssl_expiry", None)
+        )
+        if not ssl_status and getattr(env, "ssl_expiry", None):
+            ssl_status = "active"
         included = self.is_included_hostname(env.domain) and not check_name
 
         if included:
@@ -481,6 +521,8 @@ class EnvironmentDnsService:
         published = await self.publish_on_ifnotus_ns(name)
 
         if other is None:
+            # Attach flow: new custom domains start as pending_verification until
+            # nameservers / HTTPS prove live (active) or issue fails (failed).
             other = CustomerDomain(
                 customer_id=env.customer_id,
                 environment_id=env.id,
@@ -489,12 +531,14 @@ class EnvironmentDnsService:
                 registration_date=datetime.now(UTC),
                 auto_renew=False,
                 dns_records=[{"ns": self.nameservers()}],
+                status=DOMAIN_STATUS_PENDING,
                 ssl_status="pending",
             )
             self._session.add(other)
         else:
             other.environment_id = env.id
             other.dns_records = [{"ns": self.nameservers()}]
+            set_domain_lifecycle_status(other, DOMAIN_STATUS_PENDING)
 
         env.domain = name
         self._session.add(
@@ -549,6 +593,7 @@ class EnvironmentDnsService:
                 hosting.nginx_enabled = False
 
         row.environment_id = None
+        set_domain_lifecycle_status(row, DOMAIN_STATUS_DETACHED)
         await self._session.flush()
         remaining = await self.list_custom_domains(env)
         env.domain = remaining[0].domain_name if remaining else await self._addon_hostname(env)
