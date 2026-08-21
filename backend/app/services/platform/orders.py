@@ -301,6 +301,23 @@ class OrderService:
             await self._activate_hosting(order)
             await self._session.flush()
             return OrderResponse.model_validate(order)
+
+        # PHASE 22 — reuse an in-flight provision job instead of stacking duplicates.
+        inflight = await self._session.execute(
+            select(PlatformJob).where(
+                PlatformJob.job_type == "provision_environment",
+                PlatformJob.customer_id == order.customer_id,
+                PlatformJob.status.in_(("pending", "running", "queued")),
+            )
+        )
+        for candidate in inflight.scalars().all():
+            payload = candidate.payload or {}
+            if str(payload.get("order_id")) == str(order.id):
+                order.provisioning_status = "queued"
+                await self._enqueue_or_run(candidate)
+                await self._session.flush()
+                return OrderResponse.model_validate(order)
+
         job = PlatformJob(
             job_type="provision_environment",
             customer_id=order.customer_id,
@@ -310,6 +327,7 @@ class OrderService:
                 "subscription_id": str(sub.id),
                 "plan_id": str(order.plan_id),
                 "domain_name": order.domain_name,
+                "retry": True,
             },
         )
         self._session.add(job)

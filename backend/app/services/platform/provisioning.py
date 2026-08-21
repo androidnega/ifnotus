@@ -42,6 +42,60 @@ PROVISION_STEPS = (
     "ACTIVE",
 )
 
+# Steps that must fail the job (never leave env ACTIVE).
+HARD_FAIL_STEPS = frozenset(
+    {
+        "ALLOCATING_NODE",
+        "CREATING_STORAGE",
+        "CREATING_ISOLATION",
+        "CONFIGURING_WEB",
+        "CONFIGURING_TRANSFER",
+    }
+)
+
+# Soft failures: logged, job may still reach ACTIVE.
+SOFT_FAIL_STEPS = frozenset({"CONFIGURING_SSL", "HEALTH_CHECK"})
+
+
+def classify_provision_failure(step: str | None, error: str | BaseException) -> dict[str, Any]:
+    """Map a failed step + error into a stable failure record for ops/tests."""
+    message = str(error)
+    lower = message.lower()
+    category = "unknown"
+    if "docker" in lower:
+        category = "docker"
+    elif "nginx" in lower or "web server" in lower:
+        category = "nginx"
+    elif "unix" in lower or "useradd" in lower or "sftp" in lower or "transfer" in lower:
+        category = "unix_or_transfer"
+    elif "disk" in lower or "capacity" in lower or "insufficient" in lower:
+        category = "capacity"
+    elif "ssl" in lower or "letsencrypt" in lower or "certbot" in lower:
+        category = "ssl"
+    elif "dns" in lower:
+        category = "dns"
+    elif "database" in lower or "mysql" in lower or "postgres" in lower:
+        category = "database"
+    elif "mail" in lower:
+        category = "mail"
+    elif "domain" in lower or "hostname" in lower or "duplicate" in lower:
+        category = "domain"
+    step_name = step or "unknown"
+    hard = step_name in HARD_FAIL_STEPS or category in {
+        "docker",
+        "nginx",
+        "unix_or_transfer",
+        "capacity",
+        "domain",
+    }
+    return {
+        "step": step_name,
+        "category": category,
+        "hard_fail": hard,
+        "expected_env_status": "provisioning_failed" if hard else "active_or_degraded",
+        "message": message[:500],
+    }
+
 
 def docker_downgrade_allowed(plan: HostingPlan | None, preferred_isolation: str) -> bool:
     """Whether silent filesystem fallback is permitted after Docker isolation fails.
@@ -145,14 +199,20 @@ class ProvisioningEngine:
         self._nginx.ensure_document_root(doc_root)
         self._touch_created(job, doc_root=doc_root)
 
-        # PHASE 20 — allocate ids early so isolation/processes can use tenant uid:gid.
+        # PHASE 20/22 — allocate ids early for docker --user. Prefer existing env ids;
+        # on first provision env may still be None, so hash subscription id provisionally
+        # (re-bound to env.id after insert — same range, stable per subscription).
         from app.services.platform.fs_ownership import allocate_unix_ids
 
-        if getattr(env, "unix_uid", None) is None or getattr(env, "unix_gid", None) is None:
-            uid, gid = allocate_unix_ids(env.id)
-            env.unix_uid = uid
-            env.unix_gid = gid
-            await self._session.flush()
+        if env is not None:
+            if getattr(env, "unix_uid", None) is None or getattr(env, "unix_gid", None) is None:
+                uid, gid = allocate_unix_ids(env.id)
+                env.unix_uid = uid
+                env.unix_gid = gid
+                await self._session.flush()
+            provisional_uid, provisional_gid = int(env.unix_uid), int(env.unix_gid)
+        else:
+            provisional_uid, provisional_gid = allocate_unix_ids(sub.id)
 
         # --- CREATING_ISOLATION ---
         await self._set_step(job, env, "CREATING_ISOLATION")
@@ -179,8 +239,8 @@ class ProvisioningEngine:
                 cpu=plan.cpu_cores,
                 ram_gb=plan.ram_gb,
                 port=container_port,
-                uid=env.unix_uid,
-                gid=env.unix_gid,
+                uid=provisional_uid,
+                gid=provisional_gid,
             )
             if not container_id:
                 raise RuntimeError(
@@ -195,8 +255,8 @@ class ProvisioningEngine:
                 cpu=plan.cpu_cores,
                 ram_gb=plan.ram_gb,
                 port=container_port,
-                uid=env.unix_uid,
-                gid=env.unix_gid,
+                uid=provisional_uid,
+                gid=provisional_gid,
             )
             if not container_id:
                 # Plan does not require docker — filesystem is OK
@@ -561,6 +621,9 @@ class ProvisioningEngine:
         if env is not None and env.status not in {"active", "terminated", "terminating"}:
             env.status = "provisioning_failed"
             env.health_status = "unhealthy"
+        classification = classify_provision_failure(result.get("current_step"), exc)
+        result["failure"] = classification
+        job.result = result
         order_id = (job.payload or {}).get("order_id")
         if order_id:
             try:
@@ -574,6 +637,7 @@ class ProvisioningEngine:
             "provision_job_failed",
             job_id=str(job.id),
             step=result.get("current_step"),
+            category=classification.get("category"),
             error=str(exc),
         )
 
