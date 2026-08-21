@@ -299,7 +299,41 @@ class EnvironmentFtpResponse(SchemaBase):
     password: str | None = None
     connection_type: str = "FTP"
     hint: str = "Use ftp.ifnotus.space in FileZilla. If WordPress asks for a hostname, enter localhost."
-    sftp_coming_note: str | None = "SFTP coming for entitled plans"
+    sftp_coming_note: str | None = (
+        "Prefer SFTP (port 22) from the Transfer tab when available — FTP remains for WordPress prompts."
+    )
+    message: str | None = None
+
+
+class EnvironmentSftpKeyResponse(SchemaBase):
+    id: str
+    name: str | None = None
+    fingerprint: str | None = None
+    created_at: str | None = None
+
+
+class EnvironmentSftpKeyCreate(SchemaBase):
+    public_key: str = Field(min_length=32, max_length=8192)
+    name: str | None = Field(default=None, max_length=64)
+
+
+class EnvironmentSftpResponse(SchemaBase):
+    environment_id: UUID
+    sftp_allowed: bool = False
+    enabled: bool = False
+    username: str | None = None
+    host: str = "serverlabsttu.space"
+    shared_ip: str | None = None
+    port: int = 22
+    password_auth_enabled: bool = True
+    password_set: bool = False
+    password: str | None = None
+    connection_type: str = "SFTP"
+    protocol: str = "sftp"
+    shell_access: bool = False
+    keys: list[EnvironmentSftpKeyResponse] = Field(default_factory=list)
+    command: str | None = None
+    hint: str = ""
     message: str | None = None
 
 

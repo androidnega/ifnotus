@@ -264,6 +264,7 @@ class Settings(BaseSettings):
     # Shared customer access IP/host — not the operator VPS address. SSH from ₵300+.
     customer_shared_ip: str = ""
     customer_ssh_host: str = "ssh.ifnotus.space"
+    customer_sftp_host: str = "serverlabsttu.space"
     customer_ssh_min_price_ghs: int = 300
 
     @field_validator("cors_origins", mode="before")

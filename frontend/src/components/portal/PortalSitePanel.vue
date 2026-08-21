@@ -97,6 +97,26 @@ const props = defineProps<{
     message?: string | null
     error?: string
   } | null
+  sftpCreds?: {
+    sftp_allowed?: boolean
+    enabled?: boolean
+    username?: string | null
+    host?: string
+    shared_ip?: string | null
+    port?: number
+    password_set?: boolean
+    password?: string | null
+    connection_type?: string
+    shell_access?: boolean
+    keys?: Array<{ id: string; name?: string | null; fingerprint?: string | null; created_at?: string | null }>
+    command?: string | null
+    hint?: string
+    message?: string | null
+    error?: string
+  } | null
+  sftpInfo?: string
+  sftpKeyInput?: string
+  sftpKeyName?: string
   sshCreds?: {
     ssh_allowed?: boolean
     enabled?: boolean
@@ -178,6 +198,12 @@ const emit = defineEmits<{
   updateDbSql: [string]
   loadFtp: [boolean?]
   ensureFtp: [boolean?]
+  loadSftp: [boolean?]
+  ensureSftp: [boolean?]
+  addSftpKey: []
+  removeSftpKey: [string]
+  'update:sftpKeyInput': [string]
+  'update:sftpKeyName': [string]
   loadSsh: []
   ensureSsh: []
   repairFs: []
@@ -215,6 +241,14 @@ function openFileManager(path = '.') {
 }
 const showPassword = ref(false)
 const showFtpPassword = ref(false)
+const showSftpPassword = ref(false)
+
+async function toggleSftpPassword() {
+  showSftpPassword.value = !showSftpPassword.value
+  if (showSftpPassword.value && !props.sftpCreds?.password) {
+    emit('loadSftp', true)
+  }
+}
 
 watch(
   () => [props.activeEnv.id, props.initialTab] as const,
@@ -244,6 +278,7 @@ watch(siteTab, (tab) => {
   }
   if (tab === 'ftp') {
     showFtpPassword.value = false
+    showSftpPassword.value = false
     emit('loadFtp', true)
     emit('loadSsh')
   }
@@ -401,7 +436,7 @@ function formatBytes(n?: number | null) {
       <button type="button" :class="{ on: siteTab === 'logs' }" @click="siteTab = 'logs'">Logs</button>
       <button type="button" :class="{ on: siteTab === 'cron', off: !canCron }" @click="siteTab = 'cron'">Cron</button>
       <button type="button" :class="{ on: siteTab === 'database', off: !canDb }" @click="siteTab = 'database'">Database</button>
-      <button type="button" :class="{ on: siteTab === 'ftp', off: !canFtp }" @click="siteTab = 'ftp'">FTP</button>
+      <button type="button" :class="{ on: siteTab === 'ftp', off: !canFtp }" @click="siteTab = 'ftp'">Transfer</button>
       <button type="button" :class="{ on: siteTab === 'mail' }" @click="siteTab = 'mail'">Email</button>
       <button type="button" :class="{ on: siteTab === 'protect' }" @click="siteTab = 'protect'">Domain</button>
     </nav>
@@ -783,12 +818,103 @@ function formatBytes(n?: number | null) {
     </div>
 
     <div v-else-if="siteTab === 'ftp' && !canFtp" class="block">
-      <p>{{ packLocked('FTP') }}</p>
+      <p>{{ packLocked('SFTP / FTP') }}</p>
     </div>
     <div v-else-if="siteTab === 'ftp'" class="block">
-      <h3>Your FTP login</h3>
+      <h3>SFTP (recommended)</h3>
       <p class="muted">
-        One account for this site. Use it in FileZilla, or enter localhost if WordPress asks for FTP.
+        Secure file transfer over SSH (port 22). Jailed to this site only — no interactive shell.
+      </p>
+      <p v-if="sftpInfo === 'Loading…'" class="muted mt">Loading…</p>
+      <p v-else-if="sftpCreds?.error" class="empty-note mt err">{{ sftpCreds.error }}</p>
+      <div v-else-if="sftpCreds?.username" class="cred-list mt">
+        <div class="cred-row">
+          <div>
+            <p class="cred-label">SFTP host</p>
+            <p class="cred-value mono">{{ sftpCreds.host }}</p>
+            <p class="hint">FileZilla → SFTP. Port {{ sftpCreds.port || 22 }}.</p>
+          </div>
+          <button type="button" class="btn-ghost" @click="copyValue('sftp-host', sftpCreds.host || '')">
+            {{ copiedKey === 'sftp-host' ? 'Copied' : 'Copy' }}
+          </button>
+        </div>
+        <div class="cred-row">
+          <div>
+            <p class="cred-label">Username</p>
+            <p class="cred-value mono">{{ sftpCreds.username }}</p>
+          </div>
+          <button type="button" class="btn-ghost" @click="copyValue('sftp-user', sftpCreds.username || '')">
+            {{ copiedKey === 'sftp-user' ? 'Copied' : 'Copy' }}
+          </button>
+        </div>
+        <div class="cred-row">
+          <div class="grow">
+            <p class="cred-label">Password</p>
+            <p class="cred-value mono">
+              <template v-if="showSftpPassword && sftpCreds.password">{{ sftpCreds.password }}</template>
+              <template v-else-if="sftpCreds.password_set || sftpCreds.password">••••••••••••</template>
+              <template v-else>Not set</template>
+            </p>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="btn-ghost" @click="toggleSftpPassword">
+              {{ showSftpPassword ? 'Hide' : 'Show' }}
+            </button>
+            <button
+              type="button"
+              class="btn-primary"
+              :disabled="!sftpCreds.password"
+              @click="copyValue('sftp-pass', sftpCreds.password || '')"
+            >
+              {{ copiedKey === 'sftp-pass' ? 'Copied' : 'Copy' }}
+            </button>
+          </div>
+        </div>
+        <p v-if="sftpCreds.command" class="hint mt mono">{{ sftpCreds.command }}</p>
+        <p class="hint mt">{{ sftpCreds.message || sftpCreds.hint }}</p>
+      </div>
+      <div v-else class="empty-note mt">Create your SFTP login to upload files securely.</div>
+      <div class="toolbar mt">
+        <button type="button" class="btn-primary" @click="emit('ensureSftp', false)">
+          {{ sftpCreds?.username ? 'Refresh SFTP login' : 'Create SFTP login' }}
+        </button>
+        <button
+          v-if="sftpCreds?.username"
+          type="button"
+          class="btn-ghost"
+          @click="emit('ensureSftp', true)"
+        >
+          Reset SFTP password
+        </button>
+      </div>
+
+      <h4 class="mt">SSH keys (optional)</h4>
+      <p class="muted">Add a public key for passwordless SFTP. One OpenSSH line (ssh-ed25519 / ssh-rsa).</p>
+      <ul v-if="sftpCreds?.keys?.length" class="job-list mt">
+        <li v-for="k in sftpCreds.keys" :key="k.id">
+          <span>{{ k.name || 'key' }} · {{ k.fingerprint }}</span>
+          <button type="button" class="btn-ghost" @click="emit('removeSftpKey', k.id)">Remove</button>
+        </li>
+      </ul>
+      <div class="toolbar mt" style="flex-wrap: wrap; gap: 0.5rem">
+        <input
+          :value="sftpKeyName"
+          class="text-input"
+          placeholder="Key name (optional)"
+          @input="emit('update:sftpKeyName', ($event.target as HTMLInputElement).value)"
+        />
+        <input
+          :value="sftpKeyInput"
+          class="text-input grow"
+          placeholder="ssh-ed25519 AAAA… comment"
+          @input="emit('update:sftpKeyInput', ($event.target as HTMLInputElement).value)"
+        />
+        <button type="button" class="btn-primary" @click="emit('addSftpKey')">Add key</button>
+      </div>
+
+      <h3 class="mt">Legacy FTP</h3>
+      <p class="muted">
+        Still available for WordPress “FTP credentials” prompts. Prefer SFTP above for normal uploads.
       </p>
 
       <p v-if="ftpInfo === 'Loading…'" class="muted mt">Loading…</p>
@@ -799,7 +925,7 @@ function formatBytes(n?: number | null) {
           <div>
             <p class="cred-label">FTP host</p>
             <p class="cred-value mono">{{ ftpCreds.host }}</p>
-            <p class="hint">FileZilla → Host. Port {{ ftpCreds.port || 21 }}.</p>
+            <p class="hint">FileZilla → Host. Port {{ ftpCreds.port || 21 }}. Protocol FTP (not SFTP).</p>
           </div>
           <button type="button" class="btn-ghost" @click="copyValue('ftp-host', ftpCreds.host)">
             {{ copiedKey === 'ftp-host' ? 'Copied' : 'Copy' }}
@@ -851,31 +977,18 @@ function formatBytes(n?: number | null) {
             </button>
           </div>
         </div>
-        <div class="cred-row">
-          <div>
-            <p class="cred-label">Connection type</p>
-            <p class="cred-value">{{ ftpCreds.connection_type || 'FTP' }}</p>
-            <p class="hint">Port {{ ftpCreds.port || 21 }}. Choose FTP (not FTPS) unless we enable SSL later.</p>
-            <p
-              v-if="(ftpCreds.connection_type || 'FTP').toUpperCase() === 'FTP'"
-              class="hint"
-            >
-              {{ ftpCreds.sftp_coming_note || 'SFTP coming for entitled plans' }}
-            </p>
-          </div>
-        </div>
         <p v-if="ftpCreds.message || ftpCreds.hint" class="hint mt">
           {{ ftpCreds.message || ftpCreds.hint }}
         </p>
       </div>
 
       <div v-else class="empty-note mt">
-        Your plan includes one FTP account for this site. Create it to upload files or finish WordPress prompts.
+        Optional FTP account for WordPress prompts.
       </div>
 
       <div class="toolbar mt">
-        <button type="button" class="btn-primary" @click="emit('ensureFtp', false)">
-          {{ ftpCreds?.username ? 'Refresh login' : 'Create my FTP account' }}
+        <button type="button" class="btn-ghost" @click="emit('ensureFtp', false)">
+          {{ ftpCreds?.username ? 'Refresh FTP login' : 'Create FTP account' }}
         </button>
         <button
           v-if="ftpCreds?.username"

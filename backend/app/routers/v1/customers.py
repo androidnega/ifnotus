@@ -86,6 +86,9 @@ from app.schemas.platform import (
     EnvironmentBackupResponse,
     EnvironmentBackupRestoreResponse,
     EnvironmentFtpResponse,
+    EnvironmentSftpKeyCreate,
+    EnvironmentSftpKeyResponse,
+    EnvironmentSftpResponse,
     EnvironmentSshResponse,
     EnvironmentResponse,
     EnvironmentSslResponse,
@@ -1224,6 +1227,98 @@ async def ensure_env_ftp(
     data["password"] = created.get("password") or data.get("password")
     data["message"] = "Your FTP login is ready. Copy the details below."
     return EnvironmentFtpResponse(**data)
+
+
+@router.get(
+    "/environments/{environment_id}/sftp",
+    response_model=EnvironmentSftpResponse,
+)
+async def get_env_sftp(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+    reveal: bool = False,
+) -> EnvironmentSftpResponse:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.services.platform.sftp_access import EnvironmentSftpService
+
+    svc = EnvironmentSftpService(settings, session)
+    allowed = await svc.sftp_allowed(env)
+    password = svc.reveal_password(env) if reveal and allowed and env.sftp_enabled else None
+    return EnvironmentSftpResponse(**svc.status_payload(env, allowed=allowed, reveal=reveal, password=password))
+
+
+@router.post(
+    "/environments/{environment_id}/sftp/ensure",
+    response_model=EnvironmentSftpResponse,
+)
+async def ensure_env_sftp(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+    reset_password: bool = False,
+) -> EnvironmentSftpResponse:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "sftp", label="SFTP")
+    from app.services.platform.sftp_access import EnvironmentSftpService
+
+    svc = EnvironmentSftpService(settings, session)
+    data = await svc.ensure_account(env, reset_password=reset_password, actor=f"user:{user.id}")
+    data["message"] = "Your SFTP login is ready. File transfer only — no shell."
+    return EnvironmentSftpResponse(**data)
+
+
+@router.post(
+    "/environments/{environment_id}/sftp/keys",
+    response_model=EnvironmentSftpKeyResponse,
+)
+async def add_env_sftp_key(
+    environment_id: UUID,
+    body: EnvironmentSftpKeyCreate,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> EnvironmentSftpKeyResponse:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "sftp", label="SFTP")
+    from app.services.platform.sftp_access import EnvironmentSftpService
+
+    entry = await EnvironmentSftpService(settings, session).add_key(
+        env,
+        public_key=body.public_key,
+        name=body.name,
+        actor=f"user:{user.id}",
+    )
+    return EnvironmentSftpKeyResponse(**entry)
+
+
+@router.delete(
+    "/environments/{environment_id}/sftp/keys/{key_id}",
+    response_model=MessageResponse,
+)
+async def delete_env_sftp_key(
+    environment_id: UUID,
+    key_id: str,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> MessageResponse:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "sftp", label="SFTP")
+    from app.services.platform.sftp_access import EnvironmentSftpService
+
+    await EnvironmentSftpService(settings, session).remove_key(env, key_id, actor=f"user:{user.id}")
+    return MessageResponse(message="SSH key removed.")
 
 
 @router.get(

@@ -1238,6 +1238,57 @@ export const customersApi = {
       params: { reset_password: resetPassword },
     }),
 
+  getEnvSftp: (environmentId: string, reveal = false) =>
+    apiClient.get<{
+      environment_id: string
+      sftp_allowed: boolean
+      enabled: boolean
+      username?: string | null
+      host: string
+      shared_ip?: string | null
+      port: number
+      password_set: boolean
+      password?: string | null
+      connection_type?: string
+      protocol?: string
+      shell_access?: boolean
+      keys?: Array<{ id: string; name?: string | null; fingerprint?: string | null; created_at?: string | null }>
+      command?: string | null
+      hint?: string
+      message?: string | null
+    }>(`/customers/environments/${environmentId}/sftp`, { params: { reveal } }),
+
+  ensureEnvSftp: (environmentId: string, resetPassword = false) =>
+    apiClient.post<{
+      environment_id: string
+      sftp_allowed: boolean
+      enabled: boolean
+      username?: string | null
+      host: string
+      shared_ip?: string | null
+      port: number
+      password_set: boolean
+      password?: string | null
+      connection_type?: string
+      keys?: Array<{ id: string; name?: string | null; fingerprint?: string | null; created_at?: string | null }>
+      command?: string | null
+      hint?: string
+      message?: string | null
+    }>(`/customers/environments/${environmentId}/sftp/ensure`, {}, {
+      params: { reset_password: resetPassword },
+    }),
+
+  addEnvSftpKey: (environmentId: string, body: { public_key: string; name?: string }) =>
+    apiClient.post<{
+      id: string
+      name?: string | null
+      fingerprint?: string | null
+      created_at?: string | null
+    }>(`/customers/environments/${environmentId}/sftp/keys`, body),
+
+  deleteEnvSftpKey: (environmentId: string, keyId: string) =>
+    apiClient.delete<{ message: string }>(`/customers/environments/${environmentId}/sftp/keys/${keyId}`),
+
   listEnvApplications: (environmentId: string) =>
     apiClient.get<
       Array<{

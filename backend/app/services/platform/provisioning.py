@@ -254,6 +254,9 @@ class ProvisioningEngine:
             )
             if feature_included(plan, "sftp"):
                 await EnvironmentFtpService(self._settings, self._session).ensure_account(env)
+                from app.services.platform.sftp_access import EnvironmentSftpService
+
+                await EnvironmentSftpService(self._settings, self._session).ensure_account(env)
         except Exception as exc:  # noqa: BLE001
             # Transfer is best-effort for non-sftp plans; sftp entitled → fail
             if feature_included(plan, "sftp"):

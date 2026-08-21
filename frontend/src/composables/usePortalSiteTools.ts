@@ -54,6 +54,26 @@ export function usePortalSiteTools(
     message?: string | null
     error?: string
   } | null>(null)
+  const sftpCreds = ref<{
+    sftp_allowed?: boolean
+    enabled?: boolean
+    username?: string | null
+    host?: string
+    shared_ip?: string | null
+    port?: number
+    password_set?: boolean
+    password?: string | null
+    connection_type?: string
+    shell_access?: boolean
+    keys?: Array<{ id: string; name?: string | null; fingerprint?: string | null; created_at?: string | null }>
+    command?: string | null
+    hint?: string
+    message?: string | null
+    error?: string
+  } | null>(null)
+  const sftpInfo = ref('')
+  const sftpKeyInput = ref('')
+  const sftpKeyName = ref('')
   const sshCreds = ref<{
     ssh_allowed?: boolean
     enabled?: boolean
@@ -404,6 +424,7 @@ export function usePortalSiteTools(
         password: data.password || null,
         home: data.home,
         connection_type: data.connection_type,
+        sftp_coming_note: data.sftp_coming_note,
         hint: data.hint,
         message: data.message,
       }
@@ -414,7 +435,72 @@ export function usePortalSiteTools(
       ftpInfo.value = msg
       ftpCreds.value = { host: '', error: msg }
     }
-    await loadSsh()
+    await Promise.allSettled([loadSsh(), loadSftp(reveal)])
+  }
+
+  async function loadSftp(reveal = true) {
+    if (!activeEnv.value) return
+    sftpInfo.value = 'Loading…'
+    try {
+      const { data } = await customersApi.getEnvSftp(activeEnv.value.id, reveal)
+      sftpCreds.value = data
+      sftpInfo.value = ''
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      const msg = err.response?.data?.error?.message ?? 'Could not load SFTP.'
+      sftpInfo.value = msg
+      sftpCreds.value = { host: 'serverlabsttu.space', error: msg }
+    }
+  }
+
+  async function ensureSftp(resetPassword = false) {
+    if (!activeEnv.value) return
+    sftpInfo.value = 'Loading…'
+    try {
+      const { data } = await customersApi.ensureEnvSftp(activeEnv.value.id, resetPassword)
+      sftpCreds.value = data
+      sftpInfo.value = ''
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      const msg = err.response?.data?.error?.message ?? 'Could not create SFTP account.'
+      sftpInfo.value = msg
+      sftpCreds.value = { ...(sftpCreds.value || { host: 'serverlabsttu.space' }), error: msg }
+    }
+  }
+
+  async function addSftpKey() {
+    if (!activeEnv.value || !sftpKeyInput.value.trim()) return
+    try {
+      await customersApi.addEnvSftpKey(activeEnv.value.id, {
+        public_key: sftpKeyInput.value.trim(),
+        name: sftpKeyName.value.trim() || undefined,
+      })
+      sftpKeyInput.value = ''
+      sftpKeyName.value = ''
+      await loadSftp(true)
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      sftpInfo.value = err.response?.data?.error?.message ?? 'Could not add SSH key.'
+    }
+  }
+
+  async function removeSftpKey(keyId: string) {
+    if (!activeEnv.value) return
+    try {
+      await customersApi.deleteEnvSftpKey(activeEnv.value.id, keyId)
+      await loadSftp(false)
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      sftpInfo.value = err.response?.data?.error?.message ?? 'Could not remove SSH key.'
+    }
+  }
+
+  function setSftpKeyInput(value: string) {
+    sftpKeyInput.value = value
+  }
+
+  function setSftpKeyName(value: string) {
+    sftpKeyName.value = value
   }
 
   async function loadSsh() {
@@ -935,6 +1021,10 @@ export function usePortalSiteTools(
     dbRows.value = null
     ftpInfo.value = ''
     ftpCreds.value = null
+    sftpInfo.value = ''
+    sftpCreds.value = null
+    sftpKeyInput.value = ''
+    sftpKeyName.value = ''
     sshCreds.value = null
     usageInfo.value = ''
     dnsInfo.value = ''
@@ -991,6 +1081,10 @@ export function usePortalSiteTools(
     dbSql,
     ftpInfo,
     ftpCreds,
+    sftpCreds,
+    sftpInfo,
+    sftpKeyInput,
+    sftpKeyName,
     sshCreds,
     usageInfo,
     logEntries,
@@ -1029,6 +1123,12 @@ export function usePortalSiteTools(
     loadDbRows,
     runDbQuery,
     loadFtp,
+    loadSftp,
+    ensureSftp,
+    addSftpKey,
+    removeSftpKey,
+    setSftpKeyInput,
+    setSftpKeyName,
     loadSsh,
     ensureSsh,
     ensureFtp,

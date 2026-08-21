@@ -199,6 +199,11 @@ class CustomerEnvironment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     unix_gid: Mapped[int | None] = mapped_column(Integer, nullable=True)
     provisioning_step: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ssh_password_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # PHASE 19 — real SFTP (OpenSSH); separate from legacy vsftpd FTP user
+    sftp_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sftp_password_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sftp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    sftp_authorized_keys: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
 
     subscription: Mapped[Subscription] = relationship(back_populates="environments")
 

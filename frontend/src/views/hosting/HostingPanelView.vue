@@ -72,6 +72,10 @@ const {
   dbSql,
   ftpInfo,
   ftpCreds,
+  sftpCreds,
+  sftpInfo,
+  sftpKeyInput,
+  sftpKeyName,
   sshCreds,
   usageInfo,
   logEntries,
@@ -109,6 +113,12 @@ const {
   runDbQuery,
   loadFtp,
   loadSsh,
+  loadSftp,
+  ensureSftp,
+  addSftpKey,
+  removeSftpKey,
+  setSftpKeyInput,
+  setSftpKeyName,
   ensureSsh,
   ensureFtp,
   repairFs,
@@ -349,6 +359,10 @@ onMounted(() => {
           :db-can-write="dbCanWrite"
           :ftp-info="ftpInfo"
           :ftp-creds="ftpCreds"
+          :sftp-creds="sftpCreds"
+          :sftp-info="sftpInfo"
+          :sftp-key-input="sftpKeyInput"
+          :sftp-key-name="sftpKeyName"
           :ssh-creds="sshCreds"
           :dns-info="dnsInfo"
           :dns-data="dnsData"
@@ -377,6 +391,12 @@ onMounted(() => {
           @update-db-sql="(v) => (dbSql = v)"
           @load-ftp="loadFtp"
           @ensure-ftp="ensureFtp"
+          @load-sftp="loadSftp"
+          @ensure-sftp="ensureSftp"
+          @add-sftp-key="addSftpKey"
+          @remove-sftp-key="removeSftpKey"
+          @update:sftp-key-input="setSftpKeyInput"
+          @update:sftp-key-name="setSftpKeyName"
           @load-ssh="loadSsh"
           @ensure-ssh="ensureSsh"
           @repair-fs="repairFs"

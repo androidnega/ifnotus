@@ -62,6 +62,21 @@ class EnvironmentLifecycleService:
             await EnvironmentFtpService(self._settings, self._session).disable(env)
         except Exception:  # noqa: BLE001
             pass
+        try:
+            from app.services.platform.sftp_access import EnvironmentSftpService
+
+            await EnvironmentSftpService(self._settings, self._session).disable(env, actor="lifecycle")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from app.services.platform.ssh_access import EnvironmentSshService
+
+            # Drop interactive SSH group membership when suspended.
+            ssh = EnvironmentSshService(self._settings, self._session)
+            if env.ftp_username:
+                ssh._set_shell(env.ftp_username, enable=False)
+        except Exception:  # noqa: BLE001
+            pass
         IsolationService(self._settings).stop_container(env.container_id, env_id=str(env.id))
 
         await NotificationService(self._session, self._settings).notify(
@@ -105,6 +120,12 @@ class EnvironmentLifecycleService:
             await EnvironmentFtpService(self._settings, self._session).enable(env)
         except Exception:  # noqa: BLE001
             pass
+        try:
+            from app.services.platform.sftp_access import EnvironmentSftpService
+
+            await EnvironmentSftpService(self._settings, self._session).enable(env, actor="lifecycle")
+        except Exception:  # noqa: BLE001
+            pass
 
         await NotificationService(self._session, self._settings).notify(
             customer_id,
@@ -120,6 +141,18 @@ class EnvironmentLifecycleService:
         env = await self.get_owned(customer_id, environment_id)
         IsolationService(self._settings).stop_container(env.container_id, env_id=str(env.id))
         env.container_id = None
+        try:
+            from app.services.platform.sftp_access import EnvironmentSftpService
+
+            await EnvironmentSftpService(self._settings, self._session).remove_access(env, actor="lifecycle")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from app.services.platform.ftp import EnvironmentFtpService
+
+            await EnvironmentFtpService(self._settings, self._session).disable(env)
+        except Exception:  # noqa: BLE001
+            pass
         # Retention: mark terminated; physical destroy is a follow-up job
         env.status = "terminated"
         env.health_status = "critical"

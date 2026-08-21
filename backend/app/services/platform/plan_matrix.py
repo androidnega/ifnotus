@@ -419,11 +419,20 @@ def default_db_engine(plan: HostingPlan | None) -> str | None:
 
 
 def ssh_mode(plan: HostingPlan | None) -> str:
-    return str(features_for(plan).get("ssh") or "no")
+    """Effective SSH mode. ``root`` is never allowed on shared managed hosting."""
+    mode = str(features_for(plan).get("ssh") or "no")
+    if mode == "root" and sellable_on_shared_node(plan):
+        return "jail"
+    return mode
 
 
 def ssh_allowed(plan: HostingPlan | None) -> bool:
     return ssh_mode(plan) in {"limited", "jail", "root"}
+
+
+def sftp_enabled(plan: HostingPlan | None) -> bool:
+    """Package allows real SFTP (OpenSSH). Same matrix key as legacy FTP entitlement."""
+    return feature_included(plan, "sftp")
 
 
 def feature_level(plan: HostingPlan | None, key: str) -> str:
@@ -486,7 +495,12 @@ def capabilities_for(plan: HostingPlan | None) -> dict[str, Any]:
     )
     on = {key: feature_included(plan, key) for key in flags}
     on["ssh"] = ssh_allowed(plan)
-    on["root"] = str(feats.get("ssh") or "") == "root" or feature_included(plan, "root")
+    mode = ssh_mode(plan)
+    # Never advertise root on shared-node packs.
+    on["root"] = mode == "root" and not sellable_on_shared_node(plan)
+    on["sftp.enabled"] = feature_included(plan, "sftp")
+    on["ssh.enabled"] = ssh_allowed(plan)
+    on["ssh.mode"] = mode
     stacks = feats.get("stacks") if isinstance(feats.get("stacks"), dict) else {}
     for stack_key in STACK_KEYS:
         on[str(stack_key)] = stack_level(plan, stack_key) != NO
@@ -496,7 +510,9 @@ def capabilities_for(plan: HostingPlan | None) -> dict[str, Any]:
         "custom_domains": feats.get("custom_domains"),
         "repos": feats.get("repos"),
         "mailboxes": feats.get("mailboxes"),
-        "ssh_mode": feats.get("ssh") or "no",
+        "ssh_mode": mode,
+        "sftp": {"enabled": on["sftp.enabled"]},
+        "ssh": {"enabled": on["ssh.enabled"], "mode": mode},
         "on": on,
         "levels": {key: str(feats.get(key) or "no") for key in flags},
         "stacks": dict(stacks),
