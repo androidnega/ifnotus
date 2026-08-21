@@ -70,6 +70,7 @@ class NginxSiteSchema(SchemaBase):
     enabled: bool | None = None
     ssl_enabled: bool | None = None
     root: str | None = None
+    certificate_path: str | None = None
     message: str | None = None
 
 
@@ -84,6 +85,14 @@ class ServiceBindingSchema(SchemaBase):
     message: str | None = None
 
 
+class ClearablePathSchema(SchemaBase):
+    """A temporary/cache path that can safely be cleared."""
+
+    path: str
+    label: str
+    bytes: int = 0
+
+
 class ApplicationMetricsSchema(SchemaBase):
     """Per-application resource metrics."""
 
@@ -93,6 +102,8 @@ class ApplicationMetricsSchema(SchemaBase):
     memory_bytes: int | None = None
     memory_percent: float | None = None
     disk_bytes: int | None = None
+    clearable_bytes: int | None = None
+    clearable_paths: list[ClearablePathSchema] = Field(default_factory=list)
     open_files: int | None = None
     threads: int | None = None
 
@@ -141,6 +152,12 @@ class ApplicationSummarySchema(SchemaBase):
     version: str | None = None
     registry_valid: bool = True
     registry_errors: list[str] = Field(default_factory=list)
+    process_count: int = 0
+    cpu_percent: float | None = None
+    memory_bytes: int | None = None
+    memory_percent: float | None = None
+    clearable_bytes: int | None = None
+    clearable_paths: list[ClearablePathSchema] = Field(default_factory=list)
 
 
 class ApplicationDetailSchema(ApplicationSummarySchema):

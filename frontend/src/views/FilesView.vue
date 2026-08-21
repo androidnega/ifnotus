@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
-import Badge from '@/components/ui/Badge.vue'
 import FileTransferQueue from '@/components/files/FileTransferQueue.vue'
+import AiAgentPanel from '@/components/ai/AiAgentPanel.vue'
 import IconFolder from '@/components/icons/IconFolder.vue'
+import Skeleton from '@/components/ui/Skeleton.vue'
 import { filesApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
 import { useFileTransferStore } from '@/stores/fileTransfers'
@@ -16,11 +17,14 @@ import type { FileEntry } from '@/types/operations'
 type ViewMode = 'list' | 'grid'
 type SortKey = 'name' | 'size' | 'modified' | 'type'
 type SortDir = 'asc' | 'desc'
+type LookStyle = 'default' | 'windows' | 'unix' | 'compact'
 
 const VIEW_KEY = 'ifnotus.files.view'
 const SORT_KEY = 'ifnotus.files.sort'
+const LOOK_KEY = 'ifnotus.files.look'
 
 const route = useRoute()
+const router = useRouter()
 const transfers = useFileTransferStore()
 const { can } = usePermissions()
 const canWrite = computed(() => can(Permission.FILES_WRITE))
@@ -32,19 +36,16 @@ const entries = ref<FileEntry[]>([])
 const currentPath = ref('.')
 const parentPath = ref<string | undefined>()
 const message = ref<{ type: 'ok' | 'err'; text: string } | null>(null)
-const actionKey = ref<string | null>(null)
 
 const viewMode = ref<ViewMode>((localStorage.getItem(VIEW_KEY) as ViewMode) || 'list')
 const sortKey = ref<SortKey>((localStorage.getItem(SORT_KEY) as SortKey) || 'name')
 const sortDir = ref<SortDir>('asc')
+const lookStyle = ref<LookStyle>((localStorage.getItem(LOOK_KEY) as LookStyle) || 'default')
 const search = ref('')
 const showHidden = ref(false)
 const menuPath = ref<string | null>(null)
-
-const editorOpen = ref(false)
-const editorPath = ref('')
-const editorContent = ref('')
-const editorMeta = ref<FileDetail | null>(null)
+const detailsOpen = ref(false)
+const liveWrite = ref<{ path: string; content: string; active: boolean } | null>(null)
 
 const newFolderName = ref('')
 const showNewFolder = ref(false)
@@ -59,7 +60,11 @@ const moveDestination = ref('')
 
 const scope = computed(() => {
   if (!selectedRoot.value) return {}
-  if (selectedRoot.value.startsWith('root:') || selectedRoot.value.startsWith('discovered:')) {
+  if (
+    selectedRoot.value.startsWith('root:') ||
+    selectedRoot.value.startsWith('discovered:') ||
+    selectedRoot.value.startsWith('storage:')
+  ) {
     return { rootId: selectedRoot.value }
   }
   return { appId: selectedRoot.value }
@@ -111,6 +116,7 @@ const fileCount = computed(() => filteredEntries.value.filter((e) => !e.is_dir).
 
 watch(viewMode, (v) => localStorage.setItem(VIEW_KEY, v))
 watch(sortKey, (v) => localStorage.setItem(SORT_KEY, v))
+watch(lookStyle, (v) => localStorage.setItem(LOOK_KEY, v))
 
 function fileKind(entry: FileEntry): string {
   if (entry.is_dir) return 'folder'
@@ -119,7 +125,19 @@ function fileKind(entry: FileEntry): string {
   if (/\.(mp4|webm|mov|mkv|avi)$/.test(name)) return 'video'
   if (/\.(mp3|wav|ogg|flac|m4a)$/.test(name)) return 'audio'
   if (/\.(zip|tar|gz|tgz|rar|7z|bz2)$/.test(name)) return 'archive'
-  if (/\.(js|ts|tsx|jsx|vue|py|php|rb|go|rs|java|c|cpp|h|css|scss|html|json|ya?ml|toml|xml|sh|sql)$/.test(name)) return 'code'
+  if (/\.tsx?$/.test(name)) return 'code-ts'
+  if (/\.jsx?$/.test(name) || /\.mjs$/.test(name) || /\.cjs$/.test(name)) return 'code-js'
+  if (/\.vue$/.test(name)) return 'code-vue'
+  if (/\.py$/.test(name)) return 'code-py'
+  if (/\.php$/.test(name)) return 'code-php'
+  if (/\.html?$/.test(name)) return 'code-html'
+  if (/\.(css|scss|sass|less)$/.test(name)) return 'code-css'
+  if (/\.jsonc?$/.test(name)) return 'code-json'
+  if (/\.ya?ml$/.test(name)) return 'code-yaml'
+  if (/\.(md|markdown)$/.test(name)) return 'code-md'
+  if (/\.(sh|bash|zsh)$/.test(name)) return 'code-sh'
+  if (/\.(sql)$/.test(name)) return 'code-sql'
+  if (/\.(rb|go|rs|java|c|cpp|h|hpp|toml|xml)$/.test(name)) return 'code'
   if (/\.(md|txt|log|csv|env|ini|conf|cfg)$/.test(name)) return 'text'
   if (/\.(pdf|docx?|xlsx?|pptx?)$/.test(name)) return 'doc'
   return 'file'
@@ -133,10 +151,48 @@ function kindClass(kind: string) {
     audio: 'kind-audio',
     archive: 'kind-archive',
     code: 'kind-code',
+    'code-ts': 'kind-ts',
+    'code-js': 'kind-js',
+    'code-vue': 'kind-vue',
+    'code-py': 'kind-py',
+    'code-php': 'kind-php',
+    'code-html': 'kind-html',
+    'code-css': 'kind-css',
+    'code-json': 'kind-json',
+    'code-yaml': 'kind-yaml',
+    'code-md': 'kind-md',
+    'code-sh': 'kind-sh',
+    'code-sql': 'kind-sql',
     text: 'kind-text',
     doc: 'kind-doc',
     file: 'kind-file',
   } as Record<string, string>)[kind] ?? 'kind-file'
+}
+
+function kindLabel(kind: string) {
+  return ({
+    folder: 'Folder',
+    image: 'Image',
+    video: 'Video',
+    audio: 'Audio',
+    archive: 'Archive',
+    code: 'Code',
+    'code-ts': 'TypeScript',
+    'code-js': 'JavaScript',
+    'code-vue': 'Vue',
+    'code-py': 'Python',
+    'code-php': 'PHP',
+    'code-html': 'HTML',
+    'code-css': 'Stylesheet',
+    'code-json': 'JSON',
+    'code-yaml': 'YAML',
+    'code-md': 'Markdown',
+    'code-sh': 'Shell',
+    'code-sql': 'SQL',
+    text: 'Text',
+    doc: 'Document',
+    file: 'File',
+  } as Record<string, string>)[kind] ?? 'File'
 }
 
 function formatBytes(n?: number | null) {
@@ -208,6 +264,7 @@ async function switchRoot() {
   currentPath.value = '.'
   selected.value = null
   infoPanel.value = null
+  detailsOpen.value = false
   search.value = ''
   await load('.')
 }
@@ -226,6 +283,7 @@ function goBreadcrumb(path: string) {
 
 async function selectEntry(entry: FileEntry) {
   selected.value = entry
+  detailsOpen.value = true
   menuPath.value = null
   try {
     const { data } = await filesApi.stat(entry.path, scope.value)
@@ -244,6 +302,12 @@ async function selectEntry(entry: FileEntry) {
   }
 }
 
+function closeDetails() {
+  detailsOpen.value = false
+  selected.value = null
+  infoPanel.value = null
+}
+
 function openEntry(entry: FileEntry) {
   if (entry.is_dir) {
     openDir(entry)
@@ -259,33 +323,49 @@ async function showInfo(entry: FileEntry) {
 
 async function openFile(entry: FileEntry) {
   if (entry.is_dir) return
-  actionKey.value = 'read'
   menuPath.value = null
-  try {
-    const { data } = await filesApi.read(entry.path, scope.value)
-    editorPath.value = entry.path
-    editorContent.value = data.content ?? ''
-    editorMeta.value = data
-    editorOpen.value = true
-  } catch (e) {
-    message.value = { type: 'err', text: getApiErrorMessage(e, 'Cannot open file') }
-  } finally {
-    actionKey.value = null
+  const href = router.resolve({
+    name: 'file-editor',
+    query: {
+      path: entry.path,
+      root: selectedRoot.value,
+    },
+  }).href
+  const win = window.open(href, `ifnotus-editor-${entry.path}`)
+  if (!win) {
+    message.value = {
+      type: 'err',
+      text: 'Pop-up blocked — allow pop-ups for this site to open the editor in a new window.',
+    }
   }
 }
 
-async function saveFile() {
-  actionKey.value = 'save'
-  try {
-    const { data } = await filesApi.write(editorPath.value, editorContent.value, scope.value)
-    message.value = { type: data.success ? 'ok' : 'err', text: data.message }
-    editorOpen.value = false
-    await load(currentPath.value)
-  } catch (e) {
-    message.value = { type: 'err', text: getApiErrorMessage(e, 'Save failed') }
-  } finally {
-    actionKey.value = null
+async function onAiApplied(action: { type: string; path?: string | null }) {
+  await load(currentPath.value)
+  if (action.type === 'write_file' && action.path) {
+    message.value = { type: 'ok', text: `AI updated ${action.path}` }
   }
+}
+
+function onLiveWriteStart(payload: { path: string }) {
+  liveWrite.value = { path: payload.path, content: '', active: true }
+}
+
+function onLiveWriteDelta(payload: { path: string; content: string }) {
+  liveWrite.value = { path: payload.path, content: payload.content, active: true }
+}
+
+async function onLiveWriteDone(payload: { path: string; success: boolean }) {
+  if (liveWrite.value) {
+    liveWrite.value = { ...liveWrite.value, active: false }
+  }
+  await load(currentPath.value)
+  if (payload.success) {
+    message.value = { type: 'ok', text: `Live write complete · ${payload.path}` }
+  }
+  window.setTimeout(() => {
+    if (liveWrite.value && !liveWrite.value.active) liveWrite.value = null
+  }, 1600)
 }
 
 async function mkdir() {
@@ -304,8 +384,7 @@ async function remove(entry: FileEntry) {
   const { data } = await filesApi.delete(entry.path, scope.value)
   message.value = { type: data.success ? 'ok' : 'err', text: data.message }
   if (selected.value?.path === entry.path) {
-    selected.value = null
-    infoPanel.value = null
+    closeDetails()
   }
   menuPath.value = null
   await load(currentPath.value)
@@ -372,12 +451,11 @@ function onDocClick() {
 function onKeydown(ev: KeyboardEvent) {
   if (ev.key === 'Escape') {
     menuPath.value = null
-    editorOpen.value = false
     renameTarget.value = null
     moveTarget.value = null
     showNewFolder.value = false
   }
-  if ((ev.key === 'Backspace' || ev.key === 'ArrowLeft') && (ev.metaKey || ev.altKey) && !editorOpen.value) {
+  if ((ev.key === 'Backspace' || ev.key === 'ArrowLeft') && (ev.metaKey || ev.altKey)) {
     ev.preventDefault()
     goUp()
   }
@@ -455,6 +533,16 @@ onUnmounted(() => {
             </svg>
           </button>
         </div>
+
+        <label class="text-sm">
+          <span class="sr-only">Folder look</span>
+          <select v-model="lookStyle" class="files-input" title="Folder look">
+            <option value="default">Look: Default</option>
+            <option value="compact">Look: Compact</option>
+            <option value="windows">Look: Windows</option>
+            <option value="unix">Look: Unix</option>
+          </select>
+        </label>
       </div>
 
       <nav class="files-crumbs" aria-label="Breadcrumb">
@@ -477,9 +565,17 @@ onUnmounted(() => {
         {{ message.text }}
       </p>
 
-      <div class="files-workspace">
+      <div class="files-with-agent">
+      <div class="files-workspace" :class="[`look-${lookStyle}`, { 'has-details': detailsOpen && (infoPanel || selected) }]">
         <div class="files-browser">
-          <div v-if="loading" class="flex h-48 items-center justify-center text-sm text-surface-muted">Loading…</div>
+          <div v-if="loading" class="space-y-3 p-4">
+            <Skeleton height="1.25rem" width="35%" />
+            <Skeleton height="2.25rem" />
+            <Skeleton height="2.25rem" />
+            <Skeleton height="2.25rem" />
+            <Skeleton height="2.25rem" width="80%" />
+            <Skeleton height="2.25rem" width="70%" />
+          </div>
           <div v-else-if="!filteredEntries.length" class="flex h-48 flex-col items-center justify-center gap-2 text-sm text-surface-muted">
             <IconFolder :size="36" icon-class="opacity-40" />
             <p>{{ search ? 'No matches in this folder.' : 'This folder is empty.' }}</p>
@@ -508,7 +604,7 @@ onUnmounted(() => {
                   <td class="px-4 py-2">
                     <div class="flex min-w-0 items-center gap-3">
                       <span class="files-icon" :class="kindClass(fileKind(entry))">
-                        <IconFolder v-if="entry.is_dir" :size="18" />
+                        <IconFolder v-if="entry.is_dir" :size="18" :variant="lookStyle === 'windows' ? 'windows' : lookStyle === 'unix' ? 'unix' : 'default'" />
                         <span v-else class="text-[10px] font-semibold tracking-wide">{{ extension(entry.name).slice(0, 4) || 'FILE' }}</span>
                       </span>
                       <button
@@ -562,11 +658,11 @@ onUnmounted(() => {
                 @dblclick="openEntry(entry)"
               >
                 <span class="files-icon files-icon-lg" :class="kindClass(fileKind(entry))">
-                  <IconFolder v-if="entry.is_dir" :size="28" />
+                  <IconFolder v-if="entry.is_dir" :size="28" :variant="lookStyle === 'windows' ? 'windows' : lookStyle === 'unix' ? 'unix' : 'default'" />
                   <span v-else class="text-xs font-semibold tracking-wide">{{ extension(entry.name).slice(0, 4) || 'FILE' }}</span>
                 </span>
                 <span class="mt-2 w-full truncate text-sm font-medium text-slate-900 dark:text-slate-100">{{ entry.name }}</span>
-                <span class="mt-0.5 text-[11px] text-surface-muted">{{ entry.is_dir ? 'Folder' : formatBytes(entry.size_bytes) }}</span>
+                <span class="mt-0.5 text-[11px]" :class="kindClass(fileKind(entry)).replace('kind-', 'tint-')">{{ entry.is_dir ? 'Folder' : kindLabel(fileKind(entry)) }}</span>
                 <span
                   class="files-more absolute right-2 top-2 opacity-0 group-hover:opacity-100"
                   :class="{ 'opacity-100': menuPath === entry.path }"
@@ -589,21 +685,21 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <aside v-if="infoPanel || selected" class="files-details">
+        <aside v-if="detailsOpen && (infoPanel || selected)" class="files-details">
           <div class="sticky top-0 space-y-4">
             <div class="flex items-start justify-between gap-2">
               <div class="min-w-0">
                 <p class="text-xs uppercase tracking-wide text-surface-muted">Details</p>
                 <h2 class="truncate text-sm font-semibold text-slate-900 dark:text-white">{{ infoPanel?.name || selected?.name }}</h2>
               </div>
-              <button type="button" class="files-btn !px-2 !py-1 text-xs" @click="selected = null; infoPanel = null">Close</button>
+              <button type="button" class="files-btn !px-2 !py-1 text-xs" @click="closeDetails">Close</button>
             </div>
 
             <div
               class="files-icon files-icon-xl mx-auto"
               :class="kindClass(fileKind(selected || { name: infoPanel?.name || '', path: '', is_dir: !!infoPanel?.is_dir }))"
             >
-              <IconFolder v-if="infoPanel?.is_dir || selected?.is_dir" :size="36" />
+              <IconFolder v-if="infoPanel?.is_dir || selected?.is_dir" :size="36" :variant="lookStyle === 'windows' ? 'windows' : lookStyle === 'unix' ? 'unix' : 'default'" />
               <span v-else class="text-sm font-semibold">{{ extension(infoPanel?.name || selected?.name || '').slice(0, 4) || 'FILE' }}</span>
             </div>
 
@@ -617,6 +713,10 @@ onUnmounted(() => {
                 <div><dt class="text-surface-muted">Mode</dt><dd class="font-mono">{{ infoPanel?.mode || selected?.mode || '—' }}</dd></div>
                 <div><dt class="text-surface-muted">Owner</dt><dd>{{ infoPanel?.owner || selected?.owner || '—' }}</dd></div>
                 <div><dt class="text-surface-muted">Group</dt><dd>{{ infoPanel?.group || selected?.group || '—' }}</dd></div>
+              </div>
+              <div>
+                <dt class="text-surface-muted">Type</dt>
+                <dd>{{ selected ? kindLabel(fileKind(selected)) : '—' }}</dd>
               </div>
               <div>
                 <dt class="text-surface-muted">Modified</dt>
@@ -639,6 +739,34 @@ onUnmounted(() => {
         </aside>
       </div>
 
+      <AiAgentPanel
+        surface="files"
+        :path="selected?.path || currentPath"
+        :app-id="scope.appId"
+        :root-id="scope.rootId"
+        @applied="onAiApplied"
+        @undone="() => load(currentPath)"
+        @live-write-start="onLiveWriteStart"
+        @live-write-delta="onLiveWriteDelta"
+        @live-write-done="onLiveWriteDone"
+      />
+      </div>
+
+      <div v-if="liveWrite" class="files-live-write" :class="{ 'is-done': !liveWrite.active }">
+        <div class="files-live-write-panel">
+          <div class="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2">
+            <div class="min-w-0">
+              <p class="text-[10px] uppercase tracking-[0.14em] text-amber-300/90">
+                {{ liveWrite.active ? 'Snr Dev is writing live…' : 'Write complete' }}
+              </p>
+              <p class="truncate font-mono text-xs text-slate-200">{{ liveWrite.path }}</p>
+            </div>
+            <button type="button" class="files-btn !border-white/20 !px-2 !py-1 text-xs text-slate-200" @click="liveWrite = null">Close</button>
+          </div>
+          <pre class="files-live-write-code">{{ liveWrite.content }}<span v-if="liveWrite.active" class="files-caret">▋</span></pre>
+        </div>
+      </div>
+
       <div v-if="renameTarget && canWrite" class="files-dialog">
         <div class="files-dialog-panel">
           <h3 class="text-sm font-semibold">Rename</h3>
@@ -659,24 +787,6 @@ onUnmounted(() => {
           <div class="mt-3 flex justify-end gap-2">
             <button type="button" class="files-btn" @click="moveTarget = null">Cancel</button>
             <button type="button" class="files-btn-primary" @click="confirmMove">Move</button>
-          </div>
-        </div>
-      </div>
-
-      <div v-if="editorOpen" class="files-dialog">
-        <div class="files-dialog-panel files-editor">
-          <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <span class="truncate font-mono text-sm">{{ editorPath }}</span>
-            <Badge v-if="editorMeta?.mode" size="sm">{{ editorMeta.mode }} · {{ editorMeta.owner }}:{{ editorMeta.group }}</Badge>
-          </div>
-          <textarea
-            v-model="editorContent"
-            class="h-[min(50vh,24rem)] w-full rounded-lg border border-surface-border bg-slate-950/95 p-3 font-mono text-xs text-slate-100"
-            :readonly="!canWrite"
-          />
-          <div class="mt-3 flex justify-end gap-2">
-            <button type="button" class="files-btn" @click="editorOpen = false">Close</button>
-            <button v-if="canWrite" type="button" class="files-btn-primary" :disabled="actionKey === 'save'" @click="saveFile">Save</button>
           </div>
         </div>
       </div>
@@ -755,19 +865,180 @@ onUnmounted(() => {
 }
 .files-crumb:hover { background: rgb(148 163 184 / 0.12); color: inherit; }
 .files-crumb.is-current { color: inherit; font-weight: 600; }
-.files-workspace { display: grid; gap: 1rem; min-height: 0; }
+.files-with-agent {
+  display: grid;
+  gap: 1rem;
+  min-height: 0;
+}
+@media (min-width: 1280px) {
+  .files-with-agent {
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
+    align-items: stretch;
+  }
+}
+.files-workspace { display: grid; gap: 1rem; min-height: 0; grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 1024px) {
-  .files-workspace { grid-template-columns: minmax(0, 1fr) 17rem; align-items: start; }
+  .files-workspace.has-details { grid-template-columns: minmax(0, 1fr) 17rem; align-items: start; }
 }
 .files-browser {
+  display: flex;
+  flex-direction: column;
   min-height: 20rem;
   max-height: min(70vh, 36rem);
   overflow: hidden;
   border: 1px solid var(--color-border);
   border-radius: 0.875rem;
   background: var(--color-surface-raised);
+  transition: max-height 0.2s ease, border-radius 0.15s ease;
 }
-.files-scroll { height: 100%; max-height: min(70vh, 36rem); overflow: auto; }
+.files-workspace:not(.has-details) .files-browser {
+  max-height: min(78vh, 42rem);
+}
+.files-scroll { flex: 1; min-height: 0; overflow: auto; }
+
+/* Compact — dense rows like classic explorers */
+.look-compact .files-row td { padding-top: 0.2rem; padding-bottom: 0.2rem; }
+.look-compact .files-icon { height: 1.5rem; width: 1.5rem; border-radius: 0.25rem; }
+.look-compact .files-grid { grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr)); gap: 0.35rem; }
+.look-compact .files-tile { border-radius: 0.35rem; padding: 0.45rem 0.35rem; }
+.look-compact .files-icon-lg { height: 2rem; width: 2rem; }
+.look-compact .files-browser { border-radius: 0.5rem; }
+
+/* Windows Explorer–like */
+.look-windows .files-browser {
+  border-radius: 0.25rem;
+  background: #ffffff;
+  border-color: #d4d4d4;
+  box-shadow: inset 0 1px 0 #fff;
+}
+.dark .look-windows .files-browser { background: #202020; border-color: #3f3f3f; }
+.look-windows .files-row {
+  border-bottom-color: #ececec;
+  font-size: 0.8125rem;
+  color: #1a1a1a;
+}
+.dark .look-windows .files-row { border-bottom-color: #333; color: #f3f3f3; }
+.look-windows .files-row:hover { background: #e5f3ff; }
+.look-windows .files-row.is-selected { background: #cce8ff; }
+.dark .look-windows .files-row:hover { background: #2a2a2a; }
+.dark .look-windows .files-row.is-selected { background: #094771; }
+.look-windows .files-icon {
+  border-radius: 0;
+  background: transparent !important;
+  color: inherit;
+}
+.look-windows .files-icon.kind-folder {
+  background: transparent !important;
+  color: #e8b931 !important;
+}
+.look-windows .files-tile {
+  border-radius: 0.15rem;
+  border-color: transparent;
+  color: #1a1a1a;
+}
+.dark .look-windows .files-tile { color: #f3f3f3; }
+.look-windows .files-tile:hover { background: #e5f3ff; border-color: #99d1ff; }
+.look-windows .files-tile.is-selected { background: #cce8ff; border-color: #99d1ff; }
+.dark .look-windows .files-tile:hover { background: #2a2a2a; }
+.dark .look-windows .files-tile.is-selected { background: #094771; border-color: #0078d4; }
+.look-windows .files-grid { gap: 0.35rem; grid-template-columns: repeat(auto-fill, minmax(7rem, 1fr)); }
+.look-windows .kind-folder { background: transparent !important; color: #c9921a !important; }
+.look-windows .kind-image { background: transparent !important; color: #c43e1c !important; }
+.look-windows .kind-code,
+.look-windows .kind-ts,
+.look-windows .kind-js,
+.look-windows .kind-vue,
+.look-windows .kind-py,
+.look-windows .kind-php,
+.look-windows .kind-html,
+.look-windows .kind-css,
+.look-windows .kind-json,
+.look-windows .kind-yaml,
+.look-windows .kind-md,
+.look-windows .kind-sh,
+.look-windows .kind-sql,
+.look-windows .kind-text,
+.look-windows .kind-doc,
+.look-windows .kind-file,
+.look-windows .kind-archive,
+.look-windows .kind-video,
+.look-windows .kind-audio {
+  background: transparent !important;
+}
+.look-windows thead { background: #f5f5f5; color: #505050; }
+.dark .look-windows thead { background: #2b2b2b; color: #c8c8c8; }
+
+.files-live-write {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 1rem;
+  pointer-events: none;
+  background: linear-gradient(to top, rgb(15 23 42 / 0.45), transparent 55%);
+}
+.files-live-write-panel {
+  pointer-events: auto;
+  width: min(52rem, 100%);
+  max-height: min(48vh, 24rem);
+  overflow: hidden;
+  border: 1px solid rgb(245 158 11 / 0.35);
+  border-radius: 0.85rem;
+  background: #0b1220;
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.35);
+  animation: files-pop 0.18s ease-out;
+}
+.files-live-write.is-done .files-live-write-panel {
+  border-color: rgb(16 185 129 / 0.45);
+}
+.files-live-write-code {
+  margin: 0;
+  max-height: min(40vh, 20rem);
+  overflow: auto;
+  padding: 0.75rem 1rem 1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: #e2e8f0;
+  white-space: pre-wrap;
+}
+.files-caret {
+  display: inline-block;
+  margin-left: 1px;
+  color: #fbbf24;
+  animation: ai-caret 0.8s step-end infinite;
+}
+@keyframes ai-caret {
+  50% { opacity: 0; }
+}
+
+/* Unix / terminal listing feel */
+.look-unix .files-browser {
+  border-radius: 0.35rem;
+  background: #0b1220;
+  border-color: #1e293b;
+  color: #cbd5e1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.look-unix .files-row { border-bottom-color: #1e293b; font-size: 0.75rem; }
+.look-unix .files-row:hover,
+.look-unix .files-row.is-selected { background: #132337; }
+.look-unix .files-icon {
+  border-radius: 0.2rem;
+  height: 1.35rem;
+  width: 1.35rem;
+  font-size: 0.6rem;
+}
+.look-unix .files-tile {
+  border-radius: 0.25rem;
+  align-items: flex-start;
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+}
+.look-unix .files-tile span { color: #e2e8f0; }
+.look-unix .kind-folder { color: #38bdf8 !important; }
 .files-row {
   border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
   cursor: default;
@@ -817,9 +1088,43 @@ onUnmounted(() => {
 .kind-audio { background: rgb(234 179 8 / 0.14); color: #ca8a04; }
 .kind-archive { background: rgb(245 158 11 / 0.14); color: #d97706; }
 .kind-code { background: rgb(16 185 129 / 0.14); color: #059669; }
+.kind-ts { background: rgb(59 130 246 / 0.16); color: #2563eb; }
+.kind-js { background: rgb(234 179 8 / 0.18); color: #ca8a04; }
+.kind-vue { background: rgb(16 185 129 / 0.16); color: #059669; }
+.kind-py { background: rgb(56 189 248 / 0.16); color: #0284c7; }
+.kind-php { background: rgb(129 140 248 / 0.18); color: #6366f1; }
+.kind-html { background: rgb(249 115 22 / 0.16); color: #ea580c; }
+.kind-css { background: rgb(14 165 233 / 0.16); color: #0284c7; }
+.kind-json { background: rgb(163 230 53 / 0.16); color: #65a30d; }
+.kind-yaml { background: rgb(244 63 94 / 0.12); color: #e11d48; }
+.kind-md { background: rgb(100 116 139 / 0.16); color: #475569; }
+.kind-sh { background: rgb(34 197 94 / 0.14); color: #16a34a; }
+.kind-sql { background: rgb(168 85 247 / 0.14); color: #9333ea; }
 .kind-text { background: rgb(100 116 139 / 0.14); color: #475569; }
 .kind-doc { background: rgb(59 130 246 / 0.14); color: #2563eb; }
 .kind-file { background: rgb(148 163 184 / 0.14); color: #64748b; }
+.tint-folder, .tint-ts, .tint-js, .tint-vue, .tint-py, .tint-php,
+.tint-html, .tint-css, .tint-json, .tint-yaml, .tint-md, .tint-sh,
+.tint-sql, .tint-code, .tint-image, .tint-video, .tint-audio,
+.tint-archive, .tint-text, .tint-doc, .tint-file { font-weight: 500; }
+.tint-folder { color: #0284c7; }
+.tint-ts { color: #2563eb; }
+.tint-js { color: #ca8a04; }
+.tint-vue { color: #059669; }
+.tint-py { color: #0284c7; }
+.tint-php { color: #6366f1; }
+.tint-html { color: #ea580c; }
+.tint-css { color: #0284c7; }
+.tint-json { color: #65a30d; }
+.tint-yaml { color: #e11d48; }
+.tint-md, .tint-text { color: #64748b; }
+.tint-sh { color: #16a34a; }
+.tint-sql { color: #9333ea; }
+.tint-code { color: #059669; }
+.tint-image { color: #e11d48; }
+.tint-archive { color: #d97706; }
+.tint-doc { color: #2563eb; }
+.tint-file { color: #64748b; }
 .files-more {
   display: inline-flex;
   height: 1.75rem;

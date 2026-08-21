@@ -12,19 +12,41 @@ from app.schemas.inventory import NginxDiscoveredDomainSchema, SslReconciliation
 
 
 class DomainCreate(SchemaBase):
-    name: str = Field(min_length=3, max_length=255)
-    domain_type: str = Field(default="primary", pattern=r"^(primary|subdomain|addon)$")
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    subdomain_label: str | None = Field(default=None, max_length=128)
+    domain_type: str = Field(
+        default="primary",
+        pattern=r"^(primary|subdomain|addon|alias|redirect)$",
+    )
     parent_domain_id: UUID | None = None
     application_id: str | None = None
     document_root: str | None = None
     proxy_port: int | None = Field(default=None, ge=1, le=65535)
     enabled: bool = True
+    force_https: bool = False
+    redirect_url: str | None = None
+    provision: bool = True
+    create_docroot: bool = True
     notes: str | None = None
 
     @field_validator("name")
     @classmethod
-    def normalize_name(cls, value: str) -> str:
+    def normalize_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return value.strip().lower()
+
+    @field_validator("subdomain_label")
+    @classmethod
+    def normalize_label(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        import re
+
+        cleaned = value.strip().lower()
+        if not re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", cleaned):
+            raise ValueError("Invalid subdomain label.")
+        return cleaned
 
 
 class DomainUpdate(SchemaBase):
@@ -32,7 +54,10 @@ class DomainUpdate(SchemaBase):
     document_root: str | None = None
     proxy_port: int | None = Field(default=None, ge=1, le=65535)
     enabled: bool | None = None
+    force_https: bool | None = None
+    redirect_url: str | None = None
     notes: str | None = None
+    reprovision: bool = True
 
 
 class DomainSchema(SchemaBase):
@@ -47,9 +72,59 @@ class DomainSchema(SchemaBase):
     dns_points_here: bool | None = None
     nginx_enabled: bool | None = None
     ssl_certificate_path: str | None = None
+    force_https: bool = False
+    redirect_url: str | None = None
+    nginx_site: str | None = None
+    subdomain_label: str | None = None
     notes: str | None = None
     created_at: datetime
     updated_at: datetime
+    redirects: list["DomainRedirectSchema"] = Field(default_factory=list)
+    dns_records: list["DomainDnsRecordSchema"] = Field(default_factory=list)
+
+
+class DomainRedirectCreate(SchemaBase):
+    source_path: str = Field(min_length=1, max_length=512)
+    target_url: str = Field(min_length=1, max_length=1024)
+    status_code: int = Field(default=301, ge=301, le=308)
+    enabled: bool = True
+
+
+class DomainRedirectSchema(SchemaBase):
+    id: UUID
+    domain_id: UUID
+    source_path: str
+    target_url: str
+    status_code: int
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class DomainDnsRecordCreate(SchemaBase):
+    record_type: str = Field(pattern=r"^(A|AAAA|CNAME|MX|TXT|NS)$")
+    host: str = Field(default="@", max_length=255)
+    value: str = Field(min_length=1, max_length=1024)
+    ttl: int = Field(default=3600, ge=60, le=86400)
+    priority: int | None = None
+
+
+class DomainDnsRecordSchema(SchemaBase):
+    id: UUID
+    domain_id: UUID
+    record_type: str
+    host: str
+    value: str
+    ttl: int
+    priority: int | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class DomainImportRequest(SchemaBase):
+    server_name: str
+    domain_type: str = Field(default="primary", pattern=r"^(primary|subdomain|addon|alias)$")
+    parent_domain_id: UUID | None = None
 
 
 class DomainListResponse(SchemaBase):
@@ -61,6 +136,7 @@ class DomainListResponse(SchemaBase):
     drift_count: int = 0
     listening_ports: list[int] = Field(default_factory=list)
     available_ports: list[int] = Field(default_factory=list)
+    server_ip: str | None = None
 
 
 class DnsCheckResponse(SchemaBase):
@@ -70,6 +146,7 @@ class DnsCheckResponse(SchemaBase):
     points_to_server: bool | None
     server_ip: str | None
     message: str | None = None
+    suggested_records: list[dict] = Field(default_factory=list)
 
 
 class SslCertificateSchema(SchemaBase):
@@ -150,6 +227,7 @@ class MailboxSchema(SchemaBase):
     email: str
     local_part: str
     quota_mb: int | None = None
+    used_mb: int | None = None
     suspended: bool
     display_name: str | None = None
     created_at: datetime
@@ -158,6 +236,11 @@ class MailboxSchema(SchemaBase):
 class MailAliasCreate(SchemaBase):
     source_local: str = Field(min_length=1, max_length=64)
     destination: str = Field(min_length=3, max_length=320)
+
+
+class MailAliasUpdate(SchemaBase):
+    destination: str | None = Field(default=None, min_length=3, max_length=320)
+    enabled: bool | None = None
 
 
 class MailAliasSchema(SchemaBase):
@@ -170,6 +253,25 @@ class MailAliasSchema(SchemaBase):
     created_at: datetime
 
 
+class MailProbeRequest(SchemaBase):
+    to: str | None = Field(default=None, max_length=320)
+
+
+class MailClientSettings(SchemaBase):
+    imap_host: str
+    imap_port: int = 993
+    imap_security: str = "SSL/TLS"
+    smtp_host: str
+    smtp_port: int = 587
+    smtp_security: str = "STARTTLS"
+    pop_host: str
+    pop_port: int = 995
+    pop_security: str = "SSL/TLS"
+    username_hint: str = "Full email address (name@domain)"
+    webmail_url: str | None = None
+    mail_a_host: str | None = None
+
+
 class MailDomainResponse(SchemaBase):
     timestamp: datetime
     domain: DomainSchema
@@ -177,6 +279,8 @@ class MailDomainResponse(SchemaBase):
     aliases: list[MailAliasSchema]
     webmail_url: str | None = None
     mail_config_path: str | None = None
+    auth: dict | None = None
+    clients: MailClientSettings | None = None
 
 
 class FileRootSchema(SchemaBase):
@@ -270,3 +374,5 @@ class TerminalAuditSchema(SchemaBase):
     success: bool
     output_preview: str | None
     executed_at: datetime
+
+DomainSchema.model_rebuild()

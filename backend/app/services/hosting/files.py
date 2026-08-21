@@ -29,13 +29,54 @@ from app.services.applications.path_scanner import ApplicationPathScanner
 
 
 class FileManagerService:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        admin_storage: bool = False,
+        only_roots: list[Path] | None = None,
+        storage_limit_gb: int | float | None = None,
+    ) -> None:
         self._settings = settings
+        self._admin_storage = admin_storage
+        self._only_roots = [Path(p).resolve() for p in only_roots] if only_roots else None
+        self._storage_limit_gb = storage_limit_gb
         self._apps = ApplicationRepository(settings)
         self._path_scanner = ApplicationPathScanner(settings)
 
+    def _quota_root(self, base: Path) -> Path:
+        if self._only_roots:
+            return self._only_roots[0]
+        return base
+
+    def _assert_quota(self, base: Path, *, extra_bytes: int = 0) -> None:
+        if self._storage_limit_gb is None:
+            return
+        from app.services.platform.usage import assert_write_allowed
+
+        assert_write_allowed(
+            self._quota_root(base),
+            self._storage_limit_gb,
+            extra_bytes=extra_bytes,
+        )
+
+    def _admin_storage_roots(self) -> list[Path]:
+        """Privileged server storage roots exposed only to admin users."""
+        if not self._admin_storage:
+            return []
+        candidates = [
+            (Path("/srv"), "Server storage"),
+            (Path("/var/www"), "Web storage"),
+            (Path("/var/vmail"), "Mail storage"),
+            (Path("/var/backups"), "Backups"),
+        ]
+        return [path.resolve() for path, _ in candidates if path.exists()]
+
     def allowed_roots(self) -> list[Path]:
+        if self._only_roots is not None:
+            return list(self._only_roots)
         roots: list[Path] = []
+        roots.extend(self._admin_storage_roots())
         for raw in self._settings.hosting_allowed_paths:
             roots.append(Path(raw).resolve())
         for app in self._apps.list_all():
@@ -54,7 +95,37 @@ class FileManagerService:
         roots: list[FileRootSchema] = []
         seen_paths: set[str] = set()
 
+        if self._only_roots is not None:
+            for index, path in enumerate(self._only_roots):
+                roots.append(
+                    FileRootSchema(
+                        id=f"tenant:{index}",
+                        label="My site",
+                        # Never expose absolute host paths to tenant clients.
+                        path=".",
+                    )
+                )
+            return FileRootsResponse(roots=roots, timestamp=datetime.now(UTC))
+
+        admin_labels = {
+            "/srv": "Storage: Server (/srv)",
+            "/var/www": "Storage: Web (/var/www)",
+            "/var/vmail": "Storage: Mail (/var/vmail)",
+            "/var/backups": "Storage: Backups (/var/backups)",
+        }
+        for index, path in enumerate(self._admin_storage_roots()):
+            roots.append(
+                FileRootSchema(
+                    id=f"storage:{index}",
+                    label=admin_labels.get(str(path), f"Storage: {path}"),
+                    path=str(path),
+                )
+            )
+            seen_paths.add(str(path))
+
         for index, path in enumerate(self._hosting_roots()):
+            if str(path) in seen_paths:
+                continue
             roots.append(
                 FileRootSchema(
                     id=f"root:{index}",
@@ -151,12 +222,22 @@ class FileManagerService:
     ) -> OperationResult:
         base = self._resolve_base(app_id, root_id)
         target = self._safe_path(base, path)
+        new_bytes = len(content.encode("utf-8"))
+        old_bytes = 0
+        if target.exists() and target.is_file():
+            try:
+                old_bytes = target.stat().st_size
+            except OSError:
+                old_bytes = 0
+        self._assert_quota(base, extra_bytes=new_bytes - old_bytes)
         target.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(target.write_text, content, encoding="utf-8")
         return OperationResult(success=True, message=f"Saved {path}")
 
     async def mkdir(self, path: str, *, app_id: str | None = None, root_id: str | None = None) -> OperationResult:
         base = self._resolve_base(app_id, root_id)
+        # Empty dirs are free; still block when already hard-over so customers clean up first.
+        self._assert_quota(base, extra_bytes=0)
         target = self._safe_path(base, path)
         target.mkdir(parents=True, exist_ok=True)
         return OperationResult(success=True, message=f"Created directory {path}")
@@ -206,9 +287,49 @@ class FileManagerService:
         target = self._safe_path(base, path)
         if target.is_dir():
             target = target / (file.filename or "upload.bin")
+        old_bytes = 0
+        if target.exists() and target.is_file():
+            try:
+                old_bytes = target.stat().st_size
+            except OSError:
+                old_bytes = 0
+        declared = None
+        if file.size is not None:
+            declared = int(file.size)
+        elif file.headers.get("content-length"):
+            try:
+                declared = int(file.headers["content-length"])
+            except (TypeError, ValueError):
+                declared = None
+        if declared is not None:
+            self._assert_quota(base, extra_bytes=declared - old_bytes)
+
+        from app.services.platform.usage import limit_bytes, measure_path_usage
+
+        used_before, _ = measure_path_usage(self._quota_root(base))
+        # Exclude bytes we are about to replace.
+        used_base = max(0, used_before - old_bytes)
+        limit = (
+            limit_bytes(self._storage_limit_gb) if self._storage_limit_gb is not None else None
+        )
+
         target.parent.mkdir(parents=True, exist_ok=True)
+        written = 0
         with target.open("wb") as out:
             while chunk := await file.read(1024 * 1024):
+                written += len(chunk)
+                if limit is not None and used_base + written > limit:
+                    out.close()
+                    try:
+                        target.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    from app.core.exceptions import ValidationError
+
+                    raise ValidationError(
+                        "Storage limit reached while uploading. Delete files or upgrade your plan.",
+                        code="storage_quota_exceeded",
+                    )
                 out.write(chunk)
         return OperationResult(success=True, message=f"Uploaded to {target.relative_to(base)}")
 
@@ -222,6 +343,8 @@ class FileManagerService:
         root_id: str | None = None,
         chunk_size: int | None = None,
     ) -> FileUploadInitResponse:
+        base = self._resolve_base(app_id, root_id)
+        self._assert_quota(base, extra_bytes=max(int(size_bytes), 0))
         chunk = chunk_size or self._settings.file_upload_chunk_size
         upload_id = str(uuid.uuid4())
         session_dir = self._upload_session_dir(upload_id)
@@ -324,9 +447,33 @@ class FileManagerService:
         return (Path.cwd() / root).resolve()
 
     def _resolve_base(self, app_id: str | None, root_id: str | None = None) -> Path:
+        if self._only_roots is not None:
+            if root_id and root_id.startswith("tenant:"):
+                index = int(root_id.split(":", 1)[1])
+                if index < 0 or index >= len(self._only_roots):
+                    raise AppException("Invalid root.", code="invalid_root")
+                return self._only_roots[index]
+            return self._only_roots[0]
+        # Frontend may mis-send storage/root ids as app_id — normalize.
+        if app_id and (
+            app_id.startswith("storage:")
+            or app_id.startswith("root:")
+            or app_id.startswith("discovered:")
+            or app_id.startswith("tenant:")
+        ):
+            root_id = app_id
+            app_id = None
         if app_id:
             app = self._apps.get(app_id)
             return self._app_root(app)
+        if root_id and root_id.startswith("storage:"):
+            if not self._admin_storage:
+                raise AppException("Admin storage access required.", code="forbidden")
+            index = int(root_id.split(":", 1)[1])
+            roots = self._admin_storage_roots()
+            if index < 0 or index >= len(roots):
+                raise AppException("Invalid storage root.", code="invalid_root")
+            return roots[index]
         if root_id and root_id.startswith("discovered:"):
             slug = root_id.split(":", 1)[1]
             resolved = self._path_scanner.resolve_discovered_root(slug)
@@ -343,14 +490,15 @@ class FileManagerService:
 
     def _safe_path(self, base: Path, path: str) -> Path:
         base = base.resolve()
-        for root in self.allowed_roots():
-            if str(base).startswith(str(root)) or base == root:
-                break
-        else:
-            if base not in self.allowed_roots():
-                raise AppException("Path not in allowed roots.", code="forbidden")
-        target = (base / path.lstrip("/")).resolve()
-        if not any(str(target).startswith(str(r)) for r in self.allowed_roots()):
+        allowed = [root.resolve() for root in self.allowed_roots()]
+        if not any(base == root or base.is_relative_to(root) for root in allowed):
+            raise AppException("Path not in allowed roots.", code="forbidden")
+        raw = (path or ".").replace("\x00", "").strip() or "."
+        # Never allow absolute inputs to escape the jail.
+        if raw.startswith(("/", "\\")) or (len(raw) >= 2 and raw[1] == ":"):
+            raise AppException("Path traversal denied.", code="forbidden")
+        target = (base / raw).resolve()
+        if not any(target == root or target.is_relative_to(root) for root in allowed):
             raise AppException("Path traversal denied.", code="forbidden")
         return target
 
@@ -366,6 +514,9 @@ class FileManagerService:
             group = grp.getgrgid(st.st_gid).gr_name
         except (ImportError, KeyError):
             pass
+        # Tenant portal: hide OS account names (layout hint) — keep for staff roots.
+        if self._only_roots is not None:
+            owner = group = None
         return FileDetailSchema(
             name=target.name,
             path=str(target.relative_to(base)),

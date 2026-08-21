@@ -24,6 +24,7 @@ from app.schemas.applications import (
     SSLStatusSchema,
 )
 from app.schemas.health import HealthStatus
+from app.schemas.operations import OperationResult
 from app.services.applications.config import ApplicationDefinition
 from app.services.applications.future import ApplicationModules
 from app.services.applications.readers.deployments import DeploymentHistoryReader
@@ -36,6 +37,7 @@ from app.services.applications.readers.ssl import SSLReader
 from app.services.applications.types import get_adapter
 from app.schemas.inventory import AppReconciliationState
 from app.services.applications.discovery_runtime import RuntimeApplicationDiscovery
+from app.services.log_watermarks import LogClearWatermarks
 from app.services.monitoring import MonitoringService
 
 
@@ -54,12 +56,12 @@ class ApplicationEngine:
         self._modules = modules or ApplicationModules()
 
         self._git = GitReader()
-        self._ssl = SSLReader()
+        self._ssl = SSLReader(settings.letsencrypt_live_dir)
         self._nginx = NginxReader()
         self._supervisor = SupervisorReader(settings)
         self._systemd = SystemdReader()
         self._deployments = DeploymentHistoryReader()
-        self._logs = ApplicationLogReader()
+        self._logs = ApplicationLogReader(LogClearWatermarks(settings.log_clear_state_path))
         self._metrics = ApplicationMetricsReader(monitoring)
         self._runtime_discovery = RuntimeApplicationDiscovery(settings)
 
@@ -67,11 +69,52 @@ class ApplicationEngine:
         return self._repository.reload()
 
     async def list_applications(self) -> ApplicationListResponse:
-        apps = self._repository.list_all()
-        summaries: list[ApplicationSummarySchema] = []
+        # Promote newly discovered VPS apps into the active YAML registry.
+        try:
+            from app.services.applications.registrar import ApplicationRegistrar
 
-        for app in apps:
-            health = await self.get_health(app.id)
+            await asyncio.to_thread(ApplicationRegistrar(self._settings).auto_register)
+        except Exception:  # noqa: BLE001
+            pass
+
+        apps = self._repository.list_all()
+        healths = await asyncio.gather(
+            *(self.get_health(app.id) for app in apps),
+            return_exceptions=True,
+        )
+        metrics = await asyncio.gather(
+            *(self._metrics.read(app, include_clearable=True) for app in apps),
+            return_exceptions=True,
+        )
+
+        summaries: list[ApplicationSummarySchema] = []
+        for app, health, metric in zip(apps, healths, metrics, strict=False):
+            usage = metric if not isinstance(metric, Exception) else None
+            if isinstance(health, Exception):
+                summaries.append(
+                    ApplicationSummarySchema(
+                        id=app.id,
+                        name=app.name,
+                        type=app.type,
+                        environment=app.environment,
+                        enabled=app.enabled,
+                        status=ApplicationRuntimeStatus.UNKNOWN,
+                        health=HealthStatus.DEGRADED,
+                        health_score=0,
+                        domain=app.ssl.domain or app.nginx.server_name,
+                        root_path=str(app.root_path),
+                        version=self._resolve_version(app),
+                        registry_valid=app.registry_valid,
+                        registry_errors=list(app.registry_errors),
+                        process_count=getattr(usage, "process_count", 0) or 0,
+                        cpu_percent=getattr(usage, "cpu_percent", None),
+                        memory_bytes=getattr(usage, "memory_bytes", None),
+                        memory_percent=getattr(usage, "memory_percent", None),
+                        clearable_bytes=getattr(usage, "clearable_bytes", None),
+                        clearable_paths=list(getattr(usage, "clearable_paths", []) or []),
+                    )
+                )
+                continue
             summaries.append(
                 ApplicationSummarySchema(
                     id=app.id,
@@ -87,8 +130,17 @@ class ApplicationEngine:
                     version=self._resolve_version(app),
                     registry_valid=app.registry_valid,
                     registry_errors=list(app.registry_errors),
+                    process_count=usage.process_count if usage else 0,
+                    cpu_percent=usage.cpu_percent if usage else None,
+                    memory_bytes=usage.memory_bytes if usage else None,
+                    memory_percent=usage.memory_percent if usage else None,
+                    clearable_bytes=usage.clearable_bytes if usage else None,
+                    clearable_paths=list(usage.clearable_paths) if usage else [],
                 )
             )
+
+        # Heaviest RAM first so the usage panel is useful immediately.
+        summaries.sort(key=lambda s: s.memory_bytes or 0, reverse=True)
 
         return ApplicationListResponse(
             timestamp=datetime.now(UTC),
@@ -220,7 +272,7 @@ class ApplicationEngine:
 
     async def get_metrics(self, app_id: str) -> ApplicationMetricsSchema:
         app = self._repository.get(app_id)
-        return await self._metrics.read(app)
+        return await self._metrics.read(app, include_clearable=True)
 
     async def get_logs(self, app_id: str, lines: int = 100) -> ApplicationLogsResponse:
         app = self._repository.get(app_id)
@@ -230,6 +282,19 @@ class ApplicationEngine:
             application_id=app.id,
             sources=sources,
             entries=entries,
+        )
+
+    async def clear_logs(self, app_id: str) -> OperationResult:
+        app = self._repository.get(app_id)
+        stats = self._logs.clear(app)
+        return OperationResult(
+            success=True,
+            message=(
+                f"Cleared {stats['files']} log file(s) "
+                f"({stats['bytes']} bytes) for {app.id}. "
+                "Earlier journal entries are now hidden from this view."
+            ),
+            details=stats,
         )
 
     async def get_environment(self, app_id: str) -> ApplicationEnvironmentResponse:
@@ -275,16 +340,26 @@ class ApplicationEngine:
         self, app: ApplicationDefinition
     ) -> tuple[GitStatusSchema, NginxSiteSchema, SSLStatusSchema, ServiceBindingSchema, ServiceBindingSchema]:
         git_path = app.git.repository or str(app.root_path)
-        results = await asyncio.gather(
+        git, nginx, supervisor, systemd = await asyncio.gather(
             self._git.read(git_path),
             asyncio.to_thread(
-                self._nginx.read, app.nginx.site, app.nginx.server_name
+                self._nginx.read,
+                app.nginx.site,
+                app.nginx.server_name,
+                str(app.root_path) if app.paths.root else None,
             ),
-            self._ssl.read(app.ssl.certificate, app.ssl.domain),
             self._supervisor.read(app.runtime.supervisor),
             self._systemd.read(app.runtime.systemd),
         )
-        return results  # type: ignore[return-value]
+        ssl_domain = app.ssl.domain or (nginx.server_names[0] if nginx.server_names else None)
+        ssl = await self._ssl.read(
+            app.ssl.certificate,
+            ssl_domain,
+            extra_domains=list(nginx.server_names or []),
+            nginx_certificate_path=nginx.certificate_path,
+            light=True,
+        )
+        return git, nginx, ssl, supervisor, systemd
 
     def _resolve_version(self, app: ApplicationDefinition) -> str | None:
         adapter = get_adapter(app.type)

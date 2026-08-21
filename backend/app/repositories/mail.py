@@ -33,3 +33,17 @@ class MailAliasRepository(BaseRepository[MailAlias]):
         stmt = select(MailAlias).where(MailAlias.domain_id == domain_id).order_by(MailAlias.source_local)
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def get_by_source(self, domain_id: UUID, source_local: str) -> MailAlias | None:
+        stmt = select(MailAlias).where(
+            MailAlias.domain_id == domain_id,
+            MailAlias.source_local == source_local.lower(),
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+        stmt = select(MailAlias).where(
+            MailAlias.domain_id == domain_id,
+            MailAlias.source_local == source_local.lower(),
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()

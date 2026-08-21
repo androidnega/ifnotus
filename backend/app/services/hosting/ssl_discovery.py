@@ -34,7 +34,7 @@ class SslDiscoveryService:
                 fullchain = domain_dir / "fullchain.pem"
                 if not fullchain.exists():
                     continue
-                status = await self._reader.read(str(fullchain), domain_dir.name)
+                status = await self._reader.read(str(fullchain), domain_dir.name, light=True)
                 state = self._cert_state(status.days_remaining, status.status)
                 certs[domain_dir.name] = DiscoveredCertificateSchema(
                     domain=domain_dir.name,
@@ -58,7 +58,7 @@ class SslDiscoveryService:
                 continue
             cert_path = site.certificate_path
             if cert_path and Path(cert_path).exists():
-                status = await self._reader.read(cert_path, name)
+                status = await self._reader.read(cert_path, name, light=True)
                 certs[name] = DiscoveredCertificateSchema(
                     domain=name,
                     certificate_path=cert_path,

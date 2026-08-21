@@ -1,0 +1,187 @@
+/* Shared IFNOTUS customer portal surface — plan accent drives a single color. */
+
+.portal-app,
+.portal-shell {
+  --p-accent: var(--if-plan, var(--if-primary, #1e3a5f));
+  --p-accent-soft: color-mix(in srgb, var(--p-accent) 12%, var(--p-surface));
+  --p-accent-mid: color-mix(in srgb, var(--p-accent) 22%, var(--p-surface));
+  --p-ink: var(--if-ink, #161a1d);
+  --p-muted: var(--if-muted, #6b7280);
+  --p-border: var(--if-border, #e7e2db);
+  --p-surface: var(--if-surface, #ffffff);
+  --p-paper: var(--if-paper, #f4f1ec);
+}
+
+.portal-app .btn-primary,
+.portal-app .nav-cta {
+  background: var(--p-accent) !important;
+}
+
+.portal-app .btn-primary:hover {
+  background: color-mix(in srgb, var(--p-accent) 86%, black) !important;
+}
+
+.portal-app .portal-mark {
+  background: var(--p-accent) !important;
+}
+
+.p-grid {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+}
+
+@media (min-width: 640px) {
+  .p-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 980px) {
+  .p-grid.cols-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .p-grid.cols-4 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.p-card {
+  background: var(--p-surface);
+  border: 1px solid var(--p-border);
+  border-radius: 1rem;
+  padding: 1.05rem 1.1rem;
+  box-shadow: 0 1px 2px rgb(22 26 29 / 0.03), 0 8px 20px rgb(22 26 29 / 0.03);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.p-card.clickable {
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  font: inherit;
+  color: inherit;
+}
+
+.p-card.clickable:hover {
+  border-color: color-mix(in srgb, var(--p-accent) 45%, var(--p-border));
+  box-shadow: 0 0 0 3px var(--p-accent-soft);
+  transform: translateY(-1px);
+}
+
+.p-card.active {
+  border-color: var(--p-accent);
+  box-shadow: 0 0 0 3px var(--p-accent-soft);
+}
+
+.p-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 0.7rem;
+  background: var(--p-accent-soft);
+  color: var(--p-accent);
+  flex-shrink: 0;
+}
+
+.p-kicker {
+  margin: 0 0 0.2rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--p-accent);
+}
+
+.p-title {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 650;
+  color: var(--p-ink);
+  letter-spacing: -0.02em;
+}
+
+.p-desc {
+  margin: 0.35rem 0 0;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--p-muted);
+}
+
+.p-meta {
+  margin: 0.55rem 0 0;
+  font-size: 0.75rem;
+  color: var(--p-muted);
+}
+
+.p-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+}
+
+.p-section-title {
+  margin: 0 0 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--p-muted);
+}
+
+.p-banner {
+  padding: 0.8rem 1rem;
+  border-radius: 0.85rem;
+  background: var(--p-accent-soft);
+  border: 1px solid color-mix(in srgb, var(--p-accent) 22%, var(--p-border));
+  font-size: 0.84rem;
+  line-height: 1.45;
+  color: var(--p-ink);
+}
+
+.p-banner strong {
+  color: var(--p-accent);
+}
+
+.p-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.18rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  background: var(--p-accent-soft);
+  color: var(--p-accent);
+}
+
+.portal-side .side-k {
+  margin: 0.65rem 0.45rem 0.3rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--if-muted);
+}
+.portal-side .side-k:first-child {
+  margin-top: 0.15rem;
+}
+@media (max-width: 860px) {
+  .portal-side .side-k {
+    display: none;
+  }
+}
+
+.p-pill.ok { background: #e7f8ee; color: #0f7a45; }
+.p-pill.warn { background: #fff4e5; color: #b54708; }
+.p-pill.bad { background: #feeceb; color: #b42318; }
+
+.portal-app .btn-ghost.danger {
+  color: #b42318;
+  border-color: color-mix(in srgb, #b42318 35%, white);
+}
+.portal-app .btn-ghost.danger:hover {
+  background: #feeceb;
+}

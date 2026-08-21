@@ -1,7 +1,7 @@
 import type { DiscoveredApplication, VpsInventorySummary } from '@/types/inventory'
 
 export type HealthStatus = 'healthy' | 'degraded' | 'unhealthy'
-export type ServiceStatus = 'running' | 'stopped' | 'degraded' | 'unknown'
+export type ServiceStatus = 'running' | 'stopped' | 'degraded' | 'failed' | 'unknown'
 export type AlertSeverity = 'critical' | 'warning' | 'info'
 export type TrendDirection = 'up' | 'down' | 'neutral'
 
@@ -241,6 +241,12 @@ export interface AlertsResponse {
   total: number
 }
 
+export interface ClearablePath {
+  path: string
+  label: string
+  bytes: number
+}
+
 export interface ApplicationSummary {
   id: string
   name: string
@@ -255,6 +261,12 @@ export interface ApplicationSummary {
   version?: string | null
   registry_valid?: boolean
   registry_errors?: string[]
+  process_count?: number
+  cpu_percent?: number | null
+  memory_bytes?: number | null
+  memory_percent?: number | null
+  clearable_bytes?: number | null
+  clearable_paths?: ClearablePath[]
 }
 
 export interface ApplicationListResponse {

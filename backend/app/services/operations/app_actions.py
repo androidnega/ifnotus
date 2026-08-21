@@ -290,8 +290,9 @@ class ApplicationActionsService:
         if not ctl or not os.path.exists(socket):
             return OperationResult(success=False, message="Supervisor not available.")
 
+        serverurl = socket if str(socket).startswith(("unix://", "http")) else f"unix://{socket}"
         code, stdout, stderr = await run_command(
-            ctl, "-c", f"unix://{socket}", action, program, timeout=60
+            ctl, "-s", serverurl, action, program, timeout=60
         )
         ok = code == 0
         return OperationResult(

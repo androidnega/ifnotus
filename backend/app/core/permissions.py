@@ -38,6 +38,8 @@ class Permission(StrEnum):
     MAIL_READ = "mail:read"
     MAIL_WRITE = "mail:write"
     TERMINAL_EXECUTE = "terminal:execute"
+    DATABASES_READ = "databases:read"
+    DATABASES_WRITE = "databases:write"
 
     # Monitoring
     MONITORING_READ = "monitoring:read"
@@ -45,6 +47,18 @@ class Permission(StrEnum):
     # Users
     USERS_READ = "users:read"
     USERS_WRITE = "users:write"
+
+    # Support tickets
+    SUPPORT_READ = "support:read"
+    SUPPORT_WRITE = "support:write"
+
+    CUSTOMERS_MANAGE = "customers:manage"
+
+    # Product platform (customers / plans / orders)
+    PLATFORM_READ = "platform:read"
+    PLATFORM_WRITE = "platform:write"
+    # Tenant environment remediation (suspend, health, stacks, repair) — not plan CRUD
+    PLATFORM_OPS = "platform:ops"
 
 
 class Role(StrEnum):
@@ -54,14 +68,40 @@ class Role(StrEnum):
     ADMIN = "admin"
     OPERATOR = "operator"
     VIEWER = "viewer"
+    CUSTOMER_CARE = "customer_care"
+    CUSTOMER = "customer"
 
 
+# Each staff role has a unique primary job:
+# - superadmin: staff accounts, terminal, privilege switch, terminate, everything
+# - admin: product/business (plans, billing confirm, customers) + env remediation; no host shell/files
+# - operator: hands-on hosting (files/mail/dns/db) + env remediation; no plans/billing
+# - customer_care: MoMo confirm + support tickets only
+# - viewer: read-only across panel
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
     Role.SUPERADMIN: frozenset(Permission),
     Role.ADMIN: frozenset(
-        p
-        for p in Permission
-        if p not in {Permission.SYSTEM_ADMIN, Permission.USERS_WRITE, Permission.TERMINAL_EXECUTE}
+        {
+            Permission.SYSTEM_READ,
+            Permission.SERVERS_READ,
+            Permission.SERVERS_DELETE,
+            Permission.APPS_READ,
+            Permission.APPS_WRITE,
+            Permission.EMAIL_READ,
+            Permission.MONITORING_READ,
+            Permission.DOMAINS_READ,
+            Permission.SSL_READ,
+            Permission.FILES_READ,
+            Permission.MAIL_READ,
+            Permission.DATABASES_READ,
+            Permission.USERS_READ,
+            Permission.SUPPORT_READ,
+            Permission.SUPPORT_WRITE,
+            Permission.CUSTOMERS_MANAGE,
+            Permission.PLATFORM_READ,
+            Permission.PLATFORM_WRITE,
+            Permission.PLATFORM_OPS,
+        }
     ),
     Role.OPERATOR: frozenset(
         {
@@ -84,6 +124,12 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.MAIL_WRITE,
             Permission.EMAIL_READ,
             Permission.EMAIL_WRITE,
+            Permission.DATABASES_READ,
+            Permission.DATABASES_WRITE,
+            Permission.SUPPORT_READ,
+            Permission.SUPPORT_WRITE,
+            Permission.PLATFORM_READ,
+            Permission.PLATFORM_OPS,
         }
     ),
     Role.VIEWER: frozenset(
@@ -98,8 +144,61 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.SSL_READ,
             Permission.FILES_READ,
             Permission.MAIL_READ,
+            Permission.DATABASES_READ,
+            Permission.SUPPORT_READ,
+            Permission.PLATFORM_READ,
         }
     ),
+    Role.CUSTOMER_CARE: frozenset(
+        {
+            Permission.SYSTEM_READ,
+            Permission.PLATFORM_READ,
+            Permission.CUSTOMERS_MANAGE,
+            Permission.SUPPORT_READ,
+            Permission.SUPPORT_WRITE,
+        }
+    ),
+    # Customer panel — portal APIs only. Host-wide staff routes are blocked.
+    Role.CUSTOMER: frozenset(),
+}
+
+STAFF_ROLE_VALUES = frozenset(
+    {
+        Role.SUPERADMIN.value,
+        Role.ADMIN.value,
+        Role.OPERATOR.value,
+        Role.VIEWER.value,
+        Role.CUSTOMER_CARE.value,
+    }
+)
+
+# Roles a superadmin may temporarily "work as" (never customer / superadmin).
+PRIVILEGE_SWITCH_ROLES = frozenset(
+    {
+        Role.ADMIN.value,
+        Role.OPERATOR.value,
+        Role.VIEWER.value,
+        Role.CUSTOMER_CARE.value,
+    }
+)
+
+# Roles that may be assigned when creating/updating staff accounts.
+CREATABLE_STAFF_ROLES = frozenset(
+    {
+        Role.ADMIN.value,
+        Role.OPERATOR.value,
+        Role.VIEWER.value,
+        Role.CUSTOMER_CARE.value,
+    }
+)
+
+# Human-readable unique job per role (API / settings copy).
+ROLE_SUMMARIES: dict[str, str] = {
+    Role.SUPERADMIN.value: "Full control — staff accounts, terminal, privilege switch, terminate sites",
+    Role.ADMIN.value: "Business admin — plans, orders, customers, env remediation (no host shell/files)",
+    Role.OPERATOR.value: "Hosting operator — domains, mail, files, databases, env remediation (no billing/plans)",
+    Role.CUSTOMER_CARE.value: "Customer care — MoMo confirm, support tickets (no env or hosting edits)",
+    Role.VIEWER.value: "Viewer — read-only across the staff panel",
 }
 
 

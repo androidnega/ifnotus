@@ -4,23 +4,128 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
     <meta name="color-scheme" content="light dark" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Sora:wght@600;700;800&family=Figtree:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
-    <meta name="robots" content="noindex, nofollow, noarchive, nosnippet" />
-    <meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet" />
-    <meta name="description" content="IFNOTUS secure server access — authorized personnel only." />
+    <meta name="description" content="IFNOTUS — go live in minutes. Domains, hosting, SSL, backups, and an AI engineer." />
     <title>IFNOTUS</title>
     <script>
       ;(function () {
-        const stored = localStorage.getItem('theme')
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-        if (stored === 'dark' || (!stored && prefersDark)) {
-          document.documentElement.classList.add('dark')
+        var path = location.pathname || '/'
+        var root = document.documentElement
+        var staff = [
+          '/panel', '/monitoring', '/applications', '/operations', '/domains', '/ssl',
+          '/admin', '/files', '/terminal', '/security', '/servers', '/settings',
+          '/platform', '/support', '/databases',
+        ]
+        var isStaff = staff.some(function (p) {
+          return path === p || path.indexOf(p + '/') === 0
+        })
+        var isAuth =
+          path === '/login' ||
+          path.indexOf('/login/') === 0 ||
+          path.indexOf('/forgot-password') === 0 ||
+          path.indexOf('/reset-password') === 0
+        var isPortal =
+          path.indexOf('/portal') === 0 ||
+          path.indexOf('/account') === 0 ||
+          path.indexOf('/billing') === 0 ||
+          path.indexOf('/signup') === 0
+
+        // Account URLs may include environment ids — do not leak via Referer.
+        if (isPortal) {
+          var referrerMeta = document.querySelector('meta[name="referrer"]')
+          if (referrerMeta) referrerMeta.setAttribute('content', 'no-referrer')
+        }
+
+        function setVar(k, v) {
+          if (v) root.style.setProperty(k, v)
+        }
+        function soft(hex, a) {
+          var h = String(hex || '').replace('#', '')
+          if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2]
+          var n = parseInt(h, 16)
+          if (isNaN(n)) return ''
+          return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')'
+        }
+        function rgb(hex) {
+          var h = String(hex || '').replace('#', '')
+          if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2]
+          var n = parseInt(h, 16)
+          if (isNaN(n)) return ''
+          return ((n >> 16) & 255) + ' ' + ((n >> 8) & 255) + ' ' + (n & 255)
+        }
+        function applyColors(c) {
+          if (!c || !c.primary) return
+          setVar('--if-primary', c.primary)
+          setVar('--if-primary-hover', c.primary_hover || c.primary)
+          setVar('--if-ink', c.ink)
+          setVar('--if-paper', c.paper)
+          setVar('--if-surface', c.surface)
+          setVar('--if-muted', c.muted)
+          setVar('--if-border', c.border)
+          setVar('--if-primary-soft', soft(c.primary, 0.14))
+          setVar('--if-primary-ring', soft(c.primary, 0.22))
+          setVar('--if-glow', soft(c.primary, 0.1))
+          setVar('--color-brand-500', c.primary)
+          setVar('--color-brand-600', c.primary_hover || c.primary)
+          setVar('--brand-rgb-500', rgb(c.primary))
+          setVar('--brand-rgb-600', rgb(c.primary_hover || c.primary))
+          setVar('--color-surface', c.paper)
+          setVar('--color-surface-raised', c.surface)
+          setVar('--color-border', c.border)
+          setVar('--color-text-muted', c.muted)
+        }
+
+        if (isStaff || isAuth) {
+          // Staff console + login: navy/blue — never flash orange marketing brand.
+          root.classList.add('control-ui')
+          root.classList.remove('dark')
+          root.style.colorScheme = 'light'
+          applyColors({
+            primary: '#1e3a5f',
+            primary_hover: '#16304d',
+            ink: '#0f172a',
+            paper: '#f3f5f8',
+            surface: '#ffffff',
+            muted: '#64748b',
+            border: '#e6ebf1',
+          })
+          if (isStaff) {
+            applyColors({
+              primary: '#2563eb',
+              primary_hover: '#1d4ed8',
+              ink: '#0f172a',
+              paper: '#f3f5f8',
+              surface: '#ffffff',
+              muted: '#64748b',
+              border: '#e6ebf1',
+            })
+          }
+          return
+        }
+
+        if (isPortal || path === '/' || path.indexOf('/plans') === 0) {
+          root.classList.remove('dark')
+          root.style.colorScheme = 'light'
+        }
+
+        try {
+          var cached = JSON.parse(localStorage.getItem('ifnotus_theme_colors') || 'null')
+          if (cached && cached.primary) applyColors(cached)
+        } catch (e) {}
+
+        var stored = localStorage.getItem('theme')
+        var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+        if (!isPortal && path !== '/' && path.indexOf('/plans') !== 0) {
+          if (stored === 'dark' || (!stored && prefersDark)) {
+            root.classList.add('dark')
+          }
         }
       })()
     </script>

@@ -101,23 +101,23 @@ function formatUptime(seconds: number) {
   return `${hours}h`
 }
 
-const cacheBusy = ref(false)
+const refreshBusy = ref(false)
 const cacheMessage = ref<{ ok: boolean; text: string } | null>(null)
 
-async function clearServerCache(reloadNginx = false) {
-  cacheBusy.value = true
+async function refreshServer() {
+  refreshBusy.value = true
   cacheMessage.value = null
   try {
-    const { data } = await serverApi.clearCache(reloadNginx)
+    const { data } = await serverApi.refresh(true)
     cacheMessage.value = { ok: data.success, text: data.message }
     refreshAll()
   } catch (e) {
     cacheMessage.value = {
       ok: false,
-      text: getApiErrorMessage(e, 'Failed to clear server cache'),
+      text: getApiErrorMessage(e, 'Failed to refresh server'),
     }
   } finally {
-    cacheBusy.value = false
+    refreshBusy.value = false
   }
 }
 </script>
@@ -131,20 +131,18 @@ async function clearServerCache(reloadNginx = false) {
         <div class="mb-4 flex flex-wrap items-center gap-2">
           <button
             type="button"
-            class="rounded-lg border border-surface-border px-3 py-1.5 text-xs hover:bg-slate-50 disabled:opacity-50 dark:hover:bg-slate-800"
-            :disabled="cacheBusy"
-            @click="clearServerCache(false)"
+            class="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50"
+            :disabled="refreshBusy"
+            @click="refreshServer"
           >
-            {{ cacheBusy ? 'Clearing…' : 'Clear cache & refresh' }}
+            {{ refreshBusy ? 'Refreshing…' : 'Refresh inventory' }}
           </button>
-          <button
-            type="button"
-            class="rounded-lg border border-surface-border px-3 py-1.5 text-xs hover:bg-slate-50 disabled:opacity-50 dark:hover:bg-slate-800"
-            :disabled="cacheBusy"
-            @click="clearServerCache(true)"
+          <RouterLink
+            to="/operations"
+            class="rounded-lg border border-surface-border px-3 py-1.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-800"
           >
-            Clear cache + reload nginx
-          </button>
+            Cache / nginx / restarts → Operations
+          </RouterLink>
           <p
             v-if="cacheMessage"
             class="text-xs"

@@ -7,6 +7,7 @@ import hashlib
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from redis.asyncio import Redis
 
@@ -384,18 +385,38 @@ class MonitoringService:
         collectors = await self._registry.health_checks()
         ports_data = await self._registry.collect("ports")
         missing_ports = self._missing_expected_ports(ports_data.ports)
-        alerts = self._generate_alerts(cpu, memory, disk, collectors, missing_ports, ports_data.ports)
+        services_resp = await self.get_services(mode="all")
+        relevant_services = [s for s in services_resp.services if s.relevant]
+        alerts = self._generate_alerts(
+            cpu,
+            memory,
+            disk,
+            collectors,
+            missing_ports,
+            ports_data.ports,
+            services=relevant_services,
+        )
         return AlertsResponse(
             timestamp=datetime.now(UTC),
             alerts=alerts,
             total=len(alerts),
         )
 
-    def _generate_alerts(self, cpu, memory, disk, collectors, missing_ports=None, ports=None) -> list[AlertSchema]:
+    def _generate_alerts(
+        self,
+        cpu,
+        memory,
+        disk,
+        collectors,
+        missing_ports=None,
+        ports=None,
+        services: list[ManagedService] | None = None,
+    ) -> list[AlertSchema]:
         now = datetime.now(UTC)
         alerts: list[AlertSchema] = []
         missing_ports = missing_ports or []
         ports = ports or []
+        services = services or []
 
         port_labels = {8000: "IFNOTUS API", 5173: "Frontend", 5432: "PostgreSQL", 6379: "Redis"}
         for port in missing_ports:
@@ -482,6 +503,48 @@ class MonitoringService:
                     )
                 )
 
+        # Promote failed/degraded process managers into the alert feed so the
+        # dashboard Alerts panel matches Activity Timeline (e.g. supervisor FATAL).
+        # Skip phantom failures when the same unit is already healthy under another
+        # process manager (common: supervisor + systemd both defining reverb).
+        healthy_units = {
+            (svc.unit_name or svc.name or "").lower().removesuffix(".service")
+            for svc in services
+            if svc.status == ServiceState.RUNNING
+        }
+        for svc in services:
+            unit_key = (svc.unit_name or svc.name or "").lower().removesuffix(".service")
+            if svc.status == ServiceState.FAILED:
+                if unit_key in healthy_units:
+                    continue
+                alerts.append(
+                    AlertSchema(
+                        id=self._alert_id(f"service-failed-{svc.id}"),
+                        title=f"Service {svc.name} failed",
+                        message=svc.description
+                        or f"{svc.source} reports {svc.name} is failed and needs attention.",
+                        severity=AlertSeverity.CRITICAL,
+                        source=svc.source or "service",
+                        timestamp=now,
+                        metric="service_status",
+                    )
+                )
+            elif svc.status == ServiceState.DEGRADED:
+                if unit_key in healthy_units:
+                    continue
+                alerts.append(
+                    AlertSchema(
+                        id=self._alert_id(f"service-degraded-{svc.id}"),
+                        title=f"Service {svc.name} degraded",
+                        message=svc.description
+                        or f"{svc.source} reports {svc.name} is degraded.",
+                        severity=AlertSeverity.WARNING,
+                        source=svc.source or "service",
+                        timestamp=now,
+                        metric="service_status",
+                    )
+                )
+
         return alerts
 
     @staticmethod
@@ -492,7 +555,21 @@ class MonitoringService:
         overview = await self.get_server_overview()
         services_resp = await self.get_services(mode="all")
         relevant_services = [s for s in services_resp.services if s.relevant]
-        alerts_resp = await self.get_alerts()
+        ports_data = await self._registry.collect("ports")
+        missing_ports = self._missing_expected_ports(ports_data.ports)
+        # Reuse overview samples for alert thresholds — avoid a second full metrics pass.
+        cpu_proxy = SimpleNamespace(percent=overview.cpu_percent)
+        memory_proxy = SimpleNamespace(percent=overview.memory_percent)
+        disk_proxy = SimpleNamespace(primary_percent=overview.disk_percent)
+        alerts = self._generate_alerts(
+            cpu_proxy,
+            memory_proxy,
+            disk_proxy,
+            overview.collectors,
+            missing_ports,
+            ports_data.ports,
+            services=relevant_services,
+        )
         processes = await self._registry.collect("processes")
 
         stats = [
@@ -519,7 +596,7 @@ class MonitoringService:
         ]
 
         applications = await self._registered_applications(processes, services_resp.services)
-        activities = await self._build_activities(alerts_resp.alerts, relevant_services)
+        activities = await self._build_activities(alerts, relevant_services)
         charts = self._build_charts()
 
         return DashboardResponse(
@@ -533,7 +610,7 @@ class MonitoringService:
             servers=servers,
             services=relevant_services,
             applications=applications,
-            alerts=alerts_resp.alerts,
+            alerts=alerts,
             activities=activities,
             charts=charts,
             load_average=overview.load_average,
@@ -582,11 +659,22 @@ class MonitoringService:
         for binding in (definition.runtime.supervisor, definition.runtime.systemd):
             if not binding:
                 continue
-            svc = service_by_name.get(binding.lower())
+            key = str(binding).lower().removesuffix(".service")
+            svc = service_by_name.get(key)
             if svc:
                 return svc.pid, svc.memory_bytes, svc.status
 
+        # Many VPS apps are systemd units named like the app id (votebridge, quizsnap).
+        for key in self._runtime_unit_candidates(definition):
+            svc = service_by_name.get(key)
+            if svc and svc.status == ServiceState.RUNNING:
+                return svc.pid, svc.memory_bytes, svc.status
+
         pattern = definition.runtime.process_match
+        shared_stack = bool(
+            pattern
+            and re.search(r"(?i)\b(nginx|php-fpm\d*|apache2?|httpd)\b", pattern)
+        )
         if pattern:
             try:
                 regex = re.compile(pattern, re.IGNORECASE)
@@ -597,9 +685,75 @@ class MonitoringService:
                     haystack = f"{proc.name} {proc.cmdline or ''}"
                     if regex.search(haystack):
                         return proc.pid, proc.memory_rss_bytes, ServiceState.RUNNING
-                return None, None, ServiceState.STOPPED
+                # Dedicated app processes missing ⇒ stopped. Shared nginx/php-fpm
+                # patterns often miss because the process snapshot is top-N only.
+                if not shared_stack:
+                    return None, None, ServiceState.STOPPED
 
+        if self._web_app_appears_running(definition):
+            return None, None, ServiceState.RUNNING
+
+        if pattern and not shared_stack:
+            return None, None, ServiceState.STOPPED
         return None, None, ServiceState.UNKNOWN
+
+    @staticmethod
+    def _runtime_unit_candidates(definition) -> list[str]:
+        raw = {
+            definition.id,
+            definition.id.replace("-", "_"),
+            definition.id.replace("_", "-"),
+            re.sub(r"[^a-z0-9]+", "-", definition.name.lower()).strip("-"),
+            re.sub(r"[^a-z0-9]+", "_", definition.name.lower()).strip("_"),
+        }
+        return [k.lower() for k in raw if k]
+
+    @staticmethod
+    def _web_app_appears_running(definition) -> bool:
+        """Treat nginx-backed / static / PHP sites as running when the site is live."""
+        root = Path(definition.paths.root)
+        if not root.exists():
+            return False
+
+        enabled = Path("/etc/nginx/sites-enabled")
+        site = definition.nginx.site
+        server_name = definition.nginx.server_name
+
+        if site:
+            site_path = Path(site)
+            if site_path.exists() and "sites-enabled" in str(site_path.resolve()):
+                return True
+            if enabled.exists() and (enabled / site_path.name).exists():
+                return True
+
+        if server_name and enabled.exists():
+            if (enabled / server_name).exists():
+                return True
+            try:
+                for candidate in enabled.iterdir():
+                    if not candidate.is_file() and not candidate.is_symlink():
+                        continue
+                    try:
+                        text = candidate.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        continue
+                    if re.search(rf"\bserver_name\b[^;]*\b{re.escape(server_name)}\b", text):
+                        return True
+            except OSError:
+                pass
+
+        app_type = getattr(definition.type, "value", str(definition.type))
+        if app_type in {"static_site", "laravel", "php"}:
+            markers = (
+                root / "index.html",
+                root / "index.php",
+                root / "public" / "index.php",
+                root / "dist" / "index.html",
+                root / "frontend" / "dist" / "index.html",
+            )
+            if any(path.exists() for path in markers):
+                return True
+        return False
 
     async def _build_activities(
         self,
@@ -618,20 +772,29 @@ class MonitoringService:
                     status=alert.severity.value,
                 )
             )
+        healthy_units = {
+            (svc.unit_name or svc.name or "").lower().removesuffix(".service")
+            for svc in services
+            if svc.status == ServiceState.RUNNING
+        }
         for svc in services:
             # Only surface failed/degraded relevant services — inactive oneshots
             # (zfs-mount, ua-auto-attach, etc.) are noise on the control plane.
-            if svc.status in {ServiceState.FAILED, ServiceState.DEGRADED}:
-                activities.append(
-                    ActivitySchema(
-                        id=f"act-svc-{svc.id}",
-                        title=f"Service {svc.name} {svc.status.value}",
-                        description=svc.description,
-                        timestamp=datetime.now(UTC),
-                        type="service",
-                        status=svc.status.value,
-                    )
+            if svc.status not in {ServiceState.FAILED, ServiceState.DEGRADED}:
+                continue
+            unit_key = (svc.unit_name or svc.name or "").lower().removesuffix(".service")
+            if unit_key in healthy_units:
+                continue
+            activities.append(
+                ActivitySchema(
+                    id=f"act-svc-{svc.id}",
+                    title=f"Service {svc.name} {svc.status.value}",
+                    description=svc.description,
+                    timestamp=datetime.now(UTC),
+                    type="service",
+                    status=svc.status.value,
                 )
+            )
 
         for definition in self._app_repository.list_all()[:8]:
             if not definition.enabled:

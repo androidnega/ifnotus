@@ -25,6 +25,7 @@ from app.schemas.inventory import (
 from app.services.applications.discovery_runtime import RuntimeApplicationDiscovery
 from app.services.hosting.nginx_discovery import NginxDiscoveryService
 from app.services.hosting.ssl_discovery import SslDiscoveryService
+from app.services.hosting.webmail_settings import WebmailSettingsStore
 
 
 class InventoryService:
@@ -38,9 +39,15 @@ class InventoryService:
         self._runtime = RuntimeApplicationDiscovery(settings)
         self._nginx = NginxDiscoveryService(settings)
         self._ssl_discovery = SslDiscoveryService(settings)
+        self._webmail = WebmailSettingsStore(settings)
 
     async def get_inventory(self) -> VpsInventoryResponse:
         now = datetime.now(UTC)
+        # Auto-detect new nginx domains for /mail webmail (throttled), like app discovery.
+        try:
+            await self._webmail.ensure_webmail_for_domains(force=False)
+        except Exception:  # noqa: BLE001 — inventory must not fail on webmail sync
+            pass
         apps = self._build_application_inventory(now)
         domains = await self._build_domain_inventory(now)
         ssl = await self._build_ssl_inventory(now, domains)
@@ -65,7 +72,7 @@ class InventoryService:
             ),
             certificates_expiring=ssl.expiring_count,
             certificates_missing=ssl.missing_count,
-            runtime_issues=runtime_issues + domains.drift_count,
+            runtime_issues=runtime_issues,
         )
 
         return VpsInventoryResponse(summary=summary, applications=apps, domains=domains, ssl=ssl)

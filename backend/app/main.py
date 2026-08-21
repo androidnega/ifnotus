@@ -10,7 +10,8 @@ from app.core.container import Container, create_container
 from app.core.events import lifespan
 from app.core.exceptions import AppException, app_exception_handler, unhandled_exception_handler
 from app.core.openapi import setup_openapi
-from app.utils.middleware import RequestContextMiddleware
+from app.utils.middleware import CustomerSafeResponseMiddleware, RequestContextMiddleware
+from app.utils.rate_limit import RateLimitMiddleware
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -47,6 +48,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(CustomerSafeResponseMiddleware)
+    app.add_middleware(RateLimitMiddleware)
 
     # Exception handlers
     app.add_exception_handler(AppException, app_exception_handler)

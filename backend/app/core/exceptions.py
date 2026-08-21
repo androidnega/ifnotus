@@ -83,15 +83,24 @@ class IntegrationError(AppException):
     message = "External integration failed."
 
 
-def app_exception_handler(_request: Request, exc: AppException) -> JSONResponse:
+def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
     """Map AppException to JSON error response."""
+    message = exc.message
+    details = exc.details
+    # Never leak host filesystem layout to the customer portal.
+    if request.url.path.startswith("/api/v1/customers"):
+        from app.utils.customer_safe import scrub_host_paths, scrub_obj
+
+        message = scrub_host_paths(message)
+        if details is not None:
+            details = scrub_obj(details)  # type: ignore[assignment]
     return JSONResponse(
         status_code=exc.status_code,
         content=ErrorResponse(
             error=ErrorDetail(
                 code=exc.code,
-                message=exc.message,
-                details=exc.details,
+                message=message,
+                details=details,
             )
         ).model_dump(),
     )

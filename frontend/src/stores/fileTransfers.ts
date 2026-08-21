@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { filesApi } from '@/api'
+import { customersApi, filesApi } from '@/api'
 
 export type TransferKind = 'upload' | 'download'
 export type TransferStatus = 'queued' | 'active' | 'done' | 'error' | 'cancelled'
@@ -8,6 +8,8 @@ export type TransferStatus = 'queued' | 'active' | 'done' | 'error' | 'cancelled
 export interface FileScope {
   appId?: string
   rootId?: string
+  /** Customer portal environment uploads */
+  environmentId?: string
 }
 
 export interface TransferItem {
@@ -103,9 +105,20 @@ export const useFileTransferStore = defineStore('fileTransfers', () => {
           if (item.kind === 'upload') {
             const file = uploadFileMap.get(item.id)
             if (!file) throw new Error('File data missing from queue')
-            await filesApi.uploadChunked(file, item.path, item.scope, (pct) => {
-              item.progress = pct
-            })
+            if (item.scope.environmentId) {
+              await customersApi.uploadEnvChunked(
+                item.scope.environmentId,
+                file,
+                item.path,
+                (pct) => {
+                  item.progress = pct
+                },
+              )
+            } else {
+              await filesApi.uploadChunked(file, item.path, item.scope, (pct) => {
+                item.progress = pct
+              })
+            }
             uploadFileMap.delete(item.id)
           } else {
             await filesApi.downloadQueued(item.path, item.name, item.scope, (pct) => {

@@ -13,6 +13,7 @@ const variant = computed(() => {
       return 'success'
     case 'degraded':
       return 'warning'
+    case 'failed':
     case 'stopped':
       return 'danger'
     default:

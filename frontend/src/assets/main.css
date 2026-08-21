@@ -4,13 +4,29 @@
 
 @layer base {
   :root {
-    --color-surface: #f8fafc;
-    --color-surface-raised: #ffffff;
-    --color-surface-overlay: #ffffff;
-    --color-border: #e2e8f0;
-    --color-text-muted: #64748b;
-    --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.06);
-    --shadow-elevated: 0 10px 15px -3px rgb(0 0 0 / 0.08), 0 4px 6px -4px rgb(0 0 0 / 0.08);
+    --if-primary: #ff6c2c;
+    --if-primary-hover: #e85a1c;
+    --if-primary-soft: rgba(255, 108, 44, 0.14);
+    --if-primary-ring: rgba(255, 108, 44, 0.22);
+    --if-glow: rgba(255, 108, 44, 0.1);
+    --if-ink: #161a1d;
+    --if-paper: #f4f1ec;
+    --if-surface: #ffffff;
+    --if-muted: #6b7280;
+    --if-border: #e7e2db;
+    --if-plan: #0f766e;
+
+    --brand-rgb-500: 255 108 44;
+    --brand-rgb-600: 232 90 28;
+    --color-brand-500: var(--if-primary);
+    --color-brand-600: var(--if-primary-hover);
+    --color-surface: var(--if-paper);
+    --color-surface-raised: var(--if-surface);
+    --color-surface-overlay: var(--if-surface);
+    --color-border: var(--if-border);
+    --color-text-muted: var(--if-muted);
+    --shadow-card: 0 1px 2px rgb(22 26 29 / 0.04), 0 8px 24px rgb(22 26 29 / 0.04);
+    --shadow-elevated: 0 12px 32px rgb(22 26 29 / 0.08);
   }
 
   .dark {
@@ -33,6 +49,36 @@
 
   *:focus-visible {
     @apply outline-none ring-2 ring-brand-500 ring-offset-2 ring-offset-surface;
+  }
+
+  /* Overlay-style auto-hide scrollbars on Windows / Linux (keep macOS native). */
+  html.os-non-mac {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+  html.os-non-mac:hover,
+  html.os-non-mac *:hover,
+  html.os-non-mac *:focus-within {
+    scrollbar-color: rgb(100 116 139 / 0.45) transparent;
+  }
+  html.os-non-mac *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  html.os-non-mac *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  html.os-non-mac *::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 999px;
+  }
+  html.os-non-mac *:hover::-webkit-scrollbar-thumb,
+  html.os-non-mac *:focus-within::-webkit-scrollbar-thumb {
+    background: rgb(100 116 139 / 0.45);
+  }
+  html.os-non-mac.dark *:hover::-webkit-scrollbar-thumb,
+  html.os-non-mac.dark *:focus-within::-webkit-scrollbar-thumb {
+    background: rgb(148 163 184 / 0.4);
   }
 }
 

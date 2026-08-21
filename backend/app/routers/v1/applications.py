@@ -1,10 +1,12 @@
 """Application management endpoints."""
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.applications import get_application_engine
-from app.api.deps import CurrentUser, RequirePermission
+from app.api.deps import CurrentUser, DenyCustomerHost, RequirePermission, get_auth_service
 from app.api.operations import get_application_actions
 from app.core.permissions import Permission
 from app.schemas.applications import (
@@ -17,8 +19,9 @@ from app.schemas.applications import (
     ApplicationMetricsSchema,
 )
 from app.schemas.operations import OperationResult
+from app.services.auth import AuthService
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(DenyCustomerHost)])
 
 
 class DeployRequest(BaseModel):
@@ -36,6 +39,10 @@ class AppEnableRequest(BaseModel):
     enabled: bool
 
 
+class ClearAppLogsRequest(BaseModel):
+    confirm_password: str = Field(min_length=1, max_length=128)
+
+
 @router.get(
     "",
     response_model=ApplicationListResponse,
@@ -47,6 +54,23 @@ async def list_applications(
     _user: CurrentUser,
 ) -> ApplicationListResponse:
     return await get_application_engine(request).list_applications()
+
+
+@router.post(
+    "/cache/clear-all",
+    response_model=OperationResult,
+    summary="Clear caches for all enabled applications",
+    dependencies=[Depends(RequirePermission(Permission.APPS_WRITE))],
+)
+async def clear_all_application_caches(
+    request: Request,
+    _user: CurrentUser,
+) -> OperationResult:
+    from app.api.monitoring import get_monitoring_service
+    from app.services.operations.cache import CacheOperationsService
+
+    settings = request.app.state.container.config()
+    return await CacheOperationsService(settings, get_monitoring_service(request)).clear_all_apps()
 
 
 @router.get(
@@ -104,6 +128,23 @@ async def get_application_logs(
     lines: int = Query(default=100, ge=1, le=500),
 ) -> ApplicationLogsResponse:
     return await get_application_engine(request).get_logs(app_id, lines=lines)
+
+
+@router.post(
+    "/{app_id}/logs/clear",
+    response_model=OperationResult,
+    summary="Clear application log files",
+    dependencies=[Depends(RequirePermission(Permission.SYSTEM_ADMIN))],
+)
+async def clear_application_logs(
+    app_id: str,
+    request: Request,
+    user: CurrentUser,
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+    body: ClearAppLogsRequest,
+) -> OperationResult:
+    await auth_service.confirm_password(user, body.confirm_password)
+    return await get_application_engine(request).clear_logs(app_id)
 
 
 @router.get(
@@ -230,6 +271,24 @@ async def refresh_application(
             "nginx_enabled": detail.nginx.enabled if detail.nginx else None,
         },
     )
+
+
+@router.post(
+    "/{app_id}/cache/clear",
+    response_model=OperationResult,
+    summary="Clear application caches (framework + filesystem)",
+    dependencies=[Depends(RequirePermission(Permission.APPS_WRITE))],
+)
+async def clear_application_cache(
+    app_id: str,
+    request: Request,
+    _user: CurrentUser,
+) -> OperationResult:
+    from app.api.monitoring import get_monitoring_service
+    from app.services.operations.cache import CacheOperationsService
+
+    settings = request.app.state.container.config()
+    return await CacheOperationsService(settings, get_monitoring_service(request)).clear_app(app_id)
 
 
 @router.post(

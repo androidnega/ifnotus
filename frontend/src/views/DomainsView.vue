@@ -1,109 +1,96 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
-import Card from '@/components/ui/Card.vue'
-import Badge from '@/components/ui/Badge.vue'
-import { applicationsApi, domainsApi } from '@/api'
+import { domainsApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
 import { usePermissions } from '@/composables/usePermissions'
 import { Permission } from '@/lib/permissions'
-import type { ApplicationSummary } from '@/types/dashboard'
 import type { DnsCheckResponse, Domain } from '@/types/hosting'
-import type { NginxDiscoveredDomain } from '@/types/inventory'
 
 const loading = ref(true)
 const domains = ref<Domain[]>([])
-const discoveredDomains = ref<NginxDiscoveredDomain[]>([])
-const driftCount = ref(0)
-const availablePorts = ref<number[]>([])
-const listeningPorts = ref<number[]>([])
-const apps = ref<ApplicationSummary[]>([])
+const serverIp = ref<string | null>(null)
 const message = ref<{ type: 'ok' | 'err'; text: string } | null>(null)
 const actionKey = ref<string | null>(null)
 const dnsResult = ref<DnsCheckResponse | null>(null)
 const showForm = ref(false)
+const selectedId = ref<string | null>(null)
 
 const form = ref({
   name: '',
+  subdomain_label: '',
   domain_type: 'primary' as Domain['domain_type'],
   parent_domain_id: '',
-  application_id: '',
-  document_root: '',
-  proxy_port: '' as string | number,
-  notes: '',
 })
-
-const primaryDomains = computed(() => domains.value.filter((d) => d.domain_type === 'primary'))
+const dnsForm = ref({ record_type: 'A', host: '@', value: '', ttl: 3600, priority: '' as string | number })
 
 const { can } = usePermissions()
 const canWrite = computed(() => can(Permission.DOMAINS_WRITE))
 
-const editingDomain = ref<Domain | null>(null)
-const editForm = ref({ application_id: '', document_root: '', proxy_port: '' as string | number, notes: '' })
+const zones = computed(() =>
+  domains.value.filter((d) => d.domain_type !== 'redirect'),
+)
+const primaryZones = computed(() =>
+  domains.value.filter((d) => d.domain_type === 'primary' || d.domain_type === 'addon'),
+)
+const selected = computed(() => domains.value.find((d) => d.id === selectedId.value) || null)
+
+function dnsLabel(domain: Domain) {
+  if (domain.dns_points_here === true) return { cls: 'ok', text: 'Points here' }
+  if (domain.dns_points_here === false) return { cls: 'bad', text: 'Mismatch' }
+  return { cls: '', text: 'Not checked' }
+}
 
 async function load() {
   loading.value = true
   try {
-    const [d, a] = await Promise.all([domainsApi.list(), applicationsApi.list()])
+    const d = await domainsApi.list()
     domains.value = d.data.domains
-    discoveredDomains.value = d.data.discovered ?? []
-    driftCount.value = d.data.drift_count ?? 0
-    availablePorts.value = d.data.available_ports ?? []
-    listeningPorts.value = d.data.listening_ports ?? []
-    apps.value = a.data.applications
+    serverIp.value = d.data.server_ip ?? null
+    if (selectedId.value && !domains.value.some((x) => x.id === selectedId.value)) {
+      selectedId.value = null
+    }
+    if (!selectedId.value && domains.value[0]) selectedId.value = domains.value[0].id
+    if (serverIp.value && !dnsForm.value.value) dnsForm.value.value = serverIp.value
   } finally {
     loading.value = false
   }
 }
 
-async function createDomain() {
+function openCreate(type: Domain['domain_type']) {
+  form.value = {
+    name: '',
+    subdomain_label: '',
+    domain_type: type,
+    parent_domain_id: primaryZones.value[0]?.id || '',
+  }
+  showForm.value = true
+}
+
+async function createZone() {
   actionKey.value = 'create'
   message.value = null
   try {
-    const portRaw = form.value.proxy_port
-    const proxyPort =
-      portRaw === '' || portRaw === null || portRaw === undefined ? undefined : Number(portRaw)
     await domainsApi.create({
-      name: form.value.name,
+      name: form.value.name || undefined,
+      subdomain_label: form.value.subdomain_label || undefined,
       domain_type: form.value.domain_type,
       parent_domain_id: form.value.parent_domain_id || undefined,
-      application_id: form.value.application_id || undefined,
-      document_root: form.value.document_root || undefined,
-      proxy_port: Number.isFinite(proxyPort) ? proxyPort : undefined,
-      notes: form.value.notes || undefined,
+      provision: false,
+      create_docroot: false,
     })
-    message.value = { type: 'ok', text: 'Domain created.' }
+    message.value = { type: 'ok', text: 'DNS zone added.' }
     showForm.value = false
-    form.value = {
-      name: '',
-      domain_type: 'primary',
-      parent_domain_id: '',
-      application_id: '',
-      document_root: '',
-      proxy_port: '',
-      notes: '',
-    }
     await load()
   } catch (e) {
-    message.value = { type: 'err', text: getApiErrorMessage(e, 'Failed to create domain') }
-  } finally {
-    actionKey.value = null
-  }
-}
-
-async function toggleEnabled(domain: Domain) {
-  actionKey.value = domain.id
-  try {
-    await domainsApi.update(domain.id, { enabled: !domain.enabled })
-    await load()
-  } catch (e) {
-    message.value = { type: 'err', text: e instanceof Error ? e.message : 'Update failed' }
+    message.value = { type: 'err', text: getApiErrorMessage(e, 'Could not add zone') }
   } finally {
     actionKey.value = null
   }
 }
 
 async function checkDns(domain: Domain) {
+  selectedId.value = domain.id
   actionKey.value = `dns-${domain.id}`
   dnsResult.value = null
   try {
@@ -111,63 +98,58 @@ async function checkDns(domain: Domain) {
     dnsResult.value = data
     await load()
   } catch (e) {
-    message.value = { type: 'err', text: e instanceof Error ? e.message : 'DNS check failed' }
+    message.value = { type: 'err', text: getApiErrorMessage(e, 'DNS check failed') }
   } finally {
     actionKey.value = null
   }
 }
 
-async function removeDomain(domain: Domain) {
-  if (!confirm(`Delete ${domain.name}?`)) return
+async function removeZone(domain: Domain) {
+  if (!confirm(`Remove DNS zone ${domain.name}?`)) return
   actionKey.value = `del-${domain.id}`
   try {
     await domainsApi.delete(domain.id)
-    message.value = { type: 'ok', text: 'Domain deleted.' }
+    message.value = { type: 'ok', text: 'Zone removed.' }
     await load()
   } catch (e) {
-    message.value = { type: 'err', text: e instanceof Error ? e.message : 'Delete failed' }
+    message.value = { type: 'err', text: getApiErrorMessage(e, 'Delete failed') }
   } finally {
     actionKey.value = null
   }
 }
 
-function startEdit(domain: Domain) {
-  editingDomain.value = domain
-  editForm.value = {
-    application_id: domain.application_id ?? '',
-    document_root: domain.document_root ?? '',
-    proxy_port: domain.proxy_port ?? '',
-    notes: domain.notes ?? '',
-  }
-}
-
-async function saveEdit() {
-  if (!editingDomain.value) return
-  actionKey.value = `edit-${editingDomain.value.id}`
+async function addDns() {
+  if (!selected.value) return
+  actionKey.value = 'dnsadd'
   try {
-    const portRaw = editForm.value.proxy_port
-    const proxyPort =
-      portRaw === '' || portRaw === null || portRaw === undefined ? null : Number(portRaw)
-    await domainsApi.update(editingDomain.value.id, {
-      application_id: editForm.value.application_id ? editForm.value.application_id : null,
-      document_root: editForm.value.document_root ? editForm.value.document_root : null,
-      proxy_port: Number.isFinite(proxyPort as number) ? (proxyPort as number) : null,
-      notes: editForm.value.notes ? editForm.value.notes : null,
+    const priority =
+      dnsForm.value.priority === '' || dnsForm.value.priority === null
+        ? undefined
+        : Number(dnsForm.value.priority)
+    await domainsApi.createDnsRecord(selected.value.id, {
+      record_type: dnsForm.value.record_type,
+      host: dnsForm.value.host || '@',
+      value: dnsForm.value.value,
+      ttl: Number(dnsForm.value.ttl) || 3600,
+      priority,
     })
-    message.value = { type: 'ok', text: 'Domain updated.' }
-    editingDomain.value = null
+    dnsForm.value = { record_type: 'A', host: '@', value: serverIp.value || '', ttl: 3600, priority: '' }
     await load()
   } catch (e) {
-    message.value = { type: 'err', text: getApiErrorMessage(e, 'Update failed') }
+    message.value = { type: 'err', text: getApiErrorMessage(e, 'Could not add record') }
   } finally {
     actionKey.value = null
   }
 }
 
-function dnsBadge(domain: Domain) {
-  if (domain.dns_points_here === true) return { variant: 'success' as const, label: 'DNS OK' }
-  if (domain.dns_points_here === false) return { variant: 'danger' as const, label: 'DNS mismatch' }
-  return { variant: 'neutral' as const, label: 'DNS unknown' }
+async function removeDns(recordId: string) {
+  if (!selected.value) return
+  try {
+    await domainsApi.deleteDnsRecord(selected.value.id, recordId)
+    await load()
+  } catch (e) {
+    message.value = { type: 'err', text: getApiErrorMessage(e, 'Could not delete record') }
+  }
 }
 
 onMounted(load)
@@ -175,244 +157,230 @@ onMounted(load)
 
 <template>
   <DashboardLayout @refresh="load">
-    <div class="animate-fade-in space-y-5">
-      <div class="flex flex-wrap items-center justify-between gap-3">
+    <div class="ctrl">
+      <header class="head">
         <div>
-          <h1 class="text-lg font-semibold text-slate-900 dark:text-white">Domains</h1>
-          <p class="text-sm text-surface-muted">
-            IFNOTUS-managed domains and nginx-discovered hostnames
-            <span v-if="driftCount" class="text-amber-600"> · {{ driftCount }} drift</span>
-          </p>
+          <p class="k">DNS</p>
+          <h1>Zones</h1>
+          <p class="muted">Nameservers, records, and checks — nothing else on this page.</p>
         </div>
-        <div class="flex gap-2">
-          <button
-            type="button"
-            class="rounded-lg border border-surface-border px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-800"
-            :disabled="loading"
-            @click="load"
-          >
-            Refresh
-          </button>
-          <button
-            v-if="canWrite"
-            type="button"
-            class="rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700"
-            @click="showForm = !showForm"
-          >
-            Add domain
-          </button>
+        <div class="head-actions">
+          <button type="button" class="ghost" :disabled="loading" @click="load">Refresh</button>
+          <button v-if="canWrite" type="button" class="cta" @click="openCreate('primary')">Add zone</button>
+          <button v-if="canWrite" type="button" class="ghost" @click="openCreate('subdomain')">Add subdomain</button>
         </div>
-      </div>
+      </header>
 
-      <p
-        v-if="message"
-        class="rounded-lg px-3 py-2 text-sm"
-        :class="message.type === 'ok' ? 'bg-emerald-500/10 text-emerald-700' : 'bg-red-500/10 text-red-700'"
-      >
-        {{ message.text }}
+      <article class="card ns">
+        <p class="k">Nameservers</p>
+        <p class="ns-line">ns1.ifnotus.space &nbsp;·&nbsp; ns2.ifnotus.space</p>
+        <p class="muted">Point the domain here, then add A / MX / TXT records below.</p>
+      </article>
+
+      <p v-if="message" class="note" :class="message.type">{{ message.text }}</p>
+      <p v-if="dnsResult" class="note" :class="dnsResult.points_to_server ? 'ok' : 'err'">
+        {{ dnsResult.domain }}:
+        {{ dnsResult.resolves ? dnsResult.addresses.join(', ') : dnsResult.message || 'Does not resolve' }}
+        <span v-if="dnsResult.points_to_server !== null">
+          · {{ dnsResult.points_to_server ? 'points here' : 'does not point here' }}
+        </span>
       </p>
 
-      <Card v-if="showForm && canWrite" padding="md">
-        <h2 class="mb-3 text-sm font-semibold">New domain</h2>
-        <div class="grid gap-3 md:grid-cols-2">
-          <label class="block text-sm">
-            <span class="text-surface-muted">Hostname</span>
-            <input v-model="form.name" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2" placeholder="example.com" />
+      <article v-if="showForm && canWrite" class="card">
+        <header>
+          <h2>{{ form.domain_type === 'subdomain' ? 'New subdomain' : 'New zone' }}</h2>
+          <button type="button" class="ghost" @click="showForm = false">Cancel</button>
+        </header>
+        <div class="form-row">
+          <label v-if="form.domain_type === 'subdomain'">
+            Label
+            <input v-model="form.subdomain_label" placeholder="blog" />
           </label>
-          <label class="block text-sm">
-            <span class="text-surface-muted">Type</span>
-            <select v-model="form.domain_type" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2">
-              <option value="primary">Primary</option>
-              <option value="subdomain">Subdomain</option>
-              <option value="addon">Addon</option>
+          <label v-else>
+            Hostname
+            <input v-model="form.name" placeholder="example.com" />
+          </label>
+          <label v-if="form.domain_type === 'subdomain'">
+            Parent zone
+            <select v-model="form.parent_domain_id">
+              <option value="">Select</option>
+              <option v-for="p in primaryZones" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
           </label>
-          <label v-if="form.domain_type !== 'primary'" class="block text-sm">
-            <span class="text-surface-muted">Parent domain</span>
-            <select v-model="form.parent_domain_id" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2">
-              <option value="">Select parent</option>
-              <option v-for="p in primaryDomains" :key="p.id" :value="p.id">{{ p.name }}</option>
-            </select>
-          </label>
-          <label class="block text-sm">
-            <span class="text-surface-muted">Application</span>
-            <select v-model="form.application_id" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2">
-              <option value="">None</option>
-              <option v-for="a in apps" :key="a.id" :value="a.id">{{ a.name }}</option>
-            </select>
-          </label>
-          <label class="block text-sm md:col-span-2">
-            <span class="text-surface-muted">Document root</span>
-            <input v-model="form.document_root" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2" placeholder="/var/www/example" />
-          </label>
-          <label class="block text-sm md:col-span-2">
-            <span class="text-surface-muted">Backend proxy port (optional)</span>
-            <select v-model="form.proxy_port" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2">
-              <option value="">None — static / PHP via nginx only</option>
-              <option v-for="port in availablePorts" :key="port" :value="port">
-                {{ port }} (available)
-              </option>
-            </select>
-            <p class="mt-1 text-xs text-surface-muted">
-              Pick a free local port so reverse-proxy apps do not collide.
-              <span v-if="listeningPorts.length"> In use: {{ listeningPorts.slice(0, 12).join(', ') }}{{ listeningPorts.length > 12 ? '…' : '' }}</span>
-            </p>
-          </label>
-        </div>
-        <div class="mt-4 flex gap-2">
-          <button
-            type="button"
-            class="rounded-lg bg-brand-600 px-3 py-2 text-sm text-white"
-            :disabled="actionKey === 'create' || !form.name"
-            @click="createDomain"
-          >
-            Save
+          <button type="button" class="cta" :disabled="actionKey === 'create'" @click="createZone">
+            {{ actionKey === 'create' ? 'Adding…' : 'Add DNS zone' }}
           </button>
-          <button type="button" class="rounded-lg border border-surface-border px-3 py-2 text-sm" @click="showForm = false">Cancel</button>
         </div>
-      </Card>
+      </article>
 
-      <Card v-if="editingDomain && canWrite" padding="md">
-        <h2 class="mb-3 text-sm font-semibold">Edit {{ editingDomain.name }}</h2>
-        <div class="grid gap-3 md:grid-cols-2">
-          <label class="block text-sm">
-            <span class="text-surface-muted">Application</span>
-            <select v-model="editForm.application_id" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2">
-              <option value="">None</option>
-              <option v-for="a in apps" :key="a.id" :value="a.id">{{ a.name }}</option>
-            </select>
-          </label>
-          <label class="block text-sm md:col-span-2">
-            <span class="text-surface-muted">Document root</span>
-            <input v-model="editForm.document_root" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2" />
-          </label>
-          <label class="block text-sm md:col-span-2">
-            <span class="text-surface-muted">Backend proxy port</span>
-            <select v-model="editForm.proxy_port" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2">
-              <option value="">None</option>
-              <option
-                v-if="editingDomain?.proxy_port && !availablePorts.includes(editingDomain.proxy_port)"
-                :value="editingDomain.proxy_port"
-              >
-                {{ editingDomain.proxy_port }} (current)
-              </option>
-              <option v-for="port in availablePorts" :key="port" :value="port">{{ port }} (available)</option>
-            </select>
-          </label>
-          <label class="block text-sm md:col-span-2">
-            <span class="text-surface-muted">Notes</span>
-            <input v-model="editForm.notes" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2" />
-          </label>
-        </div>
-        <div class="mt-4 flex gap-2">
-          <button type="button" class="rounded-lg bg-brand-600 px-3 py-2 text-sm text-white" @click="saveEdit">Save</button>
-          <button type="button" class="rounded-lg border border-surface-border px-3 py-2 text-sm" @click="editingDomain = null">Cancel</button>
-        </div>
-      </Card>
+      <div class="split">
+        <article class="card">
+          <header><h2>Zones</h2></header>
+          <p v-if="loading" class="muted">Loading…</p>
+          <ul v-else class="zones">
+            <li
+              v-for="zone in zones"
+              :key="zone.id"
+              :class="{ on: selectedId === zone.id }"
+              @click="selectedId = zone.id"
+            >
+              <div>
+                <strong>{{ zone.name }}</strong>
+                <span class="pill" :class="dnsLabel(zone).cls">{{ dnsLabel(zone).text }}</span>
+              </div>
+              <div class="row-actions">
+                <button type="button" class="ghost" @click.stop="checkDns(zone)">Check</button>
+                <button v-if="canWrite" type="button" class="danger" @click.stop="removeZone(zone)">Remove</button>
+              </div>
+            </li>
+            <li v-if="!zones.length" class="muted">No zones yet.</li>
+          </ul>
+        </article>
 
-      <Card v-if="dnsResult" padding="sm">
-        <p class="text-sm font-medium">DNS: {{ dnsResult.domain }}</p>
-        <p class="text-xs text-surface-muted">
-          {{ dnsResult.resolves ? dnsResult.addresses.join(', ') : dnsResult.message || 'Does not resolve' }}
-          <span v-if="dnsResult.points_to_server !== null"> · points here: {{ dnsResult.points_to_server ? 'yes' : 'no' }}</span>
-        </p>
-      </Card>
-
-      <div v-if="loading" class="text-sm text-surface-muted">Loading domains…</div>
-
-      <div v-else-if="!domains.length && !discoveredDomains.length" class="rounded-xl border border-dashed border-surface-border p-8 text-center text-sm text-surface-muted">
-        No domains registered yet.
-      </div>
-
-      <div v-else class="space-y-6">
-        <div v-if="domains.length" class="space-y-2">
-          <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">Managed domains</h2>
-          <div
-            v-for="domain in domains"
-            :key="domain.id"
-            class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-surface-border bg-surface-raised px-4 py-3"
-          >
-          <div class="min-w-0">
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="font-medium text-slate-900 dark:text-white">{{ domain.name }}</span>
-              <Badge size="sm">{{ domain.domain_type }}</Badge>
-              <Badge :variant="domain.enabled ? 'success' : 'neutral'" size="sm">{{ domain.enabled ? 'Enabled' : 'Disabled' }}</Badge>
-              <Badge :variant="dnsBadge(domain).variant" size="sm">{{ dnsBadge(domain).label }}</Badge>
-              <Badge v-if="domain.nginx_enabled !== null" :variant="domain.nginx_enabled ? 'info' : 'warning'" size="sm">
-                nginx {{ domain.nginx_enabled ? 'on' : 'off' }}
-              </Badge>
+        <article class="card">
+          <header>
+            <h2>Records</h2>
+            <span v-if="selected" class="muted">{{ selected.name }}</span>
+          </header>
+          <p v-if="!selected" class="muted">Select a zone to edit its records.</p>
+          <template v-else>
+            <div v-if="canWrite" class="dns-add">
+              <select v-model="dnsForm.record_type">
+                <option>A</option>
+                <option>AAAA</option>
+                <option>CNAME</option>
+                <option>MX</option>
+                <option>TXT</option>
+                <option>NS</option>
+                <option>CAA</option>
+              </select>
+              <input v-model="dnsForm.host" placeholder="@" />
+              <input v-model="dnsForm.value" :placeholder="serverIp || 'value'" />
+              <input v-model="dnsForm.ttl" type="number" placeholder="TTL" />
+              <input v-if="dnsForm.record_type === 'MX'" v-model="dnsForm.priority" type="number" placeholder="Pri" />
+              <button type="button" class="cta" :disabled="actionKey === 'dnsadd'" @click="addDns">Add</button>
             </div>
-            <p class="mt-1 text-xs text-surface-muted">
-              <span v-if="domain.application_id">app: {{ domain.application_id }}</span>
-              <span v-if="domain.proxy_port"> · port {{ domain.proxy_port }}</span>
-              <span v-if="domain.document_root"> · {{ domain.document_root }}</span>
-            </p>
-          </div>
-          <div class="flex flex-wrap gap-2">
-            <button
-              type="button"
-              class="rounded-lg border border-surface-border px-2.5 py-1.5 text-xs"
-              :disabled="!!actionKey"
-              @click="checkDns(domain)"
-            >
-              Check DNS
-            </button>
-            <button
-              v-if="canWrite"
-              type="button"
-              class="rounded-lg border border-surface-border px-2.5 py-1.5 text-xs"
-              :disabled="!!actionKey"
-              @click="startEdit(domain)"
-            >
-              Edit
-            </button>
-            <button
-              v-if="canWrite"
-              type="button"
-              class="rounded-lg border border-surface-border px-2.5 py-1.5 text-xs"
-              :disabled="!!actionKey"
-              @click="toggleEnabled(domain)"
-            >
-              {{ domain.enabled ? 'Disable' : 'Enable' }}
-            </button>
-            <button
-              v-if="canWrite"
-              type="button"
-              class="rounded-lg border border-red-500/30 px-2.5 py-1.5 text-xs text-red-600"
-              :disabled="!!actionKey"
-              @click="removeDomain(domain)"
-            >
-              Delete
-            </button>
-          </div>
-        </div>
-        </div>
-
-        <div v-if="discoveredDomains.length" class="space-y-2">
-          <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">
-            Discovered from nginx ({{ discoveredDomains.length }})
-          </h2>
-          <div
-            v-for="site in discoveredDomains"
-            :key="site.server_name + site.site_path"
-            class="rounded-xl border border-dashed border-surface-border bg-surface-raised/50 px-4 py-3"
-          >
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="font-medium text-slate-900 dark:text-white">{{ site.server_name }}</span>
-              <Badge size="sm" variant="info">discovered</Badge>
-              <Badge :variant="site.enabled ? 'success' : 'warning'" size="sm">
-                nginx {{ site.enabled ? 'enabled' : 'disabled' }}
-              </Badge>
-              <Badge v-if="site.ssl_enabled" size="sm" variant="success">SSL</Badge>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Type</th>
+                    <th>Host</th>
+                    <th>Value</th>
+                    <th>TTL</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="r in selected.dns_records || []" :key="r.id">
+                    <td>{{ r.record_type }}{{ r.priority != null ? ` ${r.priority}` : '' }}</td>
+                    <td>{{ r.host }}</td>
+                    <td>{{ r.value }}</td>
+                    <td>{{ r.ttl }}</td>
+                    <td>
+                      <button v-if="canWrite" type="button" class="danger" @click="removeDns(r.id)">Remove</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-if="!(selected.dns_records || []).length" class="muted">No records in this zone yet.</p>
             </div>
-            <p class="mt-1 text-xs text-surface-muted">
-              <span v-if="site.document_root">root: {{ site.document_root }}</span>
-              <span v-if="site.proxy_pass"> · proxy: {{ site.proxy_pass }}</span>
-              <span v-if="site.site_path"> · {{ site.site_path }}</span>
-            </p>
-          </div>
-        </div>
+          </template>
+        </article>
       </div>
     </div>
   </DashboardLayout>
 </template>
+
+<style scoped>
+.ctrl { display: flex; flex-direction: column; gap: 0.9rem; }
+.head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 1rem; align-items: flex-end; }
+.head h1 { margin: 0.15rem 0 0; font-size: 1.2rem; font-weight: 700; }
+.head-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.k {
+  margin: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+.muted { margin: 0.3rem 0 0; color: var(--color-text-muted); font-size: 0.8rem; }
+.card {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: 0.9rem;
+  box-shadow: var(--shadow-card);
+  padding: 1rem 1.1rem 1.15rem;
+}
+.card header { display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; margin-bottom: 0.75rem; }
+.card h2 { margin: 0; font-size: 0.92rem; font-weight: 700; }
+.ns-line { margin: 0.35rem 0 0; font-family: ui-monospace, monospace; font-size: 0.95rem; font-weight: 650; }
+.note { margin: 0; padding: 0.7rem 0.9rem; border-radius: 0.75rem; font-size: 0.82rem; }
+.note.ok { background: #ecfdf5; color: #047857; }
+.note.err { background: #fef2f2; color: #b91c1c; }
+.cta, .ghost, .danger {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+  border-radius: 0.65rem;
+  padding: 0.45rem 0.8rem;
+  font-size: 0.8rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+.cta { background: #2563eb; border-color: #2563eb; color: #fff; }
+.danger { color: #b91c1c; }
+.split { display: grid; gap: 0.85rem; }
+@media (min-width: 900px) { .split { grid-template-columns: 0.9fr 1.2fr; } }
+.zones { list-style: none; margin: 0; padding: 0; }
+.zones li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.7rem 0.55rem;
+  border-radius: 0.65rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.zones li.on { background: color-mix(in srgb, var(--if-primary) 14%, var(--color-surface)); }
+.zones strong { margin-right: 0.45rem; }
+.pill {
+  display: inline-block;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+}
+.pill.ok { background: #ecfdf5; color: #047857; }
+.pill.bad { background: #fef2f2; color: #b91c1c; }
+.row-actions { display: flex; gap: 0.3rem; }
+.form-row, .dns-add {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  align-items: end;
+}
+.form-row label, .dns-add {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+input, select {
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: 0.65rem;
+  padding: 0.48rem 0.65rem;
+  font-size: 0.84rem;
+  background: var(--color-surface-raised);
+}
+.dns-add { margin-bottom: 0.75rem; }
+.table-wrap { overflow: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.78rem; font-family: ui-monospace, monospace; }
+th { text-align: left; color: var(--color-text-muted); font-weight: 650; padding: 0.4rem 0.45rem; }
+td { padding: 0.45rem; border-top: 1px solid var(--color-border); word-break: break-all; }
+</style>

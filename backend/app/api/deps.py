@@ -14,6 +14,7 @@ from app.repositories.user import UserRepository
 from app.schemas.auth import AuthenticatedUser
 from app.services.access_control import AccessControlService
 from app.services.auth import AuthService
+from app.services.platform.tenant import is_pure_customer
 
 security_scheme = HTTPBearer(auto_error=False)
 
@@ -72,9 +73,21 @@ def require_permission(permission: Permission):
     return _check
 
 
+async def deny_customer_host_apis(
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+) -> AuthenticatedUser:
+    """Block paying customers from host-wide staff APIs (files, DBs, apps, …)."""
+    if is_pure_customer(user):
+        raise AuthorizationError(
+            "Customer accounts must use the IFNOTUS portal APIs for their own environment."
+        )
+    return user
+
+
 # Type aliases for cleaner router signatures
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
 AccessControlDep = Annotated[AccessControlService, Depends(get_access_control)]
 RequirePermission = require_permission  # usage: Depends(RequirePermission(Permission.X))
+DenyCustomerHost = deny_customer_host_apis

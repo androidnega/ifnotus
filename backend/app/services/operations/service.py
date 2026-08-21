@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import shutil
@@ -34,6 +35,7 @@ from app.schemas.operations import (
     StorageResponse,
     StorageVolume,
 )
+from app.services.applications.readers.nginx import NginxReader
 from app.services.applications.readers.ssl import SSLReader
 from app.services.monitoring.subprocess_util import resolve_binary, run_command
 from app.workers.queue import TaskQueue
@@ -46,7 +48,8 @@ class OperationsService:
         self._settings = settings
         self._queue = task_queue
         self._apps = ApplicationRepository(settings)
-        self._ssl = SSLReader()
+        self._ssl = SSLReader(settings.letsencrypt_live_dir)
+        self._nginx = NginxReader()
 
     async def overview(self) -> OperationsOverview:
         apps = self._apps.list_all()
@@ -341,12 +344,24 @@ class OperationsService:
     async def ssl_status(self) -> list[dict]:
         results = []
         for app in self._apps.list_all():
-            ssl = await self._ssl.read(app.ssl.certificate, app.ssl.domain)
+            nginx = await asyncio.to_thread(
+                self._nginx.read,
+                app.nginx.site,
+                app.nginx.server_name,
+                str(app.root_path) if app.paths.root else None,
+            )
+            domain = app.ssl.domain or app.nginx.server_name or (nginx.server_names[0] if nginx.server_names else None)
+            ssl = await self._ssl.read(
+                app.ssl.certificate,
+                domain,
+                extra_domains=list(nginx.server_names or []),
+                nginx_certificate_path=nginx.certificate_path,
+            )
             results.append(
                 {
                     "application_id": app.id,
                     "application_name": app.name,
-                    "domain": app.ssl.domain or app.nginx.server_name,
+                    "domain": domain,
                     "ssl": ssl.model_dump(),
                 }
             )

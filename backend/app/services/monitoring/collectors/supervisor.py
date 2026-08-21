@@ -29,8 +29,8 @@ class SupervisorCollector(BaseCollector[list[ManagedService]]):
 
         code, stdout, stderr = await run_command(
             self._supervisorctl,
-            "-c",
-            f"unix://{self._socket}",
+            "-s",
+            f"unix://{self._socket}" if not str(self._socket).startswith("unix://") else str(self._socket),
             "status",
         )
         if code != 0 and not stdout:

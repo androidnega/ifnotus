@@ -1,0 +1,556 @@
+IFNOTUS — COMPLETE HOSTING SERVICE AUDIT
+========================================
+Date: 19 August 2026
+Scope: ifnotus.space as a Ghana hosting company on one Contabo VPS
+        (12 vCPU, 48 GB RAM, 256 GB disk), selling via Mobile Money.
+Purpose: What exists today, what is still broken or missing, and what
+         must improve before this is a clean, complete hosting service.
+
+This is an operations and product review, not a marketing page.
+Customers should never see server IPs, jail language, or staff tools.
+This document is for you (the operator).
+
+
+------------------------------------------------------------------------
+1. WHAT IFNOTUS IS TODAY
+------------------------------------------------------------------------
+
+IFNOTUS is already three products in one codebase:
+
+  A) Public site     https://ifnotus.space/          /plans  /signup  /login
+  B) Customer panel  https://ifnotus.space/account   (cPanel analogue)
+  C) Staff panel     https://ifnotus.space/panel     (WHM analogue)
+
+Money flow (correct direction, still manual):
+  Sign up → pick pack + domain option → invoice → pay MTN MoMo merchant
+  → customer pastes transaction ID → staff confirm → site is provisioned
+  → SMS/email when live.
+
+Hosting engine (custom, not ISPConfig):
+  Nginx vhosts, Let’s Encrypt on *.ifnotus.space, files, FTP, optional
+  Docker isolate, MySQL for WordPress/Laravel, stacks, cron, backups,
+  BIND notes for ns1/ns2, staff mail/webmail, SNR Dev AI on the site.
+
+You can stay on this stack. ISPConfig is optional later. Completeness
+does not require ISPConfig. It requires production hardening, real
+limits, mail for customers, legal/ops polish, and a disk/CPU plan that
+fits 256 GB.
+
+
+------------------------------------------------------------------------
+2. THE VPS — CAN THIS BOX SERVE PAYING CUSTOMERS?
+------------------------------------------------------------------------
+
+Machine: Contabo, 12 vCPU, 48 GB RAM, 256 GB disk. One node.
+
+Hold 20% back for the host itself (OS, Postgres, Redis, nginx, mail,
+BIND, logs, IFNOTUS API, worker, staff tools, swap/headroom):
+
+  Sellable roughly:  ~9–10 vCPU    ~38 GB RAM    ~180–200 GB disk
+  After OS + images you may only have ~150–170 GB for customer sites.
+
+Shared hosting always oversells CPU (many idle sites). Disk does not
+oversell safely. Backups need a second copy or they are not backups.
+
+Rough packing (illustrative, not a promise):
+
+  ₵30 student/static   ~0.25 vCPU / 256 MB / 2 GB
+  ₵70 WordPress-ish    ~0.5 vCPU  / 512 MB / 4 GB
+
+  Disk fills first.  ~40 × 4 GB WP sites  ≈ 160 GB  (before backups)
+  RAM is comfortable for tens of small sites if they are quiet.
+  12 vCPU is fine for that class if PHP-FPM and MySQL are tuned.
+  One noisy WordPress or one Node app can starve neighbours unless
+  cgroups / FPM pools actually enforce plan limits.
+
+Hard truth for 256 GB:
+  This VPS is a good START node for shared hosting + student subdomains.
+  It is not a Cloud VPS farm. Do not sell “root VPS / 8 GB RAM” packs
+  off this same disk as if they were dedicated machines.
+  Offload backups off-box (Contabo object storage, another VPS, or
+  encrypted tarball to a cheap disk) or one full disk kills everyone.
+
+Must register this box as an InfrastructureNode in IFNOTUS with honest
+numbers (12 CPU, 48 RAM, ~200 storage, 20% reserve). If no healthy node
+exists in the database, checkout fails with “no capacity”.
+
+
+------------------------------------------------------------------------
+3. ROUTE MAP — PUBLIC
+------------------------------------------------------------------------
+
+  /                 Marketing home, domain search widget
+  /plans            Public plan catalogue
+  /signup           Customer registration (phone required for MoMo)
+  /login            Shared login (staff vs customer routed after auth)
+  /forgot-password  Reset request
+  /reset-password   Reset land
+
+Missing on public (needed for a real host):
+  /privacy  /terms  /refunds  /aup  /contact  /status
+  Clear “how to pay” and “nameservers” pages
+  Cookie/consent if you track anything
+  Ghana-facing company details (name, location, support hours, MoMo number)
+
+Leftover / confusing:
+  /billing/callback and /billing/demo-pay still exist from Paystack days.
+  They only show “pay MoMo”. Harmless but looks unfinished.
+  /portal/* redirects exist (good). Keep them.
+
+Home vs checkout:
+  Home can search .online / .com / .org. Checkout also has .net and
+  Student. Public home should mention Student (surname.ifnotus.space)
+  or people will not discover it.
+
+
+------------------------------------------------------------------------
+4. ROUTE MAP — CUSTOMER (/account)
+------------------------------------------------------------------------
+
+Pages
+  /account                 Overview + Site workspace (query ?panel=)
+  /account/plans           Order a pack (domain radios + Student)
+  /account/invoice/:id     Invoice, MoMo number, paste transaction ID
+  /account/support         Tickets
+
+In-app panels (not separate URLs)
+  Overview, Billing, AI
+  Site: Files, Stack, Logs, Cron, Database, FTP/SSH, Domain
+
+What already works in product shape
+  Signup / login / password reset
+  Order + invoice + MoMo merchant + staff confirm
+  Student hostname: surname.ifnotus.space, then surname1, surname2
+  Register domain vs “I already have a domain”
+  Isolated file manager (document root only)
+  Stack install: static, WordPress, Laravel, Node
+  FTP shown as ftp.ifnotus.space (not the VPS IP)
+  SSH gated by plan price (jailed, not root)
+  Custom domain attach via nameservers (not A-to-IP copy)
+  HTTPS on *.ifnotus.space
+  Cron, logs, DB credentials, backups create/restore APIs
+  Support tickets
+  SNR Dev AI jailed to that site (credits)
+  Renew / change plan / auto-renew / credit top-up (invoice-based)
+
+Customer fallshorts (must fix or hide)
+
+  1. Email is not a customer product.
+     Staff have /admin/mail. Customers have no “create mailbox
+     hello@their-domain” in /account. A hosting company that cannot
+     sell or include email feels incomplete. Student sites especially
+     will ask for mail.
+
+  2. No account settings page.
+     Change password, change phone, 2FA, sessions, close account,
+     download invoices as PDF. Forgot-password exists; in-panel
+     password change does not.
+
+  3. Notifications exist in API; UX is thin.
+     Unread count is there. A proper inbox (order paid, site live,
+     disk 90%, invoice due) is not a first-class screen.
+
+  4. Customers can suspend / restore / terminate their environment
+     via API. Terminate is irreversible. Needs a serious confirm UI
+     and usually staff-only terminate, or a cooling-off period.
+
+  5. Capacity endpoint is readable by logged-in customers and returns
+     node hostname and resource totals. That can leak infrastructure.
+     Staff-only.
+
+  6. Billing/tick is staff-gated on the customer router — odd place.
+     Fine if locked; do not document it as a customer feature.
+
+  7. Copy still mixed.
+     Brief still says every site is env-XXXX.customers.ifnotus.space.
+     Student sites are now surname.ifnotus.space. Overview must show
+     the real hostname, padlock, and “open site”. Empty state should
+     not say “provision” in engineer language.
+
+  8. phpMyAdmin / DB studio for customers.
+     Staff have Database Studio. Customers get credentials + localhost.
+     That is OK if documented. Many Ghana buyers expect a click-to-DB UI.
+
+  9. Multiple sites per login.
+     Data model allows several environments. UI is still “this login’s
+     site”. Switching is weak if you sell add-on sites later.
+
+ 10. No usage invoices over time.
+     One invoice per order. No statement, no GRA-friendly receipt
+     (TIN, address), no failed-payment dunning beyond auto-renew flag.
+
+ 11. Domain registration.
+     Fees are listed. Actual Namecheap buy only runs if API keys work
+     and staff/process succeeds. Without keys, “Register a new domain”
+     is a promise you cannot keep. Either wire registrar for real or
+     sell “you buy at Namecheap, we point NS” only.
+
+ 12. “I already have a domain”.
+     Customer must change nameservers at their registrar. There is no
+     guided “DNS not live yet” status with a simple checklist and
+     “test again”. SSL for custom domains waits on NS — that wait
+     needs a human-readable page.
+
+
+------------------------------------------------------------------------
+5. ROUTE MAP — STAFF (/panel)
+------------------------------------------------------------------------
+
+  /panel                 Ops dashboard
+  /applications[/:id]    Discovered websites
+  /domains               DNS
+  /files  /files/upload  /files/edit
+  /databases  /databases/studio
+  /admin/mail            Mailboxes, aliases, webmail, DKIM
+  /ssl
+  /operations            Host backups
+  /security              Firewall
+  /monitoring
+  /terminal  /terminal/full
+  /servers               Docker / host
+  /platform/customers    Search, confirm hosting, provision
+  /platform/plans        Pack editor
+  /platform/orders       MoMo confirm queue (the money desk)
+  /support               Tickets
+  /settings              Theme, MoMo merchant, integrations
+
+This is a strong operator console. Gaps:
+
+  Orders desk
+    Need a dedicated “awaiting confirmation” queue: invoice, claimed
+    MoMo ID, customer phone, screenshot optional, one-click confirm.
+    Duplicate transaction IDs, typos, and delayed MTN SMS will happen
+    every day. Staff need a playbook, not only a status column.
+
+  Customer care role
+    Exists in spirit (customers, orders, support). Must not see
+    /terminal, /security, host file manager, or other customers’ files.
+    Audit that customer_care cannot open /files at server root.
+
+  Provision failures
+    If nginx/certbot/FTP fails, order can sit “queued/failed” with
+    little retry UI. Staff need “retry provision” and a readable error.
+
+  No runbook in-app
+    “Site live but DNS wrong”, “disk full”, “WordPress white screen”.
+
+  Host vs customer files
+    Easy to edit the wrong tree. Visual distinction is required
+    (already noted in the redesign brief). Do not mix.
+
+  Terminal on production
+    Powerful and dangerous. Restrict to superadmin. Log every command.
+
+
+------------------------------------------------------------------------
+6. HOSTING ENGINE — WHAT STILL FALLS SHORT
+------------------------------------------------------------------------
+
+Isolation
+  Preferred mode is Docker; fallback is a folder on the same OS.
+  Docker path currently starts nginx:alpine with the site mounted
+  READ-ONLY as static HTML. WordPress/Laravel then switch to host
+  PHP. That means:
+    - Plan CPU/RAM Docker limits often do not apply to PHP.
+    - Neighbour sites share host PHP-FPM and MySQL unless you set
+      per-user pools and quotas.
+  Filesystem mode = even less isolation. One customer can fill disk
+  and (without quotas) affect everyone.
+
+  To be a real host you need at minimum:
+    - Per-site PHP-FPM pool (or LiteSpeed/OpenLiteSpeed)
+    - Disk quota (XFS project quota, ZFS dataset, or bind + quota)
+    - MySQL user limited to one database
+    - Process limits (nproc, memory)
+    - Open_basedir / disable_functions
+  Docker-per-site with php-fpm+nginx (read-write) is cleaner than
+  static nginx:alpine. ISPConfig would give you this stack; you can
+  also finish it in IFNOTUS.
+
+Disk 256 GB
+  No inode/quota UI for staff “who is using 40 GB”.
+  Storage alerts exist in code; they must actually page someone
+  (SMS to you) before 90%.
+  Daily backups on the same disk are not disaster recovery.
+
+PHP / WordPress
+  Stack installer downloads wordpress.org, writes wp-config, wants
+  MySQL. Host must have php-fpm, mysql/mariadb, unzip, composer,
+  node — installed and versioned (PHP 8.2/8.3). If the VPS only
+  has the IFNOTUS API containers, WordPress will not run for buyers.
+
+Mail
+  Staff mail stack (Postfix, OpenDKIM, Roundcube/webmail path) is
+  a separate product from customer environments.
+  Sending mail from WordPress (contact forms) needs localhost SMTP
+  or a relay. Unauthenticated PHP mail() will land in spam or get
+  the VPS IP blacklisted. You need:
+    - SPF/DKIM/DMARC for ifnotus.space
+    - Per-customer mailbox or a transactional relay (even if MoMo
+      stays manual)
+    - rDNS / PTR on the Contabo IP matching a hostname you control
+      (mail.ifnotus.space). Contabo panel: set reverse DNS.
+    - Keep the VPS IP off customer screens; PTR is for the internet,
+      not for invoices.
+
+DNS
+  ns1.ifnotus.space / ns2.ifnotus.space on ONE VPS is a single point
+  of failure. Registrars often want two nameservers. Options:
+    - Same IP on ns1 and ns2 (some registrars accept this)
+    - Cheap second VPS or a DNS secondary (BuddyNS, secondary BIND)
+  Glue records at the parent of ifnotus.space must point to this
+  box. Wildcard A for *.ifnotus.space must exist or Student sites
+  will not resolve. deploy/dns has zone fragments — they must be
+  LIVE on the server, not only in git.
+
+SSL
+  Wildcard or per-name certs for *.ifnotus.space: must be automated
+  and renewed. Custom domains: wait for NS, then issue. Failed
+  certbot must be visible on the invoice/site page.
+
+FTP
+  vsftpd/proftpd chroot, PASV ports opened on Contabo firewall,
+  FTP_PASV_ADDRESS set to the public IP internally (customers still
+  see ftp.ifnotus.space). If PASV is wrong, FileZilla hangs. Test
+  from a phone hotspot, not only from the VPS.
+
+SSH
+  ssh.ifnotus.space, jailed user, not root, not the operator key.
+  Fail2ban on sshd. Disable password root login for the host itself.
+
+Worker
+  docker-compose runs an IFNOTUS worker. Production must run it
+  always (provision, SSL jobs, billing tick, backup tick, cron tick,
+  health). If the worker is down, MoMo confirm does nothing visible.
+
+Compose today is development:
+  Postgres/Redis ports published, default passwords, --reload,
+  frontend on 5173, DEBUG-friendly. Production needs:
+  TLS reverse proxy, no public 5432, secret keys, DEBUG=false,
+  CORS only https://ifnotus.space, no OpenAPI in public,
+  non-root API user, backups of Postgres.
+
+
+------------------------------------------------------------------------
+7. MONEY — MANUAL MOMO
+------------------------------------------------------------------------
+
+What is good
+  Invoice numbers, merchant number, transaction ID, staff confirm,
+  no fake “Paystack checkout” for customers.
+  You can keep this forever. Many Ghana SMEs prefer it.
+
+What is not complete
+
+  Fraud and ops
+    Anyone can type a random ID. Staff must verify in MoMo
+    business app (amount, time, name) before confirm.
+    Store who confirmed, when, and the MoMo ID uniquely
+    (reject reuse).
+
+  Timing
+    Customer pays, staff is asleep. Need SLA: “confirmed within
+    X hours, 8:00–20:00 GMT”. Auto-reply SMS: we received the ID,
+    waiting for confirmation.
+
+  Amounts
+    Invoice total must match the MoMo deposit. Partial pay and
+    wrong amount need a staff note, not silent activate.
+
+  Domain + hosting on one invoice
+    If Namecheap buy fails after MoMo is taken, you owe the
+    customer a domain or a refund. Process for that.
+
+  Renewals
+    Auto-renew flag without auto-debit is just a reminder.
+    Need: invoice N days before expiry, SMS, suspend after
+    grace, delete after longer grace. Worker tick must be
+    trusted and tested.
+
+  Credits / upgrades
+    Same MoMo path. Keep one mental model.
+
+  Refunds
+    Policy + staff button. MoMo refunds are manual too.
+
+  Tax
+    If you operate as a business in Ghana, invoices may need
+    legal name, address, TIN. Ask an accountant. The app does
+    not do this yet.
+
+
+------------------------------------------------------------------------
+8. SECURITY AND TRUST
+------------------------------------------------------------------------
+
+  Change SECRET_KEY, DB password, JWT, admin password — never ship
+  docker-compose defaults.
+  Rate limits exist for auth; keep Redis up or they fail open.
+  Customer file API must stay jailed (already intended).
+  Staff file API is host-wide — IP allowlist or VPN for /panel is wise.
+  HTTPS everywhere; HSTS once certs are stable.
+  Backups encrypted if they leave the box.
+  2FA for staff (not present). Superadmin without 2FA is a risk.
+  Audit log exists; use it when confirming MoMo and provisioning.
+  Do not expose /customers/capacity to buyers.
+  Do not put 80.241.x.x (or any host IP) in email, FTP copy, or UI.
+
+
+------------------------------------------------------------------------
+9. PRODUCT COMPLETENESS — FEATURE GRID
+------------------------------------------------------------------------
+
+Legend: DONE = in the app in a usable way
+        PART = code or UI exists but not production-safe
+        MISS = expected of a hosting company, not really there
+
+Public website              PART  (pretty home, no legal/contact/status)
+Signup + phone              DONE
+Email verify                PART  (depends on SMTP)
+Plans + Student domain      DONE  (needs live wildcard DNS)
+MoMo invoice                DONE
+Staff confirm pay           PART  (needs a real queue + unique txn)
+Provision site              PART  (depends on nginx/php/mysql/worker)
+Wildcard HTTPS              PART  (depends on cert + DNS)
+Custom domain + NS          PART  (needs glue + customer guide)
+Registrar buy               PART  (Namecheap keys or turn the option off)
+FTP                         PART  (needs PASV/firewall test)
+Customer SSH                PART  (plan gate; jail must be real)
+WordPress one-click         PART  (needs PHP-FPM + MySQL on host)
+Laravel / Node              PART  (Node process supervision)
+Customer email mailboxes    MISS
+Webmail for customers       MISS  (staff only today)
+Disk/CPU hard quotas        MISS / PART  (plan numbers; weak enforce)
+Off-site backups            MISS
+Status page                 MISS
+In-account password/2FA     MISS
+PDF invoices / tax          MISS
+Customer phpMyAdmin         MISS  (staff studio only)
+Multi-node / extra VPS      MISS  (model exists, one box)
+VPS/VDS as dedicated        MISS  (do not sell off 256 GB)
+Support tickets             DONE
+AI engineer                 PART  (credits + API keys + jail)
+Monitoring (staff)          DONE
+Firewall (staff)            PART  (must match Contabo + nftables)
+Legal pages                 MISS
+
+
+------------------------------------------------------------------------
+10. PRIORITY LIST — TO BECOME A CLEAN COMPLETE SERVICE
+------------------------------------------------------------------------
+
+P0 — Do not take money until these are true
+  [ ] Production deploy: TLS, secrets, DEBUG off, worker always on
+  [ ] InfrastructureNode row matches this Contabo box
+  [ ] Wildcard DNS *.ifnotus.space and Student names resolve
+  [ ] ns1/ns2 glue live; customers never told the VPS IP
+  [ ] One test Student site: HTTPS padlock, FTP from FileZilla, files
+  [ ] One test WordPress: PHP works, DB works, permalinks, HTTPS
+  [ ] MoMo confirm: unique transaction ID, amount check, staff log
+  [ ] SMTP or at least SMS so “site is live” actually arrives
+  [ ] Postgres + site files backed up somewhere that is not this disk
+  [ ] Contabo firewall: 80, 443, 21+PASV, 25/587/993 as needed, 22
+      from your IP; 5432/6379/8000 NOT public
+  [ ] Reverse DNS for mail if you send any mail from this IP
+  [ ] Register domain option: live registrar OR disable the radio
+
+P1 — First month of real customers
+  [ ] Staff “payments to confirm” queue with phone + invoice + ID
+  [ ] Suspend after unpaid grace; restore after pay
+  [ ] Disk usage alerts to your phone at 80% / 90%
+  [ ] Customer Domain tab: nameserver checklist + SSL status in English
+  [ ] Hide terminate or make it staff-only
+  [ ] Hide capacity/hostname from customer API
+  [ ] /terms /privacy /refund /contact /AUP
+  [ ] Support hours + WhatsApp/phone on invoice
+  [ ] PHP-FPM per site or equivalent limits (even simple)
+  [ ] Fail2ban, unattended security updates
+  [ ] Retry provision button for failed jobs
+
+P2 — Feels like a hosting company
+  [ ] Customer mailboxes + webmail (or a clear “email not included”
+      on cheap packs and a paid add-on)
+  [ ] In-account profile: password, phone, 2FA
+  [ ] Invoice PDF
+  [ ] Public status page
+  [ ] Guided WordPress first-login (admin user created for them)
+  [ ] Staging/preview only on packs that include it (matrix already
+      describes this — enforce it)
+  [ ] Secondary DNS or a documented ns1=ns2 policy
+  [ ] Offsite backup restore test (quarterly)
+  [ ] Staff 2FA
+  [ ] Remove Paystack leftover routes and copy
+
+P3 — Scale past this VPS
+  [ ] Second node when disk or CPU is honestly full
+  [ ] Do not sell Cloud VPS/VDS from leftover RAM on the same 256 GB
+      without a dedicated VM per customer
+  [ ] ISPConfig only if you want a standard mail/quota engine behind
+      IFNOTUS — not as the customer-facing look
+
+
+------------------------------------------------------------------------
+11. WHAT YOU SHOULD NOT DO YET
+------------------------------------------------------------------------
+
+  Do not put ISPConfig in front of customers. Your look and MoMo
+  checkout live in IFNOTUS. ISPConfig would only be a backend later.
+
+  Do not advertise “unlimited” anything on 256 GB.
+
+  Do not sell root VPS on this same machine without KVM isolation.
+
+  Do not tell customers about jails, docker, or the Contabo IP.
+
+  Do not leave “Register a new domain” on if Namecheap is not live.
+
+  Do not skip the worker process.
+
+  Do not store backups only next to the sites they are backing up.
+
+
+------------------------------------------------------------------------
+12. SUGGESTED PACKAGING ON THIS BOX
+------------------------------------------------------------------------
+
+Honest catalogue for one 12 / 48 / 256 node:
+
+  Student     surname.ifnotus.space     small PHP/static     ₵30-ish
+  Starter     own domain or cheap TLD   WordPress            mid
+  Business    more disk, SSH, backups   still shared         higher
+
+Cap the number of WordPress sites by disk, not by “we have 48 GB RAM”.
+Leave 20% disk empty always. When 70% full, stop selling or add a disk
+/ node.
+
+Student option is a genuine differentiator in Ghana. Make it the
+easiest path: surname → invoice → MoMo → live HTTPS. That is the
+product. Everything else is support around that promise.
+
+
+------------------------------------------------------------------------
+13. SUMMARY
+------------------------------------------------------------------------
+
+IFNOTUS already has the skeleton of a complete host: branded site,
+customer panel, staff panel, MoMo invoices, Student hostnames, files,
+stacks, FTP, tickets, AI.
+
+It is not yet a complete hosting SERVICE because the VPS production
+layer (DNS, PHP, quotas, mail, offsite backup, firewall, worker,
+secrets) and the commercial layer (legal pages, payment verification
+discipline, renew/suspend, customer email, account settings) are
+unfinished or only partially wired.
+
+The gap is not “another control panel.” The gap is finishing the path:
+
+  pay MoMo → staff sure it is real money → site actually serves
+  HTTPS on the name they bought → they can upload files / install
+  WordPress → you can restore them if the disk dies → you can
+  suspend them if they stop paying.
+
+Close P0, then take the first paying Student. Improve from real
+tickets, not from more panels.
+
+End of audit.
+)

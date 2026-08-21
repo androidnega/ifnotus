@@ -4,9 +4,10 @@ import { RouterLink } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Card from '@/components/ui/Card.vue'
+import Skeleton from '@/components/ui/Skeleton.vue'
 import { applicationsApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
-import type { ApplicationSummary } from '@/types/dashboard'
+import type { ApplicationSummary, ClearablePath } from '@/types/dashboard'
 import type { DiscoveredApplication } from '@/types/inventory'
 
 const apps = ref<ApplicationSummary[]>([])
@@ -15,6 +16,8 @@ const issuesCount = ref(0)
 const loading = ref(true)
 const loadError = ref<string | null>(null)
 const filter = ref<'all' | 'registered' | 'discovered' | 'issues'>('all')
+const actionBusy = ref<string | null>(null)
+const actionMessage = ref<{ ok: boolean; text: string } | null>(null)
 
 const reconciliationVariant = (state: string) => {
   if (state === 'registered') return 'success'
@@ -41,6 +44,29 @@ const filteredDiscovered = computed(() => {
   return discovered.value
 })
 
+const totalMemory = computed(() =>
+  apps.value.reduce((sum, app) => sum + (app.memory_bytes ?? 0), 0),
+)
+const totalClearable = computed(() =>
+  apps.value.reduce((sum, app) => sum + (app.clearable_bytes ?? 0), 0),
+)
+
+function formatBytes(bytes?: number | null): string {
+  if (bytes == null || bytes <= 0) return '—'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = bytes
+  let i = 0
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024
+    i += 1
+  }
+  return `${value.toFixed(value >= 10 || i === 0 ? 0 : 1)} ${units[i]}`
+}
+
+function topClearable(paths?: ClearablePath[], limit = 3): ClearablePath[] {
+  return [...(paths ?? [])].sort((a, b) => b.bytes - a.bytes).slice(0, limit)
+}
+
 async function load() {
   loading.value = true
   loadError.value = null
@@ -56,6 +82,38 @@ async function load() {
   }
 }
 
+async function clearAllCaches() {
+  if (!confirm('Clear caches/temp for every enabled application on this server?')) return
+  actionBusy.value = 'cache-all'
+  actionMessage.value = null
+  try {
+    const { data } = await applicationsApi.clearAllCaches()
+    actionMessage.value = { ok: data.success, text: data.message }
+    await load()
+  } catch (e) {
+    actionMessage.value = { ok: false, text: getApiErrorMessage(e, 'Failed to clear app caches') }
+  } finally {
+    actionBusy.value = null
+  }
+}
+
+async function clearAppCache(appId: string, event: Event) {
+  event.preventDefault()
+  event.stopPropagation()
+  if (!confirm(`Clear temporary/cache files for ${appId}?`)) return
+  actionBusy.value = `cache-${appId}`
+  actionMessage.value = null
+  try {
+    const { data } = await applicationsApi.clearCache(appId)
+    actionMessage.value = { ok: data.success, text: data.message }
+    await load()
+  } catch (e) {
+    actionMessage.value = { ok: false, text: getApiErrorMessage(e, 'Failed to clear cache') }
+  } finally {
+    actionBusy.value = null
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -66,10 +124,18 @@ onMounted(load)
         <div>
           <h1 class="text-lg font-semibold text-slate-900 dark:text-white">Applications</h1>
           <p class="text-sm text-surface-muted">
-            Registered YAML apps and VPS-discovered applications
+            Live RAM/CPU per app, plus temporary files that can be cleared
           </p>
         </div>
         <div class="flex flex-wrap gap-2">
+          <button
+            type="button"
+            class="rounded-lg border border-surface-border px-3 py-1.5 text-xs hover:bg-slate-50 disabled:opacity-50 dark:hover:bg-slate-800"
+            :disabled="!!actionBusy"
+            @click="clearAllCaches"
+          >
+            {{ actionBusy === 'cache-all' ? 'Clearing…' : 'Clear all temp/caches' }}
+          </button>
           <button
             v-for="tab in [
               { id: 'all', label: 'All' },
@@ -92,93 +158,161 @@ onMounted(load)
         </div>
       </div>
 
+      <div
+        v-if="!loading && apps.length"
+        class="grid gap-3 sm:grid-cols-3"
+      >
+        <Card padding="sm">
+          <p class="text-xs text-surface-muted">Apps tracked</p>
+          <p class="mt-1 text-xl font-semibold tabular-nums text-slate-900 dark:text-white">
+            {{ apps.length }}
+          </p>
+        </Card>
+        <Card padding="sm">
+          <p class="text-xs text-surface-muted">App process RAM (sum)</p>
+          <p class="mt-1 text-xl font-semibold tabular-nums text-slate-900 dark:text-white">
+            {{ formatBytes(totalMemory) }}
+          </p>
+        </Card>
+        <Card padding="sm">
+          <p class="text-xs text-surface-muted">Clearable temp/cache</p>
+          <p class="mt-1 text-xl font-semibold tabular-nums text-slate-900 dark:text-white">
+            {{ formatBytes(totalClearable) }}
+          </p>
+        </Card>
+      </div>
+
+      <p
+        v-if="actionMessage"
+        class="rounded-lg px-3 py-2 text-sm"
+        :class="actionMessage.ok ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-red-500/10 text-red-700 dark:text-red-300'"
+      >
+        {{ actionMessage.text }}
+      </p>
       <p v-if="loadError" class="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300">
         {{ loadError }}
       </p>
 
-      <section v-if="filter === 'all' || filter === 'registered' || filter === 'issues'" class="space-y-3">
-        <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">
-          {{ filter === 'issues' ? 'Registered with registry issues' : 'Registered' }}
-        </h2>
-        <div class="dashboard-grid md:grid-cols-2 xl:grid-cols-3">
-          <RouterLink
-            v-for="app in filteredRegistered"
-            :key="app.id"
-            :to="`/applications/${app.id}`"
-            class="block rounded-xl border border-surface-border bg-surface-raised p-4 shadow-card transition hover:border-brand-500/30"
-          >
-            <div class="flex items-start justify-between gap-2">
-              <div>
-                <h2 class="font-semibold text-slate-900 dark:text-white">{{ app.name }}</h2>
-                <p class="text-xs text-surface-muted">{{ app.type }} · {{ app.environment }}</p>
-              </div>
-              <Badge :variant="app.health === 'healthy' ? 'success' : 'warning'" size="sm">
-                {{ app.health_score }}
-              </Badge>
-            </div>
-            <p class="mt-2 text-sm text-surface-muted">{{ app.domain || app.root_path }}</p>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <Badge size="sm">{{ app.status }}</Badge>
-              <Badge variant="success" size="sm">registered</Badge>
-              <Badge :variant="app.enabled ? 'success' : 'neutral'" size="sm">
-                {{ app.enabled ? 'Enabled' : 'Disabled' }}
-              </Badge>
-              <Badge v-if="app.registry_valid === false" variant="warning" size="sm">
-                registry issue
-              </Badge>
-            </div>
-            <ul
-              v-if="app.registry_errors?.length"
-              class="mt-2 list-inside list-disc text-xs text-amber-700 dark:text-amber-300"
-            >
-              <li v-for="(err, idx) in app.registry_errors.slice(0, 3)" :key="idx">{{ err }}</li>
-            </ul>
-          </RouterLink>
-        </div>
-        <p v-if="!filteredRegistered.length && !loading" class="text-sm text-surface-muted">
-          No registered applications in this view.
-        </p>
-      </section>
+      <div v-if="loading" class="space-y-3">
+        <Skeleton v-for="n in 4" :key="n" height="3.5rem" width="100%" />
+      </div>
 
-      <section v-if="filter !== 'registered'" class="space-y-3">
-        <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">
-          {{ filter === 'issues' ? 'Reconciliation issues' : 'Discovered on VPS' }}
-        </h2>
-        <div class="dashboard-grid md:grid-cols-2 xl:grid-cols-3">
-          <Card
-            v-for="app in filteredDiscovered"
-            :key="app.id + app.root_path"
-            padding="md"
-            class="border-dashed"
-          >
-            <div class="flex items-start justify-between gap-2">
-              <div>
-                <h2 class="font-semibold text-slate-900 dark:text-white">{{ app.name }}</h2>
-                <p class="text-xs text-surface-muted">{{ app.probable_type }}</p>
-              </div>
-              <Badge :variant="reconciliationVariant(app.reconciliation_state)" size="sm">
-                {{ app.reconciliation_state.replace(/_/g, ' ') }}
-              </Badge>
-            </div>
-            <p class="mt-2 truncate text-sm text-surface-muted" :title="app.root_path">{{ app.root_path }}</p>
-            <p v-if="app.server_names.length" class="mt-1 text-xs text-surface-muted">
-              {{ app.server_names.join(', ') }}
+      <template v-else>
+        <section v-if="filter === 'all' || filter === 'registered' || filter === 'issues'" class="space-y-3">
+          <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">
+            {{ filter === 'issues' ? 'Registered with registry issues' : 'Resource usage' }}
+          </h2>
+
+          <div class="overflow-x-auto rounded-xl border border-surface-border bg-surface-raised shadow-card">
+            <table class="min-w-full text-left text-sm">
+              <thead class="border-b border-surface-border bg-slate-50 text-xs uppercase tracking-wide text-surface-muted dark:bg-slate-900/40">
+                <tr>
+                  <th class="px-4 py-3 font-medium">Application</th>
+                  <th class="px-4 py-3 font-medium">Status</th>
+                  <th class="px-4 py-3 font-medium">Procs</th>
+                  <th class="px-4 py-3 font-medium">CPU</th>
+                  <th class="px-4 py-3 font-medium">RAM</th>
+                  <th class="px-4 py-3 font-medium">Clearable temp</th>
+                  <th class="px-4 py-3 font-medium">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="app in filteredRegistered"
+                  :key="app.id"
+                  class="border-b border-surface-border/70 last:border-0"
+                >
+                  <td class="px-4 py-3">
+                    <RouterLink
+                      :to="`/applications/${app.id}`"
+                      class="font-medium text-slate-900 hover:text-brand-600 dark:text-white"
+                    >
+                      {{ app.name }}
+                    </RouterLink>
+                    <p class="text-xs text-surface-muted">{{ app.type }} · {{ app.domain || app.root_path }}</p>
+                  </td>
+                  <td class="px-4 py-3">
+                    <div class="flex flex-wrap gap-1">
+                      <Badge :variant="app.health === 'healthy' ? 'success' : 'warning'" size="sm">
+                        {{ app.status }}
+                      </Badge>
+                      <Badge v-if="!app.enabled" variant="neutral" size="sm">disabled</Badge>
+                    </div>
+                  </td>
+                  <td class="px-4 py-3 tabular-nums text-surface-muted">{{ app.process_count ?? 0 }}</td>
+                  <td class="px-4 py-3 tabular-nums text-surface-muted">
+                    {{ app.cpu_percent != null ? `${app.cpu_percent.toFixed(1)}%` : '—' }}
+                  </td>
+                  <td class="px-4 py-3">
+                    <p class="font-medium tabular-nums text-slate-900 dark:text-white">
+                      {{ formatBytes(app.memory_bytes) }}
+                    </p>
+                    <p v-if="app.memory_percent" class="text-xs tabular-nums text-surface-muted">
+                      {{ app.memory_percent.toFixed(1) }}% of host
+                    </p>
+                  </td>
+                  <td class="px-4 py-3">
+                    <p class="font-medium tabular-nums text-slate-900 dark:text-white">
+                      {{ formatBytes(app.clearable_bytes) }}
+                    </p>
+                    <ul
+                      v-if="topClearable(app.clearable_paths).length"
+                      class="mt-1 space-y-0.5 text-[11px] text-surface-muted"
+                    >
+                      <li v-for="item in topClearable(app.clearable_paths)" :key="item.path">
+                        {{ item.label }} · {{ formatBytes(item.bytes) }}
+                      </li>
+                    </ul>
+                    <p v-else class="text-xs text-surface-muted">No temp cache found</p>
+                  </td>
+                  <td class="px-4 py-3">
+                    <button
+                      type="button"
+                      class="rounded-lg border border-surface-border px-2.5 py-1 text-xs hover:bg-slate-50 disabled:opacity-50 dark:hover:bg-slate-800"
+                      :disabled="!!actionBusy || !(app.clearable_bytes && app.clearable_bytes > 0)"
+                      @click="clearAppCache(app.id, $event)"
+                    >
+                      {{ actionBusy === `cache-${app.id}` ? 'Clearing…' : 'Clear temp' }}
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <p v-if="!filteredRegistered.length" class="px-4 py-6 text-sm text-surface-muted">
+              No registered applications in this view.
             </p>
-            <div class="mt-3 flex flex-wrap gap-1">
-              <Badge v-for="signal in app.signals.slice(0, 4)" :key="signal" size="sm">{{ signal }}</Badge>
-            </div>
-            <ul
-              v-if="app.registry_errors?.length"
-              class="mt-2 list-inside list-disc text-xs text-amber-700 dark:text-amber-300"
+          </div>
+        </section>
+
+        <section v-if="filter !== 'registered'" class="space-y-3">
+          <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">
+            {{ filter === 'issues' ? 'Reconciliation issues' : 'Still discovering' }}
+          </h2>
+          <p v-if="filter !== 'issues'" class="text-xs text-surface-muted">
+            Excluded platform paths stay here. Everything else is auto-registered as an active app.
+          </p>
+          <div class="dashboard-grid md:grid-cols-2 xl:grid-cols-3">
+            <Card
+              v-for="app in filteredDiscovered"
+              :key="`${app.root_path}-${app.name}`"
+              padding="md"
             >
-              <li v-for="(err, idx) in app.registry_errors.slice(0, 3)" :key="idx">{{ err }}</li>
-            </ul>
-          </Card>
-        </div>
-        <p v-if="!filteredDiscovered.length && !loading" class="text-sm text-surface-muted">
-          No discovered applications in this view.
-        </p>
-      </section>
+              <div class="flex items-start justify-between gap-2">
+                <div>
+                  <h3 class="font-semibold text-slate-900 dark:text-white">{{ app.name }}</h3>
+                  <p class="text-xs text-surface-muted">{{ app.probable_type }} · {{ app.root_path }}</p>
+                </div>
+                <Badge :variant="reconciliationVariant(app.reconciliation_state)" size="sm">
+                  {{ app.reconciliation_state }}
+                </Badge>
+              </div>
+            </Card>
+          </div>
+          <p v-if="!filteredDiscovered.length" class="text-sm text-surface-muted">
+            Nothing pending in discovery.
+          </p>
+        </section>
+      </template>
     </div>
   </DashboardLayout>
 </template>

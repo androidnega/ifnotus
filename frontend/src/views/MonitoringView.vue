@@ -148,7 +148,7 @@ onMounted(refreshAll)
     />
 
     <div v-else class="animate-fade-in space-y-5">
-      <Card title="Platform Status" subtitle="Live · updates every 5s">
+      <Card title="Platform Status" subtitle="Health checks">
         <div class="flex flex-wrap gap-4 text-sm">
           <div>
             <p class="text-surface-muted">Liveness</p>

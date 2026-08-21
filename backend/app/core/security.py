@@ -29,6 +29,8 @@ class TokenPayload(BaseModel):
     iat: datetime
     jti: str | None = None
     scopes: list[str] = Field(default_factory=list)
+    # Superadmin privilege overlay — staff roles only (never customer).
+    act_as_role: str | None = None
 
 
 class TokenPair(BaseModel):
@@ -58,6 +60,7 @@ def create_token(
     token_type: TokenType,
     scopes: list[str] | None = None,
     jti: str | None = None,
+    act_as_role: str | None = None,
 ) -> str:
     """Create a signed JWT."""
     now = datetime.now(UTC)
@@ -75,6 +78,8 @@ def create_token(
     }
     if jti:
         payload["jti"] = jti
+    if act_as_role:
+        payload["act_as_role"] = act_as_role
 
     return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
 
@@ -83,6 +88,7 @@ def decode_token(settings: Settings, token: str) -> TokenPayload:
     """Decode and validate a JWT."""
     try:
         data = jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
+        act_as = data.get("act_as_role")
         return TokenPayload(
             sub=UUID(data["sub"]),
             type=TokenType(data["type"]),
@@ -90,6 +96,7 @@ def decode_token(settings: Settings, token: str) -> TokenPayload:
             iat=datetime.fromtimestamp(data["iat"], tz=UTC),
             jti=data.get("jti"),
             scopes=data.get("scopes", []),
+            act_as_role=str(act_as) if act_as else None,
         )
     except (JWTError, KeyError, ValueError) as exc:
         raise AuthenticationError("Invalid or expired token.") from exc
@@ -100,10 +107,23 @@ def create_token_pair(
     *,
     subject: UUID,
     scopes: list[str] | None = None,
+    act_as_role: str | None = None,
 ) -> TokenPair:
     """Create access + refresh token pair."""
-    access = create_token(settings, subject=subject, token_type=TokenType.ACCESS, scopes=scopes)
-    refresh = create_token(settings, subject=subject, token_type=TokenType.REFRESH, scopes=scopes)
+    access = create_token(
+        settings,
+        subject=subject,
+        token_type=TokenType.ACCESS,
+        scopes=scopes,
+        act_as_role=act_as_role,
+    )
+    refresh = create_token(
+        settings,
+        subject=subject,
+        token_type=TokenType.REFRESH,
+        scopes=scopes,
+        act_as_role=act_as_role,
+    )
     return TokenPair(
         access_token=access,
         refresh_token=refresh,

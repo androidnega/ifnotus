@@ -29,8 +29,13 @@ class SupervisorReader:
                 message="Supervisor not available on this host.",
             )
 
+        serverurl = (
+            self._socket
+            if str(self._socket).startswith("unix://") or str(self._socket).startswith("http")
+            else f"unix://{self._socket}"
+        )
         code, stdout, stderr = await run_command(
-            self._ctl, "-c", f"unix://{self._socket}", "status", program_name
+            self._ctl, "-s", serverurl, "status", program_name
         )
         if code != 0:
             return ServiceBindingSchema(

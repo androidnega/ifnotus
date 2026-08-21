@@ -44,3 +44,6 @@ class UserResponse(UserBase):
     created_at: datetime
     updated_at: datetime
     last_login_at: datetime | None = None
+    last_login_ip: str | None = None
+    privilege_viewing_as: str | None = None
+    can_privilege_switch: bool = False

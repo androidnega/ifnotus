@@ -18,7 +18,15 @@ export const Permission = {
   MAIL_READ: 'mail:read',
   MAIL_WRITE: 'mail:write',
   TERMINAL_EXECUTE: 'terminal:execute',
+  DATABASES_READ: 'databases:read',
+  DATABASES_WRITE: 'databases:write',
   MONITORING_READ: 'monitoring:read',
+  SUPPORT_READ: 'support:read',
+  SUPPORT_WRITE: 'support:write',
+  PLATFORM_READ: 'platform:read',
+  PLATFORM_WRITE: 'platform:write',
+  PLATFORM_OPS: 'platform:ops',
+  CUSTOMERS_MANAGE: 'customers:manage',
 } as const
 
 export type PermissionKey = (typeof Permission)[keyof typeof Permission]

@@ -18,6 +18,40 @@ def main() -> None:
     container = create_container()
     container.wire(modules=["app.workers.runner"])
 
+    from app.workers.registry import task_registry
+    from app.workers.tasks_platform import (
+        BackupDailyTickTask,
+        BackupEnvironmentTask,
+        ConfigureDnsTask,
+        HealthCheckEnvironmentTask,
+        HealthCheckTickTask,
+        IssueSslTask,
+        ProvisionEnvironmentTask,
+        RestoreEnvironmentBackupTask,
+        StorageUsageTickTask,
+        DeployStackTask,
+        EnvCronTickTask,
+        RegisterDomainTask,
+        DeliverNotificationTask,
+        SubscriptionTickTask,
+    )
+
+    factory = container.db_session_factory()
+    task_registry.register(ProvisionEnvironmentTask(settings=settings, session_factory=factory))
+    task_registry.register(ConfigureDnsTask(settings=settings, session_factory=factory))
+    task_registry.register(IssueSslTask(settings=settings, session_factory=factory))
+    task_registry.register(SubscriptionTickTask(settings=settings, session_factory=factory))
+    task_registry.register(BackupEnvironmentTask(settings=settings, session_factory=factory))
+    task_registry.register(RestoreEnvironmentBackupTask(settings=settings, session_factory=factory))
+    task_registry.register(BackupDailyTickTask(settings=settings, session_factory=factory))
+    task_registry.register(HealthCheckEnvironmentTask(settings=settings, session_factory=factory))
+    task_registry.register(HealthCheckTickTask(settings=settings, session_factory=factory))
+    task_registry.register(StorageUsageTickTask(settings=settings, session_factory=factory))
+    task_registry.register(DeployStackTask(settings=settings, session_factory=factory))
+    task_registry.register(EnvCronTickTask(settings=settings, session_factory=factory))
+    task_registry.register(RegisterDomainTask(settings=settings, session_factory=factory))
+    task_registry.register(DeliverNotificationTask(settings=settings, session_factory=factory))
+
     runner = WorkerRunner(
         settings=settings,
         task_queue=container.task_queue(),

@@ -1,6 +1,44 @@
 import axios, { type AxiosInstance, type InternalAxiosRequestConfig } from 'axios'
+import { getDeviceFingerprint } from '@/lib/deviceFingerprint'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
+
+let cachedFingerprint: string | null = null
+let fingerprintPromise: Promise<string> | null = null
+
+async function resolveFingerprint(): Promise<string | null> {
+  if (cachedFingerprint) return cachedFingerprint
+  if (typeof window === 'undefined') return null
+  if (!fingerprintPromise) {
+    fingerprintPromise = getDeviceFingerprint()
+      .then((fp) => {
+        cachedFingerprint = fp
+        return fp
+      })
+      .catch(() => {
+        fingerprintPromise = null
+        return ''
+      })
+  }
+  const fp = await fingerprintPromise
+  return fp || null
+}
+
+export async function ensureDeviceFingerprint(): Promise<string | undefined> {
+  const fp = await resolveFingerprint()
+  return fp || undefined
+}
+
+function attachAuth(config: InternalAxiosRequestConfig) {
+  const token = localStorage.getItem('access_token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  if (cachedFingerprint) {
+    config.headers['X-Device-Fingerprint'] = cachedFingerprint
+  }
+  return config
+}
 
 export const apiClient: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -9,12 +47,9 @@ export const apiClient: AxiosInstance = axios.create({
   },
 })
 
-apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-  const token = localStorage.getItem('access_token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
+apiClient.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
+  await resolveFingerprint()
+  return attachAuth(config)
 })
 
 apiClient.interceptors.response.use(
@@ -46,12 +81,9 @@ export const transferClient: AxiosInstance = axios.create({
   timeout: 0,
 })
 
-transferClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-  const token = localStorage.getItem('access_token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
+transferClient.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
+  await resolveFingerprint()
+  return attachAuth(config)
 })
 
 transferClient.interceptors.response.use(

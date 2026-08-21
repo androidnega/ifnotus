@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { RouterLink } from 'vue-router'
 import type { ApplicationItem } from '@/types/dashboard'
 import Badge from '@/components/ui/Badge.vue'
 
@@ -13,6 +14,7 @@ const variant = computed(() => {
       return 'success'
     case 'degraded':
       return 'warning'
+    case 'failed':
     case 'stopped':
       return 'danger'
     default:
@@ -22,8 +24,9 @@ const variant = computed(() => {
 </script>
 
 <template>
-  <article
-    class="rounded-lg border border-surface-border p-3 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-card"
+  <RouterLink
+    :to="{ name: 'application-detail', params: { id: application.id } }"
+    class="block rounded-lg border border-surface-border p-3 transition-all duration-200 hover:-translate-y-0.5 hover:border-brand-500/40 hover:shadow-card"
     :aria-label="`${application.name} ${application.status}`"
   >
     <div class="flex items-start justify-between gap-2">
@@ -38,12 +41,11 @@ const variant = computed(() => {
       </div>
       <Badge :variant="variant" dot size="sm">{{ application.status }}</Badge>
     </div>
-    <a
+    <span
       v-if="application.url"
-      :href="application.url"
-      class="mt-2 inline-block truncate text-xs text-brand-600 hover:underline dark:text-brand-400"
+      class="mt-2 inline-block truncate text-xs text-brand-600 dark:text-brand-400"
     >
       {{ application.url }}
-    </a>
-  </article>
+    </span>
+  </RouterLink>
 </template>

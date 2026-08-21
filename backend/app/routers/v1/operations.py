@@ -73,6 +73,56 @@ async def restart_nginx(request: Request, _user: CurrentUser) -> OperationResult
 
 
 @router.post(
+    "/server/refresh",
+    response_model=OperationResult,
+    summary="Refresh the live server (caches + registry + nginx)",
+    dependencies=[Depends(RequirePermission(Permission.SERVERS_WRITE))],
+)
+async def refresh_live_server(request: Request, _user: CurrentUser) -> OperationResult:
+    from app.api.monitoring import get_monitoring_service
+    from app.services.operations.cache import CacheOperationsService
+
+    settings = request.app.state.container.config()
+    return await CacheOperationsService(settings, get_monitoring_service(request)).refresh_server(
+        reload_nginx=True
+    )
+
+
+@router.post(
+    "/cache/clear",
+    response_model=OperationResult,
+    summary="Clear central platform caches",
+    dependencies=[Depends(RequirePermission(Permission.SERVERS_WRITE))],
+)
+async def clear_central_cache(
+    request: Request,
+    _user: CurrentUser,
+    reload_nginx: bool = Query(default=False),
+) -> OperationResult:
+    from app.api.monitoring import get_monitoring_service
+    from app.services.operations.cache import CacheOperationsService
+
+    settings = request.app.state.container.config()
+    return await CacheOperationsService(settings, get_monitoring_service(request)).clear_central(
+        reload_nginx=reload_nginx
+    )
+
+
+@router.post(
+    "/cache/clear-apps",
+    response_model=OperationResult,
+    summary="Clear caches for every enabled application",
+    dependencies=[Depends(RequirePermission(Permission.APPS_WRITE))],
+)
+async def clear_all_apps_cache(request: Request, _user: CurrentUser) -> OperationResult:
+    from app.api.monitoring import get_monitoring_service
+    from app.services.operations.cache import CacheOperationsService
+
+    settings = request.app.state.container.config()
+    return await CacheOperationsService(settings, get_monitoring_service(request)).clear_all_apps()
+
+
+@router.post(
     "/worker/restart",
     response_model=OperationResult,
     dependencies=[Depends(RequirePermission(Permission.SERVERS_WRITE))],

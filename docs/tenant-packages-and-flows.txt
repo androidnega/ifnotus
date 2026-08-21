@@ -1,0 +1,881 @@
+================================================================================
+IFNOTUS — TENANT PACKAGES, WHAT THEY GET, PROCESSES, DASHBOARDS,
+DATABASE ACCESS, AND STACKS
+================================================================================
+Generated from codebase (plan_matrix, seeds, portal, provisioning, stacks).
+Date reference: August 2026.
+Currency: GHS (Ghana Cedi) unless noted.
+
+NOTE ON LIVE DATA
+- Catalog rows live in table hosting_plans. Staff can edit CPU/RAM/disk/price.
+- Feature gates (stacks, SSH, DB manage, etc.) come from plan_matrix.py keyed by
+  plan slug / matrix_key — not only from the DB "features" JSON.
+- Seeded prices/resources below are the migration defaults; production may differ
+  if plans were edited in Platform Admin.
+
+
+================================================================================
+1. ACCOUNT vs HOSTING (TENANCY MODEL)
+================================================================================
+
+ONE CUSTOMER ACCOUNT (identity + billing)
+  - Register with phone OTP (no hosting required).
+  - Complete profile later: real name, email, optional password.
+  - Owns: Orders (invoices), Subscriptions, Environments, Domains, AI credits,
+    Support tickets.
+
+MANY HOSTING PURCHASES UNDER THAT ACCOUNT
+  - Each paid hosting order → 1 Subscription → 1 CustomerEnvironment (site jail).
+  - Tools (files, stack, DB, FTP, DNS, mail) are always scoped to one environment.
+  - Dashboard API returns all non-terminated environments for the customer.
+
+RELATIONSHIP
+  User (login) 1:1 Customer
+    ├─* Order          (checkout / MoMo invoice)
+    ├─* Subscription   (paid entitlement + plan limits)
+    │     └─* CustomerEnvironment  (document root, domain, FTP, optional DB)
+    ├─* CustomerDomain
+    └─1 AiCreditAccount (wallet on the account, not per site)
+
+
+================================================================================
+2. END-TO-END CUSTOMER PROCESS
+================================================================================
+
+A. REGISTER / LOGIN
+  1. Phone number → request OTP (SMS; debug code if SMS not configured).
+  2. Verify OTP → creates Customer + User if new
+     (placeholder email like p…@phone.pending.ifnotus, name "Customer").
+  3. Complete profile (required before creating an order):
+     full name, real email, optional company/password.
+  4. Land on /account (customer portal).
+
+  Staff use /login with email/password (+ optional TOTP). Customers are steered
+  toward phone signup. Separate staff panel: /panel.
+
+B. BUY HOSTING (NEW ORDER)
+  1. Billing → "New order" → /account/plans
+     (or marketing Plans → signup with ?plan= then checkout).
+  2. Pick a pack (managed plans sellable on the shared node; Cloud VPS/VDS are
+     catalogued but not sold off the shared disk — need their own VM).
+  3. Domain choice during checkout:
+     - register   = buy/attach a new domain
+     - own        = customer already owns a domain
+     - student    = free *.ifnotus.space hostname from surname
+                  (surname.ifnotus.space, then surname1, surname2, …)
+  4. Create order → invoice (short ref e.g. IFFCEA) → MoMo pay instructions.
+  5. Customer submits MoMo transaction ID → payment_status = submitted.
+  6. Staff confirms payment → activates hosting.
+
+C. ACTIVATION / PROVISIONING
+  On confirm_payment for a hosting order:
+  1. Create Subscription (plan CPU/RAM/disk/bandwidth/AI credits allocated).
+  2. Top up AI credits for the month onto the customer wallet.
+  3. Enqueue provision job.
+  4. ProvisioningEngine:
+     - Pick infrastructure node for plan capacity.
+     - Create document root under customer_environments_root.
+     - Isolation: filesystem jail by default; Docker only if plan includes docker
+       and isolation prefers docker (falls back to filesystem if start fails).
+     - Create Domain + nginx (+ Let's Encrypt for *.ifnotus.space).
+     - Create CustomerEnvironment (status active, limits from plan).
+     - NO database by default.
+     - Ensure FTP/SFTP account if pack includes sftp.
+     - DNS A record; attach custom domain if purchased; queue SSL for custom.
+     - Notify customer (email/SMS): hosting ready → open /account.
+
+D. AFTER GO-LIVE — DASHBOARD
+  Until a live environment exists:
+    - Nav: Overview + Billing (Site hidden).
+    - Overview empty state → finish payment / New order.
+
+  After activation:
+    - Overview: active site hero (domain, disk, health) + shortcuts.
+    - Site panel unlocked (cPanel-style tools for the selected environment).
+    - Billing: subscriptions, invoices, AI credits, New order (another pack).
+    - Multi-env: weak pill switcher today; product direction is Services list →
+      click one hosting → open that site’s panel.
+
+E. RENEWAL / EXTRA PURCHASES
+  - New order from Billing adds another subscription/environment under same account.
+  - Renew / change-plan exist per subscription in Billing UI.
+  - Cancelled/disputed invoices are hidden from the customer invoice list.
+
+
+================================================================================
+3. CUSTOMER DASHBOARD SURFACES
+================================================================================
+
+SHELL: /account  (PortalShell)
+  Nav pills: Overview | Site (if hasEnv) | Billing
+  Support: profile menu / AI FAB (not always a main pill)
+  Deep tools: /account/files?env=, /account/database/studio?env=, etc.
+
+OVERVIEW (PortalOverviewPanel)
+  - Greeting, pending invoice CTA if unpaid/submitted.
+  - Active environment: domain, plan specs (CPU/RAM/disk), health, usage %.
+  - Shortcuts into Site tabs: Apps/Stack, Files, Database, Domain/DNS.
+  - Multi-environment switcher when environments.length > 1.
+  - Opens Files manager in a new window scoped to env.
+
+SITE / CONTROL PANEL (PortalSitePanel) — per environment
+  Tabs (capability-gated by pack):
+    Stack     — install / clear one-click or matrix stacks
+    Files     — file manager (or open full /account/files)
+    Logs      — app / deploy style logs
+    Cron      — scheduled jobs
+    Database  — credentials + schema browse + link to SQL Studio
+    FTP       — create/show SFTP credentials (home = document root)
+    Email     — mailboxes (limited by pack mailboxes count)
+    Domain    — DNS / SSL / panel URL / redirects / custom domains
+    Protect   — related DNS/protect flows
+
+BILLING (PortalBillingPanel)
+  - New order → /account/plans
+  - List subscriptions (renew / change plan)
+  - AI credit balance (+ buy credits)
+  - Invoices (MoMo details, open invoice)
+
+AI
+  - Account-level credits wallet.
+  - Used in portal companion / file editor (Dev Companion).
+  - Pack includes monthly top-up on activation; extra credits purchasable.
+
+CPANEL SHORTCUTS
+  - cpanel.<custom-domain>/ or https://<student-host>/cpanel
+  - Resolves to account portal URL today (not always deep-linked to env id).
+
+
+================================================================================
+4. PACK CATALOG (SEEDED DEFAULTS)
+================================================================================
+
+Levels used in the feature matrix: yes | limited | no
+SSH modes: no | limited | jail | root
+
+Managed packs run on the shared Contabo node (filesystem / optional Docker jail).
+Cloud VPS / VDS are separate VM products (root SSH); not sold off shared disk.
+
+--------------------------------------------------------------------------------
+4.1 STUDENT STARTER
+  Slug:           student-starter
+  Matrix key:     student-starter
+  Kind:           managed
+  Seed price:     GHS 30 / month  (yearly ≈ 10× monthly in seed)
+  Seed resources: 0.25 vCPU, 0.25 GB RAM (256 MB), 5 GB disk, 1 TB bandwidth
+  AI credits:     5 / month (seed)
+
+  Domains:        1 custom
+  SSH:            limited
+  SFTP / files:   yes
+  Cron:           yes
+  DNS:            limited
+  Git / GitHub:   yes / yes; GitLab limited; 1 repo
+  Mailboxes:      1
+  Redirects:      no
+  Deploy:         GitHub deploys 5/mo; auto-deploy, webhooks, 1 branch auto;
+                  history/logs yes; app logs limited; rollback limited;
+                  custom build limited
+  DB manage:      yes (full studio writes)
+  DB backups:     limited
+  Monitoring:     limited
+  AI:             yes; AI errors limited; AI server no
+  Priority:       no
+
+  STACKS (matrix)
+    YES:      PHP, Laravel, WordPress, MySQL
+    NO:       Python, Django, FastAPI, Flask, Node, Next, Express, React, Vue,
+              Postgres, MongoDB, Redis, Docker
+
+--------------------------------------------------------------------------------
+4.2 PERSONAL  (DB slug personal-launch, display name "Personal")
+  Slug:           personal-launch  → matrix alias "personal"
+  Kind:           managed
+  Seed price:     GHS 25 / month
+  Seed resources: 1 vCPU, 1 GB RAM, 10 GB disk, 1 TB bandwidth
+  AI credits:     8 / month
+
+  Domains:        1
+  SSH:            no
+  Cron:           limited
+  Env vars:       no
+  DNS:            limited
+  Git:            limited; GitHub/GitLab/Bitbucket no; repos 0
+  Mailboxes:      1
+  Redirects:      limited
+  Auto-deploy:    no
+  DB manage:      limited (browse only; writes blocked)
+  AI:             limited
+
+  STACKS
+    YES:      PHP, WordPress, React/Vite
+    LIMITED:  Laravel, MySQL, Python, Flask, Node, Express, Vue, Postgres
+    NO:       Django, FastAPI, Next.js, MongoDB, Redis, Docker
+
+--------------------------------------------------------------------------------
+4.3 CLUB CONNECT
+  Slug:           club-connect
+  Kind:           managed
+  Seed price:     GHS 55 / month
+  Seed resources: 2 vCPU, 4 GB RAM, 30 GB disk, 1 TB bandwidth
+  AI credits:     15 / month
+
+  Domains:        3
+  SSH:            limited
+  Repos:          3; GitLab/Bitbucket limited
+  Mailboxes:      5
+  Deploy:         GH 20/mo; auto-deploy, webhooks, 2 branch autos;
+                  history/logs/rollback/custom build yes; preview/staging limited
+  DB backups:     yes; auto backups limited
+  Monitoring / uptime: yes
+  AI errors:      yes
+  Priority:       limited
+
+  STACKS
+    YES:      PHP, Laravel, WordPress, MySQL, Python, Django, FastAPI, Flask,
+              Node, Next, Express, React, Vue, Postgres
+    LIMITED:  MongoDB, Redis
+    NO:       Docker
+
+--------------------------------------------------------------------------------
+4.4 STUDENT PRO
+  Slug:           student-pro
+  Kind:           managed
+  Seed price:     GHS 70 / month
+  Seed resources: 2 vCPU, 2 GB RAM, 15 GB disk, 1 TB bandwidth
+  AI credits:     10 / month
+
+  Domains:        5
+  SSH:            jail
+  Repos:          5; GitLab yes; Bitbucket limited
+  Mailboxes:      10
+  Deploy:         unlimited GH deploys; preview + staging yes; full deploy tooling
+  DB backups / auto backups: yes
+  Monitoring / uptime / AI errors: yes
+  AI server:      limited
+  Priority:       limited
+
+  STACKS
+    YES:      PHP through Vue, MySQL, Postgres, MongoDB (+ all major app stacks)
+    LIMITED:  Redis, Docker
+
+--------------------------------------------------------------------------------
+4.5 STUDENT ELITE
+  Slug:           student-elite
+  Kind:           managed
+  Seed price:     GHS 100 / month
+  Seed resources: 2 vCPU, 4 GB RAM, 25 GB disk, 1 TB bandwidth
+  AI credits:     15 / month
+
+  Domains:        10
+  SSH:            jail
+  Repos:          10; GitLab + Bitbucket yes
+  Mailboxes:      25
+  Deploy:         unlimited; full preview/staging/rollback
+  Backups / monitoring / AI errors: yes
+  AI server:      limited
+  Firewall:       limited
+  Priority:       yes
+
+  STACKS
+    YES:      Full app stack + Redis
+    LIMITED:  Docker
+
+--------------------------------------------------------------------------------
+4.6 BUSINESS PRO
+  Slug:           business-pro
+  Kind:           managed
+  Seed price:     GHS 150 / month
+  Seed resources: 4 vCPU, 8 GB RAM, 80 GB disk, 1 TB bandwidth
+  AI credits:     20 / month
+
+  Domains:        20
+  SSH:            jail
+  Repos:          20
+  Mailboxes:      50
+  Branch autos:   10
+  AI server:      yes
+  Firewall:       limited
+  Priority:       yes
+  Docker:         yes (isolation may use Docker when enabled)
+
+  STACKS: all matrix keys YES (including Docker)
+
+--------------------------------------------------------------------------------
+4.7 MACHO POWER
+  Slug:           macho-power
+  Kind:           managed
+  Seed price:     GHS 300 / month
+  Seed resources: 8 vCPU, 16 GB RAM, 160 GB disk, 2 TB bandwidth
+  AI credits:     40 / month
+
+  Domains:        40
+  SSH:            jail
+  Repos:          40
+  Mailboxes:      100
+  Firewall:       yes
+  Priority:       yes
+  STACKS:         all YES
+
+--------------------------------------------------------------------------------
+4.8 MONSTER CLOUD
+  Slug:           monster-cloud
+  Kind:           managed
+  Seed price:     GHS 500 / month
+  Seed resources: 12 vCPU, 32 GB RAM, 300 GB disk, 4 TB bandwidth
+  AI credits:     80 / month
+
+  Domains:        100
+  SSH:            jail
+  Repos:          100
+  Mailboxes:      200
+  Branch autos:   20
+  Firewall:       yes
+  Priority:       yes
+  STACKS:         all YES
+
+--------------------------------------------------------------------------------
+4.9 CLOUD VPS  (not sold on shared node)
+  Slug:           cloud-vps
+  Kind:           vps
+  Seed price:     GHS 170 / month
+  Seed resources: 4 vCPU, 8 GB RAM, 100 GB SSD, 4 TB bandwidth
+  AI credits:     40 / month
+  SSH:            root
+  Domains/repos/mailboxes: unlimited (null in matrix)
+  Dedicated CPU:  no
+  cPanel flag:    yes (product flag)
+  STACKS:         all YES
+  NOTE: Requires own VM provisioning path — sellable_on_shared_node = false.
+
+--------------------------------------------------------------------------------
+4.10 CLOUD VDS  (not sold on shared node)
+  Slug:           cloud-vds
+  Kind:           vds
+  Seed price:     GHS 750 / month
+  Seed resources: (matrix) RAM 24 GB, storage 180 GB NVMe; seed also 8 vCPU
+  AI credits:     80 / month
+  SSH:            root
+  Dedicated CPU:  yes
+  cPanel flag:    yes
+  STACKS:         all YES
+  NOTE: Requires own VM — not provisioned on the shared Contabo disk.
+
+--------------------------------------------------------------------------------
+PRICE → RESOURCE HELPER (when staff create packs by price)
+  Anchors: GHS 30 → 0.25 vCPU / 256 MB; GHS 70 → 0.50 vCPU / 512 MB
+  Storage snaps; AI credits ≈ max(5, round(price/5))
+  See plan_sizing.py / planResources.ts
+
+
+================================================================================
+5. STACKS — WHAT THEY ARE AND HOW TENANTS USE THEM
+================================================================================
+
+TWO LAYERS
+
+A) MATRIX STACKS (entitlement)
+   Declared per pack in plan_matrix (php, laravel, wordpress, mysql, python,
+   django, fastapi, flask, nodejs, nextjs, express, react, vue, postgres,
+   mongodb, redis, docker).
+   UI lists included/limited stacks for the pack. "no" stacks are hidden.
+
+B) ONE-CLICK INSTALLERS (implemented today)
+   Ids: static | wordpress | laravel | nodejs
+   Mapped to matrix keys: static→php, wordpress→wordpress, laravel→laravel,
+   nodejs→nodejs.
+   Student Starter only sees one-click options that pass matrix (static always
+   allowed; WordPress/Laravel/Node if pack allows).
+   Higher packs also LIST matrix stacks (Python, Django, …) with
+   one_click=false — "Deploy via Files or Git (one-click coming soon)".
+
+INSTALL FLOW (customer Site → Stack)
+  1. Pick stack → Install (blocked if one_click=false).
+  2. Background job with step progress (prepare → … → done).
+  3. Writes into environment document_root; updates nginx as needed.
+  4. WordPress / Laravel: create MySQL DB + credentials on the environment.
+  5. Node: Express starter + npm + reverse proxy.
+  6. Static: starter PHP/HTML page, no DB until needed.
+  7. Customer can Clear install (optionally drop database) and reinstall.
+
+STACK STEPS (summary)
+  static:     prepare → files → nginx → done
+  wordpress:  prepare → database → download → extract → config → nginx → done
+  laravel:    prepare → database → composer → env → nginx → done
+  nodejs:     prepare → files → npm → start → nginx → done
+
+DEFAULT DB ENGINE FOR PACK
+  MySQL if mysql stack allowed; else PostgreSQL if postgres allowed; else none.
+  Provisioning itself does NOT create a DB — only stack install (or staff) does.
+
+
+================================================================================
+6. DATABASE — HOW TENANTS ACCESS IT
+================================================================================
+
+WHEN A DB EXISTS
+  - After WordPress or Laravel one-click (MySQL created and bound to env).
+  - Fields on CustomerEnvironment: db_engine, db_name, db_username, db_host,
+    db_port, db_password_encrypted, db_registry_id.
+  - Default host shown to customers may be masked/normalized for safety.
+
+ACCESS PATHS
+
+1) Site → Database tab
+   - Shows engine, name, username, host, port.
+   - Reveal password / connection URI (reveal=true API).
+   - Browse schema / tables.
+   - Open SQL Studio: /account/database/studio?env=<environment_id>
+
+2) Database Studio (full UI)
+   - Schema, rows, insert/update/delete, run queries.
+   - WRITE operations require pack db_manage == "yes".
+   - If db_manage == "limited" (e.g. Personal): browse OK; changing data denied
+     with message to upgrade.
+
+3) App config
+   - WordPress: wp-config.php written with DB credentials.
+   - Laravel: .env configured with DB credentials.
+
+4) External clients
+   - Use revealed host/port/user/password (subject to firewall / bind rules on
+     the server). Not all packs expose remote MySQL the same way; panel studio
+     is the primary supported path.
+
+NO DATABASE YET
+  API returns: "No database on this site yet. Install WordPress or Laravel,
+  or ask support to attach one."
+
+
+================================================================================
+7. FILES, FTP, SSH, DNS, MAIL (PER ENVIRONMENT)
+================================================================================
+
+FILES
+  - Capability: file_manager (almost all packs yes).
+  - In-panel browser + full /account/files?env= window.
+  - Uploads count against storage_limit_gb; write blocked when over quota.
+
+FTP / SFTP
+  - Capability: sftp.
+  - ensure_account creates jailed user with home = document_root.
+  - Credentials shown in Site → FTP tab.
+
+SSH
+  - Modes: no / limited / jail / root (VPS/VDS).
+  - ensure SSH endpoints exist; Personal has ssh=no.
+
+DNS / SSL / CUSTOM DOMAINS
+  - Student hostnames live under ifnotus.space (wildcard-friendly).
+  - Custom domains: attach + NS instructions; SSL queued when ready.
+  - custom_domains limit enforced per pack matrix.
+  - Preview/staging hostnames gated by pack preview/staging flags.
+
+CRON / GIT / LOGS / REDIRECTS
+  - Cron, git clone/pull, logs, redirects APIs under /customers/environments/{id}/…
+  - Feature levels can be limited or no per pack.
+
+MAIL
+  - Create mailboxes under environment domain up to pack mailboxes limit.
+
+
+================================================================================
+8. STAFF / OPS SIDE (SUMMARY)
+================================================================================
+
+- Entry: /login (email + password, optional device challenge / TOTP) → /panel
+- Customer product panel is /account — pure customers cannot open /panel.
+- Full structure, roles, and every screen: see SECTION 12 below.
+
+
+================================================================================
+9. CAPABILITY FLAGS USED BY THE PANEL (capabilities_for)
+================================================================================
+
+Boolean "on" flags derived from matrix (yes|limited → on, except ssh/root special):
+  sftp, file_manager, cron, env_vars, ssl, dns, git, redirects,
+  db_manage, db_backups, auto_backups, preview, staging, ai, ai_errors,
+  ai_server, monitoring, uptime, docker, firewall,
+  plus each STACK_KEY, ssh, root.
+
+isolation: "docker" if docker on, else "filesystem".
+
+Denied features return pack_denied_message:
+  "{label} is not included on this package. Upgrade to unlock it."
+
+
+================================================================================
+10. KEY SOURCE FILES
+================================================================================
+
+Backend
+  backend/app/services/platform/plan_matrix.py     — feature + stack matrix
+  backend/app/services/platform/plan_sizing.py      — price → resources
+  backend/app/services/platform/provisioning.py     — env creation
+  backend/app/services/platform/orders.py           — checkout / MoMo / activate
+  backend/app/services/platform/stacks.py           — one-click installers
+  backend/app/services/platform/tenant.py           — ownership + capabilities
+  backend/app/services/platform/ftp.py              — SFTP accounts
+  backend/app/services/platform/student_hostname.py — *.ifnotus.space
+  backend/app/services/platform/staff.py            — staff product console service
+  backend/app/services/hosting/databases.py         — DB manager
+  backend/app/services/hosting/db_studio.py         — SQL studio
+  backend/app/routers/v1/customers.py               — customer APIs
+  backend/app/routers/v1/platform_admin.py          — staff product APIs
+  backend/app/core/permissions.py                  — roles + permission matrix
+  backend/alembic/versions/0007_ifnotus_platform.py — plan seeds
+  backend/alembic/versions/0016_cloud_vps_vds_plans.py — VPS/VDS seeds
+
+Frontend
+  frontend/src/lib/planMatrix.ts
+  frontend/src/lib/planPack.ts
+  frontend/src/lib/planResources.ts
+  frontend/src/lib/roles.ts
+  frontend/src/lib/permissions.ts
+  frontend/src/components/layout/AppSidebar.vue      — staff nav structure
+  frontend/src/components/portal/PortalShell.vue
+  frontend/src/components/portal/PortalOverviewPanel.vue
+  frontend/src/components/portal/PortalSitePanel.vue
+  frontend/src/components/portal/PortalBillingPanel.vue
+  frontend/src/views/portal/PortalSignupView.vue
+  frontend/src/views/portal/PortalAccountPlansView.vue
+  frontend/src/views/portal/PortalDashboardView.vue
+  frontend/src/views/DashboardView.vue              — staff host dashboard
+  frontend/src/views/PlatformCustomersView.vue
+  frontend/src/views/PlatformPlansView.vue
+  frontend/src/views/PlatformOrdersView.vue
+  frontend/src/views/SettingsView.vue               — staff settings / staff users
+  frontend/src/views/SupportTicketsView.vue
+  frontend/src/router/index.ts                      — panel: staff | portal | public
+
+
+================================================================================
+11. QUICK COMPARISON TABLE (MANAGED PACKS)
+================================================================================
+
+Pack              Price*  Domains  SSH       One-click focus     DB manage
+----------------  ------  -------  --------  ------------------  ---------
+Student Starter   30      1        limited   PHP/WP/Laravel      yes
+Personal          25      1        no        PHP/WP/React        limited
+Club Connect      55      3        limited   broad + PG          yes
+Student Pro       70      5        jail      broad + Mongo       yes
+Student Elite     100     10       jail      + Redis             yes
+Business Pro      150     20       jail      + Docker            yes
+Macho Power       300     40       jail      all                 yes
+Monster Cloud     500     100      jail      all                 yes
+Cloud VPS         170     unlim.   root      all (own VM)        yes
+Cloud VDS         750     unlim.   root      all (own VM)        yes
+
+* Seed monthly GHS; confirm live catalog in admin if prices were edited.
+
+
+================================================================================
+12. HOSTING SUPER ADMIN / STAFF PANEL — STRUCTURE & CAPABILITIES
+================================================================================
+
+OVERVIEW
+  The staff console is the WHM-style host control panel at /panel (meta.panel =
+  "staff"). It has two layers:
+
+  A) HOST CONTROL  — manage the shared Contabo server itself
+     (websites discovery, DNS, files, DBs, mail, SSL, backups, firewall,
+      monitoring, terminal, Docker).
+
+  B) ACCOUNTS (product platform) — manage IFNOTUS customers, plans, MoMo
+     orders, support tickets, and per-tenant environment remediation.
+
+  Pure customers (role "customer" only) are blocked from all staff routes.
+  Staff may open /account if they also have a customer profile; otherwise
+  they stay in /panel.
+
+
+--------------------------------------------------------------------------------
+12.1 ACCESS & AUTH
+--------------------------------------------------------------------------------
+
+  URL:     https://ifnotus.space/login  → after auth → /panel
+  Auth:    email + password
+  Extra:   device challenge / TOTP where configured
+  Layout:  DashboardLayout + AppSidebar (control-ui theme)
+
+  API prefix for product console: /api/v1/platform/... (platform_admin.py)
+  Host tools use their own routers (domains, files, mail, security, etc.).
+
+
+--------------------------------------------------------------------------------
+12.2 STAFF ROLES (who can do what)
+--------------------------------------------------------------------------------
+
+  Role            Primary job
+  --------------  ------------------------------------------------------------
+  superadmin      Full control — staff accounts, terminal, privilege switch,
+                  terminate sites, every permission
+  admin           Business — plans, billing confirm, customers, env remediation;
+                  NO host shell / files write emphasis
+  operator        Hands-on hosting — domains, mail, files, databases, env ops;
+                  NO plan CRUD / billing confirm
+  customer_care   MoMo confirm + support tickets only (no env/hosting edits)
+  viewer          Read-only across the staff panel
+  customer        Portal only — empty staff permission set
+
+  Permission families (backend Permission enum):
+    system:*, servers:*, deployments:*, apps:*, domains:*, ssl:*, files:*,
+    mail:*, terminal:execute, databases:*, monitoring:*, users:*,
+    support:*, customers:manage, platform:read, platform:write, platform:ops
+
+  Notable gates:
+    platform:write     → create/edit plans, integrations, site theme
+    platform:ops       → suspend/restore env, health, stacks, repair FS,
+                         grant AI credits
+    customers:manage   → confirm / reject MoMo, retry provision
+    system:admin       → terminate env, create/update staff users,
+                         provision hosting for a customer, security page
+    terminal:execute   → Terminal / SSH (superadmin-heavy)
+
+  Superadmin can temporarily "work as" admin | operator | viewer |
+  customer_care (privilege switch) — never as customer or another superadmin.
+
+
+--------------------------------------------------------------------------------
+12.3 SIDEBAR STRUCTURE (AppSidebar)
+--------------------------------------------------------------------------------
+
+  Group CONTROL (host)
+    /panel              Dashboard
+    /applications       Websites          (apps:read)
+    /domains            DNS               (domains:read)
+    /files              File Manager      (files:read)
+    /databases          Databases         (databases:read)
+    /admin/mail         Email             (mail:read)
+    /ssl                SSL               (ssl:read)
+    /operations         Backups           (system:read)
+    /security           Firewall/Security (system:admin)
+    /monitoring         Monitoring        (monitoring:read)
+    /terminal           Terminal / SSH    (terminal:execute)
+    /servers            Docker / host     (servers:read)
+
+  Group ACCOUNTS (product)
+    /platform/customers Customers         (platform:read)
+    /platform/plans     Plans             (platform:read)
+    /platform/orders    Orders            (platform:read)
+    /support            Support           (support:read)
+
+  Group SYSTEM
+    /settings           Settings          (all staff who can open panel)
+
+  Related deep routes (not all listed as top nav):
+    /applications/:id
+    /databases/studio
+    /files/edit, /files/upload
+    /terminal/full
+
+
+--------------------------------------------------------------------------------
+12.4 CONTROL — WHAT EACH HOST SCREEN DOES
+--------------------------------------------------------------------------------
+
+  DASHBOARD (/panel)
+    Host overview: resource gauges, health, traffic hints, SSH/terminal
+    shortcuts, recent alerts/services. Operator view of the shared node —
+    not a single customer’s site.
+
+  WEBSITES (/applications)
+    Discovered / registered apps on the host (nginx/sites style inventory).
+    Detail page for metrics, logs, SSL, services, deploy-related actions.
+
+  DNS (/domains)
+    Server-wide domain & nginx site management (staff scope — all domains on
+    the host, not tenant-jailed).
+
+  FILE MANAGER (/files)
+    Host filesystem browser/editor/upload. Staff sees broader roots than
+    customers (customers are locked to their environment document_root).
+
+  DATABASES (/databases + /databases/studio)
+    Host DB registry + SQL studio for any managed DB on the node.
+    Parallel to customer studio, but not limited to one tenant env.
+
+  EMAIL (/admin/mail)
+    Mail domains / mailboxes administration on the host.
+
+  SSL (/ssl)
+    Certificate discovery, issue, renew for host domains.
+
+  BACKUPS (/operations)
+    Host/ops backup and related operations actions.
+
+  FIREWALL / SECURITY (/security) — system:admin
+    Firewall and security controls for the host.
+
+  MONITORING (/monitoring)
+    Service health, metrics, collectors for the shared node.
+
+  TERMINAL / SSH (/terminal, /terminal/full) — terminal:execute
+    Key-based shell into the host. Intended for superadmin/ops — not exposed
+    to customers.
+
+  DOCKER / HOST (/servers)
+    Container / host inventory and server management views.
+
+
+--------------------------------------------------------------------------------
+12.5 ACCOUNTS — PRODUCT CONSOLE (CUSTOMERS / PLANS / ORDERS / SUPPORT)
+--------------------------------------------------------------------------------
+
+  CUSTOMERS (/platform/customers) — PlatformCustomersView
+    List/search customers (name, email, phone).
+    Open customer detail:
+      - Profile, AI credit balance
+      - Subscriptions + orders summary
+      - Environments list (domain, status, stack, DB chip, document_root)
+      - Env sub-panels: Overview | Health | Stacks | Logs | Activity (audit)
+    Actions (permission-gated):
+      - Grant AI credits          (platform:ops)
+      - Staff-provision hosting   (system:admin) — create paid-style provision
+        for a customer with plan + domain without MoMo flow
+      - Per environment:
+          Health check, view usage (disk soft/hard)
+          Suspend / Restore       (platform:ops)
+          Terminate               (system:admin only — permanent)
+          Clear stack (± drop DB) (platform:ops)
+          Install stack           (platform:ops)
+          Repair filesystem / WP FS_METHOD (platform:ops)
+          Read env logs           (platform:ops)
+
+  PLANS (/platform/plans) — PlatformPlansView
+    List all hosting_plans (incl. inactive).
+    Create / edit: name, slug, price monthly/yearly, CPU, RAM, storage,
+      bandwidth, AI credits, custom_domains override, active flag.
+    Option: auto-size resources from monthly price (₵30→0.25/256MB anchors).
+    Bulk: "Rebalance from price" recalculates all plans’ resources.
+    Hide/activate plan for public catalog.
+    Requires platform:write for mutations.
+
+  ORDERS (/platform/orders) — PlatformOrdersView
+    Filter by payment_status (default: submitted / awaiting confirmation).
+    Per order: customer link, plan, domain, MoMo txn id, invoice totals.
+    Actions (customers:manage):
+      - Confirm payment (amount received + staff note) → activates hosting
+        (Subscription + provision job)
+      - Reject payment → mark failed
+      - Retry provision if paid but env not active
+
+  SUPPORT (/support) — SupportTicketsView
+    Staff inbox for customer tickets (support:read / support:write).
+    Tickets may reference an environment_id when opened from a site context.
+
+
+--------------------------------------------------------------------------------
+12.6 SETTINGS (/settings) — SUPER ADMIN CONFIG SURFACE
+--------------------------------------------------------------------------------
+
+  Typical blocks available to elevated staff:
+
+  - Staff accounts (system:admin)
+      Create staff user: email, password, full name, role
+        (admin | operator | viewer | customer_care — not another superadmin
+         via creatable roles)
+      List staff: activate / deactivate, change role/password/name
+
+  - API integrations (platform:write)
+      Encrypted store for Paystack, SMS, registrar, MoMo merchant details
+      (network, number, account name), import-from-.env helper
+
+  - Public site theme (platform:write)
+      Marketing site theme id + color overrides / plan accent colors
+
+  - AI settings
+      Model/provider configuration for the platform AI companion
+
+  - Panel theme / appearance for the control UI
+
+  - Integration status polling (keys configured vs missing)
+
+
+--------------------------------------------------------------------------------
+12.7 STAFF PRODUCT APIs (platform_admin router map)
+--------------------------------------------------------------------------------
+
+  Customers
+    GET    /platform/customers
+    GET    /platform/customers/{id}
+    GET    /platform/customers/{id}/audit
+    POST   /platform/customers/{id}/credits/grant
+    POST   /platform/customers/{id}/provision          (system:admin)
+
+  Orders
+    GET    /platform/orders
+    POST   /platform/orders/{id}/confirm-payment
+    POST   /platform/orders/{id}/reject-payment
+    POST   /platform/orders/{id}/retry-provision
+
+  Plans
+    GET    /platform/plans
+    POST   /platform/plans
+    PATCH  /platform/plans/{id}
+    POST   /platform/plans/rebalance-from-price
+
+  Environments (tenant remediation)
+    POST   /platform/environments/{id}/suspend
+    POST   /platform/environments/{id}/restore
+    POST   /platform/environments/{id}/terminate       (system:admin)
+    POST   /platform/environments/{id}/health/check
+    GET    /platform/environments/{id}/usage
+    GET    /platform/environments/{id}/stacks
+    POST   /platform/environments/{id}/stacks/install
+    POST   /platform/environments/{id}/stacks/clear
+    GET    /platform/environments/{id}/logs
+    POST   /platform/environments/{id}/filesystem/repair
+
+  Staff users
+    GET/POST  /platform/staff-users
+    PATCH     /platform/staff-users/{id}
+
+  Integrations & theme
+    GET/PUT /platform/integrations
+    POST    /platform/integrations/import-env
+    GET/PUT /platform/site-theme
+
+
+--------------------------------------------------------------------------------
+12.8 DAY-TO-DAY SUPER ADMIN WORKFLOWS
+--------------------------------------------------------------------------------
+
+  1. MoMo activation
+     Orders → filter "submitted" → verify txn in MoMo app → Confirm
+     → subscription created → provision job → customer notified → site live.
+
+  2. Broken customer site
+     Customers → select customer → select env → Health / Logs →
+     Repair FS or Clear stack / reinstall → Suspend if threatening host.
+
+  3. Pack catalog change
+     Plans → edit price/resources or Rebalance from price → Hide/Activate.
+
+  4. Manual credit top-up
+     Customers → Grant AI credits (ops).
+
+  5. Comp / internal hosting
+     Customers → Provision hosting (superadmin) with plan + domain.
+
+  6. Hire staff
+     Settings → create operator / admin / customer_care account.
+
+  7. Kill a fraudulent site
+     Customers → env → Terminate (superadmin only; irreversible from portal).
+
+
+--------------------------------------------------------------------------------
+12.9 WHAT SUPER ADMIN IS NOT
+--------------------------------------------------------------------------------
+
+  - Not the customer /account portal (that is phone-first client area).
+  - Not a separate login per hosting package — staff remediate by picking
+    the customer’s environment inside Customers.
+  - Cloud VPS/VDS sales on this shared node are blocked in product logic;
+    those need their own VM path even though plans exist in the catalog.
+
+
+================================================================================
+END OF DOCUMENT
+================================================================================

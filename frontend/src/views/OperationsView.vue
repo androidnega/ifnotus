@@ -209,8 +209,32 @@ onMounted(refreshAll)
       </section>
 
       <!-- Quick actions row -->
-      <Card title="Service controls" subtitle="Restart platform services">
+      <Card title="Service controls" subtitle="Refresh the live server and clear caches">
         <div class="flex flex-wrap gap-2">
+          <button
+            type="button"
+            class="action-btn-primary"
+            :disabled="!!actionLoading"
+            @click="runAction('refresh-server', () => operationsApi.refreshServer())"
+          >
+            {{ actionLoading === 'refresh-server' ? '…' : 'Refresh server' }}
+          </button>
+          <button
+            type="button"
+            class="action-btn"
+            :disabled="!!actionLoading"
+            @click="runAction('cache-central', () => operationsApi.clearCentralCache(false))"
+          >
+            {{ actionLoading === 'cache-central' ? '…' : 'Clear central cache' }}
+          </button>
+          <button
+            type="button"
+            class="action-btn"
+            :disabled="!!actionLoading"
+            @click="runAction('cache-apps', () => operationsApi.clearAllAppCaches())"
+          >
+            {{ actionLoading === 'cache-apps' ? '…' : 'Clear all app caches' }}
+          </button>
           <button
             type="button"
             class="action-btn"
@@ -452,5 +476,8 @@ onMounted(refreshAll)
 <style scoped>
 .action-btn {
   @apply rounded-lg border border-surface-border bg-slate-50 px-3 py-2 text-sm font-medium transition hover:border-brand-500/30 hover:bg-brand-500/5 disabled:opacity-50 dark:bg-slate-900;
+}
+.action-btn-primary {
+  @apply rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-brand-700 disabled:opacity-50;
 }
 </style>

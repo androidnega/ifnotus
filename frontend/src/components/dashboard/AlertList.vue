@@ -39,7 +39,7 @@ function severityVariant(severity: AlertItem['severity']) {
     <EmptyState
       v-else-if="!alerts.length"
       title="No active alerts"
-      message="Your infrastructure is running smoothly."
+      message="No resource, port, or service failures detected right now."
     >
       <template #icon>
         <IconAlert :size="20" class="text-emerald-500" />

@@ -5,22 +5,32 @@ import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import ErrorState from '@/components/ui/ErrorState.vue'
+import ConfirmPasswordModal from '@/components/databases/ConfirmPasswordModal.vue'
 import { applicationsApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
+import { usePermissions } from '@/composables/usePermissions'
+import { Permission } from '@/lib/permissions'
 import type { ApplicationDetail, DeploymentRecord } from '@/types/operations'
 
 const route = useRoute()
 const appId = computed(() => String(route.params.id))
+const { can } = usePermissions()
+const canClearLogs = computed(() => can(Permission.SYSTEM_ADMIN))
 
 const app = ref<ApplicationDetail | null>(null)
 const deployments = ref<DeploymentRecord[]>([])
-const logs = ref<Array<{ message?: string; level?: string }>>([])
+const logs = ref<Array<{ message?: string; level?: string; source?: string }>>([])
+const logSources = ref<string[]>([])
 const envVars = ref<Record<string, string>>({})
 const loading = ref(true)
 const error = ref<string | null>(null)
 const actionLoading = ref<string | null>(null)
 const message = ref<{ ok: boolean; text: string } | null>(null)
 const activeTab = ref<'overview' | 'deployments' | 'logs' | 'environment' | 'services'>('overview')
+
+const clearLogsOpen = ref(false)
+const clearLogsBusy = ref(false)
+const clearLogsError = ref<string | null>(null)
 
 async function load() {
   loading.value = true
@@ -36,6 +46,7 @@ async function load() {
     ])
     deployments.value = deps.status === 'fulfilled' ? (deps.value.data.deployments as DeploymentRecord[]) : []
     logs.value = logRes.status === 'fulfilled' ? logRes.value.data.entries : []
+    logSources.value = logRes.status === 'fulfilled' ? (logRes.value.data.sources || []) : []
     envVars.value = env.status === 'fulfilled' ? env.value.data.variables : {}
   } catch (e) {
     app.value = null
@@ -65,6 +76,21 @@ async function revealEnv() {
     envVars.value = data
   } catch (e) {
     message.value = { ok: false, text: getApiErrorMessage(e, 'Failed to reveal environment') }
+  }
+}
+
+async function confirmClearAppLogs(password: string) {
+  clearLogsBusy.value = true
+  clearLogsError.value = null
+  try {
+    const { data } = await applicationsApi.clearLogs(appId.value, password)
+    clearLogsOpen.value = false
+    message.value = { ok: data.success, text: data.message }
+    await load()
+  } catch (e) {
+    clearLogsError.value = getApiErrorMessage(e, 'Clear failed — check password')
+  } finally {
+    clearLogsBusy.value = false
   }
 }
 
@@ -130,6 +156,14 @@ watch(appId, load, { immediate: true })
             @click="run('refresh', () => applicationsApi.refresh(appId))"
           >
             Refresh status
+          </button>
+          <button
+            type="button"
+            class="action-btn"
+            :disabled="!!actionLoading"
+            @click="run('cache', () => applicationsApi.clearCache(appId))"
+          >
+            {{ actionLoading === 'cache' ? 'Clearing…' : 'Clear cache' }}
           </button>
           <button
             type="button"
@@ -209,8 +243,23 @@ watch(appId, load, { immediate: true })
           <p v-if="app.git.message" class="mt-2 text-xs text-amber-700 dark:text-amber-300">{{ app.git.message }}</p>
         </Card>
         <Card v-if="app.ssl" title="SSL">
-          <p class="text-sm">{{ app.ssl.domain || '—' }}</p>
-          <Badge v-if="app.ssl.status" class="mt-2" size="sm">{{ app.ssl.status }}</Badge>
+          <p class="text-sm font-medium">{{ app.ssl.domain || '—' }}</p>
+          <div class="mt-2 flex flex-wrap gap-2">
+            <Badge
+              v-if="app.ssl.configured"
+              :variant="app.ssl.status === 'healthy' ? 'success' : 'warning'"
+              size="sm"
+            >
+              {{ app.ssl.status || 'configured' }}
+            </Badge>
+            <Badge v-else variant="warning" size="sm">not configured</Badge>
+            <span v-if="app.ssl.days_remaining != null" class="text-xs text-surface-muted">
+              {{ app.ssl.days_remaining }}d remaining
+            </span>
+          </div>
+          <p v-if="app.ssl.issuer" class="mt-2 truncate text-xs text-surface-muted" :title="String(app.ssl.issuer)">
+            {{ app.ssl.issuer }}
+          </p>
           <p v-if="app.ssl.message" class="mt-2 text-xs text-surface-muted">{{ app.ssl.message }}</p>
         </Card>
         <Card v-if="app.nginx" title="Nginx">
@@ -221,7 +270,10 @@ watch(appId, load, { immediate: true })
             </Badge>
             <Badge v-if="app.nginx.ssl_enabled" size="sm">ssl</Badge>
           </div>
-          <p v-if="app.nginx.root" class="mt-2 truncate text-xs text-surface-muted" :title="String(app.nginx.root)">
+          <p v-if="app.nginx.site_path" class="mt-2 truncate font-mono text-[11px] text-surface-muted" :title="String(app.nginx.site_path)">
+            {{ app.nginx.site_path }}
+          </p>
+          <p v-if="app.nginx.root" class="mt-1 truncate text-xs text-surface-muted" :title="String(app.nginx.root)">
             root {{ app.nginx.root }}
           </p>
           <p v-if="app.nginx.message" class="mt-2 text-xs text-surface-muted">{{ app.nginx.message }}</p>
@@ -256,8 +308,22 @@ watch(appId, load, { immediate: true })
       </Card>
 
       <Card v-if="activeTab === 'logs'" title="Application logs">
-        <pre class="max-h-96 overflow-y-auto text-xs leading-relaxed text-surface-muted">{{
-          logs.map((l) => l.message).join('\n') || 'No log lines.'
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <p v-if="logSources.length" class="text-[11px] text-surface-muted">
+            Sources: {{ logSources.join(' · ') }}
+          </p>
+          <button
+            v-if="canClearLogs"
+            type="button"
+            class="rounded-lg border border-red-300 bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700"
+            :disabled="clearLogsBusy"
+            @click="clearLogsOpen = true"
+          >
+            Clear logs…
+          </button>
+        </div>
+        <pre class="max-h-96 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-surface-muted">{{
+          logs.map((l) => (l.source ? `[${l.source}] ${l.message}` : l.message)).join('\n') || 'No log lines found yet.'
         }}</pre>
       </Card>
 
@@ -332,6 +398,17 @@ watch(appId, load, { immediate: true })
         </Card>
       </div>
     </div>
+
+    <ConfirmPasswordModal
+      :open="clearLogsOpen"
+      title="Clear application logs"
+      description="This truncates on-disk log files for this application. System journal history is not wiped. Enter your dashboard admin password to continue."
+      confirm-label="Clear app logs"
+      :busy="clearLogsBusy"
+      :error="clearLogsError"
+      @cancel="clearLogsOpen = false"
+      @confirm="confirmClearAppLogs"
+    />
   </DashboardLayout>
 </template>
 

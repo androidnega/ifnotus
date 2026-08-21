@@ -7,3 +7,14 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv
 }
+
+interface MonacoEnvironment {
+  getWorker(workerId: string, label: string): Worker
+}
+
+interface Window {
+  MonacoEnvironment?: MonacoEnvironment
+}
+
+declare var MonacoEnvironment: MonacoEnvironment | undefined
+

@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ENV=/srv/apps/ifnotus/backend/.env
+
+set_env() {
+  local key="$1" val="$2"
+  if grep -q "^${key}=" "$ENV"; then
+    sed -i "s|^${key}=.*|${key}=${val}|" "$ENV"
+  else
+    echo "${key}=${val}" >> "$ENV"
+  fi
+}
+
+get_env() { grep -E "^$1=" "$ENV" | head -1 | cut -d= -f2- || true; }
+
+case "${1:-status}" in
+  off)
+    set_env ADMIN_LOCKDOWN_ENABLED false
+    systemctl restart ifnotus-api
+    echo "Lockdown disabled."
+    ;;
+  add)
+    ip="${2:?usage: ifnotus-unlock add <IP>}"
+    cur="$(get_env ADMIN_ALLOWED_IPS)"
+    if [ -z "$cur" ]; then
+      new="$ip"
+    else
+      echo "$cur" | grep -q "$ip" && new="$cur" || new="$cur,$ip"
+    fi
+    set_env ADMIN_ALLOWED_IPS "$new"
+    set_env ADMIN_LOCKDOWN_ENABLED true
+    systemctl restart ifnotus-api
+    echo "Allowed $ip for panel."
+    ;;
+  pending)
+    cd /srv/apps/ifnotus/backend
+    set -a; . .env; set +a
+    ./.venv/bin/python - <<'PY'
+from app.services import auth_challenges
+pending = auth_challenges.list_pending_sync()
+if not pending:
+    print("No pending login challenges.")
+else:
+    print(f"{'ID':<10} {'CODE':<8} {'IP':<18} {'USER':<28} EXPIRES")
+    for ch in pending:
+        print(f"{ch.challenge_id:<10} {ch.code:<8} {ch.ip_address:<18} {ch.username_or_email[:26]:<28} {ch.expires_at}")
+    print()
+    print("On the login page, enter the CODE for your Challenge ID.")
+PY
+    ;;
+  approve)
+    id="${2:?usage: ifnotus-unlock approve <CHALLENGE_ID>}"
+    cd /srv/apps/ifnotus/backend
+    set -a; . .env; set +a
+    ./.venv/bin/python - <<PY
+from app.services import auth_challenges
+ch = auth_challenges.get_challenge_sync("$id")
+if ch is None or ch.consumed or ch.is_expired():
+    raise SystemExit("Challenge not found or expired.")
+print("CODE", ch.code)
+print("IP", ch.ip_address)
+print("USER", ch.username_or_email)
+print()
+print("Enter this CODE on the web login approval screen.")
+print("Or run: ifnotus-unlock trust-ip", ch.ip_address)
+PY
+    ;;
+  trust-ip)
+    ip="${2:?usage: ifnotus-unlock trust-ip <IP>}"
+    cd /srv/apps/ifnotus/backend
+    set -a; . .env; set +a
+    ./.venv/bin/python - <<PY
+import asyncio
+from app.core.config import Settings, get_settings
+from app.core.database import create_engine, create_session_factory
+from app.services.access_control import AccessControlService
+get_settings.cache_clear()
+async def main():
+    s = Settings()
+    eng = create_engine(s)
+    sf = create_session_factory(eng)
+    async with sf() as session:
+        await AccessControlService(session).trust_authenticated_ip("$ip", reason="cli_trust")
+        await session.commit()
+    await eng.dispose()
+    print("Trusted $ip for panel.")
+asyncio.run(main())
+PY
+    systemctl restart ifnotus-api
+    ;;
+  ssh-open)
+    ufw limit 22/tcp || ufw allow 22/tcp
+    ufw reload || true
+    echo "SSH rate-limited open."
+    ;;
+  status)
+    echo "--- .env ---"; grep -E '^ADMIN_' "$ENV" || true
+    echo "--- ufw ---"; ufw status | head -20 || true
+    echo "--- api ---"; systemctl is-active ifnotus-api
+    ;;
+  *)
+    echo "usage: ifnotus-unlock {pending|approve <ID>|trust-ip <IP>|add <IP>|off|ssh-open|status}"
+    exit 1
+    ;;
+esac

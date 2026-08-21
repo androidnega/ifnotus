@@ -58,7 +58,7 @@ const actions = [
     role="group"
     aria-label="Quick actions"
   >
-    <div class="grid min-w-0 grid-flow-col auto-cols-fr gap-2 px-1 sm:grid-flow-row sm:grid-cols-5 sm:gap-2.5">
+    <div class="grid min-w-0 grid-flow-col auto-cols-fr gap-2 px-1 sm:grid-flow-row sm:grid-cols-6 sm:gap-2.5">
       <button
         v-for="action in actions"
         :key="action.id"

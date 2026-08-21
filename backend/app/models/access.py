@@ -1,4 +1,4 @@
-"""Access control ORM models — login attempts and IP blacklist."""
+"""Access control ORM models — login attempts, IP blacklist, firewall, audit."""
 
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ class AccessAttempt(Base, UUIDPrimaryKeyMixin):
     device_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
     request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="web", index=True)
 
 
 class IpBlacklist(Base, UUIDPrimaryKeyMixin):
@@ -66,3 +67,73 @@ class IpBlacklist(Base, UUIDPrimaryKeyMixin):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class FirewallRule(Base, UUIDPrimaryKeyMixin):
+    """Application firewall allow / deny CIDR rules."""
+
+    __tablename__ = "firewall_rules"
+
+    cidr: Mapped[str] = mapped_column(String(64), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False, index=True)  # allow | deny
+    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class BlockedAction(Base, UUIDPrimaryKeyMixin):
+    """Admin kill-switch for sensitive dashboard / CLI actions."""
+
+    __tablename__ = "blocked_actions"
+
+    action_key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class SystemActionLog(Base, UUIDPrimaryKeyMixin):
+    """Dashboard + CLI mutating action audit trail."""
+
+    __tablename__ = "system_action_logs"
+
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    actor_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="web", index=True)
+    method: Mapped[str] = mapped_column(String(16), nullable=False)
+    path: Mapped[str] = mapped_column(String(512), nullable=False)
+    action_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

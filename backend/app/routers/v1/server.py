@@ -12,9 +12,15 @@ from app.schemas.monitoring import (
     ServerResourcesResponse,
 )
 from app.schemas.operations import OperationResult
-from app.services.hosting.nginx_sites import NginxSiteManager
+from app.services.operations.cache import CacheOperationsService
 
 router = APIRouter()
+
+
+def _cache_ops(request: Request) -> CacheOperationsService:
+    settings = request.app.state.container.config()
+    monitoring = get_monitoring_service(request)
+    return CacheOperationsService(settings, monitoring)
 
 
 @router.get(
@@ -58,9 +64,23 @@ async def server_ports(request: Request, _user: CurrentUser) -> PortsResponse:
 
 
 @router.post(
+    "/refresh",
+    response_model=OperationResult,
+    summary="Refresh server state (clear caches, reload registry, reload nginx)",
+    dependencies=[Depends(RequirePermission(Permission.SERVERS_WRITE))],
+)
+async def refresh_server(
+    request: Request,
+    _user: CurrentUser,
+    reload_nginx: bool = Query(default=True),
+) -> OperationResult:
+    return await _cache_ops(request).refresh_server(reload_nginx=reload_nginx)
+
+
+@router.post(
     "/cache/clear",
     response_model=OperationResult,
-    summary="Clear server monitoring cache and reload app registry",
+    summary="Clear central server caches and reload app registry",
     dependencies=[Depends(RequirePermission(Permission.SERVERS_WRITE))],
 )
 async def clear_server_cache(
@@ -68,30 +88,4 @@ async def clear_server_cache(
     _user: CurrentUser,
     reload_nginx: bool = Query(default=False),
 ) -> OperationResult:
-    monitoring = get_monitoring_service(request)
-    cleared = monitoring.clear_cache()
-
-    from app.api.applications import get_application_engine
-
-    apps = get_application_engine(request).reload()
-    details: dict = {
-        "monitoring_cache": cleared,
-        "applications_reloaded": len(apps),
-    }
-
-    if reload_nginx:
-        settings = request.app.state.container.config()
-        nginx_result = await NginxSiteManager(settings).reload()
-        details["nginx"] = {"success": nginx_result.success, "message": nginx_result.message}
-        if not nginx_result.success:
-            return OperationResult(
-                success=False,
-                message=f"Cache cleared but nginx reload failed: {nginx_result.message}",
-                details=details,
-            )
-
-    return OperationResult(
-        success=True,
-        message="Server cache cleared and application registry reloaded.",
-        details=details,
-    )
+    return await _cache_ops(request).clear_central(reload_nginx=reload_nginx)

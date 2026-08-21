@@ -15,13 +15,19 @@ const props = defineProps<{
 
 const theme = useThemeStore()
 
+const hasData = computed(
+  () =>
+    props.chart.categories.length > 0 &&
+    props.chart.series.some((s) => s.data.length > 0),
+)
+
 const options = computed(() => ({
   chart: {
     type: 'area' as const,
     toolbar: { show: false },
     zoom: { enabled: false },
     fontFamily: 'Inter, sans-serif',
-    animations: { enabled: true, easing: 'easeinout', speed: 600 },
+    animations: { enabled: false },
     background: 'transparent',
   },
   theme: { mode: theme.isDark ? ('dark' as const) : ('light' as const) },
@@ -68,6 +74,13 @@ const series = computed(() =>
 <template>
   <div :aria-label="`${title} chart`">
     <Skeleton v-if="loading" :height="`${height || 220}px`" />
+    <div
+      v-else-if="!hasData"
+      class="flex items-center justify-center text-center text-sm text-surface-muted"
+      :style="{ height: `${height || 220}px` }"
+    >
+      Collecting samples… charts fill in after a few polling cycles.
+    </div>
     <VueApexCharts
       v-else
       type="area"

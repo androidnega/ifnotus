@@ -22,9 +22,10 @@ from app.services.hosting.files import FileManagerService
 router = APIRouter()
 
 
-def _files(request: Request) -> FileManagerService:
+def _files(request: Request, user) -> FileManagerService:
     settings = request.app.state.container.config()
-    return FileManagerService(settings)
+    is_admin = user.is_superuser or "admin" in user.roles or "superadmin" in user.roles
+    return FileManagerService(settings, admin_storage=is_admin)
 
 
 def _root_params(app_id: str | None, root_id: str | None) -> dict[str, str | None]:
@@ -37,7 +38,7 @@ def _root_params(app_id: str | None, root_id: str | None) -> dict[str, str | Non
     dependencies=[Depends(RequirePermission(Permission.FILES_READ))],
 )
 async def list_roots(request: Request, _user: CurrentUser) -> FileRootsResponse:
-    return await _files(request).list_roots()
+    return await _files(request, _user).list_roots()
 
 
 @router.get(
@@ -52,7 +53,7 @@ async def list_files(
     app_id: str | None = Query(default=None),
     root_id: str | None = Query(default=None),
 ) -> FileListResponse:
-    return await _files(request).list_files(path, **_root_params(app_id, root_id))
+    return await _files(request, _user).list_files(path, **_root_params(app_id, root_id))
 
 
 @router.get(
@@ -67,7 +68,7 @@ async def read_file(
     app_id: str | None = Query(default=None),
     root_id: str | None = Query(default=None),
 ) -> FileDetailSchema:
-    return await _files(request).read_file(path, **_root_params(app_id, root_id))
+    return await _files(request, _user).read_file(path, **_root_params(app_id, root_id))
 
 
 @router.put(
@@ -82,7 +83,7 @@ async def write_file(
     app_id: str | None = Query(default=None),
     root_id: str | None = Query(default=None),
 ) -> OperationResult:
-    return await _files(request).write_file(body.path, body.content, **_root_params(app_id, root_id))
+    return await _files(request, _user).write_file(body.path, body.content, **_root_params(app_id, root_id))
 
 
 @router.post(
@@ -97,7 +98,7 @@ async def mkdir(
     app_id: str | None = Query(default=None),
     root_id: str | None = Query(default=None),
 ) -> OperationResult:
-    return await _files(request).mkdir(body.path, **_root_params(app_id, root_id))
+    return await _files(request, _user).mkdir(body.path, **_root_params(app_id, root_id))
 
 
 @router.post(
@@ -112,7 +113,7 @@ async def move_file(
     app_id: str | None = Query(default=None),
     root_id: str | None = Query(default=None),
 ) -> OperationResult:
-    return await _files(request).move(body.source, body.destination, **_root_params(app_id, root_id))
+    return await _files(request, _user).move(body.source, body.destination, **_root_params(app_id, root_id))
 
 
 @router.delete(
@@ -127,7 +128,7 @@ async def delete_path(
     app_id: str | None = Query(default=None),
     root_id: str | None = Query(default=None),
 ) -> OperationResult:
-    return await _files(request).delete(path, **_root_params(app_id, root_id))
+    return await _files(request, _user).delete(path, **_root_params(app_id, root_id))
 
 
 @router.post(
@@ -142,7 +143,7 @@ async def chmod(
     app_id: str | None = Query(default=None),
     root_id: str | None = Query(default=None),
 ) -> OperationResult:
-    return await _files(request).chmod(body.path, body.mode, **_root_params(app_id, root_id))
+    return await _files(request, _user).chmod(body.path, body.mode, **_root_params(app_id, root_id))
 
 
 @router.post(
@@ -158,7 +159,7 @@ async def upload_file(
     root_id: str | None = Query(default=None),
     file: UploadFile = File(...),
 ) -> OperationResult:
-    return await _files(request).upload(path, file, **_root_params(app_id, root_id))
+    return await _files(request, _user).upload(path, file, **_root_params(app_id, root_id))
 
 
 @router.post(
@@ -173,7 +174,7 @@ async def init_chunked_upload(
     app_id: str | None = Query(default=None),
     root_id: str | None = Query(default=None),
 ) -> FileUploadInitResponse:
-    return await _files(request).init_chunked_upload(
+    return await _files(request, _user).init_chunked_upload(
         body.filename,
         body.path,
         body.size_bytes,
@@ -196,7 +197,7 @@ async def upload_chunk(
     file: UploadFile = File(...),
 ) -> OperationResult:
     data = await file.read()
-    return await _files(request).upload_chunk(upload_id, chunk_index, data)
+    return await _files(request, _user).upload_chunk(upload_id, chunk_index, data)
 
 
 @router.post(
@@ -209,7 +210,7 @@ async def complete_chunked_upload(
     request: Request,
     _user: CurrentUser,
 ) -> OperationResult:
-    return await _files(request).complete_chunked_upload(body.upload_id)
+    return await _files(request, _user).complete_chunked_upload(body.upload_id)
 
 
 @router.get(
@@ -223,7 +224,9 @@ async def download_file(
     app_id: str | None = Query(default=None),
     root_id: str | None = Query(default=None),
 ) -> FileResponse:
-    file_path, filename = _files(request).resolve_download(path, **_root_params(app_id, root_id))
+    file_path, filename = _files(request, _user).resolve_download(
+        path, **_root_params(app_id, root_id)
+    )
     return FileResponse(path=file_path, filename=filename, media_type="application/octet-stream")
 
 
@@ -239,7 +242,7 @@ async def unzip(
     app_id: str | None = Query(default=None),
     root_id: str | None = Query(default=None),
 ) -> OperationResult:
-    return await _files(request).unzip(path, **_root_params(app_id, root_id))
+    return await _files(request, _user).unzip(path, **_root_params(app_id, root_id))
 
 
 @router.get(
@@ -254,4 +257,4 @@ async def stat_file(
     app_id: str | None = Query(default=None),
     root_id: str | None = Query(default=None),
 ) -> FileDetailSchema:
-    return await _files(request).stat_file(path, **_root_params(app_id, root_id))
+    return await _files(request, _user).stat_file(path, **_root_params(app_id, root_id))

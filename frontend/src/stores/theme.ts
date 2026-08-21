@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
+import { syncSiteDocumentTone } from '@/composables/useSiteTheme'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
@@ -12,6 +13,10 @@ function resolveDark(mode: ThemeMode): boolean {
 }
 
 function applyTheme(isDark: boolean) {
+  if (!document.documentElement.classList.contains('control-ui')) {
+    syncSiteDocumentTone()
+    return
+  }
   document.documentElement.classList.toggle('dark', isDark)
   document.documentElement.style.colorScheme = isDark ? 'dark' : 'light'
 }

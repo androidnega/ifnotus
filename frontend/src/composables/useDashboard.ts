@@ -21,7 +21,7 @@ function mapServiceStatus(status: string): ServiceStatus {
     stopped: 'stopped',
     degraded: 'degraded',
     unknown: 'unknown',
-    failed: 'stopped',
+    failed: 'failed',
   }
   return map[status] ?? 'unknown'
 }
@@ -49,25 +49,20 @@ function mapManagedService(svc: ApiManagedService): ServiceItem {
   }
 }
 
-async function fetchRegisteredApplications(): Promise<ApplicationItem[]> {
-  try {
-    const { data } = await applicationsApi.list()
-    return data.applications.map((app) => ({
-      id: app.id,
-      name: app.name,
-      status: mapServiceStatus(String(app.status)),
-      version: app.version ?? undefined,
-      environment: app.environment,
-    }))
-  } catch {
-    return []
-  }
+function mapDashboardApplications(dashboard: DashboardApiResponse): ApplicationItem[] {
+  return (dashboard.applications ?? []).map((app) => ({
+    id: app.id,
+    name: app.name,
+    status: mapServiceStatus(String(app.status)),
+    version: app.version ?? undefined,
+    environment: app.environment ?? undefined,
+  }))
 }
 
-async function fetchRecentDeployments(): Promise<DeploymentItem[]> {
+async function fetchRecentDeployments(): Promise<DeploymentItem[] | null> {
   try {
     const { data: list } = await applicationsApi.list()
-    const enabled = list.applications.filter((app) => app.enabled).slice(0, 4)
+    const enabled = list.applications.filter((app) => app.enabled).slice(0, 6)
     const batches = await Promise.allSettled(
       enabled.map((app) => applicationsApi.deployments(app.id)),
     )
@@ -93,7 +88,27 @@ async function fetchRecentDeployments(): Promise<DeploymentItem[]> {
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
       .slice(0, 8)
   } catch {
-    return []
+    return null
+  }
+}
+
+const STAFF_CACHE_KEY = 'ifnotus.staff.dashboard'
+
+function readStaffCache(): DashboardApiResponse | null {
+  try {
+    const raw = sessionStorage.getItem(STAFF_CACHE_KEY)
+    if (!raw) return null
+    return JSON.parse(raw) as DashboardApiResponse
+  } catch {
+    return null
+  }
+}
+
+function writeStaffCache(payload: DashboardApiResponse) {
+  try {
+    sessionStorage.setItem(STAFF_CACHE_KEY, JSON.stringify(payload))
+  } catch {
+    /* ignore quota */
   }
 }
 
@@ -102,7 +117,6 @@ function mapDashboardResponse(
   health: HealthResponse | null,
   readiness: ReadinessResponse | null,
   deployments: DeploymentItem[],
-  applications: ApplicationItem[],
 ): DashboardData {
   const metrics: SystemMetrics = {
     timestamp: dashboard.timestamp,
@@ -118,14 +132,14 @@ function mapDashboardResponse(
     metrics,
     integrations: null,
     healthScore: dashboard.health_score,
-    stats: dashboard.stats.map((s) => ({
+    stats: (dashboard.stats || []).map((s) => ({
       ...s,
       trendValue: s.trend_value,
     })),
-    servers: dashboard.servers,
-    services: dashboard.services.map(mapManagedService),
-    applications,
-    alerts: dashboard.alerts.map((a) => ({
+    servers: dashboard.servers || [],
+    services: (dashboard.services || []).map(mapManagedService),
+    applications: mapDashboardApplications(dashboard),
+    alerts: (dashboard.alerts || []).map((a) => ({
       id: a.id,
       title: a.title,
       message: a.message,
@@ -137,9 +151,9 @@ function mapDashboardResponse(
     deployments,
     activities: dashboard.activities as ActivityItem[],
     charts: dashboard.charts,
-    loadAverage: (dashboard.load_average.length >= 3
+    loadAverage: ((dashboard.load_average?.length ?? 0) >= 3
       ? dashboard.load_average.slice(0, 3)
-      : [...dashboard.load_average, 0, 0, 0].slice(0, 3)) as [number, number, number],
+      : [...(dashboard.load_average || []), 0, 0, 0].slice(0, 3)) as [number, number, number],
     networkThroughput: dashboard.network_throughput,
     collectors: dashboard.collectors,
     inventory: dashboard.inventory ?? null,
@@ -151,6 +165,7 @@ export function useDashboard() {
   const loading = ref(true)
   const refreshing = ref(false)
   const error = ref<string | null>(null)
+  const extrasError = ref<string | null>(null)
   let timer: ReturnType<typeof setInterval> | null = null
   let pollCount = 0
 
@@ -163,15 +178,16 @@ export function useDashboard() {
   )
 
   async function loadExtras() {
-    const [deployments, applications] = await Promise.all([
-      fetchRecentDeployments(),
-      fetchRegisteredApplications(),
-    ])
+    const deployments = await fetchRecentDeployments()
     if (!data.value) return
+    if (deployments === null) {
+      extrasError.value = 'Could not load recent deployments.'
+      return
+    }
+    extrasError.value = null
     data.value = {
       ...data.value,
       deployments,
-      applications,
     }
   }
 
@@ -181,35 +197,59 @@ export function useDashboard() {
       refreshing.value = false
       return
     }
-    if (isRefresh) refreshing.value = true
-    else loading.value = true
+    if (typeof document !== 'undefined' && document.hidden && isRefresh) {
+      return
+    }
     error.value = null
 
-    try {
-      // Paint core dashboard first — do not block on N+1 deployment fan-out.
-      const [dashboardRes, healthRes, readinessRes] = await Promise.all([
-        monitoringApi.dashboard(),
-        healthApi.liveness().catch(() => null),
-        healthApi.readiness().catch(() => null),
-      ])
+    if (!isRefresh && !data.value) {
+      const cached = readStaffCache()
+      if (cached?.servers) {
+        data.value = mapDashboardResponse(cached, null, null, [])
+        loading.value = false
+      } else {
+        loading.value = true
+      }
+    }
 
+    try {
+      const dashboardRes = await monitoringApi.dashboard()
+      writeStaffCache(dashboardRes.data)
       data.value = mapDashboardResponse(
         dashboardRes.data,
-        healthRes?.data ?? null,
-        readinessRes?.data ?? null,
+        data.value?.health ?? null,
+        data.value?.readiness ?? null,
         data.value?.deployments ?? [],
-        data.value?.applications ?? [],
       )
       loading.value = false
 
+      void Promise.all([healthApi.liveness().catch(() => null), healthApi.readiness().catch(() => null)]).then(
+        ([healthRes, readinessRes]) => {
+          if (!data.value) return
+          data.value = {
+            ...data.value,
+            health: healthRes?.data ?? data.value.health,
+            readiness: readinessRes?.data ?? data.value.readiness,
+          }
+        },
+      )
+
       if (withExtras) {
-        await loadExtras()
+        void loadExtras()
       }
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to load dashboard data.'
+      if (!data.value) {
+        error.value = e instanceof Error ? e.message : 'Failed to load dashboard data.'
+      }
     } finally {
       loading.value = false
       refreshing.value = false
+    }
+  }
+
+  function onVisibility() {
+    if (!document.hidden && localStorage.getItem('access_token')) {
+      fetchDashboard(true, { withExtras: false })
     }
   }
 
@@ -218,16 +258,18 @@ export function useDashboard() {
       loading.value = false
       return
     }
-    fetchDashboard(false, { withExtras: true })
+    fetchDashboard(false, { withExtras: false })
     timer = setInterval(() => {
       pollCount += 1
       // Refresh extras every 6th poll (~30s) to keep the 5s loop light.
       fetchDashboard(true, { withExtras: pollCount % 6 === 0 })
     }, REALTIME_POLL_MS)
+    document.addEventListener('visibilitychange', onVisibility)
   })
 
   onUnmounted(() => {
     if (timer) clearInterval(timer)
+    document.removeEventListener('visibilitychange', onVisibility)
   })
 
   return {
@@ -235,6 +277,7 @@ export function useDashboard() {
     loading,
     refreshing,
     error,
+    extrasError,
     runningServices,
     activeApplications,
     refresh: () => fetchDashboard(true, { withExtras: true }),
