@@ -84,6 +84,7 @@ class EnvironmentBackupService:
             raise AppException("Cannot back up a terminated environment.")
         if not env.document_root:
             raise AppException("Environment has no document root.")
+        await self._require_backup_entitlement(env, action="create", reason=reason)
 
         row = EnvironmentBackup(
             customer_id=customer_id,
@@ -91,6 +92,8 @@ class EnvironmentBackupService:
             filename="",
             backup_type="full",
             status="pending",
+            storage_provider="local",
+            offsite_status="pending",
         )
         self._session.add(row)
         await self._session.flush()
@@ -139,11 +142,15 @@ class EnvironmentBackupService:
             raise NotFoundError("Environment not found.")
         if env.status == "terminated":
             raise AppException("Cannot restore into a terminated environment.")
+        await self._require_backup_entitlement(env, action="restore", reason="restore")
         backup = await self.get_owned_backup(customer_id, environment_id, backup_id)
         if backup.status != "success":
             raise ValidationError("Only successful backups can be restored.")
         if not backup.filename or not Path(backup.filename).exists():
-            raise AppException("Backup archive file is missing on disk.")
+            # Try off-site fetch before failing
+            recovered = await self._ensure_local_archive(backup)
+            if not recovered:
+                raise AppException("Backup archive file is missing on disk and off-site.")
 
         job = PlatformJob(
             job_type="restore_environment_backup",
@@ -176,6 +183,21 @@ class EnvironmentBackupService:
         await self._session.flush()
         return job
 
+    async def delete_backup(self, customer_id: UUID, environment_id: UUID, backup_id: UUID) -> None:
+        backup = await self.get_owned_backup(customer_id, environment_id, backup_id)
+        await self._delete_storage(backup)
+        await self._session.delete(backup)
+        self._session.add(
+            PlatformAuditLog(
+                customer_id=customer_id,
+                action="environment.backup_delete",
+                target_type="backup",
+                target_id=str(backup_id),
+                result="success",
+            )
+        )
+        await self._session.flush()
+
     async def run_backup(self, backup_id: UUID) -> EnvironmentBackup:
         backup = await self._session.get(EnvironmentBackup, backup_id)
         if backup is None:
@@ -196,6 +218,9 @@ class EnvironmentBackupService:
             backup.file_size = size
             backup.status = "success"
             backup.verified_at = datetime.now(UTC)
+            backup.retention_until = await self._retention_until(env.id)
+            offsite_meta = await self._push_offsite(backup, archive_path)
+            meta["offsite"] = offsite_meta
             self._session.add(
                 PlatformAuditLog(
                     customer_id=backup.customer_id,
@@ -224,9 +249,9 @@ class EnvironmentBackupService:
             raise NotFoundError("Backup or environment not found.")
         if backup.environment_id != env.id:
             raise AppException("Backup does not belong to this environment.")
+        if not await self._ensure_local_archive(backup):
+            raise AppException("Backup archive missing on disk and off-site.")
         archive = Path(backup.filename)
-        if not archive.exists():
-            raise AppException("Backup archive missing on disk.")
         if not env.document_root:
             raise AppException("Environment has no document root.")
 
@@ -252,7 +277,7 @@ class EnvironmentBackupService:
         return meta
 
     async def enqueue_daily(self) -> dict:
-        """Queue backups for active environments that lack a successful backup today."""
+        """Queue automatic backups for entitled active environments."""
         today = datetime.now(UTC).date()
         result = await self._session.execute(
             select(CustomerEnvironment).where(CustomerEnvironment.status == "active")
@@ -261,36 +286,15 @@ class EnvironmentBackupService:
         queued = 0
         skipped = 0
         for env in envs:
-            recent = await self._session.execute(
-                select(EnvironmentBackup)
-                .where(
-                    EnvironmentBackup.environment_id == env.id,
-                    EnvironmentBackup.status.in_(["success", "queued", "running", "pending"]),
-                )
-                .order_by(EnvironmentBackup.created_at.desc())
-                .limit(5)
-            )
-            rows = list(recent.scalars().all())
-            already = False
-            for row in rows:
-                created = row.created_at
-                if created is None:
+            try:
+                if not await self._auto_backup_due(env, today):
+                    skipped += 1
                     continue
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=UTC)
-                if created.date() == today and row.status in {
-                    "success",
-                    "queued",
-                    "running",
-                    "pending",
-                }:
-                    already = True
-                    break
-            if already:
+                await self.queue_backup(env.customer_id, env.id, reason="daily")
+                queued += 1
+            except AppException:
                 skipped += 1
                 continue
-            await self.queue_backup(env.customer_id, env.id, reason="daily")
-            queued += 1
         await self._session.flush()
         platform = self.dump_platform_postgres()
         return {"queued": queued, "skipped": skipped, "active": len(envs), "platform": platform}
@@ -451,6 +455,20 @@ class EnvironmentBackupService:
                 "document_root": str(doc),
                 "created_at": datetime.now(UTC).isoformat(),
                 "database": db_meta,
+                "application": {
+                    "isolation_type": env.isolation_type,
+                    "db_engine": env.db_engine,
+                    "db_name": env.db_name,
+                    "container_id": env.container_id,
+                    "unix_username": getattr(env, "unix_username", None),
+                    "status": env.status,
+                },
+                "env_var_keys": [],  # keys only would come from ApplicationInstance; values never stored
+                "domains": await self._domain_snapshot(env),
+                "note": (
+                    "Secret values are not stored in cleartext. Same-VPS archive alone is not DR; "
+                    "off-site copy is tracked on EnvironmentBackup.storage_* fields."
+                ),
             }
             (stage / "manifest.json").write_text(
                 json.dumps(manifest, indent=2), encoding="utf-8"
@@ -604,18 +622,14 @@ class EnvironmentBackupService:
         )
         rows = list(result.scalars().all())
         for old in rows[keep:]:
-            try:
-                if old.filename:
-                    Path(old.filename).unlink(missing_ok=True)
-            except OSError:
-                pass
+            await self._delete_storage(old)
             await self._session.delete(old)
 
     async def _retention_keep(self, environment_id: UUID) -> int:
-        """Entitlement check: plan features.retention_days (or retention_count) when set.
+        """Entitlement check: plan features.retention_days / backup_retention when set.
 
         Same-VPS backups are convenience snapshots — not disaster recovery.
-        See docs/phase14-backups.md.
+        See docs/phase14-backups.md and docs/phase24-offsite-dr.md.
         """
         default = int(getattr(self._settings, "backup_retention_count", 7) or 7)
         env = await self._session.get(CustomerEnvironment, environment_id)
@@ -627,8 +641,7 @@ class EnvironmentBackupService:
         sub = await self._session.get(Subscription, env.subscription_id)
         plan = await self._session.get(HostingPlan, sub.plan_id) if sub else None
         feats = features_for(plan)
-        # retention_days ≈ keep N daily backups when present on plan features.
-        for key in ("retention_count", "retention_days"):
+        for key in ("backup_retention", "retention_count", "retention_days"):
             raw = feats.get(key)
             if raw is None and isinstance(getattr(plan, "features", None), dict):
                 raw = plan.features.get(key)
@@ -638,6 +651,165 @@ class EnvironmentBackupService:
                 except (TypeError, ValueError):
                     pass
         return default
+
+    async def _retention_until(self, environment_id: UUID):
+        from datetime import timedelta
+
+        keep = await self._retention_keep(environment_id)
+        return datetime.now(UTC) + timedelta(days=keep)
+
+    async def _plan_for_env(self, env: CustomerEnvironment):
+        from app.models.platform import HostingPlan, Subscription
+
+        sub = await self._session.get(Subscription, env.subscription_id)
+        if sub is None:
+            return None
+        return await self._session.get(HostingPlan, sub.plan_id)
+
+    async def _require_backup_entitlement(
+        self, env: CustomerEnvironment, *, action: str, reason: str
+    ) -> None:
+        from app.services.platform.plan_matrix import feature_included, features_for
+
+        plan = await self._plan_for_env(env)
+        feats = features_for(plan)
+        if action == "create" and reason == "daily" and not (
+            feature_included(plan, "auto_backups") or feats.get("backup_frequency") not in {None, "manual", "no"}
+        ):
+            raise AppException(
+                "Automatic backups are not included on this package.",
+                code="backup_not_included",
+            )
+        if action == "restore":
+            customer_restore = feats.get("customer_restore")
+            if customer_restore is False or str(customer_restore).lower() in {"no", "false", "0"}:
+                raise AppException(
+                    "Customer self-restore is not enabled on this package. Contact support.",
+                    code="restore_not_included",
+                )
+
+    async def _auto_backup_due(self, env: CustomerEnvironment, today) -> bool:
+        from app.services.platform.plan_matrix import feature_included, features_for
+
+        plan = await self._plan_for_env(env)
+        feats = features_for(plan)
+        if not (feature_included(plan, "auto_backups") or feats.get("backup_frequency")):
+            return False
+        freq = str(feats.get("backup_frequency") or "daily").lower()
+        # limited auto_backups → treat as daily when entitled
+        lookback = 1
+        if freq in {"weekly", "week"}:
+            lookback = 7
+        elif freq in {"hourly"}:
+            lookback = 0  # still one success per calendar day to avoid storms
+        recent = await self._session.execute(
+            select(EnvironmentBackup)
+            .where(
+                EnvironmentBackup.environment_id == env.id,
+                EnvironmentBackup.status.in_(["success", "queued", "running", "pending"]),
+            )
+            .order_by(EnvironmentBackup.created_at.desc())
+            .limit(5)
+        )
+        for row in recent.scalars().all():
+            created = row.created_at
+            if created is None:
+                continue
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            age_days = (today - created.date()).days
+            if age_days < max(1, lookback) and row.status in {
+                "success",
+                "queued",
+                "running",
+                "pending",
+            }:
+                return False
+            if lookback == 0 and created.date() == today:
+                return False
+        return True
+
+    async def _push_offsite(self, backup: EnvironmentBackup, archive_path: Path) -> dict:
+        from app.services.platform.backup_providers import resolve_backup_provider, storage_key_for
+
+        provider = resolve_backup_provider(self._settings)
+        key = storage_key_for(str(backup.customer_id), str(backup.environment_id), archive_path.name)
+        result = provider.put(archive_path, key)
+        backup.storage_provider = result.provider if result.ok or not result.skipped else "local"
+        backup.storage_key = result.key if result.ok else None
+        if result.ok:
+            backup.offsite_status = "synced"
+            if not getattr(self._settings, "backup_keep_local_after_offsite", True):
+                try:
+                    archive_path.unlink(missing_ok=True)
+                    backup.filename = f"offsite:{result.key}"
+                except OSError:
+                    pass
+        elif result.skipped:
+            backup.storage_provider = "local"
+            backup.offsite_status = "local_only"
+        else:
+            backup.offsite_status = "failed"
+        return {
+            "ok": result.ok,
+            "skipped": result.skipped,
+            "provider": result.provider,
+            "key": result.key,
+            "error": result.error,
+        }
+
+    async def _ensure_local_archive(self, backup: EnvironmentBackup) -> bool:
+        path = Path(backup.filename) if backup.filename and not backup.filename.startswith("offsite:") else None
+        if path and path.exists():
+            return True
+        if not backup.storage_key:
+            return False
+        from app.services.platform.backup_providers import resolve_backup_provider
+
+        provider = resolve_backup_provider(self._settings)
+        dest = self._backup_dir(backup.customer_id) / Path(backup.storage_key).name
+        result = provider.fetch(backup.storage_key, dest)
+        if not result.ok:
+            logger.warning("backup_offsite_fetch_failed", error=result.error, key=backup.storage_key)
+            return False
+        backup.filename = str(dest)
+        await self._session.flush()
+        return dest.exists()
+
+    async def _delete_storage(self, backup: EnvironmentBackup) -> None:
+        try:
+            if backup.filename and not backup.filename.startswith("offsite:"):
+                Path(backup.filename).unlink(missing_ok=True)
+        except OSError:
+            pass
+        if backup.storage_key:
+            from app.services.platform.backup_providers import resolve_backup_provider
+
+            resolve_backup_provider(self._settings).delete(backup.storage_key)
+
+    def _env_var_keys(self, env: CustomerEnvironment) -> list[str]:
+        return []
+
+    async def _domain_snapshot(self, env: CustomerEnvironment) -> list[dict]:
+        from app.models.platform import CustomerDomain
+
+        result = await self._session.execute(
+            select(CustomerDomain).where(CustomerDomain.environment_id == env.id)
+        )
+        rows = list(result.scalars().all())
+        out = []
+        if env.domain:
+            out.append({"domain_name": env.domain, "role": "primary"})
+        for row in rows:
+            out.append(
+                {
+                    "domain_name": row.domain_name,
+                    "status": getattr(row, "status", None),
+                    "ssl_status": getattr(row, "ssl_status", None),
+                    "registrar": getattr(row, "registrar", None),
+                }
+            )
+        return out
 
     @staticmethod
     def _sha256(path: Path) -> str:

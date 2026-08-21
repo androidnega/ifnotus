@@ -349,7 +349,13 @@ class PlatformJob(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 
 class EnvironmentBackup(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """Daily / on-demand backup of a customer environment."""
+    """Daily / on-demand backup of a customer environment.
+
+    Local ``filename`` is the on-node archive. Off-site copies (DR) are tracked via
+    ``storage_provider`` / ``storage_key`` / ``offsite_status`` (PHASE 24).
+    PlatformJob rows with job_type backup_environment / restore_environment_backup
+    are the BackupJob / RestoreJob records.
+    """
 
     __tablename__ = "environment_backups"
 
@@ -365,6 +371,10 @@ class EnvironmentBackup(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     backup_type: Mapped[str] = mapped_column(String(16), nullable=False, default="full")
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    storage_provider: Mapped[str] = mapped_column(String(32), nullable=False, default="local")
+    storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    offsite_status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    retention_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PlatformAuditLog(Base, UUIDPrimaryKeyMixin):

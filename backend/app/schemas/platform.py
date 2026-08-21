@@ -583,6 +583,10 @@ class EnvironmentBackupResponse(SchemaBase):
     status: str
     verified_at: datetime | None = None
     created_at: datetime | None = None
+    storage_provider: str = "local"
+    storage_key: str | None = None
+    offsite_status: str = "pending"
+    retention_until: datetime | None = None
 
 
 class EnvironmentBackupRestoreResponse(SchemaBase):

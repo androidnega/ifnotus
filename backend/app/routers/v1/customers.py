@@ -2406,6 +2406,26 @@ async def list_backups(
     return [EnvironmentBackupResponse.model_validate(r) for r in rows]
 
 
+@router.delete(
+    "/environments/{environment_id}/backups/{backup_id}",
+    status_code=204,
+)
+async def delete_backup(
+    environment_id: UUID,
+    backup_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> None:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    from app.services.platform.backups import EnvironmentBackupService
+
+    await EnvironmentBackupService(settings, session).delete_backup(
+        customer.id, environment_id, backup_id
+    )
+
+
 @router.post(
     "/environments/{environment_id}/backups/{backup_id}/restore",
     response_model=EnvironmentBackupRestoreResponse,

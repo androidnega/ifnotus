@@ -125,9 +125,22 @@ def _row(
     root: Level = NO,
     priority_support: Level = NO,
     retention_days: int | None = None,
+    backup_enabled: bool | None = None,
+    backup_frequency: str | None = None,
+    backup_retention: int | None = None,
+    customer_restore: bool | None = None,
     marketing_blurb: str | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
+    # Derive PHASE 24 backup package language from existing matrix keys when unset
+    if backup_enabled is None:
+        backup_enabled = auto_backups in {YES, LIM} or db_backups in {YES, LIM}
+    if backup_frequency is None:
+        backup_frequency = "daily" if auto_backups in {YES, LIM} else "manual"
+    if backup_retention is None:
+        backup_retention = retention_days
+    if customer_restore is None:
+        customer_restore = backup_enabled
     data: dict[str, Any] = {
         "kind": kind,
         "custom_domains": custom_domains,
@@ -168,6 +181,10 @@ def _row(
         "root": root,
         "priority_support": priority_support,
         "retention_days": retention_days,
+        "backup_enabled": backup_enabled,
+        "backup_frequency": backup_frequency,
+        "backup_retention": backup_retention,
+        "customer_restore": customer_restore,
         "marketing_blurb": marketing_blurb,
         "stacks": stacks,
     }

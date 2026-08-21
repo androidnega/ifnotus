@@ -243,6 +243,18 @@ class Settings(BaseSettings):
     # Shell command after a successful dump. Use {path} and {dir}. Example:
     # rsync -az {dir}/ backup@otherhost:/var/backups/ifnotus/
     platform_backup_offsite_cmd: str = ""
+    # PHASE 24 — environment archive DR target (none | command | s3)
+    backup_offsite_provider: str = "none"
+    # command provider: {path} archive, {key} object key, {dir} parent
+    backup_offsite_cmd: str = ""
+    backup_s3_endpoint: str = ""
+    backup_s3_bucket: str = ""
+    backup_s3_access_key: str = ""
+    backup_s3_secret_key: str = ""
+    backup_s3_region: str = "auto"
+    backup_s3_prefix: str = "ifnotus/"
+    # Keep a local copy after successful offsite put (recommended until restore-from-offsite is routine)
+    backup_keep_local_after_offsite: bool = True
     host_disk_warn_pct: int = 80
     host_disk_crit_pct: int = 90
     infra_hostname: str = "ifnotus-1"

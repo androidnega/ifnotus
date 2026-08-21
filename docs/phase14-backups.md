@@ -19,4 +19,5 @@ customer environment on the **same VPS / shared node** that runs the site.
   PHASE 18 release notes.
 
 Treat same-VPS backups as a safety net for day-to-day mistakes, not as a DR
-plan. Plan DR with a remote target before promising recovery SLAs to customers.
+plan. Off-site DR is PHASE 24 — see `docs/phase24-offsite-dr.md`
+(`BackupProvider`, `BACKUP_OFFSITE_PROVIDER`).
