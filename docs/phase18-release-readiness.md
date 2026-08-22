@@ -68,6 +68,12 @@ under `/panel` auth and must not be required for pure customers.
 
 ## Smoke before flip
 
+Use the permanent checklist:
+
+→ [production-hosting-checklist.md](./production-hosting-checklist.md)
+
+Minimum highlights:
+
 - [ ] `alembic upgrade head` on staging
 - [ ] Checkout managed pack → provision → ACTIVE
 - [ ] Mailbox create respects plan limit
@@ -75,3 +81,4 @@ under `/panel` auth and must not be required for pure customers.
 - [ ] Capacity page loads for staff
 - [ ] Disk pressure critical blocks `pick_node_for_plan`
 - [ ] SSL GET prefers certificate `valid_until` over +90d estimate
+- [ ] Catalog shows Coming soon for Cloud VPS/VDS (not purchasable)
