@@ -1683,6 +1683,10 @@ export const customersApi = {
         last_exit_code?: number | null
         last_output?: string | null
       }>
+      max_jobs?: number
+      min_interval_minutes?: number
+      jobs_used?: number
+      runs_as?: string | null
       note?: string
     }>(`/customers/environments/${environmentId}/cron`),
 

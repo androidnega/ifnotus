@@ -2061,13 +2061,25 @@ async def env_list_cron(
 ) -> EnvCronListResponse:
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
-    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    tenant = TenantService(session)
+    env = await tenant.get_owned_environment(customer.id, environment_id)
+    plan = await tenant.plan_for_environment(env)
     from app.services.platform.env_cron import EnvironmentCronService
 
-    jobs = EnvironmentCronService(settings, session).list_jobs(env)
+    svc = EnvironmentCronService(settings, session)
+    jobs = svc.list_jobs(env)
+    ent = svc.entitlements(plan)
     return EnvCronListResponse(
         environment_id=env.id,
         jobs=[EnvCronJobSchema.model_validate(j) for j in jobs],
+        max_jobs=ent.max_jobs,
+        min_interval_minutes=ent.min_interval_minutes,
+        jobs_used=len(jobs),
+        runs_as=env.unix_username,
+        note=(
+            f"Up to {ent.max_jobs} job(s); minimum interval {ent.min_interval_minutes} minutes. "
+            f"Commands run as {env.unix_username or 'your hosting user'} in your site folder."
+        ),
     )
 
 
@@ -2084,12 +2096,17 @@ async def env_create_cron(
 ) -> EnvCronJobSchema:
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
-    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
-    await TenantService(session).require_capability(env, "cron", label="Cron jobs")
+    tenant = TenantService(session)
+    env = await tenant.get_owned_environment(customer.id, environment_id)
+    plan = await tenant.require_capability(env, "cron", label="Cron jobs")
     from app.services.platform.env_cron import EnvironmentCronService
 
     job = EnvironmentCronService(settings, session).add_job(
-        env, schedule=body.schedule, command=body.command, enabled=body.enabled
+        env,
+        schedule=body.schedule,
+        command=body.command,
+        enabled=body.enabled,
+        plan=plan,
     )
     return EnvCronJobSchema.model_validate(job)
 
@@ -2108,7 +2125,9 @@ async def env_update_cron(
 ) -> EnvCronJobSchema:
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
-    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    tenant = TenantService(session)
+    env = await tenant.get_owned_environment(customer.id, environment_id)
+    plan = await tenant.require_capability(env, "cron", label="Cron jobs")
     from app.services.platform.env_cron import EnvironmentCronService
 
     job = EnvironmentCronService(settings, session).update_job(
@@ -2117,6 +2136,7 @@ async def env_update_cron(
         schedule=body.schedule,
         command=body.command,
         enabled=body.enabled,
+        plan=plan,
     )
     return EnvCronJobSchema.model_validate(job)
 

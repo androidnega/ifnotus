@@ -142,6 +142,8 @@ def _row(
     postgres_databases: int | None = None,
     database_storage_mb: int | None = None,
     remote_database_access: bool | None = None,
+    cron_jobs: int | None = None,
+    cron_min_interval_minutes: int | None = None,
     marketing_blurb: str | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
@@ -177,6 +179,21 @@ def _row(
         mail_enabled = bool(mailboxes and mailboxes > 0)
     if mail_storage_mb is None and mailboxes:
         mail_storage_mb = max(512, int(mailboxes) * 512)
+    # PHASE 31 — cron package constraints
+    if cron_jobs is None:
+        if cron == NO:
+            cron_jobs = 0
+        elif cron == LIM:
+            cron_jobs = 2
+        else:
+            cron_jobs = 10
+    if cron_min_interval_minutes is None:
+        if cron == LIM:
+            cron_min_interval_minutes = 15
+        elif cron == YES:
+            cron_min_interval_minutes = 5
+        else:
+            cron_min_interval_minutes = 60
     data: dict[str, Any] = {
         "kind": kind,
         "custom_domains": custom_domains,
@@ -234,6 +251,8 @@ def _row(
         "remote_database_access": remote_database_access,
         "mail_enabled": mail_enabled,
         "mail_storage_mb": mail_storage_mb,
+        "cron_jobs": cron_jobs,
+        "cron_min_interval_minutes": cron_min_interval_minutes,
         "marketing_blurb": marketing_blurb,
         "stacks": stacks,
     }
@@ -268,6 +287,8 @@ MATRIX: dict[str, dict[str, Any]] = {
         mysql_databases=1,
         postgres_databases=0,
         mail_storage_mb=512,
+        cron_jobs=2,
+        cron_min_interval_minutes=15,
     ),
     "personal": _row(
         kind="managed",
@@ -281,6 +302,8 @@ MATRIX: dict[str, dict[str, Any]] = {
         },
         cron=LIM, env_vars=NO, dns=LIM, git=LIM, github=NO, gitlab=NO, bitbucket=NO,
         repos=0, mailboxes=1, redirects=LIM, auto_deploy=NO, db_manage=LIM, ai=LIM, ai_errors=NO,
+        cron_jobs=2,
+        cron_min_interval_minutes=15,
     ),
     "club-connect": _row(
         kind="managed",
@@ -324,6 +347,8 @@ MATRIX: dict[str, dict[str, Any]] = {
         mysql_databases=2,
         postgres_databases=1,
         database_storage_mb=512,
+        cron_jobs=10,
+        cron_min_interval_minutes=5,
     ),
     "student-elite": _row(
         kind="managed",
@@ -598,6 +623,10 @@ def capabilities_for(plan: HostingPlan | None) -> dict[str, Any]:
             "enabled": bool(feats.get("mail_enabled")),
             "mailboxes": feats.get("mailboxes"),
             "storage_mb": feats.get("mail_storage_mb"),
+        },
+        "cron_limits": {
+            "max_jobs": int(feats.get("cron_jobs") or 0),
+            "min_interval_minutes": int(feats.get("cron_min_interval_minutes") or 15),
         },
         "ssh_mode": mode,
         "sftp": {"enabled": on["sftp.enabled"]},

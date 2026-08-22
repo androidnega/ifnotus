@@ -1,11 +1,13 @@
-"""Per-environment cron jobs for customer sites (jailed to document root)."""
+"""Per-environment cron jobs — package-aware, tenant-identity execution (PHASE 31)."""
 
 from __future__ import annotations
 
 import json
 import re
 import shlex
+import shutil
 import subprocess
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,15 +19,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.core.exceptions import AppException, NotFoundError, ValidationError
 from app.core.logging import get_logger
-from app.models.platform import CustomerEnvironment
+from app.models.platform import CustomerEnvironment, HostingPlan
+from app.services.platform.plan_matrix import features_for
 
 logger = get_logger(__name__)
 
-_SCHEDULE_RE = re.compile(
-    r"^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$"
-)
-_MAX_JOBS = 20
+_SCHEDULE_RE = re.compile(r"^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$")
 _MAX_COMMAND_LEN = 500
+_RUN_TIMEOUT_SECONDS = 300
 _ALLOWED_BINARIES = frozenset(
     {
         "php",
@@ -40,9 +41,32 @@ _ALLOWED_BINARIES = frozenset(
         "sh",
         "composer",
         "wp",
-        "artisan",  # rare as binary; usually php artisan
+        "artisan",
     }
 )
+
+
+@dataclass(frozen=True)
+class CronEntitlements:
+    enabled: bool
+    max_jobs: int
+    min_interval_minutes: int
+
+
+def entitlements_for_plan(plan: HostingPlan | None) -> CronEntitlements:
+    feats = features_for(plan)
+    level = str(feats.get("cron") or "no")
+    enabled = level in {"yes", "limited"}
+    max_jobs = int(feats.get("cron_jobs") or (2 if level == "limited" else 10 if enabled else 0))
+    min_interval = int(
+        feats.get("cron_min_interval_minutes")
+        or (15 if level == "limited" else 5 if enabled else 60)
+    )
+    return CronEntitlements(
+        enabled=enabled,
+        max_jobs=max(0, max_jobs),
+        min_interval_minutes=max(1, min_interval),
+    )
 
 
 def _cron_field_matches(field: str, value: int, *, minimum: int, maximum: int) -> bool:
@@ -93,13 +117,9 @@ def schedule_matches(schedule: str, when: datetime) -> bool:
     if not m:
         return False
     minute, hour, day, month, weekday = m.groups()
-    # cron weekday: 0-7 Sunday=0 or 7
     wd = when.weekday() + 1  # Mon=1 … Sun=7
-    if wd == 7:
-        cron_wd = 0
-    else:
-        cron_wd = wd
-    return (
+    cron_wd = 0 if wd == 7 else wd
+    return bool(
         _cron_field_matches(minute, when.minute, minimum=0, maximum=59)
         and _cron_field_matches(hour, when.hour, minimum=0, maximum=23)
         and _cron_field_matches(day, when.day, minimum=1, maximum=31)
@@ -111,19 +131,108 @@ def schedule_matches(schedule: str, when: datetime) -> bool:
     )
 
 
-def validate_schedule(schedule: str) -> str:
+def estimate_min_interval_minutes(schedule: str) -> int | None:
+    """Best-effort minimum gap between runs (minutes). None if unparseable."""
+    m = _SCHEDULE_RE.match(schedule.strip())
+    if not m:
+        return None
+    minute, hour, day, month, weekday = m.groups()
+
+    def _values(field: str, minimum: int, maximum: int) -> list[int] | None:
+        if field == "*":
+            return list(range(minimum, maximum + 1))
+        if field.startswith("*/"):
+            try:
+                step = max(1, int(field[2:]))
+            except ValueError:
+                return None
+            return list(range(minimum, maximum + 1, step))
+        out: list[int] = []
+        for part in field.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "/" in part:
+                base, step_s = part.split("/", 1)
+                try:
+                    step = max(1, int(step_s))
+                except ValueError:
+                    return None
+                if base == "*":
+                    out.extend(range(minimum, maximum + 1, step))
+                    continue
+                if "-" in base:
+                    try:
+                        a, b = map(int, base.split("-", 1))
+                    except ValueError:
+                        return None
+                    out.extend(range(a, b + 1, step))
+                    continue
+                try:
+                    start = int(base)
+                except ValueError:
+                    return None
+                out.extend(range(start, maximum + 1, step))
+                continue
+            if "-" in part:
+                try:
+                    a, b = map(int, part.split("-", 1))
+                except ValueError:
+                    return None
+                out.extend(range(a, b + 1))
+                continue
+            try:
+                out.append(int(part))
+            except ValueError:
+                return None
+        return sorted(set(out)) if out else None
+
+    mins = _values(minute, 0, 59)
+    if mins is None:
+        return None
+    if len(mins) >= 2:
+        gaps = [mins[i + 1] - mins[i] for i in range(len(mins) - 1)]
+        gaps.append((mins[0] + 60) - mins[-1])
+        min_gap = min(gaps) if gaps else 60
+    else:
+        min_gap = 60
+
+    hours = _values(hour, 0, 23)
+    if hours is None:
+        return None
+    if hour == "*" or (hours and len(hours) >= 24):
+        return max(1, min_gap)
+    if hours and len(hours) >= 2:
+        hour_gaps = [hours[i + 1] - hours[i] for i in range(len(hours) - 1)]
+        hour_gaps.append((hours[0] + 24) - hours[-1])
+        return max(1, min(hour_gaps) * 60)
+    if day == "*" and month == "*" and weekday == "*":
+        return 24 * 60
+    return 24 * 60
+
+
+def validate_schedule(schedule: str, *, min_interval_minutes: int | None = None) -> str:
     schedule = " ".join(schedule.split())
     if not _SCHEDULE_RE.match(schedule):
         raise ValidationError(
             "Schedule must be a 5-field cron expression, e.g. */15 * * * *",
             code="invalid_cron_schedule",
         )
-    # Smoke-test fields with current time matcher internals
     now = datetime.now(UTC)
     try:
         schedule_matches(schedule, now)
     except Exception as exc:  # noqa: BLE001
         raise ValidationError(f"Invalid cron schedule: {exc}", code="invalid_cron_schedule") from exc
+
+    if min_interval_minutes and min_interval_minutes > 1:
+        estimated = estimate_min_interval_minutes(schedule)
+        if estimated is not None and estimated < min_interval_minutes:
+            raise ValidationError(
+                f"This package requires at least {min_interval_minutes} minutes between runs "
+                f"(your schedule fires about every {estimated} minute(s)). "
+                f"Try */{min_interval_minutes} * * * *",
+                code="cron_interval_too_short",
+            )
     return schedule
 
 
@@ -134,7 +243,6 @@ def validate_command(command: str, *, domain: str | None = None) -> str:
     if len(command) > _MAX_COMMAND_LEN:
         raise ValidationError("Command is too long.")
     forbidden = ("`", "$(", "${", "\n", "\r", ">>", ">", "<", "&&", "||", ";", "|")
-    # Allow simple pipes? Safer to ban. Allow &&? Ban.
     for token in forbidden:
         if token in command:
             raise ValidationError(
@@ -151,7 +259,6 @@ def validate_command(command: str, *, domain: str | None = None) -> str:
     if binary.startswith("./") or binary.startswith("php") or binary in _ALLOWED_BINARIES:
         pass
     elif "/" in binary:
-        # Relative path only — no absolute paths outside jail (executor uses cwd=docroot)
         if binary.startswith("/"):
             raise ValidationError("Absolute command paths are not allowed. Use a path under your site.")
     else:
@@ -160,7 +267,6 @@ def validate_command(command: str, *, domain: str | None = None) -> str:
             "Use php, node, npm, curl, python3, composer, or a ./script in your site.",
             code="invalid_cron_command",
         )
-    # curl/wget must target own domain when URL-like
     if binary in {"curl", "wget"} and domain:
         joined = " ".join(parts[1:])
         if "://" in joined and domain not in joined:
@@ -172,6 +278,9 @@ class EnvironmentCronService:
     def __init__(self, settings: Settings, session: AsyncSession) -> None:
         self._settings = settings
         self._session = session
+
+    def entitlements(self, plan: HostingPlan | None) -> CronEntitlements:
+        return entitlements_for_plan(plan)
 
     def _cron_path(self, env: CustomerEnvironment) -> Path:
         return Path(env.document_root or ".") / ".ifnotus" / "cron.json"
@@ -207,13 +316,20 @@ class EnvironmentCronService:
         schedule: str,
         command: str,
         enabled: bool = True,
+        plan: HostingPlan | None = None,
     ) -> dict[str, Any]:
         if not env.document_root:
             raise AppException("Environment has no document root.")
+        ent = entitlements_for_plan(plan)
+        if not ent.enabled:
+            raise ValidationError("Cron jobs are not included on this package.", code="pack_feature")
         jobs = self._load(env)
-        if len(jobs) >= _MAX_JOBS:
-            raise ValidationError(f"Maximum {_MAX_JOBS} cron jobs per site.")
-        schedule = validate_schedule(schedule)
+        if len(jobs) >= ent.max_jobs:
+            raise ValidationError(
+                f"This package allows {ent.max_jobs} cron job(s). Delete one or upgrade.",
+                code="cron_quota",
+            )
+        schedule = validate_schedule(schedule, min_interval_minutes=ent.min_interval_minutes)
         command = validate_command(command, domain=env.domain)
         job = {
             "id": str(uuid4()),
@@ -238,13 +354,17 @@ class EnvironmentCronService:
         schedule: str | None = None,
         command: str | None = None,
         enabled: bool | None = None,
+        plan: HostingPlan | None = None,
     ) -> dict[str, Any]:
+        ent = entitlements_for_plan(plan)
         jobs = self._load(env)
         for job in jobs:
             if job.get("id") != job_id:
                 continue
             if schedule is not None:
-                job["schedule"] = validate_schedule(schedule)
+                job["schedule"] = validate_schedule(
+                    schedule, min_interval_minutes=ent.min_interval_minutes
+                )
             if command is not None:
                 job["command"] = validate_command(command, domain=env.domain)
             if enabled is not None:
@@ -267,6 +387,23 @@ class EnvironmentCronService:
                 return self._execute(env, job, jobs)
         raise NotFoundError("Cron job not found.")
 
+    def _build_argv(self, env: CustomerEnvironment, command: str) -> list[str]:
+        """Run as the tenant unix user when available — never as root in production."""
+        username = (env.unix_username or "").strip()
+        inner = ["bash", "-lc", command]
+        if not username:
+            logger.warning("cron_run_without_unix_user", environment_id=str(env.id))
+            return inner
+
+        runuser = shutil.which("runuser")
+        if runuser:
+            return [runuser, "-u", username, "--", *inner]
+        sudo = shutil.which("sudo")
+        if sudo:
+            return [sudo, "-n", "-u", username, "--", *inner]
+        logger.warning("cron_no_runuser_fallback", username=username, environment_id=str(env.id))
+        return inner
+
     def _execute(
         self,
         env: CustomerEnvironment,
@@ -279,26 +416,29 @@ class EnvironmentCronService:
         command = str(job.get("command") or "")
         validate_command(command, domain=env.domain)
         started = datetime.now(UTC)
+        argv = self._build_argv(env, command)
+        run_env = {
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "HOME": str(root),
+            "IFNOTUS_ENV_ID": str(env.id),
+            "IFNOTUS_DOMAIN": env.domain or "",
+            "IFNOTUS_UNIX_USER": env.unix_username or "",
+        }
         try:
             proc = subprocess.run(
-                ["bash", "-lc", command],
+                argv,
                 cwd=str(root),
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=_RUN_TIMEOUT_SECONDS,
                 check=False,
-                env={
-                    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                    "HOME": str(root),
-                    "IFNOTUS_ENV_ID": str(env.id),
-                    "IFNOTUS_DOMAIN": env.domain or "",
-                },
+                env=run_env,
             )
             output = ((proc.stdout or "") + (proc.stderr or ""))[-4000:]
             status = "success" if proc.returncode == 0 else "failed"
             exit_code = proc.returncode
         except subprocess.TimeoutExpired:
-            output = "Job timed out after 300 seconds."
+            output = f"Job timed out after {_RUN_TIMEOUT_SECONDS} seconds."
             status = "timeout"
             exit_code = -1
         except Exception as exc:  # noqa: BLE001
@@ -317,7 +457,10 @@ class EnvironmentCronService:
         log_file = log_dir / f"{job['id']}.log"
         try:
             with log_file.open("a", encoding="utf-8") as fh:
-                fh.write(f"\n--- {started.isoformat()} status={status} exit={exit_code} ---\n")
+                fh.write(
+                    f"\n--- {started.isoformat()} status={status} exit={exit_code} "
+                    f"user={env.unix_username or 'worker'} ---\n"
+                )
                 fh.write(output)
                 fh.write("\n")
         except OSError:
@@ -329,6 +472,7 @@ class EnvironmentCronService:
             job_id=job.get("id"),
             status=status,
             exit_code=exit_code,
+            unix_user=env.unix_username,
         )
         return job
 
@@ -345,19 +489,27 @@ class EnvironmentCronService:
         ran = 0
         failed = 0
         checked = 0
+        skipped_interval = 0
         for env in rows:
             jobs = self._load(env)
             if not jobs:
                 continue
             checked += 1
+            from app.services.platform.tenant import TenantService
+
+            plan = await TenantService(self._session).plan_for_environment(env)
+            ent = entitlements_for_plan(plan)
             dirty = False
             for job in jobs:
                 if not job.get("enabled"):
                     continue
                 schedule = str(job.get("schedule") or "")
+                estimated = estimate_min_interval_minutes(schedule)
+                if estimated is not None and estimated < ent.min_interval_minutes:
+                    skipped_interval += 1
+                    continue
                 if not schedule_matches(schedule, now):
                     continue
-                # Skip if already ran in this minute
                 last = job.get("last_run_at")
                 if last:
                     try:
@@ -380,4 +532,10 @@ class EnvironmentCronService:
                     logger.warning("env_cron_tick_job_failed", error=str(exc), env=str(env.id))
             if dirty:
                 self._save(env, jobs)
-        return {"checked_envs": checked, "ran": ran, "failed": failed, "at": now.isoformat()}
+        return {
+            "checked_envs": checked,
+            "ran": ran,
+            "failed": failed,
+            "skipped_interval": skipped_interval,
+            "at": now.isoformat(),
+        }

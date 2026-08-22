@@ -94,6 +94,7 @@ const {
   cronCommand,
   cronMsg,
   cronBusy,
+  cronLimits,
   setActiveEnvId,
   selectEnv,
   hydrateActiveEnv,
@@ -427,6 +428,7 @@ watch(
         v-model:cron-command="cronCommand"
         :cron-busy="cronBusy"
         :cron-msg="cronMsg"
+        :cron-limits="cronLimits"
         :db-info="dbInfo"
         :db-creds="dbCreds"
         :db-schema="dbSchema"

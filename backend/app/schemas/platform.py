@@ -502,9 +502,13 @@ class EnvCronUpdateRequest(SchemaBase):
 class EnvCronListResponse(SchemaBase):
     environment_id: UUID
     jobs: list[EnvCronJobSchema] = Field(default_factory=list)
+    max_jobs: int = 10
+    min_interval_minutes: int = 5
+    jobs_used: int = 0
+    runs_as: str | None = None
     note: str = (
-        "Jobs run on the server every minute when due. "
-        "Commands execute inside your site folder. Use php, node, npm, curl, or ./scripts."
+        "Jobs run on the server when due. Commands execute as your hosting user "
+        "inside your site folder. Schedules must respect your package interval."
     )
 
 

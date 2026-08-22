@@ -108,6 +108,7 @@ const {
   cronCommand,
   cronMsg,
   cronBusy,
+  cronLimits,
   appCatalog,
   applications,
   appMsg,
@@ -425,6 +426,7 @@ onMounted(() => {
           v-model:cron-command="cronCommand"
           :cron-busy="cronBusy"
           :cron-msg="cronMsg"
+          :cron-limits="cronLimits"
           :db-info="dbInfo"
           :db-creds="dbCreds"
           :db-schema="dbSchema"

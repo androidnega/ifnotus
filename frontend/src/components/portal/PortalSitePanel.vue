@@ -75,6 +75,13 @@ const props = defineProps<{
   cronCommand: string
   cronBusy: boolean
   cronMsg: string
+  cronLimits?: {
+    max_jobs: number
+    min_interval_minutes: number
+    jobs_used: number
+    runs_as?: string | null
+    note?: string
+  } | null
   dbInfo: string
   dbCreds?: {
     engine?: string | null
@@ -803,11 +810,22 @@ function formatBytes(n?: number | null) {
     </div>
     <div v-else-if="siteTab === 'cron'" class="block">
       <h3>Cron jobs</h3>
-      <p class="muted">Commands run with your site folder as the working directory — not the host.</p>
+      <p class="muted">
+        Commands run as {{ cronLimits?.runs_as || 'your hosting user' }} in your site folder.
+        <template v-if="cronLimits">
+          Limit {{ cronLimits.jobs_used }}/{{ cronLimits.max_jobs }} · min interval
+          {{ cronLimits.min_interval_minutes }} min.
+        </template>
+      </p>
       <div class="form-row mt">
-        <input v-model="cronScheduleModel" class="input" placeholder="*/15 * * * *" />
+        <input v-model="cronScheduleModel" class="input" :placeholder="cronLimits?.min_interval_minutes ? `*/${cronLimits.min_interval_minutes} * * * *` : '*/15 * * * *'" />
         <input v-model="cronCommandModel" class="input grow" placeholder="php artisan schedule:run" />
-        <button type="button" class="btn-primary" :disabled="cronBusy" @click="emit('addCron')">
+        <button
+          type="button"
+          class="btn-primary"
+          :disabled="cronBusy || (cronLimits != null && cronLimits.jobs_used >= cronLimits.max_jobs)"
+          @click="emit('addCron')"
+        >
           {{ cronBusy ? 'Adding…' : 'Add' }}
         </button>
       </div>

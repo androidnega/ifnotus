@@ -200,6 +200,13 @@ export function usePortalSiteTools(
   const cronCommand = ref('php artisan schedule:run')
   const cronMsg = ref('')
   const cronBusy = ref(false)
+  const cronLimits = ref<{
+    max_jobs: number
+    min_interval_minutes: number
+    jobs_used: number
+    runs_as?: string | null
+    note?: string
+  } | null>(null)
   const appCatalog = ref<
     Array<{
       id: string
@@ -1236,8 +1243,19 @@ export function usePortalSiteTools(
     try {
       const { data } = await customersApi.listEnvCron(activeEnv.value.id)
       cronJobs.value = data.jobs
+      cronLimits.value = {
+        max_jobs: data.max_jobs ?? 10,
+        min_interval_minutes: data.min_interval_minutes ?? 5,
+        jobs_used: data.jobs_used ?? data.jobs.length,
+        runs_as: data.runs_as,
+        note: data.note,
+      }
+      if (data.min_interval_minutes && data.min_interval_minutes >= 15) {
+        cronSchedule.value = `*/${data.min_interval_minutes} * * * *`
+      }
     } catch {
       cronJobs.value = []
+      cronLimits.value = null
     }
   }
 
@@ -1408,6 +1426,7 @@ export function usePortalSiteTools(
     cronCommand,
     cronMsg,
     cronBusy,
+    cronLimits,
     appCatalog,
     applications,
     appMsg,
