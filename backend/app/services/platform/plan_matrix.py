@@ -71,15 +71,39 @@ INSTALL_STACK_KEY = {
 SLUG_ALIASES = {
     "personal-launch": "personal",
     "personal": "personal",
+    "personal-hosting": "personal",
     "student-starter": "student-starter",
+    "student-basic": "student-starter",
     "club-connect": "club-connect",
+    "student-developer": "club-connect",
     "student-pro": "student-pro",
     "student-elite": "student-elite",
+    "student-advanced": "student-elite",
     "business-pro": "business-pro",
+    "business-hosting": "business-pro",
     "macho-power": "macho-power",
     "monster-cloud": "monster-cloud",
     "cloud-vps": "cloud-vps",
     "cloud-vds": "cloud-vds",
+}
+
+# PHASE 34 — public storefront order (matrix keys). Others stay for legacy/staff.
+PUBLIC_CATALOG_KEYS: tuple[str, ...] = (
+    "student-starter",
+    "club-connect",
+    "student-pro",
+    "student-elite",
+    "personal",
+    "business-pro",
+)
+
+PUBLIC_DISPLAY_NAMES: dict[str, str] = {
+    "student-starter": "Student Basic",
+    "club-connect": "Student Developer",
+    "student-pro": "Student Pro",
+    "student-elite": "Student Advanced",
+    "personal": "Personal Hosting",
+    "business-pro": "Business Hosting",
 }
 
 
@@ -144,6 +168,8 @@ def _row(
     remote_database_access: bool | None = None,
     cron_jobs: int | None = None,
     cron_min_interval_minutes: int | None = None,
+    catalog_listed: bool = True,
+    display_name: str | None = None,
     marketing_blurb: str | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
@@ -253,6 +279,8 @@ def _row(
         "mail_storage_mb": mail_storage_mb,
         "cron_jobs": cron_jobs,
         "cron_min_interval_minutes": cron_min_interval_minutes,
+        "catalog_listed": catalog_listed,
+        "display_name": display_name,
         "marketing_blurb": marketing_blurb,
         "stacks": stacks,
     }
@@ -289,6 +317,9 @@ MATRIX: dict[str, dict[str, Any]] = {
         mail_storage_mb=512,
         cron_jobs=2,
         cron_min_interval_minutes=15,
+        catalog_listed=True,
+        display_name="Student Basic",
+        marketing_blurb="Starter student site — PHP/WordPress, 1 domain, modest disk and mail.",
     ),
     "personal": _row(
         kind="managed",
@@ -304,6 +335,9 @@ MATRIX: dict[str, dict[str, Any]] = {
         repos=0, mailboxes=1, redirects=LIM, auto_deploy=NO, db_manage=LIM, ai=LIM, ai_errors=NO,
         cron_jobs=2,
         cron_min_interval_minutes=15,
+        catalog_listed=True,
+        display_name="Personal Hosting",
+        marketing_blurb="Simple personal site hosting with limited runtimes.",
     ),
     "club-connect": _row(
         kind="managed",
@@ -321,6 +355,9 @@ MATRIX: dict[str, dict[str, Any]] = {
         custom_build=YES, preview=LIM, staging=LIM, db_backups=YES, auto_backups=LIM,
         retention_days=7,
         monitoring=YES, uptime=YES, ai_errors=YES, priority_support=LIM,
+        catalog_listed=True,
+        display_name="Student Developer",
+        marketing_blurb="Student build pack — Python/Node stacks, more domains and mailboxes.",
     ),
     "student-pro": _row(
         kind="managed",
@@ -349,6 +386,9 @@ MATRIX: dict[str, dict[str, Any]] = {
         database_storage_mb=512,
         cron_jobs=10,
         cron_min_interval_minutes=5,
+        catalog_listed=True,
+        display_name="Student Pro",
+        marketing_blurb="Full student stack — SSH jail, Postgres, apps, backups, monitoring.",
     ),
     "student-elite": _row(
         kind="managed",
@@ -367,6 +407,9 @@ MATRIX: dict[str, dict[str, Any]] = {
         monitoring=YES, uptime=YES, ai_errors=YES, ai_server=LIM, firewall=LIM,
         priority_support=YES,
         retention_days=14,
+        catalog_listed=True,
+        display_name="Student Advanced",
+        marketing_blurb="Advanced student / project hosting with more domains, mail, and Redis.",
     ),
     "business-pro": _row(
         kind="managed",
@@ -385,6 +428,9 @@ MATRIX: dict[str, dict[str, Any]] = {
         monitoring=YES, uptime=YES, ai_errors=YES, ai_server=YES, firewall=LIM,
         priority_support=YES,
         retention_days=14,
+        catalog_listed=True,
+        display_name="Business Hosting",
+        marketing_blurb="Business sites on shared hosting — more domains, mail, and Docker-ready stacks.",
     ),
     "macho-power": _row(
         kind="managed",
@@ -400,7 +446,9 @@ MATRIX: dict[str, dict[str, Any]] = {
         monitoring=YES, uptime=YES, ai_errors=YES, ai_server=YES, firewall=YES,
         priority_support=YES,
         retention_days=14,
-        # Sellable on shared node — keep catalog copy calm (no hype).
+        # Not listed on the public storefront — unrealistic as “dedicated” on shared VPS.
+        catalog_listed=False,
+        display_name="Macho Power",
         marketing_blurb="High-capacity managed hosting for busy production sites.",
     ),
     "monster-cloud": _row(
@@ -415,6 +463,8 @@ MATRIX: dict[str, dict[str, Any]] = {
         monitoring=YES, uptime=YES, ai_errors=YES, ai_server=YES, firewall=YES,
         priority_support=YES,
         retention_days=30,
+        catalog_listed=False,
+        display_name="Monster Cloud",
         marketing_blurb="Top-tier managed pack on the shared platform — large sites, calm ops.",
     ),
     # Cloud VPS / VDS: kind=vps|vds → sellable_on_shared_node() is False.
@@ -432,6 +482,8 @@ MATRIX: dict[str, dict[str, Any]] = {
         priority_support=YES, vcpu=4, ram_gb=8, storage_gb=100, storage_kind="SSD",
         dedicated_cpu=NO, cpanel=YES,
         retention_days=7,
+        catalog_listed=False,
+        display_name="Cloud VPS",
         marketing_blurb="Dedicated virtual server (own VM) — not provisioned on the shared node.",
     ),
     "cloud-vds": _row(
@@ -447,6 +499,8 @@ MATRIX: dict[str, dict[str, Any]] = {
         priority_support=YES, vcpu=None, ram_gb=24, storage_gb=180, storage_kind="NVMe",
         dedicated_cpu=YES, cpanel=YES,
         retention_days=14,
+        catalog_listed=False,
+        display_name="Cloud VDS",
         marketing_blurb="Dedicated virtual dedicated server — separate from shared hosting capacity.",
     ),
 }
@@ -566,11 +620,123 @@ def catalog_features(plan: HostingPlan | None) -> dict[str, Any]:
     return feats
 
 
+def listed_in_public_catalog(plan: HostingPlan | None) -> bool:
+    """PHASE 34 — only realistic shared packs appear on the storefront."""
+    if not sellable_on_shared_node(plan):
+        return False
+    feats = features_for(plan)
+    if feats.get("catalog_listed") is False:
+        return False
+    key = str(feats.get("matrix_key") or "")
+    return key in PUBLIC_CATALOG_KEYS
+
+
+def catalog_card_for(plan: HostingPlan | None) -> dict[str, Any]:
+    """Buyer-facing capability summary — frontend must not invent another matrix."""
+    feats = features_for(plan)
+    caps = capabilities_for(plan)
+    stacks = feats.get("stacks") if isinstance(feats.get("stacks"), dict) else {}
+    included = [k for k, v in stacks.items() if v == YES]
+    limited = [k for k, v in stacks.items() if v == LIM]
+    key = str(feats.get("matrix_key") or "")
+    return {
+        "matrix_key": key,
+        "display_name": feats.get("display_name") or PUBLIC_DISPLAY_NAMES.get(key),
+        "blurb": feats.get("marketing_blurb") or "",
+        "family": "student" if key.startswith("student") or key == "club-connect" else "general",
+        "storage_gb": feats.get("storage_gb"),
+        "domains": feats.get("custom_domains"),
+        "databases": {
+            "mysql": feats.get("mysql_databases"),
+            "postgres": feats.get("postgres_databases"),
+        },
+        "mailboxes": feats.get("mailboxes"),
+        "cron": {
+            "enabled": caps.get("on", {}).get("cron"),
+            "max_jobs": feats.get("cron_jobs"),
+            "min_interval_minutes": feats.get("cron_min_interval_minutes"),
+        },
+        "git": caps.get("on", {}).get("git"),
+        "ssh_mode": caps.get("ssh_mode"),
+        "backups": bool(feats.get("backup_enabled")),
+        "monitoring": caps.get("on", {}).get("monitoring"),
+        "apps": {
+            "python": feats.get("python_apps"),
+            "node": feats.get("node_apps"),
+            "php": feats.get("php_apps"),
+            "memory_mb": feats.get("app_memory_mb"),
+            "max_processes": feats.get("max_processes"),
+        },
+        "stacks_included": included,
+        "stacks_limited": limited,
+        "support": "priority" if feats.get("priority_support") == YES else "standard",
+        "highlights": _catalog_highlights(feats, caps),
+    }
+
+
+def _catalog_highlights(feats: dict[str, Any], caps: dict[str, Any]) -> list[dict[str, str]]:
+    on = caps.get("on") if isinstance(caps.get("on"), dict) else {}
+    items: list[dict[str, str]] = []
+    domains = feats.get("custom_domains")
+    if domains is not None:
+        items.append({"id": "domains", "label": "Domains", "detail": f"{domains} professional"})
+    items.append(
+        {
+            "id": "mail",
+            "label": "Mailboxes",
+            "detail": str(feats.get("mailboxes") or 0),
+        }
+    )
+    items.append(
+        {
+            "id": "db",
+            "label": "Databases",
+            "detail": (
+                f"MySQL {feats.get('mysql_databases') or 0} · "
+                f"Postgres {feats.get('postgres_databases') or 0}"
+            ),
+        }
+    )
+    cron = feats.get("cron_jobs") or 0
+    interval = feats.get("cron_min_interval_minutes") or 15
+    items.append(
+        {
+            "id": "cron",
+            "label": "Cron",
+            "detail": f"{cron} jobs · ≥{interval} min" if on.get("cron") else "Not included",
+        }
+    )
+    items.append({"id": "ssh", "label": "SSH", "detail": str(caps.get("ssh_mode") or "no")})
+    items.append(
+        {
+            "id": "git",
+            "label": "Git",
+            "detail": "Included" if on.get("git") else "Not included",
+        }
+    )
+    items.append(
+        {
+            "id": "backups",
+            "label": "Backups",
+            "detail": "Included" if feats.get("backup_enabled") else "Manual / limited",
+        }
+    )
+    items.append(
+        {
+            "id": "monitoring",
+            "label": "Monitoring",
+            "detail": "Included" if on.get("monitoring") else "Limited / upgrade",
+        }
+    )
+    return items
+
+
 def sellable_on_shared_node(plan: HostingPlan | None) -> bool:
     """Cloud VPS/VDS need their own VM — do not sell them off this shared disk.
 
     MATRIX entries with kind ``vps`` / ``vds`` (cloud-vps, cloud-vds) return False.
-    Managed packs including macho-power / monster-cloud remain True.
+    Managed packs including macho-power / monster-cloud remain True for existing billing,
+    but are hidden from the public catalog via ``catalog_listed``.
     """
     kind = str(features_for(plan).get("kind") or "managed").lower()
     return kind not in {"vps", "vds"}

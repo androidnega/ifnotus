@@ -134,16 +134,38 @@ function asLevel(v: unknown): FeatureLevel {
   return 'no'
 }
 
+const SLUG_ALIASES: Record<string, string> = {
+  'personal-launch': 'personal',
+  'personal-hosting': 'personal',
+  personal: 'personal',
+  'student-starter': 'student-starter',
+  'student-basic': 'student-starter',
+  'club-connect': 'club-connect',
+  'student-developer': 'club-connect',
+  'student-pro': 'student-pro',
+  'student-elite': 'student-elite',
+  'student-advanced': 'student-elite',
+  'business-pro': 'business-pro',
+  'business-hosting': 'business-pro',
+  'macho-power': 'macho-power',
+  'monster-cloud': 'monster-cloud',
+  'cloud-vps': 'cloud-vps',
+  'cloud-vds': 'cloud-vds',
+}
+
 export function planMatrixKey(plan: HostingPlan | null | undefined): string {
+  const fromCaps = String(plan?.capabilities?.matrix_key || '')
+  if (fromCaps) return fromCaps
   const stored = String(plan?.features?.matrix_key || '')
   if (stored) return stored
   const slug = (plan?.slug || '').toLowerCase()
+  if (SLUG_ALIASES[slug]) return SLUG_ALIASES[slug]
   if (slug.includes('vds')) return 'cloud-vds'
   if (slug.includes('vps')) return 'cloud-vps'
   if (slug.includes('personal')) return 'personal'
-  if (slug.includes('starter')) return 'student-starter'
-  if (slug.includes('club')) return 'club-connect'
-  if (slug.includes('elite')) return 'student-elite'
+  if (slug.includes('basic') || slug.includes('starter')) return 'student-starter'
+  if (slug.includes('developer') || slug.includes('club')) return 'club-connect'
+  if (slug.includes('advanced') || slug.includes('elite')) return 'student-elite'
   if (slug.includes('student-pro') || slug === 'student-pro') return 'student-pro'
   if (slug.includes('business')) return 'business-pro'
   if (slug.includes('macho')) return 'macho-power'
@@ -152,9 +174,9 @@ export function planMatrixKey(plan: HostingPlan | null | undefined): string {
   if (name.includes('vds')) return 'cloud-vds'
   if (name.includes('vps')) return 'cloud-vps'
   if (name.includes('personal')) return 'personal'
-  if (name.includes('starter')) return 'student-starter'
-  if (name.includes('club')) return 'club-connect'
-  if (name.includes('elite')) return 'student-elite'
+  if (name.includes('basic') || name.includes('starter')) return 'student-starter'
+  if (name.includes('developer') || name.includes('club')) return 'club-connect'
+  if (name.includes('advanced') || name.includes('elite')) return 'student-elite'
   if (name.includes('student pro')) return 'student-pro'
   if (name.includes('business')) return 'business-pro'
   if (name.includes('macho')) return 'macho-power'
@@ -166,36 +188,38 @@ export function planMatrix(plan: HostingPlan | null | undefined): PlanMatrix {
   const key = planMatrixKey(plan)
   const fb = FALLBACK[key] || FALLBACK.personal
   const feats = Array.isArray(plan?.features) ? {} : ((plan?.features || {}) as Record<string, unknown>)
-  const stacksRaw = (feats.stacks || {}) as Record<string, unknown>
-  // Prefer matrix fallback for stacks (matches backend features_for). Stale plan.features.stacks
-  // used to advertise Python/Django/etc. on Student Starter.
+  const caps = plan?.capabilities
+  const stacksRaw = (caps?.stacks || feats.stacks || {}) as Record<string, unknown>
+  // Prefer backend capabilities/features when present; FALLBACK only for offline/legacy.
   const stacks: Partial<Record<StackKey, FeatureLevel>> = { ...fb.stacks }
-  const keyIsManaged = Boolean(FALLBACK[key])
-  if (!keyIsManaged) {
+  const hasBackendStacks = Boolean(caps?.stacks) || Boolean(feats.stacks && typeof feats.stacks === 'object')
+  if (hasBackendStacks) {
     for (const stackKey of STACK_KEYS) {
       if (stackKey in stacksRaw) stacks[stackKey] = asLevel(stacksRaw[stackKey])
     }
   }
-  const domains = feats.custom_domains ?? fb.custom_domains
+  const levels = (caps?.levels || {}) as Record<string, unknown>
+  const domains = caps?.custom_domains ?? feats.custom_domains ?? fb.custom_domains
+  const ssh = String(caps?.ssh_mode || feats.ssh || fb.ssh)
   return {
     matrix_key: key,
-    kind: String(feats.kind || fb.kind),
+    kind: String(caps?.kind || feats.kind || fb.kind),
     custom_domains: domains == null || domains === '' ? null : Number(domains),
-    ssh: String(feats.ssh || fb.ssh),
+    ssh,
     stacks,
-    sftp: asLevel(feats.sftp ?? fb.sftp),
-    file_manager: asLevel(feats.file_manager ?? fb.file_manager),
-    cron: asLevel(feats.cron ?? fb.cron),
-    env_vars: asLevel(feats.env_vars ?? 'no'),
-    ssl: asLevel(feats.ssl ?? fb.ssl),
-    dns: asLevel(feats.dns ?? 'limited'),
-    git: asLevel(feats.git ?? 'no'),
-    db_manage: asLevel(feats.db_manage ?? fb.db_manage),
-    ai: asLevel(feats.ai ?? fb.ai),
-    preview: asLevel(feats.preview ?? 'no'),
-    staging: asLevel(feats.staging ?? 'no'),
-    docker: asLevel((feats.stacks as Record<string, unknown> | undefined)?.docker ?? feats.docker ?? 'no'),
-    root: asLevel(feats.root ?? 'no'),
+    sftp: asLevel(levels.sftp ?? feats.sftp ?? fb.sftp),
+    file_manager: asLevel(levels.file_manager ?? feats.file_manager ?? fb.file_manager),
+    cron: asLevel(levels.cron ?? feats.cron ?? fb.cron),
+    env_vars: asLevel(levels.env_vars ?? feats.env_vars ?? 'no'),
+    ssl: asLevel(levels.ssl ?? feats.ssl ?? fb.ssl),
+    dns: asLevel(levels.dns ?? feats.dns ?? 'limited'),
+    git: asLevel(levels.git ?? feats.git ?? 'no'),
+    db_manage: asLevel(levels.db_manage ?? feats.db_manage ?? fb.db_manage),
+    ai: asLevel(levels.ai ?? feats.ai ?? fb.ai),
+    preview: asLevel(levels.preview ?? feats.preview ?? 'no'),
+    staging: asLevel(levels.staging ?? feats.staging ?? 'no'),
+    docker: asLevel(stacksRaw.docker ?? levels.docker ?? feats.docker ?? 'no'),
+    root: asLevel(levels.root ?? feats.root ?? 'no'),
     vcpu: feats.vcpu == null ? null : Number(feats.vcpu),
     ram_gb: feats.ram_gb == null ? null : Number(feats.ram_gb),
     storage_gb: feats.storage_gb == null ? null : Number(feats.storage_gb),
@@ -223,7 +247,7 @@ export function packStacksForDisplay(plan: HostingPlan | null | undefined) {
 }
 
 export function sshHeadline(plan: HostingPlan | null | undefined) {
-  const mode = planMatrix(plan).ssh
+  const mode = String(plan?.capabilities?.ssh_mode || plan?.catalog_card?.ssh_mode || planMatrix(plan).ssh)
   if (mode === 'root') return 'Full root SSH'
   if (mode === 'jail') return 'SSH included'
   if (mode === 'limited') return 'SSH with limits'

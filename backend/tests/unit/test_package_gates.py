@@ -19,9 +19,14 @@ from app.services.platform.plan_matrix import (
 def test_slug_aliases_cover_current_catalog_families() -> None:
     for slug in (
         "student-starter",
+        "student-basic",
+        "student-developer",
         "student-pro",
+        "student-advanced",
         "personal",
+        "personal-hosting",
         "business-pro",
+        "business-hosting",
         "cloud-vps",
         "cloud-vds",
     ):

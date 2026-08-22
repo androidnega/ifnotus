@@ -25,18 +25,48 @@ DOMAIN_PRICES = [
 
 @router.get("/plans", response_model=HostingPlanListResponse)
 async def list_plans(session: DbSession) -> HostingPlanListResponse:
+    """Public storefront — shared packs only, capabilities from backend matrix."""
     result = await session.execute(
         select(HostingPlan).where(HostingPlan.is_active.is_(True)).order_by(HostingPlan.sort_order)
     )
     plans = list(result.scalars().all())
-    from app.services.platform.plan_matrix import features_for, sellable_on_shared_node
+    from app.services.platform.plan_matrix import (
+        PUBLIC_CATALOG_KEYS,
+        PUBLIC_DISPLAY_NAMES,
+        capabilities_for,
+        catalog_card_for,
+        features_for,
+        listed_in_public_catalog,
+    )
+
+    keyed: dict[str, HostingPlan] = {}
+    for p in plans:
+        if not listed_in_public_catalog(p):
+            continue
+        feats = features_for(p)
+        key = str(feats.get("matrix_key") or "")
+        # Prefer first match per matrix key (avoid duplicates)
+        if key and key not in keyed:
+            keyed[key] = p
 
     items = []
-    for p in plans:
-        if not sellable_on_shared_node(p):
+    for key in PUBLIC_CATALOG_KEYS:
+        p = keyed.get(key)
+        if p is None:
             continue
+        feats = features_for(p)
+        display = feats.get("display_name") or PUBLIC_DISPLAY_NAMES.get(key) or p.name
         schema = HostingPlanSchema.model_validate(p)
-        items.append(schema.model_copy(update={"features": features_for(p)}))
+        items.append(
+            schema.model_copy(
+                update={
+                    "name": display,
+                    "features": feats,
+                    "capabilities": capabilities_for(p),
+                    "catalog_card": catalog_card_for(p),
+                }
+            )
+        )
     return HostingPlanListResponse(items=items)
 
 

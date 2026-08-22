@@ -22,6 +22,8 @@ class HostingPlanSchema(SchemaBase):
     price_yearly: Decimal | None = None
     currency: str
     features: dict
+    capabilities: dict = Field(default_factory=dict)
+    catalog_card: dict = Field(default_factory=dict)
     sort_order: int
     is_active: bool
     version: int = 1
@@ -29,6 +31,11 @@ class HostingPlanSchema(SchemaBase):
     @field_validator("features", mode="before")
     @classmethod
     def _features_dict(cls, value):
+        return value if isinstance(value, dict) else {}
+
+    @field_validator("capabilities", "catalog_card", mode="before")
+    @classmethod
+    def _dict_fields(cls, value):
         return value if isinstance(value, dict) else {}
 
 

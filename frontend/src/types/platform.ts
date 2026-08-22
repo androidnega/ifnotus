@@ -11,6 +11,32 @@ export type HostingPlan = {
   price_yearly: number | null
   currency: string
   features: Record<string, unknown>
+  /** Backend capabilities_for() — prefer over client FALLBACK. */
+  capabilities?: {
+    kind?: string
+    matrix_key?: string
+    custom_domains?: number | null
+    repos?: number | null
+    mailboxes?: number | null
+    mail?: { enabled?: boolean; mailboxes?: number | null; storage_mb?: number | null }
+    cron_limits?: { max_jobs?: number; min_interval_minutes?: number }
+    ssh_mode?: string
+    on?: Record<string, boolean>
+    levels?: Record<string, string>
+    stacks?: Record<string, string>
+    isolation?: string
+  }
+  /** Backend catalog_card_for() — buyer-facing highlights. */
+  catalog_card?: {
+    display_name?: string
+    blurb?: string
+    highlights?: Array<{ id: string; label: string; detail: string }>
+    stacks_included?: string[]
+    stacks_limited?: string[]
+    ssh_mode?: string
+    mailboxes?: number | null
+    domains?: number | null
+  }
   sort_order: number
   is_active: boolean
 }
