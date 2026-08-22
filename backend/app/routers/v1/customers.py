@@ -56,6 +56,7 @@ from app.schemas.platform import (
     UnassignCustomDomainRequest,
     AutoRenewRequest,
     CapacityNodeResponse,
+    StaffCapacityDashboardResponse,
     ChangePlanRequest,
     CreateOrderRequest,
     CreateOrderResponse,
@@ -3554,36 +3555,32 @@ async def run_billing_tick(
     return await SubscriptionBillingService(settings, session).tick()
 
 
-@router.get("/capacity", response_model=list[CapacityNodeResponse])
+@router.get("/capacity", response_model=StaffCapacityDashboardResponse)
 async def capacity(
     user: CurrentUser,
     session: DbSession,
-) -> list[CapacityNodeResponse]:
+    settings: SettingsDep,
+) -> StaffCapacityDashboardResponse:
+    """Staff hosting-operations capacity dashboard for the shared node."""
     if not (
         user.is_superuser
         or Role.ADMIN.value in (user.roles or [])
         or Role.SUPERADMIN.value in (user.roles or [])
     ):
         raise AuthorizationError("Staff only.")
-    mgr = ResourceManager(session)
-    out: list[CapacityNodeResponse] = []
-    for node in await mgr.list_nodes():
-        snap = await mgr.snapshot(node)
-        out.append(
-            CapacityNodeResponse(
-                node_id=snap.node_id,
-                hostname="ifnotus-1",
-                cpu_total=snap.cpu_total,
-                ram_total_gb=snap.ram_total_gb,
-                storage_total_gb=snap.storage_total_gb,
-                cpu_reserved_pct=snap.cpu_reserved_pct,
-                cpu_used=snap.cpu_used,
-                ram_used=snap.ram_used,
-                storage_used=snap.storage_used,
-                cpu_free=snap.cpu_free,
-                ram_free=snap.ram_free,
-                storage_free=snap.storage_free,
-                status=snap.status,
-            )
-        )
-    return out
+    from app.services.platform.staff_capacity import StaffCapacityService
+
+    data = await StaffCapacityService(settings, session).dashboard()
+    nodes = [CapacityNodeResponse.model_validate(n) for n in data.get("nodes") or []]
+    return StaffCapacityDashboardResponse(
+        display_name=str(data.get("display_name") or "Shared Node 01"),
+        hostname=str(data.get("hostname") or "ifnotus-1"),
+        checked_at=data.get("checked_at"),
+        live=dict(data.get("live") or {}),
+        policy=dict(data.get("policy") or {}),
+        counts=dict(data.get("counts") or {}),
+        ops=dict(data.get("ops") or {}),
+        host_pressure=dict(data.get("host_pressure") or {}),
+        nodes=nodes,
+        selling_paused=bool(data.get("selling_paused")),
+    )

@@ -757,17 +757,46 @@ class CustomerDashboardResponse(SchemaBase):
 class CapacityNodeResponse(SchemaBase):
     node_id: str
     hostname: str
+    display_name: str | None = None
     cpu_total: int
     ram_total_gb: int
     storage_total_gb: int
     cpu_reserved_pct: int
+    ram_reserved_pct: int | None = None
+    storage_reserved_pct: int | None = None
     cpu_used: float
     ram_used: float
     storage_used: int
     cpu_free: float
     ram_free: float
     storage_free: int
+    cpu_committed: float | None = None
+    ram_committed_gb: float | None = None
+    storage_committed_gb: int | None = None
+    cpu_available: float | None = None
+    ram_available_gb: float | None = None
+    storage_available_gb: int | None = None
+    cpu_reserve: int | None = None
+    ram_reserve_gb: int | None = None
+    storage_reserve_gb: int | None = None
     status: str
+
+
+class StaffCapacityDashboardResponse(SchemaBase):
+    display_name: str = "Shared Node 01"
+    hostname: str = "ifnotus-1"
+    checked_at: str | None = None
+    live: dict = Field(default_factory=dict)
+    policy: dict = Field(default_factory=dict)
+    counts: dict = Field(default_factory=dict)
+    ops: dict = Field(default_factory=dict)
+    host_pressure: dict = Field(default_factory=dict)
+    nodes: list[CapacityNodeResponse] = Field(default_factory=list)
+    selling_paused: bool = False
+    note: str = (
+        "Committed capacity is plan allocations after system reserve. "
+        "Actual usage is live host metrics — not advertised package RAM totals."
+    )
 
 
 class StudentHostnameRequest(SchemaBase):

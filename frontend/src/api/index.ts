@@ -1942,10 +1942,19 @@ export const platformAdminApi = {
     apiClient.get<import('@/types/staffPlatform').StaffOrderItem[]>('/platform/orders', { params }),
 
   listCapacity: () =>
-    apiClient.get<
-      Array<{
+    apiClient.get<{
+      display_name: string
+      hostname: string
+      checked_at?: string | null
+      live: Record<string, unknown>
+      policy: Record<string, unknown>
+      counts: Record<string, number>
+      ops: Record<string, number>
+      host_pressure: Record<string, unknown>
+      nodes: Array<{
         node_id: string
         hostname: string
+        display_name?: string | null
         cpu_total: number
         ram_total_gb: number
         storage_total_gb: number
@@ -1958,7 +1967,9 @@ export const platformAdminApi = {
         storage_free: number
         status: string
       }>
-    >('/customers/capacity'),
+      selling_paused?: boolean
+      note?: string
+    }>('/customers/capacity'),
 
   confirmOrderPayment: (orderId: string, body?: { amount_received?: number; notes?: string }) =>
     apiClient.post(`/platform/orders/${orderId}/confirm-payment`, body || {}),
