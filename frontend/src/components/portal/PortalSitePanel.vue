@@ -348,6 +348,7 @@ const packStacks = computed(() => visibleStacks(props.activePlan))
 const canFiles = computed(() => envCan(props.activeEnv, 'file_manager'))
 const canCron = computed(() => envCan(props.activeEnv, 'cron'))
 const canDb = computed(() => envCan(props.activeEnv, 'db_manage'))
+const canMail = computed(() => envCan(props.activeEnv, 'mail'))
 const canFtp = computed(() => envCan(props.activeEnv, 'sftp'))
 
 const dbEngineLabel = computed(() => {
@@ -496,7 +497,7 @@ function formatBytes(n?: number | null) {
       <button type="button" :class="{ on: siteTab === 'cron', off: !canCron }" @click="siteTab = 'cron'">Cron</button>
       <button type="button" :class="{ on: siteTab === 'database', off: !canDb }" @click="siteTab = 'database'">Database</button>
       <button type="button" :class="{ on: siteTab === 'ftp', off: !canFtp }" @click="siteTab = 'ftp'">Transfer</button>
-      <button type="button" :class="{ on: siteTab === 'mail' }" @click="siteTab = 'mail'">Email</button>
+      <button type="button" :class="{ on: siteTab === 'mail', off: !canMail }" @click="siteTab = 'mail'">Email</button>
       <button type="button" :class="{ on: siteTab === 'protect' }" @click="siteTab = 'protect'">Domain</button>
     </nav>
 
@@ -1231,11 +1232,15 @@ function formatBytes(n?: number | null) {
       </div>
     </div>
 
+    <div v-else-if="siteTab === 'mail' && !canMail" class="block">
+      <p>{{ packLocked('Email') }}</p>
+    </div>
     <div v-else-if="siteTab === 'mail'" class="block">
       <PortalMailPanel
         :environment-id="activeEnv.id"
         :domain="activeEnv.domain"
-        :mailbox-limit="activeEnv.capabilities?.mailboxes == null ? null : Number(activeEnv.capabilities.mailboxes)"
+        :mailbox-limit="activeEnv.capabilities?.mail?.mailboxes ?? activeEnv.capabilities?.mailboxes ?? null"
+        :storage-limit-mb="activeEnv.capabilities?.mail?.storage_mb ?? null"
       />
     </div>
 

@@ -6,6 +6,7 @@ import json
 import os
 import pwd
 import grp
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
@@ -137,9 +138,30 @@ class MailService:
         if mailbox is None or mailbox.domain_id != domain_id:
             raise NotFoundError("Mailbox not found.")
         domain = await self._domains.get_by_id(domain_id)
+        local = mailbox.local_part
         await self._mailboxes.delete(mailbox)
         if domain is not None:
+            self._remove_vmail(domain.name, local)
             await self._sync_mail_config(domain_id)
+
+    async def purge_domain(self, domain_id: UUID) -> None:
+        """Remove all mailboxes, aliases, vmail files, and config snapshot for a domain."""
+        domain = await self._domains.get_by_id(domain_id)
+        if domain is None:
+            return
+        for mailbox in list(await self._mailboxes.list_for_domain(domain_id)):
+            self._remove_vmail(domain.name, mailbox.local_part)
+            await self._mailboxes.delete(mailbox)
+        for alias in list(await self._aliases.list_for_domain(domain_id)):
+            await self._aliases.delete(alias)
+        await self._sync_mail_config(domain_id)
+        cfg = self._config_path(domain.name)
+        if cfg.exists():
+            try:
+                cfg.unlink()
+            except OSError:
+                pass
+        logger.info("mail_domain_purged", domain=domain.name)
 
     async def create_alias(self, domain_id: UUID, body: MailAliasCreate) -> MailAliasSchema:
         domain = await self._domains.get_by_id(domain_id)
@@ -240,6 +262,11 @@ class MailService:
         if not hashed.startswith(("{BLF-CRYPT}", "$2")):
             return f"{{BLF-CRYPT}}{hashed}"
         return hashed
+
+    def _remove_vmail(self, domain_name: str, local_part: str) -> None:
+        path = self._vmail_root() / domain_name / local_part
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
 
     def _vmail_root(self) -> Path:
         root = Path(getattr(self._settings, "mail_vmail_dir", "/var/vmail"))

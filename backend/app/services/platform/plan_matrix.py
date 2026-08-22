@@ -101,6 +101,8 @@ def _row(
     bitbucket: Level = NO,
     repos: int | None = 0,
     mailboxes: int | None = 5,
+    mail_enabled: bool | None = None,
+    mail_storage_mb: int | None = None,
     redirects: Level = YES,
     gh_deploys: str = "no",
     auto_deploy: Level = NO,
@@ -171,6 +173,10 @@ def _row(
         postgres_databases = 1 if stacks.get("postgres", NO) in {YES, LIM} else 0
     if remote_database_access is None:
         remote_database_access = False
+    if mail_enabled is None:
+        mail_enabled = bool(mailboxes and mailboxes > 0)
+    if mail_storage_mb is None and mailboxes:
+        mail_storage_mb = max(512, int(mailboxes) * 512)
     data: dict[str, Any] = {
         "kind": kind,
         "custom_domains": custom_domains,
@@ -226,6 +232,8 @@ def _row(
         "postgres_databases": postgres_databases,
         "database_storage_mb": database_storage_mb,
         "remote_database_access": remote_database_access,
+        "mail_enabled": mail_enabled,
+        "mail_storage_mb": mail_storage_mb,
         "marketing_blurb": marketing_blurb,
         "stacks": stacks,
     }
@@ -259,6 +267,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         max_processes=8,
         mysql_databases=1,
         postgres_databases=0,
+        mail_storage_mb=512,
     ),
     "personal": _row(
         kind="managed",
@@ -283,7 +292,7 @@ MATRIX: dict[str, dict[str, Any]] = {
             "express": YES, "react": YES, "vue": YES, "postgres": YES, "mongodb": LIM,
             "redis": LIM, "docker": NO,
         },
-        gitlab=LIM, bitbucket=LIM, repos=3, mailboxes=5, redirects=YES,
+        gitlab=LIM, bitbucket=LIM, repos=3, mailboxes=5, mail_storage_mb=2048, redirects=YES,
         gh_deploys="20/mo", auto_deploy=YES, webhooks=YES,
         branch_auto=2, deploy_history=YES, deploy_logs=YES, app_logs=YES, rollback=YES,
         custom_build=YES, preview=LIM, staging=LIM, db_backups=YES, auto_backups=LIM,
@@ -300,7 +309,7 @@ MATRIX: dict[str, dict[str, Any]] = {
             "express": YES, "react": YES, "vue": YES, "postgres": YES, "mongodb": YES,
             "redis": LIM, "docker": LIM,
         },
-        gitlab=YES, bitbucket=LIM, repos=5, mailboxes=10, redirects=YES,
+        gitlab=YES, bitbucket=LIM, repos=5, mailboxes=10, mail_storage_mb=5120, redirects=YES,
         gh_deploys="unlimited", auto_deploy=YES, webhooks=YES,
         branch_auto=3, deploy_history=YES, deploy_logs=YES, app_logs=YES, rollback=YES,
         custom_build=YES, preview=YES, staging=YES, db_backups=YES, auto_backups=YES,
@@ -578,12 +587,18 @@ def capabilities_for(plan: HostingPlan | None) -> dict[str, Any]:
     stacks = feats.get("stacks") if isinstance(feats.get("stacks"), dict) else {}
     for stack_key in STACK_KEYS:
         on[str(stack_key)] = stack_level(plan, stack_key) != NO
+    on["mail"] = bool(feats.get("mail_enabled"))
     return {
         "kind": feats.get("kind") or "managed",
         "matrix_key": feats.get("matrix_key"),
         "custom_domains": feats.get("custom_domains"),
         "repos": feats.get("repos"),
         "mailboxes": feats.get("mailboxes"),
+        "mail": {
+            "enabled": bool(feats.get("mail_enabled")),
+            "mailboxes": feats.get("mailboxes"),
+            "storage_mb": feats.get("mail_storage_mb"),
+        },
         "ssh_mode": mode,
         "sftp": {"enabled": on["sftp.enabled"]},
         "ssh": {"enabled": on["ssh.enabled"], "mode": mode},

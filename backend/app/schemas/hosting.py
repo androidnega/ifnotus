@@ -214,6 +214,10 @@ class MailboxCreate(SchemaBase):
     display_name: str | None = None
 
 
+class MailboxPasswordReset(SchemaBase):
+    password: str = Field(min_length=8, max_length=128)
+
+
 class MailboxUpdate(SchemaBase):
     password: str | None = Field(default=None, min_length=8, max_length=128)
     quota_mb: int | None = None

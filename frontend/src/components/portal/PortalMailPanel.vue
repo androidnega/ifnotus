@@ -6,30 +6,41 @@ const props = defineProps<{
   environmentId: string
   domain?: string | null
   mailboxLimit?: number | null
+  storageLimitMb?: number | null
 }>()
+
+type MailboxRow = {
+  id: string
+  email: string
+  local_part?: string
+  quota_mb?: number | null
+  used_mb?: number | null
+  suspended?: boolean
+}
+
+type AliasRow = {
+  id: string
+  source_email: string
+  destination: string
+  enabled: boolean
+}
 
 const loading = ref(true)
 const error = ref('')
-const mailboxes = ref<Array<{ id?: string; email: string; local_part?: string }>>([])
+const mailboxes = ref<MailboxRow[]>([])
+const aliases = ref<AliasRow[]>([])
 const domainName = ref(props.domain || '')
 const webmail = ref('https://mail.ifnotus.space/')
-const clients = ref<{
-  imap_host?: string
-  imap_port?: number
-  imap_security?: string
-  smtp_host?: string
-  smtp_port?: number
-  smtp_security?: string
-  pop_host?: string
-  pop_port?: number
-  webmail_url?: string
-  username_hint?: string
-} | null>(null)
+const clients = ref<Record<string, unknown> | null>(null)
 const localPart = ref('hello')
 const password = ref('')
 const msg = ref('')
 const creating = ref(false)
+const busyId = ref('')
 const showConnect = ref(false)
+const aliasSource = ref('')
+const aliasDest = ref('')
+const resetPassword = ref('')
 
 const atLimit = computed(() => {
   if (props.mailboxLimit == null) return false
@@ -42,12 +53,17 @@ const previewEmail = computed(() => {
   return `${local}@${host}`
 })
 
+const totalQuotaMb = computed(() =>
+  mailboxes.value.reduce((sum, m) => sum + (m.quota_mb || m.used_mb || 0), 0),
+)
+
 async function load() {
   loading.value = true
   error.value = ''
   try {
     const { data } = await customersApi.getEnvMail(props.environmentId)
     mailboxes.value = data.mailboxes || []
+    aliases.value = data.aliases || []
     domainName.value = data.domain?.name || props.domain || ''
     webmail.value = data.webmail_url || data.clients?.webmail_url || 'https://mail.ifnotus.space/'
     clients.value = data.clients || null
@@ -78,6 +94,91 @@ async function createBox() {
   }
 }
 
+async function deleteBox(id: string, email: string) {
+  if (!confirm(`Delete mailbox ${email}?`)) return
+  busyId.value = id
+  try {
+    await customersApi.deleteEnvMailbox(props.environmentId, id)
+    msg.value = `Deleted ${email}.`
+    await load()
+  } catch (e: unknown) {
+    const x = e as { response?: { data?: { error?: { message?: string } } } }
+    msg.value = x.response?.data?.error?.message ?? 'Delete failed.'
+  } finally {
+    busyId.value = ''
+  }
+}
+
+async function toggleSuspend(box: MailboxRow) {
+  busyId.value = box.id
+  try {
+    await customersApi.updateEnvMailbox(props.environmentId, box.id, {
+      suspended: !box.suspended,
+    })
+    await load()
+  } catch (e: unknown) {
+    const x = e as { response?: { data?: { error?: { message?: string } } } }
+    msg.value = x.response?.data?.error?.message ?? 'Could not update mailbox.'
+  } finally {
+    busyId.value = ''
+  }
+}
+
+async function resetBoxPassword(box: MailboxRow) {
+  const pwd = resetPassword.value.trim()
+  if (pwd.length < 8) {
+    msg.value = 'Enter a new password (8+ characters) in the field below first.'
+    return
+  }
+  if (!confirm(`Reset password for ${box.email}?`)) return
+  busyId.value = box.id
+  try {
+    await customersApi.resetEnvMailboxPassword(props.environmentId, box.id, pwd)
+    resetPassword.value = ''
+    msg.value = `Password reset for ${box.email}. Copy it now.`
+    await load()
+  } catch (e: unknown) {
+    const x = e as { response?: { data?: { error?: { message?: string } } } }
+    msg.value = x.response?.data?.error?.message ?? 'Reset failed.'
+  } finally {
+    busyId.value = ''
+  }
+}
+
+async function createAlias() {
+  msg.value = ''
+  creating.value = true
+  try {
+    await customersApi.createEnvMailAlias(props.environmentId, {
+      source_local: aliasSource.value.trim(),
+      destination: aliasDest.value.trim(),
+    })
+    aliasSource.value = ''
+    aliasDest.value = ''
+    msg.value = 'Forwarder created.'
+    await load()
+  } catch (e: unknown) {
+    const x = e as { response?: { data?: { error?: { message?: string } } } }
+    msg.value = x.response?.data?.error?.message ?? 'Could not create forwarder.'
+  } finally {
+    creating.value = false
+  }
+}
+
+async function deleteAlias(id: string) {
+  if (!confirm('Delete this forwarder?')) return
+  busyId.value = id
+  try {
+    await customersApi.deleteEnvMailAlias(props.environmentId, id)
+    await load()
+  } catch (e: unknown) {
+    const x = e as { response?: { data?: { error?: { message?: string } } } }
+    msg.value = x.response?.data?.error?.message ?? 'Delete failed.'
+  } finally {
+    busyId.value = ''
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -88,9 +189,10 @@ onMounted(load)
         <p class="kicker">Email</p>
         <h3>Email Accounts</h3>
         <p class="lede">
-          Create <strong>name@{{ domainName || domain || 'your-domain' }}</strong>, then open Roundcube at
+          Create <strong>name@{{ domainName || domain || 'your-domain' }}</strong>, forward mail, and open Roundcube at
           <strong>mail.ifnotus.space</strong>.
-          <span v-if="mailboxLimit != null"> This package allows {{ mailboxLimit }} mailbox{{ mailboxLimit === 1 ? '' : 'es' }}.</span>
+          <span v-if="mailboxLimit != null"> Up to {{ mailboxLimit }} mailbox{{ mailboxLimit === 1 ? '' : 'es' }}.</span>
+          <span v-if="storageLimitMb != null"> · {{ totalQuotaMb }}/{{ storageLimitMb }} MB allocated.</span>
         </p>
       </div>
       <a class="btn-webmail" :href="webmail" target="_blank" rel="noopener">Open Roundcube</a>
@@ -134,7 +236,6 @@ onMounted(load)
               {{ creating ? 'Creating…' : 'Create account' }}
             </button>
           </form>
-          <p v-if="msg" class="status">{{ msg }}</p>
         </section>
 
         <section class="card">
@@ -143,22 +244,80 @@ onMounted(load)
             <button type="button" class="linkish" @click="load">Refresh</button>
           </div>
           <ul v-if="mailboxes.length" class="accounts">
-            <li v-for="mb in mailboxes" :key="mb.email">
-              <div>
-                <p class="email">{{ mb.email }}</p>
-                <p class="hint">Login with the full address</p>
+            <li v-for="mb in mailboxes" :key="mb.id">
+              <div class="grow">
+                <p class="email">
+                  {{ mb.email }}
+                  <span v-if="mb.suspended" class="pill warn">Suspended</span>
+                </p>
+                <p class="hint">
+                  {{ mb.used_mb ?? 0 }} MB used
+                  <template v-if="mb.quota_mb"> · {{ mb.quota_mb }} MB quota</template>
+                </p>
               </div>
-              <a class="btn-ghost" :href="webmail" target="_blank" rel="noopener">Check Email</a>
+              <div class="row-actions">
+                <button
+                  type="button"
+                  class="btn-ghost"
+                  :disabled="busyId === mb.id"
+                  @click="toggleSuspend(mb)"
+                >
+                  {{ mb.suspended ? 'Unsuspend' : 'Suspend' }}
+                </button>
+                <button type="button" class="btn-ghost" :disabled="busyId === mb.id" @click="resetBoxPassword(mb)">
+                  Reset pass
+                </button>
+                <button type="button" class="btn-ghost" :disabled="busyId === mb.id" @click="deleteBox(mb.id, mb.email)">
+                  Delete
+                </button>
+                <a class="btn-ghost" :href="webmail" target="_blank" rel="noopener">Webmail</a>
+              </div>
             </li>
           </ul>
           <div v-else class="empty">
             <p>No mailboxes yet</p>
             <p class="hint">Create one on the left to get started.</p>
           </div>
+          <label v-if="mailboxes.length" class="field mt">
+            <span>New password (for Reset pass)</span>
+            <input v-model="resetPassword" class="input" type="password" minlength="8" autocomplete="new-password" />
+          </label>
         </section>
       </div>
 
-      <section class="card connect-card">
+      <section class="card mt">
+        <h4>Forwarders</h4>
+        <form class="create-form" @submit.prevent="createAlias">
+          <label class="field">
+            <span>From</span>
+            <div class="email-row">
+              <input v-model="aliasSource" class="input" placeholder="info" required />
+              <span class="at">@{{ domainName || domain || '…' }}</span>
+            </div>
+          </label>
+          <label class="field">
+            <span>To (full email)</span>
+            <input v-model="aliasDest" class="input" type="email" placeholder="you@gmail.com" required />
+          </label>
+          <button type="submit" class="btn" :disabled="creating">Add forwarder</button>
+        </form>
+        <ul v-if="aliases.length" class="accounts mt">
+          <li v-for="a in aliases" :key="a.id">
+            <div>
+              <p class="email">{{ a.source_email }} → {{ a.destination }}</p>
+              <p v-if="!a.enabled" class="hint">Disabled</p>
+            </div>
+            <button type="button" class="btn-ghost" :disabled="busyId === a.id" @click="deleteAlias(a.id)">
+              Delete
+            </button>
+          </li>
+        </ul>
+        <p v-else class="hint mt">No forwarders yet.</p>
+      </section>
+
+      <p v-if="msg" class="status">{{ msg }}</p>
+
+      <section class="card connect-card mt">
         <button type="button" class="connect-toggle" @click="showConnect = !showConnect">
           <span>{{ showConnect ? 'Hide' : 'Show' }} device settings (IMAP / SMTP)</span>
           <span class="chev">{{ showConnect ? '−' : '+' }}</span>
@@ -175,10 +334,6 @@ onMounted(load)
             <div>
               <p class="cred-k">Outgoing (SMTP)</p>
               <p class="cred-v">{{ clients?.smtp_host || 'mail.ifnotus.space' }}:{{ clients?.smtp_port || 587 }} · {{ clients?.smtp_security || 'STARTTLS' }}</p>
-            </div>
-            <div>
-              <p class="cred-k">Webmail</p>
-              <p class="cred-v"><a :href="webmail" target="_blank" rel="noopener">{{ webmail }}</a></p>
             </div>
           </div>
         </div>
@@ -231,6 +386,7 @@ h3 { margin-top: 0.2rem; font-family: Sora, sans-serif; font-size: 1.25rem; lett
   padding: 1.05rem 1.15rem;
   background: var(--if-surface, #fff);
 }
+.mt { margin-top: 1rem; }
 .create-form { display: flex; flex-direction: column; gap: 0.8rem; margin-top: 0.85rem; }
 .field { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.78rem; color: #5c6670; font-weight: 600; }
 .email-row { display: flex; align-items: center; gap: 0.35rem; }
@@ -276,6 +432,7 @@ h3 { margin-top: 0.2rem; font-family: Sora, sans-serif; font-size: 1.25rem; lett
   text-decoration: none;
   font-size: 0.82rem;
   font-weight: 650;
+  cursor: pointer;
 }
 .list-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
 .linkish {
@@ -299,7 +456,18 @@ h3 { margin-top: 0.2rem; font-family: Sora, sans-serif; font-size: 1.25rem; lett
   border-radius: 0.7rem;
   background: #eef2f6;
 }
+.grow { flex: 1; min-width: 0; }
+.row-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; }
 .email { margin: 0; font-weight: 650; color: var(--if-ink, #0f172a); }
+.pill.warn {
+  display: inline-block;
+  margin-left: 0.35rem;
+  font-size: 0.68rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+}
 .empty { margin-top: 0.85rem; padding: 1rem; border-radius: 0.7rem; background: #eef2f6; }
 .empty p { margin: 0; font-weight: 650; }
 .connect-card { padding: 0; overflow: hidden; }
@@ -323,5 +491,4 @@ h3 { margin-top: 0.2rem; font-family: Sora, sans-serif; font-size: 1.25rem; lett
 .creds { margin-top: 0.75rem; display: grid; gap: 0.7rem; }
 .cred-k { margin: 0; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #5c6670; }
 .cred-v { margin: 0.2rem 0 0; font-size: 0.9rem; color: var(--if-ink, #0f172a); word-break: break-all; }
-.cred-v a { color: #1e3a5f; }
 </style>

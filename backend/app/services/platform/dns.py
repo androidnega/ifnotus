@@ -388,13 +388,14 @@ class EnvironmentDnsService:
 
     async def ensure_hosting_domain_for_mail(self, env: CustomerEnvironment) -> Domain:
         """Ensure the environment has a Domain row so mailboxes can be created (cPanel-style)."""
-        if env.hosting_domain_id:
-            existing = await self._session.get(Domain, env.hosting_domain_id)
-            if existing is not None:
-                return existing
         name = (env.domain or "").strip().lower().rstrip(".")
         if not name:
             raise ValidationError("This site has no hostname for email yet.")
+        if env.hosting_domain_id:
+            existing = await self._session.get(Domain, env.hosting_domain_id)
+            if existing is not None and existing.name == name:
+                return existing
+            env.hosting_domain_id = None
         result = await self._session.execute(select(Domain).where(Domain.name == name))
         domain = result.scalar_one_or_none()
         if domain is None:

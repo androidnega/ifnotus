@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.exceptions import AppException, NotFoundError
+from app.core.logging import get_logger
 from app.services.platform.isolation import IsolationService
 from app.services.platform.notifications import NotificationService
 from app.models.platform import (
@@ -19,6 +20,8 @@ from app.models.platform import (
     PlatformJob,
     Subscription,
 )
+
+logger = get_logger(__name__)
 
 
 class EnvironmentLifecycleService:
@@ -72,6 +75,12 @@ class EnvironmentLifecycleService:
             from app.services.platform.unix_identity import UnixIdentityService
 
             UnixIdentityService(self._settings, self._session).lock(env, actor="lifecycle")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from app.services.platform.environment_mail import EnvironmentMailService
+
+            await EnvironmentMailService(self._settings, self._session).suspend_all_mailboxes(env)
         except Exception:  # noqa: BLE001
             pass
         IsolationService(self._settings).stop_container(env.container_id, env_id=str(env.id))
@@ -184,8 +193,14 @@ class EnvironmentLifecycleService:
                     )
                     for row in result.scalars().all():
                         await self._session.delete(row)
-            except Exception:  # noqa: BLE001
-                pass
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from app.services.platform.environment_mail import EnvironmentMailService
+
+            await EnvironmentMailService(self._settings, self._session).purge_environment_mail(env)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("terminate_mail_purge_failed", error=str(exc), env_id=str(env.id))
         # Retention: mark terminated; physical destroy is a follow-up job
         env.status = "terminated"
         env.health_status = "critical"

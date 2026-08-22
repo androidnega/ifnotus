@@ -1425,7 +1425,20 @@ export const customersApi = {
   getEnvMail: (environmentId: string) =>
     apiClient.get<{
       domain: { id: string; name: string }
-      mailboxes: Array<{ id: string; email: string; local_part: string }>
+      mailboxes: Array<{
+        id: string
+        email: string
+        local_part: string
+        quota_mb?: number | null
+        used_mb?: number | null
+        suspended?: boolean
+      }>
+      aliases?: Array<{
+        id: string
+        source_email: string
+        destination: string
+        enabled: boolean
+      }>
       webmail_url?: string
       clients?: {
         imap_host?: string
@@ -1441,8 +1454,32 @@ export const customersApi = {
       }
     }>(`/customers/environments/${environmentId}/mail`),
 
-  createEnvMailbox: (environmentId: string, body: { local_part: string; password: string }) =>
-    apiClient.post(`/customers/environments/${environmentId}/mail/mailboxes`, body),
+  createEnvMailbox: (
+    environmentId: string,
+    body: { local_part: string; password: string; quota_mb?: number | null },
+  ) => apiClient.post(`/customers/environments/${environmentId}/mail/mailboxes`, body),
+
+  updateEnvMailbox: (
+    environmentId: string,
+    mailboxId: string,
+    body: { quota_mb?: number | null; suspended?: boolean; display_name?: string | null },
+  ) => apiClient.patch(`/customers/environments/${environmentId}/mail/mailboxes/${mailboxId}`, body),
+
+  resetEnvMailboxPassword: (environmentId: string, mailboxId: string, password: string) =>
+    apiClient.post(`/customers/environments/${environmentId}/mail/mailboxes/${mailboxId}/reset-password`, {
+      password,
+    }),
+
+  deleteEnvMailbox: (environmentId: string, mailboxId: string) =>
+    apiClient.delete(`/customers/environments/${environmentId}/mail/mailboxes/${mailboxId}`),
+
+  createEnvMailAlias: (
+    environmentId: string,
+    body: { source_local: string; destination: string },
+  ) => apiClient.post(`/customers/environments/${environmentId}/mail/aliases`, body),
+
+  deleteEnvMailAlias: (environmentId: string, aliasId: string) =>
+    apiClient.delete(`/customers/environments/${environmentId}/mail/aliases/${aliasId}`),
 
   listEnvRedirects: (environmentId: string) =>
     apiClient.get<

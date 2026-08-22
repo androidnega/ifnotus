@@ -38,7 +38,13 @@ from app.schemas.hosting import (
     FileUploadInitRequest,
     FileUploadInitResponse,
     MailboxCreate,
+    MailboxPasswordReset,
+    MailboxUpdate,
+    MailAliasCreate,
+    MailAliasSchema,
+    MailAliasUpdate,
     MailDomainResponse,
+    MailboxSchema,
 )
 from app.schemas.operations import FileListResponse, OperationResult
 from app.schemas.platform import (
@@ -1465,67 +1471,173 @@ async def get_env_mail(
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
-    from app.core.exceptions import ValidationError
-    from app.services.hosting.mail import MailService
-    from app.services.platform.dns import EnvironmentDnsService
+    from app.models.platform import HostingPlan, Subscription
+    from app.services.platform.environment_mail import EnvironmentMailService
 
-    if not env.hosting_domain_id:
-        if not env.domain:
-            raise ValidationError("Email is not ready until the site has a hostname.")
-        # Link / create the hosting Domain row so mailboxes can attach (cPanel-style per domain).
-        await EnvironmentDnsService(settings, session).ensure_hosting_domain_for_mail(env)
-        await session.refresh(env)
-    if not env.hosting_domain_id:
-        raise ValidationError("Email is not ready until the site is live.")
-    return await MailService(settings, session).get_domain_mail(env.hosting_domain_id)
+    sub = await session.get(Subscription, env.subscription_id)
+    plan = await session.get(HostingPlan, sub.plan_id) if sub else None
+    return await EnvironmentMailService(settings, session).get_mail(env, plan)
 
 
-@router.post("/environments/{environment_id}/mail/mailboxes")
+@router.post(
+    "/environments/{environment_id}/mail/mailboxes",
+    response_model=MailboxSchema,
+)
 async def create_env_mailbox(
     environment_id: UUID,
     body: MailboxCreate,
     user: CurrentUser,
     session: DbSession,
     settings: SettingsDep,
-):
+) -> MailboxSchema:
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
-    from app.core.exceptions import ValidationError
     from app.models.platform import HostingPlan, Subscription
-    from app.services.hosting.mail import MailService
-    from app.services.platform.dns import EnvironmentDnsService
-    from app.services.platform.plan_matrix import capabilities_for, features_for
-
-    if not env.hosting_domain_id:
-        if not env.domain:
-            raise ValidationError("Email is not ready until the site has a hostname.")
-        await EnvironmentDnsService(settings, session).ensure_hosting_domain_for_mail(env)
-        await session.refresh(env)
-    if not env.hosting_domain_id:
-        raise ValidationError("Email is not ready until the site is live.")
+    from app.services.platform.environment_mail import EnvironmentMailService
 
     sub = await session.get(Subscription, env.subscription_id)
     plan = await session.get(HostingPlan, sub.plan_id) if sub else None
-    # Prefer capabilities.mailboxes (plan_matrix); fall back to features key.
-    caps = capabilities_for(plan)
-    limit = caps.get("mailboxes")
-    if limit is None:
-        limit = features_for(plan).get("mailboxes")
-    if limit is not None:
-        try:
-            cap = int(limit)
-        except (TypeError, ValueError):
-            cap = None
-        if cap is not None:
-            mail = MailService(settings, session)
-            existing = await mail.list_mailboxes_for_domain(env.hosting_domain_id)
-            if len(existing) >= cap:
-                raise ValidationError(
-                    f"This package allows {cap} mailbox{'es' if cap != 1 else ''}. Remove one or upgrade."
-                )
+    return await EnvironmentMailService(settings, session).create_mailbox(env, plan, body)
 
-    return await MailService(settings, session).create_mailbox(env.hosting_domain_id, body)
+
+@router.patch(
+    "/environments/{environment_id}/mail/mailboxes/{mailbox_id}",
+    response_model=MailboxSchema,
+)
+async def update_env_mailbox(
+    environment_id: UUID,
+    mailbox_id: UUID,
+    body: MailboxUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> MailboxSchema:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.models.platform import HostingPlan, Subscription
+    from app.services.platform.environment_mail import EnvironmentMailService
+
+    sub = await session.get(Subscription, env.subscription_id)
+    plan = await session.get(HostingPlan, sub.plan_id) if sub else None
+    return await EnvironmentMailService(settings, session).update_mailbox(env, plan, mailbox_id, body)
+
+
+@router.post(
+    "/environments/{environment_id}/mail/mailboxes/{mailbox_id}/reset-password",
+    response_model=MailboxSchema,
+)
+async def reset_env_mailbox_password(
+    environment_id: UUID,
+    mailbox_id: UUID,
+    body: MailboxPasswordReset,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> MailboxSchema:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.models.platform import HostingPlan, Subscription
+    from app.services.platform.environment_mail import EnvironmentMailService
+
+    sub = await session.get(Subscription, env.subscription_id)
+    plan = await session.get(HostingPlan, sub.plan_id) if sub else None
+    return await EnvironmentMailService(settings, session).reset_password(
+        env, plan, mailbox_id, body.password
+    )
+
+
+@router.delete(
+    "/environments/{environment_id}/mail/mailboxes/{mailbox_id}",
+    response_model=OperationResult,
+)
+async def delete_env_mailbox(
+    environment_id: UUID,
+    mailbox_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> OperationResult:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.models.platform import HostingPlan, Subscription
+    from app.services.platform.environment_mail import EnvironmentMailService
+
+    sub = await session.get(Subscription, env.subscription_id)
+    plan = await session.get(HostingPlan, sub.plan_id) if sub else None
+    await EnvironmentMailService(settings, session).delete_mailbox(env, plan, mailbox_id)
+    return OperationResult(success=True, message="Mailbox deleted.")
+
+
+@router.post(
+    "/environments/{environment_id}/mail/aliases",
+    response_model=MailAliasSchema,
+)
+async def create_env_mail_alias(
+    environment_id: UUID,
+    body: MailAliasCreate,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> MailAliasSchema:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.models.platform import HostingPlan, Subscription
+    from app.services.platform.environment_mail import EnvironmentMailService
+
+    sub = await session.get(Subscription, env.subscription_id)
+    plan = await session.get(HostingPlan, sub.plan_id) if sub else None
+    return await EnvironmentMailService(settings, session).create_alias(env, plan, body)
+
+
+@router.patch(
+    "/environments/{environment_id}/mail/aliases/{alias_id}",
+    response_model=MailAliasSchema,
+)
+async def update_env_mail_alias(
+    environment_id: UUID,
+    alias_id: UUID,
+    body: MailAliasUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> MailAliasSchema:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.models.platform import HostingPlan, Subscription
+    from app.services.platform.environment_mail import EnvironmentMailService
+
+    sub = await session.get(Subscription, env.subscription_id)
+    plan = await session.get(HostingPlan, sub.plan_id) if sub else None
+    return await EnvironmentMailService(settings, session).update_alias(env, plan, alias_id, body)
+
+
+@router.delete(
+    "/environments/{environment_id}/mail/aliases/{alias_id}",
+    response_model=OperationResult,
+)
+async def delete_env_mail_alias(
+    environment_id: UUID,
+    alias_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> OperationResult:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.models.platform import HostingPlan, Subscription
+    from app.services.platform.environment_mail import EnvironmentMailService
+
+    sub = await session.get(Subscription, env.subscription_id)
+    plan = await session.get(HostingPlan, sub.plan_id) if sub else None
+    await EnvironmentMailService(settings, session).delete_alias(env, plan, alias_id)
+    return OperationResult(success=True, message="Forwarder deleted.")
 
 
 @router.post(
