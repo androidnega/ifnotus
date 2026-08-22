@@ -25,3 +25,8 @@ Plain-language status of the Master Redesign work finished in this codebase.
 | 18 | Release / migration notes | Done |
 
 See also: `docs/phase18-release-readiness.md`, `docs/phase14-backups.md`, `docs/phase0-regression-baseline.md`.
+
+Remaining-work track (phases 19–37) ops closeout:
+
+- Checklist → [production-hosting-checklist.md](./production-hosting-checklist.md)
+- Runbooks → [ops-runbooks.md](./ops-runbooks.md)

@@ -8,6 +8,7 @@ Related deeper guides:
 
 | Topic | Doc |
 |---|---|
+| **Ops runbooks (incidents)** | [ops-runbooks.md](./ops-runbooks.md) |
 | Buy → pay → provision smoke | [phase21-buy-to-hosting-smoke.md](./phase21-buy-to-hosting-smoke.md) |
 | Provisioning failure / retry | [phase22-provisioning-failure-tests.md](./phase22-provisioning-failure-tests.md) |
 | Student DNS | [phase23-serverlabsttu-dns.md](./phase23-serverlabsttu-dns.md) |
