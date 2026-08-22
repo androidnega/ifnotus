@@ -61,9 +61,9 @@ print("CODE", ch.code)
 print("IP", ch.ip_address)
 print("USER", ch.username_or_email)
 print()
-    print("Enter this CODE on the web login approval screen.")
-    print("When DEBUG=true in .env, staff login skips the IP challenge entirely.")
-    print("Or run: ifnotus-unlock trust-ip", ch.ip_address)
+print("Enter this CODE on the web login approval screen.")
+print("When DEBUG=true in .env, staff login skips the IP challenge entirely.")
+print("Or run: ifnotus-unlock trust-ip", ch.ip_address)
 PY
     ;;
   trust-ip)
@@ -95,12 +95,24 @@ PY
     echo "SSH rate-limited open."
     ;;
   status)
-    echo "--- .env ---"; grep -E '^ADMIN_' "$ENV" || true
+    echo "--- .env ---"
+    grep -E '^(ADMIN_|DEBUG=)' "$ENV" || true
     echo "--- ufw ---"; ufw status | head -20 || true
     echo "--- api ---"; systemctl is-active ifnotus-api
     ;;
+  debug-on)
+    set_env DEBUG true
+    systemctl restart ifnotus-api
+    echo "DEBUG=true — phone OTP accepts any code; staff skips TOTP/IP challenge."
+    echo "Turn off: ifnotus-unlock debug-off"
+    ;;
+  debug-off)
+    set_env DEBUG false
+    systemctl restart ifnotus-api
+    echo "DEBUG=false — normal SMS and admin IP approval restored."
+    ;;
   *)
-    echo "usage: ifnotus-unlock {pending|approve <ID>|trust-ip <IP>|add <IP>|off|ssh-open|status}"
+    echo "usage: ifnotus-unlock {pending|approve <ID>|trust-ip <IP>|add <IP>|off|debug-on|debug-off|ssh-open|status}"
     exit 1
     ;;
 esac
