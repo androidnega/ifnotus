@@ -64,6 +64,11 @@ export type CustomerEnvironment = {
     custom_domains?: number | null
     repos?: number | null
     mailboxes?: number | null
+    mail?: {
+      enabled?: boolean
+      mailboxes?: number | null
+      storage_mb?: number | null
+    }
     ssh_mode?: string
     on?: Record<string, boolean>
     levels?: Record<string, string>
