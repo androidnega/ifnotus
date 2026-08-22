@@ -163,6 +163,15 @@ class SubscriptionBillingService:
         if plan.id == sub.plan_id:
             raise AppException("Already on this plan.")
 
+        from app.services.platform.plan_matrix import sellable_on_shared_node
+
+        if not sellable_on_shared_node(plan):
+            raise AppException(
+                "Cloud VPS/VDS is coming soon and cannot be assigned on this shared "
+                "hosting node.",
+                code="plan_not_sellable",
+            )
+
         # Capacity only matters when increasing resources
         if plan.cpu_cores > sub.cpu_allocated or plan.ram_gb > sub.ram_allocated or plan.storage_gb > sub.storage_allocated:
             extra_storage = max(0, int(plan.storage_gb) - int(sub.storage_allocated or 0))

@@ -7,7 +7,7 @@ import PortalDomainOptions, { type DomainKind } from '@/components/portal/Portal
 import PortalShell from '@/components/portal/PortalShell.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSiteTheme } from '@/composables/useSiteTheme'
-import type { CustomerDashboard, HostingPlan } from '@/types/platform'
+import type { ComingSoonProduct, CustomerDashboard, HostingPlan } from '@/types/platform'
 import { planAccentFromPrice } from '@/lib/theme'
 import { formatCpu, formatRamGb } from '@/lib/planResources'
 import { sshHeadline, visibleStacks } from '@/lib/planMatrix'
@@ -24,6 +24,7 @@ const route = useRoute()
 const auth = useAuthStore()
 const { planColors, load: loadTheme } = useSiteTheme()
 const plans = ref<HostingPlan[]>([])
+const comingSoon = ref<ComingSoonProduct[]>([])
 const dash = ref<CustomerDashboard | null>(null)
 const loading = ref(true)
 const error = ref('')
@@ -90,6 +91,7 @@ onMounted(async () => {
     }
     const [planRes, dashRes] = await Promise.all([catalogApi.plans(), customersApi.dashboard()])
     plans.value = planRes.data.items
+    comingSoon.value = planRes.data.coming_soon || []
     dash.value = dashRes.data
     // Prefill student surname from profile during checkout only (not after activation).
     const parts = (dash.value.customer.full_name || '').trim().split(/\s+/).filter(Boolean)
@@ -275,6 +277,28 @@ async function checkout() {
           </span>
         </button>
       </div>
+
+      <section
+        v-if="!loading && !error && !selected && comingSoon.length"
+        class="mt-8 border-t border-slate-200 pt-6"
+        aria-label="Coming soon"
+      >
+        <h2 class="text-base font-bold text-slate-900">Coming soon</h2>
+        <p class="mt-1 max-w-xl text-sm text-slate-600">
+          Dedicated VMs need their own provisioning path — not sold on this shared node.
+        </p>
+        <div class="mt-4 grid gap-3 sm:grid-cols-2">
+          <article
+            v-for="item in comingSoon"
+            :key="item.slug"
+            class="rounded-2xl border border-dashed border-slate-300 bg-slate-50/80 px-4 py-4"
+          >
+            <p class="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Coming soon</p>
+            <h3 class="mt-2 text-lg font-bold text-slate-900">{{ item.name }}</h3>
+            <p class="mt-1 text-sm leading-relaxed text-slate-600">{{ item.blurb }}</p>
+          </article>
+        </div>
+      </section>
 
       <!-- Step 2: domain -->
       <section v-else class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">

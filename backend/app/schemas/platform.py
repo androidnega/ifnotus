@@ -39,8 +39,22 @@ class HostingPlanSchema(SchemaBase):
         return value if isinstance(value, dict) else {}
 
 
+class ComingSoonProductSchema(SchemaBase):
+    """PHASE 35 — Cloud VPS/VDS teasers; never checkout-ready on shared node."""
+
+    matrix_key: str
+    slug: str
+    name: str
+    kind: str = "vps"
+    status: str = "coming_soon"
+    blurb: str = ""
+    sellable: bool = False
+    requires_external_vm: bool = True
+
+
 class HostingPlanListResponse(SchemaBase):
     items: list[HostingPlanSchema]
+    coming_soon: list[ComingSoonProductSchema] = Field(default_factory=list)
     brand: str = "IFNOTUS"
     currency: str = "GHS"
 

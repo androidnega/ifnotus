@@ -41,6 +41,18 @@ export type HostingPlan = {
   is_active: boolean
 }
 
+/** PHASE 35 — Cloud VPS/VDS teaser; never purchasable on shared node. */
+export type ComingSoonProduct = {
+  matrix_key: string
+  slug: string
+  name: string
+  kind: string
+  status: string
+  blurb: string
+  sellable: boolean
+  requires_external_vm: boolean
+}
+
 export type CustomerProfile = {
   id: string
   email: string

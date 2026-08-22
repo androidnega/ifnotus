@@ -794,7 +794,8 @@ class OrderService:
 
         if not sellable_on_shared_node(plan):
             raise AppException(
-                "That package is not available on this hosting node.",
+                "Cloud VPS/VDS is coming soon and cannot be purchased on this shared "
+                "hosting node. Choose a managed hosting pack instead.",
                 code="plan_not_sellable",
             )
         return plan

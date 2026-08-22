@@ -143,6 +143,14 @@ class ProvisioningEngine:
         if not order or not sub or not plan:
             raise RuntimeError("Order/subscription/plan missing for provision job.")
 
+        from app.services.platform.plan_matrix import requires_external_vm
+
+        if requires_external_vm(plan):
+            raise RuntimeError(
+                "Cloud VPS/VDS requires external VM provisioning and must not be "
+                "created on the shared IFNOTUS node."
+            )
+
         env: CustomerEnvironment | None = None
         try:
             return await self._run_steps(job, order, sub, plan, domain_name)

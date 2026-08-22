@@ -800,9 +800,12 @@ export const aiApi = {
 
 export const catalogApi = {
   plans: () =>
-    apiClient.get<{ items: import('@/types/platform').HostingPlan[]; brand: string; currency: string }>(
-      '/catalog/plans',
-    ),
+    apiClient.get<{
+      items: import('@/types/platform').HostingPlan[]
+      coming_soon?: import('@/types/platform').ComingSoonProduct[]
+      brand: string
+      currency: string
+    }>('/catalog/plans'),
   meta: () =>
     apiClient.get<{
       brand: string

@@ -7,6 +7,7 @@ from app.api.deps import DbSession, SettingsDep
 from app.models.platform import HostingPlan
 from app.schemas.platform import (
     CatalogMetaResponse,
+    ComingSoonProductSchema,
     DomainTldPriceSchema,
     HostingPlanListResponse,
     HostingPlanSchema,
@@ -35,6 +36,7 @@ async def list_plans(session: DbSession) -> HostingPlanListResponse:
         PUBLIC_DISPLAY_NAMES,
         capabilities_for,
         catalog_card_for,
+        coming_soon_products,
         features_for,
         listed_in_public_catalog,
     )
@@ -67,7 +69,8 @@ async def list_plans(session: DbSession) -> HostingPlanListResponse:
                 }
             )
         )
-    return HostingPlanListResponse(items=items)
+    soon = [ComingSoonProductSchema.model_validate(row) for row in coming_soon_products()]
+    return HostingPlanListResponse(items=items, coming_soon=soon)
 
 
 @router.get("/meta", response_model=CatalogMetaResponse)

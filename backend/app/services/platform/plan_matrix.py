@@ -106,6 +106,22 @@ PUBLIC_DISPLAY_NAMES: dict[str, str] = {
     "business-pro": "Business Hosting",
 }
 
+# PHASE 35 — advertised but not purchasable until external VM provisioning exists.
+COMING_SOON_KEYS: tuple[str, ...] = ("cloud-vps", "cloud-vds")
+
+COMING_SOON_COPY: dict[str, dict[str, str]] = {
+    "cloud-vps": {
+        "display_name": "Cloud VPS",
+        "blurb": "Dedicated VM with root SSH — not sold on the shared IFNOTUS node.",
+        "status": "coming_soon",
+    },
+    "cloud-vds": {
+        "display_name": "Cloud VDS",
+        "blurb": "Dedicated virtual dedicated server — requires separate VM provisioning.",
+        "status": "coming_soon",
+    },
+}
+
 
 def _row(
     *,
@@ -740,6 +756,32 @@ def sellable_on_shared_node(plan: HostingPlan | None) -> bool:
     """
     kind = str(features_for(plan).get("kind") or "managed").lower()
     return kind not in {"vps", "vds"}
+
+
+def requires_external_vm(plan: HostingPlan | None) -> bool:
+    """True when the pack must never be provisioned on Shared Node 01."""
+    return not sellable_on_shared_node(plan)
+
+
+def coming_soon_products() -> list[dict[str, Any]]:
+    """PHASE 35 — storefront teasers for Cloud VPS/VDS (not checkout-ready)."""
+    items: list[dict[str, Any]] = []
+    for key in COMING_SOON_KEYS:
+        copy = COMING_SOON_COPY.get(key) or {}
+        row = MATRIX.get(key) or {}
+        items.append(
+            {
+                "matrix_key": key,
+                "slug": key,
+                "name": copy.get("display_name") or row.get("display_name") or key,
+                "kind": row.get("kind") or "vps",
+                "status": copy.get("status") or "coming_soon",
+                "blurb": copy.get("blurb") or row.get("marketing_blurb") or "",
+                "sellable": False,
+                "requires_external_vm": True,
+            }
+        )
+    return items
 
 
 def capabilities_for(plan: HostingPlan | None) -> dict[str, Any]:
