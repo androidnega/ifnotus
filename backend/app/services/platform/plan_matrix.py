@@ -129,6 +129,13 @@ def _row(
     backup_frequency: str | None = None,
     backup_retention: int | None = None,
     customer_restore: bool | None = None,
+    python_apps: int | None = None,
+    node_apps: int | None = None,
+    php_apps: int | None = None,
+    app_memory_mb: int | None = None,
+    max_workers: int | None = None,
+    max_processes: int | None = None,
+    max_open_ports: int | None = None,
     marketing_blurb: str | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
@@ -141,6 +148,19 @@ def _row(
         backup_retention = retention_days
     if customer_restore is None:
         customer_restore = backup_enabled
+    # PHASE 26 — runtime resource defaults from stack access
+    if python_apps is None:
+        python_apps = 1 if stacks.get("python", NO) in {YES, LIM} else 0
+    if node_apps is None:
+        node_apps = 1 if stacks.get("nodejs", NO) in {YES, LIM} else 0
+    if php_apps is None:
+        php_apps = 2 if stacks.get("php", NO) in {YES, LIM} else 0
+    if max_workers is None:
+        max_workers = 2 if auto_backups in {YES, LIM} else 1
+    if max_processes is None:
+        max_processes = 10
+    if max_open_ports is None:
+        max_open_ports = max(1, (python_apps or 0) + (node_apps or 0) + (php_apps or 0))
     data: dict[str, Any] = {
         "kind": kind,
         "custom_domains": custom_domains,
@@ -185,6 +205,13 @@ def _row(
         "backup_frequency": backup_frequency,
         "backup_retention": backup_retention,
         "customer_restore": customer_restore,
+        "python_apps": python_apps,
+        "node_apps": node_apps,
+        "php_apps": php_apps,
+        "app_memory_mb": app_memory_mb,
+        "max_workers": max_workers,
+        "max_processes": max_processes,
+        "max_open_ports": max_open_ports,
         "marketing_blurb": marketing_blurb,
         "stacks": stacks,
     }
@@ -210,6 +237,12 @@ MATRIX: dict[str, dict[str, Any]] = {
         gh_deploys="5/mo", auto_deploy=YES, webhooks=YES,
         branch_auto=1, deploy_history=YES, deploy_logs=YES, app_logs=LIM, rollback=LIM,
         custom_build=LIM, db_backups=LIM, monitoring=LIM, uptime=LIM, ai_errors=LIM,
+        python_apps=0,
+        node_apps=0,
+        php_apps=2,
+        app_memory_mb=256,
+        max_workers=1,
+        max_processes=8,
     ),
     "personal": _row(
         kind="managed",
@@ -258,6 +291,11 @@ MATRIX: dict[str, dict[str, Any]] = {
         monitoring=YES, uptime=YES, ai_errors=YES, ai_server=LIM, firewall=NO,
         priority_support=LIM,
         retention_days=7,
+        python_apps=1,
+        node_apps=1,
+        app_memory_mb=512,
+        max_workers=2,
+        max_processes=10,
     ),
     "student-elite": _row(
         kind="managed",

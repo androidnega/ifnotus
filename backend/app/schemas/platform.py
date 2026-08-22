@@ -800,6 +800,9 @@ class ApplicationInstanceResponse(SchemaBase):
     slug: str | None = None
     build_command: str | None = None
     start_command: str | None = None
+    memory_limit_mb: int | None = None
+    worker_limit: int | None = None
+    resource_limits: dict | None = None
     message: str | None = None
 
 

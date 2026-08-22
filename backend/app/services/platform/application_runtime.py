@@ -189,6 +189,12 @@ class ApplicationRuntimeService:
         if not stack_allowed(plan, spec.stack_key):
             raise AppException(pack_denied_message(f"Framework '{spec.label}'"), code="pack_feature")
 
+        from app.services.platform.resource_enforcement import ResourceEnforcementService
+
+        limits = await ResourceEnforcementService(self._session).assert_can_create(
+            env, plan, fw
+        )
+
         slug = slugify(name)
         app_root = Path(env.document_root) / "apps" / slug
         if app_root.exists():
@@ -219,6 +225,7 @@ class ApplicationRuntimeService:
         await self._session.flush()
         cfg["supervisor_program"] = supervisor_program_name(env.id, item.id)
         item.config_json = dict(cfg)
+        ResourceEnforcementService(self._session).apply_to_instance(item, limits)
         app_root.mkdir(parents=True, exist_ok=True)
         fix_web_ownership(app_root, user=self._settings.web_run_user)
         await self._session.flush()
@@ -241,8 +248,21 @@ class ApplicationRuntimeService:
                 self._git_clone(git_url, app_root, env)
 
             build = str(cfg.get("build_command") or "").strip()
+            limits_cfg = cfg.get("resource_limits") or {}
+            from app.services.platform.resource_enforcement import AppResourceLimits, ResourceEnforcementService
+
+            limits = AppResourceLimits(
+                python_apps=int(limits_cfg.get("python_apps", 1)),
+                node_apps=int(limits_cfg.get("node_apps", 1)),
+                php_apps=int(limits_cfg.get("php_apps", 2)),
+                app_memory_mb=int(limits_cfg.get("app_memory_mb", app.memory_limit_mb or 512)),
+                max_workers=int(limits_cfg.get("max_workers", app.worker_limit or 2)),
+                max_processes=int(limits_cfg.get("max_processes", 10)),
+                max_open_ports=int(limits_cfg.get("max_open_ports", 5)),
+                cpu_shares=int(limits_cfg.get("cpu_shares", 256)),
+            )
             if build:
-                self._run_shell(build, app_root, env, cfg.get("env_vars") or {})
+                self._run_shell(build, app_root, env, cfg.get("env_vars") or {}, limits=limits)
 
             if app.framework == "static":
                 self._write_static_stub(app_root, cfg.get("name") or "App")
@@ -257,7 +277,7 @@ class ApplicationRuntimeService:
 
             if needs_supervisor and start:
                 start_cmd = start.replace("{port}", str(port))
-                self._install_supervisor(app, env, app_root, start_cmd, cfg.get("env_vars") or {})
+                self._install_supervisor(app, env, app_root, start_cmd, cfg.get("env_vars") or {}, limits)
                 self._supervisor_action(cfg["supervisor_program"], "reread")
                 self._supervisor_action(cfg["supervisor_program"], "update")
                 self._supervisor_action(cfg["supervisor_program"], "start")
@@ -334,8 +354,19 @@ class ApplicationRuntimeService:
         return base + secrets.randbelow(1000)
 
     def _run_shell(
-        self, cmd: str, cwd: Path, env: CustomerEnvironment, extra_env: dict[str, str]
+        self,
+        cmd: str,
+        cwd: Path,
+        env: CustomerEnvironment,
+        extra_env: dict[str, str],
+        *,
+        limits=None,
     ) -> None:
+        from app.services.platform.resource_enforcement import AppResourceLimits, ResourceEnforcementService
+
+        if limits is None:
+            limits = AppResourceLimits(1, 1, 2, 512, 2, 10, 5, 256)
+        cmd = ResourceEnforcementService.wrap_command(cmd, limits)
         run_env = {**os.environ, **{str(k): str(v) for k, v in extra_env.items()}}
         if env.unix_uid is not None and hasattr(os, "setuid"):
             # Run via su if root
@@ -397,7 +428,10 @@ class ApplicationRuntimeService:
         app_root: Path,
         start_cmd: str,
         extra_env: dict[str, str],
+        limits,
     ) -> None:
+        from app.services.platform.resource_enforcement import ResourceEnforcementService
+
         prog = (app.config_json or {}).get("supervisor_program") or supervisor_program_name(
             env.id, app.id
         )
@@ -405,17 +439,15 @@ class ApplicationRuntimeService:
         log.parent.mkdir(parents=True, exist_ok=True)
         env_lines = "\n".join(f'environment={k}="{v}"' for k, v in extra_env.items())
         user_line = f"user={env.unix_username}\n" if env.unix_username else ""
-        conf = f"""[program:{prog}]
-{user_line}directory={app_root}
-command={start_cmd}
-autostart=true
-autorestart=true
-stdout_logfile={log}
-stderr_logfile={log}
-stopasgroup=true
-killasgroup=true
-{env_lines}
-"""
+        conf = ResourceEnforcementService.supervisor_program_block(
+            program=prog,
+            user_line=user_line,
+            directory=str(app_root),
+            start_cmd=start_cmd,
+            limits=limits,
+            log_path=str(log),
+            env_lines=env_lines,
+        )
         path = Path(f"/etc/supervisor/conf.d/{prog}.conf")
         path.write_text(conf, encoding="utf-8")
 
@@ -509,5 +541,8 @@ def app_to_response(app: ApplicationInstance) -> dict[str, Any]:
         "slug": cfg.get("slug"),
         "build_command": cfg.get("build_command"),
         "start_command": cfg.get("start_command"),
+        "memory_limit_mb": app.memory_limit_mb,
+        "worker_limit": app.worker_limit,
+        "resource_limits": cfg.get("resource_limits"),
         "message": None,
     }
