@@ -234,9 +234,9 @@ async def consume_challenge(challenge_id: str, code: str) -> PhoneOtpChallenge:
 
     entered = (code or "").strip()
     from app.core.config import get_settings
+    from app.core.dev_mode import dev_auth_bypass_allowed
 
-    debug_bypass = bool(get_settings().debug)
-    if not debug_bypass:
+    if not dev_auth_bypass_allowed(get_settings()):
         if len(entered) != len(ch.code) or not secrets.compare_digest(ch.code, entered):
             raise AuthenticationError("Invalid verification code.")
     elif not entered:

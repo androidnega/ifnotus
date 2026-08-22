@@ -388,6 +388,25 @@ class EnvironmentHealthResponse(SchemaBase):
     message: str | None = None
 
 
+class EnvironmentMonitoringResponse(SchemaBase):
+    environment_id: UUID
+    domain: str | None = None
+    level: str = "limited"
+    checked_at: str | None = None
+    disk: dict = Field(default_factory=dict)
+    health_status: str = "unknown"
+    site_status: str = "unknown"
+    ssl: dict = Field(default_factory=dict)
+    backups: dict = Field(default_factory=dict)
+    applications: dict = Field(default_factory=dict)
+    mail: dict = Field(default_factory=dict)
+    processes: dict | None = None
+    memory: dict | None = None
+    cpu: dict | None = None
+    databases: dict | None = None
+    note: str | None = None
+
+
 class StackInfoSchema(SchemaBase):
     id: str
     name: str

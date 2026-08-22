@@ -101,6 +101,7 @@ from app.schemas.platform import (
     EnvironmentSshResponse,
     EnvironmentResponse,
     EnvironmentSslResponse,
+    EnvironmentMonitoringResponse,
     EnvironmentUsageResponse,
     EnvironmentHealthResponse,
     NotificationResponse,
@@ -1734,6 +1735,45 @@ async def query_env_database(
     _deny_limited_db_writes(plan, body.sql)
     return await DatabaseStudioService(DatabaseManagerService(settings)).query_managed(
         _env_db_id(env), body
+    )
+
+
+@router.get(
+    "/environments/{environment_id}/monitoring",
+    response_model=EnvironmentMonitoringResponse,
+)
+async def env_monitoring(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> EnvironmentMonitoringResponse:
+    """Resource usage snapshot for the hosting panel overview."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    plan = await TenantService(session).require_capability(env, "monitoring", label="Resource monitoring")
+    from app.services.platform.environment_monitoring import EnvironmentMonitoringService
+
+    svc = EnvironmentMonitoringService(settings, session)
+    snap = await svc.snapshot(env, plan, full=svc.is_full_monitoring(plan))
+    return EnvironmentMonitoringResponse(
+        environment_id=env.id,
+        domain=env.domain,
+        level=str(snap.get("level") or "limited"),
+        checked_at=snap.get("checked_at"),
+        disk=dict(snap.get("disk") or {}),
+        health_status=str(snap.get("health_status") or "unknown"),
+        site_status=str(snap.get("site_status") or env.status),
+        ssl=dict(snap.get("ssl") or {}),
+        backups=dict(snap.get("backups") or {}),
+        applications=dict(snap.get("applications") or {}),
+        mail=dict(snap.get("mail") or {}),
+        processes=dict(snap.get("processes") or {}) if snap.get("processes") else None,
+        memory=dict(snap.get("memory") or {}) if snap.get("memory") else None,
+        cpu=dict(snap.get("cpu") or {}) if snap.get("cpu") else None,
+        databases=dict(snap.get("databases") or {}) if snap.get("databases") else None,
+        note=snap.get("note"),
     )
 
 

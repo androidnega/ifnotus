@@ -9,11 +9,13 @@ import pytest
 
 from app.schemas.platform import CustomerPhoneOtpRequest
 from app.services.platform.customers import CustomerService
+from app.core.config import Environment
 
 
 @pytest.mark.asyncio
-async def test_request_otp_exposes_debug_code_when_debug_true(test_settings) -> None:
-    test_settings.debug = True
+async def test_request_otp_exposes_debug_code_in_dev_mode(test_settings) -> None:
+    test_settings.dev_auth_bypass = True
+    test_settings.environment = Environment.DEVELOPMENT
     svc = CustomerService(test_settings, MagicMock())
     challenge = SimpleNamespace(challenge_id="ch_1", code="123456", phone="+233541000000")
 

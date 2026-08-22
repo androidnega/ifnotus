@@ -37,7 +37,10 @@ class WorkerRunner:
         health_ticker = asyncio.create_task(self._health_ticker())
         storage_ticker = asyncio.create_task(self._storage_ticker())
         cron_ticker = asyncio.create_task(self._env_cron_ticker())
-        await asyncio.gather(*workers, ticker, backup_ticker, health_ticker, storage_ticker, cron_ticker)
+        abuse_ticker = asyncio.create_task(self._abuse_ticker())
+        await asyncio.gather(
+            *workers, ticker, backup_ticker, health_ticker, storage_ticker, cron_ticker, abuse_ticker
+        )
 
     async def shutdown(self) -> None:
         """Graceful shutdown signal."""
@@ -176,6 +179,19 @@ class WorkerRunner:
             except Exception:  # noqa: BLE001
                 logger.exception("env_cron_tick_enqueue_failed")
             for _ in range(2):  # 2 * 30s ≈ 1 minute
+                if not self._running:
+                    return
+                await asyncio.sleep(30)
+
+    async def _abuse_ticker(self) -> None:
+        """Scan active environments for abuse about every 3 minutes."""
+        await asyncio.sleep(75)
+        while self._running:
+            try:
+                await self._queue.enqueue("abuse_protection_tick", {})
+            except Exception:  # noqa: BLE001
+                logger.exception("abuse_tick_enqueue_failed")
+            for _ in range(6):  # 6 * 30s ≈ 3 minutes
                 if not self._running:
                     return
                 await asyncio.sleep(30)

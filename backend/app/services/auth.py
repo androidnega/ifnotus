@@ -101,7 +101,9 @@ class AuthService:
                 )
             raise AuthenticationError("Invalid credentials.")
 
-        if getattr(user, "totp_enabled", False) and not self._settings.debug:
+        from app.core.dev_mode import dev_auth_bypass_allowed
+
+        if getattr(user, "totp_enabled", False) and not dev_auth_bypass_allowed(self._settings):
             from app.services import totp as totp_svc
 
             if not totp_svc.verify_code(user.totp_secret or "", credentials.totp_code or ""):
@@ -117,8 +119,10 @@ class AuthService:
         is_customer_only = (not is_staff) and ("customer" in roles)
 
         needs_challenge = False
+        from app.core.dev_mode import dev_auth_bypass_allowed
+
         if (
-            not self._settings.debug
+            not dev_auth_bypass_allowed(self._settings)
             and is_staff
             and not is_customer_only
             and self._access
@@ -179,7 +183,9 @@ class AuthService:
             except IpBlockedError:
                 raise AuthenticationError("This IP is blacklisted.") from None
 
-        if self._settings.debug:
+        from app.core.dev_mode import dev_auth_bypass_allowed
+
+        if dev_auth_bypass_allowed(self._settings):
             challenge = await auth_challenges.approve_challenge(body.challenge_id)
             if challenge is None:
                 raise AuthenticationError("Invalid or expired approval code.")

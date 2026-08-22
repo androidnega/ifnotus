@@ -21,6 +21,7 @@ def test_settings() -> Settings:
         redis_url="redis://localhost:6379/1",
         environment=Environment.TESTING,
         debug=True,
+        dev_auth_bypass=True,
         plugins_enabled=False,
         rate_limit_enabled=False,
         sms_provider="none",

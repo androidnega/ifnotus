@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     environment: Environment = Environment.DEVELOPMENT
     debug: bool = False
+    dev_auth_bypass: bool = False
     api_prefix: str = "/api"
     api_v1_prefix: str = "/v1"
 
@@ -257,6 +258,16 @@ class Settings(BaseSettings):
     backup_keep_local_after_offsite: bool = True
     host_disk_warn_pct: int = 80
     host_disk_crit_pct: int = 90
+
+    # PHASE 30 — automated abuse protection
+    abuse_protection_enabled: bool = True
+    abuse_auto_suspend_enabled: bool = True
+    abuse_cpu_pct_threshold: float = 150.0
+    abuse_memory_pct_threshold: float = 95.0
+    abuse_process_multiplier: float = 3.0
+    abuse_cron_max_jobs: int = 15
+    abuse_cron_runs_per_hour: int = 30
+    abuse_outbound_connections_threshold: int = 200
     infra_hostname: str = "ifnotus-1"
     infra_cpu_total: int = 12
     infra_ram_total_gb: int = 48

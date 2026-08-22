@@ -114,6 +114,22 @@ export function usePortalSiteTools(
   const logBusy = ref(false)
   const usageStatus = ref<'ok' | 'warning' | 'over' | ''>('')
   const usagePct = ref(0)
+  const monitoringSnapshot = ref<{
+    level?: string
+    disk?: { used_gb?: number; limit_gb?: number; pct?: number; file_count?: number; status?: string }
+    health_status?: string
+    site_status?: string
+    ssl?: { status?: string; days_remaining?: number | null }
+    backups?: { success_count?: number }
+    applications?: { total?: number; active?: number }
+    mail?: { enabled?: boolean; used_mb?: number | null; limit_mb?: number | null }
+    cpu?: { percent?: number; limit_vcpu?: number }
+    memory?: { rss_mb?: number; limit_mb?: number; pct?: number }
+    processes?: { count?: number }
+    databases?: { count?: number; total_size_mb?: number }
+    note?: string | null
+  } | null>(null)
+  const monitoringMsg = ref('')
   const healthInfo = ref('')
   const dnsInfo = ref('')
   const dnsData = ref<{
@@ -868,6 +884,21 @@ export function usePortalSiteTools(
     }
   }
 
+  async function loadMonitoring() {
+    if (!activeEnv.value) return
+    monitoringMsg.value = 'Loading…'
+    monitoringSnapshot.value = null
+    try {
+      const { data } = await customersApi.getEnvMonitoring(activeEnv.value.id)
+      monitoringSnapshot.value = data
+      monitoringMsg.value = ''
+      if (data.disk?.pct != null) usagePct.value = Number(data.disk.pct) || 0
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      monitoringMsg.value = err.response?.data?.error?.message ?? 'Could not load monitoring.'
+    }
+  }
+
   async function loadUsage() {
     if (!activeEnv.value) return
     usageInfo.value = 'Loading…'
@@ -1297,7 +1328,7 @@ export function usePortalSiteTools(
 
   async function hydrateActiveEnv() {
     if (!activeEnv.value) return
-    await Promise.allSettled([loadFiles(), loadUsage(), loadStacks(), loadCron(), loadSsh(), checkHealth()])
+    await Promise.allSettled([loadFiles(), loadUsage(), loadMonitoring(), loadStacks(), loadCron(), loadSsh(), checkHealth()])
   }
 
   async function selectEnv(id: string) {
@@ -1356,6 +1387,8 @@ export function usePortalSiteTools(
     logBusy,
     usageStatus,
     usagePct,
+    monitoringSnapshot,
+    monitoringMsg,
     healthInfo,
     dnsInfo,
     dnsData,
@@ -1414,6 +1447,7 @@ export function usePortalSiteTools(
     attachCustomDomain,
     unassignCustomDomain,
     loadUsage,
+    loadMonitoring,
     checkHealth,
     issueSsl,
     loadBackups,

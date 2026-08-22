@@ -1588,6 +1588,33 @@ export const customersApi = {
       note: string
     }>(`/customers/environments/${environmentId}/usage`),
 
+  getEnvMonitoring: (environmentId: string) =>
+    apiClient.get<{
+      environment_id: string
+      domain?: string | null
+      level?: string
+      checked_at?: string | null
+      disk?: {
+        used_bytes?: number
+        used_gb?: number
+        limit_gb?: number
+        pct?: number
+        file_count?: number
+        status?: string
+      }
+      health_status?: string
+      site_status?: string
+      ssl?: { status?: string; expires_at?: string | null; days_remaining?: number | null }
+      backups?: { success_count?: number }
+      applications?: { total?: number; active?: number }
+      mail?: { enabled?: boolean; used_mb?: number | null; limit_mb?: number | null; mailbox_limit?: number | null }
+      cpu?: { percent?: number; limit_vcpu?: number }
+      memory?: { rss_mb?: number; limit_mb?: number; pct?: number }
+      processes?: { count?: number; available?: boolean }
+      databases?: { count?: number; total_size_mb?: number }
+      note?: string | null
+    }>(`/customers/environments/${environmentId}/monitoring`),
+
   checkEnvHealth: (environmentId: string) =>
     apiClient.post<{
       environment_id: string

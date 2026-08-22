@@ -30,14 +30,17 @@ Legacy `GET .../database` and SQL studio routes still target the **primary stack
 
 Superuser/root credentials are never exposed — provisioning uses `DatabaseManagerService` scoped users only.
 
-## DEBUG auth addon (development)
+## Development auth bypass (active development only)
 
-When `DEBUG=true` in settings:
+Auth shortcuts apply **only** when `DEV_AUTH_BYPASS=true` **and** `ENVIRONMENT` is not `production`:
 
 - **Phone login:** any verification code is accepted (SMS optional).
-- **Staff login:** TOTP and new-IP approval challenges are skipped; `verify-device` approves without the 6-digit terminal code.
+- **Staff login:** TOTP and new-IP approval challenges are skipped.
 
-Production must keep `DEBUG=false`.
+On the VPS during active work: `ifnotus-unlock dev-on`  
+Restore strict production auth: `ifnotus-unlock dev-off`
+
+`DEBUG=true` alone does **not** bypass auth. Production must keep `ENVIRONMENT=production` and `DEV_AUTH_BYPASS=false`.
 
 ## Data model
 

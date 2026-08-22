@@ -187,8 +187,9 @@ class CustomerService:
         sms_body = f"IFNOTUS code: {challenge.code}. Valid for {phone_otp.OTP_TTL_MINUTES} minutes."
         delivery = MessageDelivery(self._settings).send_sms(to=phone, body=sms_body)
         sms_sent = bool(delivery.get("ok"))
-        # PHASE 3: never expose OTP unless settings.debug is explicitly true.
-        show_debug = bool(self._settings.debug)
+        from app.core.dev_mode import dev_show_otp_code
+
+        show_debug = dev_show_otp_code(self._settings)
         if sms_sent:
             message = "We sent a code by SMS."
         elif show_debug:

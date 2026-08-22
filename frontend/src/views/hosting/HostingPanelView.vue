@@ -88,6 +88,8 @@ const {
   logMsg,
   logBusy,
   usagePct,
+  monitoringSnapshot,
+  monitoringMsg,
   healthInfo,
   dnsInfo,
   dnsData,
@@ -302,6 +304,55 @@ onMounted(() => {
               {{ usageInfo || healthInfo }}
               <span v-if="usagePct" class="disk-pct"> · Disk {{ Math.min(100, Math.round(usagePct)) }}%</span>
             </p>
+
+            <div v-if="monitoringSnapshot" class="resource-grid">
+              <article class="metric">
+                <p class="metric-label">Storage</p>
+                <p class="metric-value">
+                  {{ monitoringSnapshot.disk?.used_gb ?? '—' }} / {{ monitoringSnapshot.disk?.limit_gb ?? spec.disk }} GB
+                </p>
+                <p class="metric-hint">{{ monitoringSnapshot.disk?.file_count ?? 0 }} files</p>
+              </article>
+              <article v-if="monitoringSnapshot.memory" class="metric">
+                <p class="metric-label">Memory</p>
+                <p class="metric-value">{{ monitoringSnapshot.memory.rss_mb }} MB</p>
+                <p class="metric-hint">of {{ monitoringSnapshot.memory.limit_mb }} MB plan</p>
+              </article>
+              <article v-if="monitoringSnapshot.cpu" class="metric">
+                <p class="metric-label">CPU</p>
+                <p class="metric-value">{{ monitoringSnapshot.cpu.percent }}%</p>
+                <p class="metric-hint">{{ monitoringSnapshot.cpu.limit_vcpu }} vCPU limit</p>
+              </article>
+              <article class="metric">
+                <p class="metric-label">Health</p>
+                <p class="metric-value">{{ monitoringSnapshot.health_status || '—' }}</p>
+                <p class="metric-hint">{{ monitoringSnapshot.site_status || env.status }}</p>
+              </article>
+              <article v-if="monitoringSnapshot.processes" class="metric">
+                <p class="metric-label">Processes</p>
+                <p class="metric-value">{{ monitoringSnapshot.processes.count ?? 0 }}</p>
+                <p class="metric-hint">under your account</p>
+              </article>
+              <article v-if="monitoringSnapshot.databases" class="metric">
+                <p class="metric-label">Databases</p>
+                <p class="metric-value">{{ monitoringSnapshot.databases.total_size_mb ?? 0 }} MB</p>
+                <p class="metric-hint">{{ monitoringSnapshot.databases.count ?? 0 }} database(s)</p>
+              </article>
+              <article class="metric">
+                <p class="metric-label">SSL</p>
+                <p class="metric-value">{{ monitoringSnapshot.ssl?.status || '—' }}</p>
+                <p v-if="monitoringSnapshot.ssl?.days_remaining != null" class="metric-hint">
+                  {{ monitoringSnapshot.ssl.days_remaining }} days left
+                </p>
+              </article>
+              <article class="metric">
+                <p class="metric-label">Backups</p>
+                <p class="metric-value">{{ monitoringSnapshot.backups?.success_count ?? 0 }}</p>
+                <p class="metric-hint">restore points</p>
+              </article>
+            </div>
+            <p v-else-if="monitoringMsg" class="muted">{{ monitoringMsg }}</p>
+            <p v-if="monitoringSnapshot?.note" class="muted note-line">{{ monitoringSnapshot.note }}</p>
             <div class="actions">
               <button type="button" class="btn-primary" @click="goTab('files')">Open files</button>
               <a
@@ -573,6 +624,46 @@ h2 {
   flex-wrap: wrap;
   gap: 0.5rem;
   margin-top: 1rem;
+}
+.resource-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+@media (min-width: 720px) {
+  .resource-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+.metric {
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--p-border);
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--p-surface) 92%, var(--p-border));
+}
+.metric-label {
+  margin: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--p-muted);
+}
+.metric-value {
+  margin: 0.25rem 0 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--p-ink);
+}
+.metric-hint {
+  margin: 0.15rem 0 0;
+  font-size: 0.75rem;
+  color: var(--p-muted);
+}
+.note-line {
+  margin-top: 0.65rem;
+  font-size: 0.82rem;
 }
 .btn-primary,
 .btn-ghost {
