@@ -370,10 +370,19 @@ class EnvironmentUsageResponse(SchemaBase):
     file_count: int
     isolation_type: str = "filesystem"
     soft_warning: bool = False
+    high_warning: bool = False
+    critical_warning: bool = False
     hard_exceeded: bool = False
     storage_status: str = "ok"
+    storage_tier: str = "ok"
+    components: dict = Field(default_factory=dict)
+    os_quota: dict = Field(default_factory=dict)
+    host: dict = Field(default_factory=dict)
     message: str | None = None
-    note: str = "CPU/RAM are plan limits. Live disk usage is measured under your site folder."
+    note: str = (
+        "CPU/RAM are plan limits. Live disk usage is measured under your site folder. "
+        "OS quotas apply when the filesystem supports them."
+    )
 
 
 class EnvironmentHealthResponse(SchemaBase):

@@ -202,6 +202,18 @@ class UnixIdentityService:
             raise AppException("Unix user missing after create.", code="unix_user_missing") from exc
 
         self.apply_ownership(env, prepare_sftp_jail=False)
+        # PHASE 32 — best-effort OS user quota (no-op if quotas not enabled on FS)
+        try:
+            from app.services.platform.environment_storage import apply_os_user_quota
+
+            apply_os_user_quota(
+                self._settings,
+                username=username,
+                home=home,
+                storage_limit_gb=env.storage_limit_gb,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("os_quota_apply_skipped", error=str(exc))
         self._audit(
             env,
             "unix.ensure",

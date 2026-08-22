@@ -6,8 +6,10 @@ from pathlib import Path
 
 from app.core.exceptions import ValidationError
 
-SOFT_PCT = 85.0
-HARD_PCT = 100.0
+# PHASE 32 — graduated thresholds
+WARN_PCT = 80.0
+HIGH_PCT = 90.0
+HARD_PCT = 95.0  # critical for customer plan; block writes at 100% still
 
 
 def measure_path_usage(root: str | Path | None) -> tuple[int, int]:
@@ -41,13 +43,21 @@ def usage_snapshot(root: str | Path | None, storage_limit_gb: int | float) -> di
     used, files = measure_path_usage(root)
     limit = limit_bytes(storage_limit_gb)
     pct = round((used / limit) * 100, 1) if limit else 0.0
-    soft = pct >= SOFT_PCT
-    hard = pct >= HARD_PCT
+    soft = pct >= WARN_PCT
+    high = pct >= HIGH_PCT
+    hard = pct >= 100.0
+    critical = pct >= HARD_PCT
     if hard:
         status = "over"
         message = (
             f"Storage is full ({pct}%). Delete files or upgrade your plan before uploading more."
         )
+    elif critical:
+        status = "critical"
+        message = f"Storage is critical at {pct}%. Free space immediately or upgrade."
+    elif high:
+        status = "high"
+        message = f"Storage is high at {pct}%. Free space or upgrade soon."
     elif soft:
         status = "warning"
         message = f"You're using {pct}% of your disk plan. Free space or upgrade soon."
@@ -62,8 +72,13 @@ def usage_snapshot(root: str | Path | None, storage_limit_gb: int | float) -> di
         "storage_pct": min(pct, 999.0),
         "file_count": files,
         "soft_warning": soft,
+        "high_warning": high,
+        "critical_warning": critical,
         "hard_exceeded": hard,
         "storage_status": status,
+        "storage_tier": (
+            "over" if hard else "critical" if critical else "high" if high else "warning" if soft else "ok"
+        ),
         "message": message,
     }
 

@@ -7,24 +7,26 @@ from types import SimpleNamespace
 from app.services.platform.abuse import evaluate_disk_pressure, should_block_provisioning
 
 
+def test_should_block_only_when_critical() -> None:
+    settings = SimpleNamespace(host_disk_warn_pct=80, host_disk_crit_pct=95)
+    assert should_block_provisioning(settings, pressure={"level": "ok", "block_provisioning": False}) is False
+    assert should_block_provisioning(settings, pressure={"level": "warning", "block_provisioning": False}) is False
+    assert should_block_provisioning(settings, pressure={"level": "critical", "block_provisioning": True}) is True
+
+
 def test_evaluate_disk_pressure_has_expected_keys() -> None:
     settings = SimpleNamespace(
         customer_environments_root="/",
         host_disk_warn_pct=80,
-        host_disk_crit_pct=90,
+        host_disk_high_pct=90,
+        host_disk_crit_pct=95,
+        infra_min_free_storage_gb=20,
     )
     snap = evaluate_disk_pressure(settings)  # type: ignore[arg-type]
     assert "used_pct" in snap
     assert "level" in snap
-    assert snap["level"] in {"ok", "warning", "critical"}
-    assert 0 <= int(snap["used_pct"]) <= 100
-
-
-def test_should_block_only_when_critical() -> None:
-    settings = SimpleNamespace(host_disk_warn_pct=80, host_disk_crit_pct=90)
-    assert should_block_provisioning(settings, pressure={"level": "ok"}) is False
-    assert should_block_provisioning(settings, pressure={"level": "warning"}) is False
-    assert should_block_provisioning(settings, pressure={"level": "critical"}) is True
+    assert snap["level"] in {"ok", "warning", "high", "critical"}
+    assert 0 <= float(snap["used_pct"]) <= 100
 
 
 def test_sellable_cloud_vps_false() -> None:

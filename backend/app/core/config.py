@@ -257,7 +257,9 @@ class Settings(BaseSettings):
     # Keep a local copy after successful offsite put (recommended until restore-from-offsite is routine)
     backup_keep_local_after_offsite: bool = True
     host_disk_warn_pct: int = 80
-    host_disk_crit_pct: int = 90
+    host_disk_high_pct: int = 90
+    host_disk_crit_pct: int = 95
+    os_user_quota_enabled: bool = True
 
     # PHASE 30 — automated abuse protection
     abuse_protection_enabled: bool = True

@@ -165,6 +165,22 @@ class SubscriptionBillingService:
 
         # Capacity only matters when increasing resources
         if plan.cpu_cores > sub.cpu_allocated or plan.ram_gb > sub.ram_allocated or plan.storage_gb > sub.storage_allocated:
+            extra_storage = max(0, int(plan.storage_gb) - int(sub.storage_allocated or 0))
+            if extra_storage > 0:
+                from app.services.platform.environment_storage import (
+                    host_storage_pressure,
+                    should_block_storage_upgrade,
+                )
+
+                pressure = host_storage_pressure(self._settings)
+                if should_block_storage_upgrade(
+                    self._settings, extra_gb=extra_storage, pressure=pressure
+                ):
+                    raise AppException(
+                        "Host storage is under pressure — upgrades that need more disk "
+                        "are paused until space is freed. Contact support.",
+                        code="host_storage_critical",
+                    )
             await self._resources.pick_node_for_plan(plan)
 
         sub.plan_id = plan.id
@@ -185,6 +201,17 @@ class SubscriptionBillingService:
                 self._isolation.resize_container(
                     env.container_id, cpu=plan.cpu_cores, ram_gb=plan.ram_gb
                 )
+            try:
+                from app.services.platform.environment_storage import apply_os_user_quota
+
+                apply_os_user_quota(
+                    self._settings,
+                    username=env.unix_username,
+                    home=env.document_root,
+                    storage_limit_gb=env.storage_limit_gb,
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
         await self._notify.notify(
             customer_id,

@@ -1789,25 +1789,34 @@ async def env_usage(
 ) -> EnvironmentUsageResponse:
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
-    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
-    from app.services.platform.usage import usage_snapshot
+    tenant = TenantService(session)
+    env = await tenant.get_owned_environment(customer.id, environment_id)
+    plan = await tenant.plan_for_environment(env)
+    from app.services.platform.environment_storage import EnvironmentStorageService
 
-    snap = usage_snapshot(env.document_root, env.storage_limit_gb)
+    composite = await EnvironmentStorageService(settings, session).composite_snapshot(env, plan)
+    disk = dict(composite.get("disk") or {})
     return EnvironmentUsageResponse(
         environment_id=env.id,
         domain=env.domain,
         cpu_limit=env.cpu_limit,
         ram_limit_gb=env.ram_limit_gb,
         storage_limit_gb=env.storage_limit_gb,
-        storage_used_bytes=int(snap["storage_used_bytes"]),
-        storage_used_gb=float(snap["storage_used_gb"]),
-        storage_pct=float(snap["storage_pct"]),
-        file_count=int(snap["file_count"]),
+        storage_used_bytes=int(disk.get("storage_used_bytes") or 0),
+        storage_used_gb=float(disk.get("storage_used_gb") or 0),
+        storage_pct=float(disk.get("storage_pct") or 0),
+        file_count=int(disk.get("file_count") or 0),
         isolation_type=env.isolation_type or "filesystem",
-        soft_warning=bool(snap["soft_warning"]),
-        hard_exceeded=bool(snap["hard_exceeded"]),
-        storage_status=str(snap["storage_status"]),
-        message=str(snap["message"]),
+        soft_warning=bool(disk.get("soft_warning")),
+        high_warning=bool(disk.get("high_warning")),
+        critical_warning=bool(disk.get("critical_warning")),
+        hard_exceeded=bool(disk.get("hard_exceeded")),
+        storage_status=str(disk.get("storage_status") or "ok"),
+        storage_tier=str(disk.get("storage_tier") or composite.get("tier") or "ok"),
+        components=dict(composite.get("components") or {}),
+        os_quota=dict(composite.get("os_quota") or {}),
+        host=dict(composite.get("host") or {}),
+        message=str(composite.get("message") or disk.get("message") or ""),
     )
 
 
