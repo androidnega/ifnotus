@@ -1295,26 +1295,65 @@ export const customersApi = {
         id: string
         environment_id: string
         name: string
-        stack: string
+        runtime: string
+        framework?: string | null
+        framework_label?: string | null
+        runtime_version?: string | null
         status: string
         port?: number | null
+        slug?: string | null
         message?: string | null
       }>
     >(`/customers/environments/${environmentId}/applications`),
 
+  listEnvApplicationCatalog: (environmentId: string) =>
+    apiClient.get<
+      Array<{
+        id: string
+        runtime: string
+        label: string
+        stack_key: string
+        stack_label: string
+        runtime_version: string
+        default_build: string
+        default_start: string
+        allowed: boolean
+      }>
+    >(`/customers/environments/${environmentId}/applications/catalog`),
+
   createEnvApplication: (
     environmentId: string,
-    body: { name: string; stack: string; git_url?: string | null },
+    body: {
+      name: string
+      framework: string
+      git_url?: string | null
+      runtime_version?: string | null
+      build_command?: string | null
+      start_command?: string | null
+      env_vars?: Record<string, string>
+    },
   ) =>
     apiClient.post<{
       id: string
       environment_id: string
       name: string
-      stack: string
+      runtime: string
+      framework?: string | null
       status: string
       port?: number | null
       message?: string | null
     }>(`/customers/environments/${environmentId}/applications`, body),
+
+  deployEnvApplication: (environmentId: string, applicationId: string) =>
+    apiClient.post<{
+      id: string
+      name: string
+      status: string
+      message?: string | null
+    }>(`/customers/environments/${environmentId}/applications/${applicationId}/deploy`),
+
+  deleteEnvApplication: (environmentId: string, applicationId: string) =>
+    apiClient.delete(`/customers/environments/${environmentId}/applications/${applicationId}`),
 
   listEnvDatabasesV2: (environmentId: string) =>
     apiClient.get<

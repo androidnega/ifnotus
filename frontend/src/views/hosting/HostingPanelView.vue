@@ -38,7 +38,7 @@ const HOSTING_TO_SITE: Record<Exclude<HostingTab, 'overview' | 'backups'>, Porta
   domains: 'protect',
   email: 'mail',
   transfer: 'ftp',
-  apps: 'stack',
+  apps: 'applications',
   logs: 'logs',
 }
 
@@ -100,6 +100,13 @@ const {
   cronCommand,
   cronMsg,
   cronBusy,
+  appCatalog,
+  applications,
+  appMsg,
+  appBusy,
+  newAppName,
+  newAppFramework,
+  newAppGitUrl,
   setActiveEnvId,
   selectEnv,
   hydrateActiveEnv,
@@ -130,6 +137,11 @@ const {
   loadBackups,
   createBackup,
   restoreBackup,
+  loadAppCatalog,
+  loadApplications,
+  createApplication,
+  deployApplication,
+  deleteApplication,
   installStack,
   clearStack,
   loadLogs,
@@ -225,6 +237,10 @@ watch(environmentId, () => {
 
 watch(tab, (next) => {
   if (next === 'backups' && env.value) void loadBackups()
+  if (next === 'apps' && env.value) {
+    void loadAppCatalog()
+    void loadApplications()
+  }
 })
 
 onMounted(() => {
@@ -372,9 +388,23 @@ onMounted(() => {
           :log-entries="logEntries"
           :log-msg="logMsg"
           :log-busy="logBusy"
+          :applications="applications"
+          :app-catalog="appCatalog"
+          :app-msg="appMsg"
+          :app-busy="appBusy"
+          :new-app-name="newAppName"
+          :new-app-framework="newAppFramework"
+          :new-app-git-url="newAppGitUrl"
           @select-env="selectEnv"
           @load-files="loadFiles"
           @load-logs="loadLogs"
+          @load-applications="() => { loadAppCatalog(); loadApplications() }"
+          @create-application="createApplication"
+          @deploy-application="deployApplication"
+          @delete-application="deleteApplication"
+          @update:new-app-name="(v) => (newAppName = v)"
+          @update:new-app-framework="(v) => (newAppFramework = v)"
+          @update:new-app-git-url="(v) => (newAppGitUrl = v)"
           @go-up="goUp"
           @open-entry="openEntry"
           @save-file="saveFile"

@@ -11,7 +11,7 @@ const props = defineProps<{
   environments: CustomerEnvironment[]
   activeEnv: CustomerEnvironment
   activePlan?: HostingPlan | null
-  initialTab?: 'files' | 'stack' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail' | ''
+  initialTab?: 'files' | 'stack' | 'applications' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail' | ''
   hideSubnav?: boolean
   filePath: string
   fileEntries: Array<{ name: string; path: string; is_dir: boolean; size_bytes?: number | null }>
@@ -41,6 +41,29 @@ const props = defineProps<{
     steps?: Array<{ id: string; label: string; state: string }>
   } | null
   stackOutcome?: 'idle' | 'running' | 'success' | 'error'
+  applications?: Array<{
+    id: string
+    name: string
+    runtime: string
+    framework?: string | null
+    framework_label?: string | null
+    runtime_version?: string | null
+    status: string
+    port?: number | null
+    slug?: string | null
+  }>
+  appCatalog?: Array<{
+    id: string
+    runtime: string
+    label: string
+    allowed: boolean
+    runtime_version?: string
+  }>
+  appMsg?: string
+  appBusy?: boolean
+  newAppName?: string
+  newAppFramework?: string
+  newAppGitUrl?: string
   cronJobs: Array<{
     id: string
     schedule: string
@@ -217,9 +240,16 @@ const emit = defineEmits<{
   restoreBackup: [string]
   openSupport: []
   loadLogs: []
+  loadApplications: []
+  createApplication: []
+  deployApplication: [string]
+  deleteApplication: [string]
+  'update:newAppName': [string]
+  'update:newAppFramework': [string]
+  'update:newAppGitUrl': [string]
 }>()
 
-const siteTab = ref<'files' | 'stack' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail'>('stack')
+const siteTab = ref<'files' | 'stack' | 'applications' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail'>('stack')
 const copiedKey = ref('')
 const customDomainInput = ref('')
 const assignPick = ref('')
@@ -256,6 +286,7 @@ watch(
     if (
       tab === 'files' ||
       tab === 'stack' ||
+      tab === 'applications' ||
       tab === 'cron' ||
       tab === 'database' ||
       tab === 'protect' ||
@@ -272,6 +303,7 @@ watch(
 )
 
 watch(siteTab, (tab) => {
+  if (tab === 'applications') emit('loadApplications')
   if (tab === 'database') {
     showPassword.value = false
     emit('loadDb', true)
@@ -432,6 +464,7 @@ function formatBytes(n?: number | null) {
 
     <nav v-if="!hideSubnav" class="subtabs" aria-label="Site sections">
       <button type="button" :class="{ on: siteTab === 'stack' }" @click="siteTab = 'stack'">Stack</button>
+      <button type="button" :class="{ on: siteTab === 'applications' }" @click="siteTab = 'applications'">Applications</button>
       <button type="button" :class="{ on: siteTab === 'files', off: !canFiles }" @click="siteTab = 'files'">Files</button>
       <button type="button" :class="{ on: siteTab === 'logs' }" @click="siteTab = 'logs'">Logs</button>
       <button type="button" :class="{ on: siteTab === 'cron', off: !canCron }" @click="siteTab = 'cron'">Cron</button>
@@ -455,6 +488,71 @@ function formatBytes(n?: number | null) {
         <button type="button" class="btn-ghost" @click="openFileManager('.')">Open at site root</button>
       </div>
       <p v-if="fileMsg" class="muted mt">{{ fileMsg }}</p>
+    </div>
+
+    <div v-else-if="siteTab === 'applications'" class="block">
+      <h3>Applications</h3>
+      <p class="muted">Run multiple apps on this site. IFNOTUS manages processes — no systemctl or pm2 access.</p>
+      <ul v-if="applications?.length" class="app-list mt">
+        <li v-for="app in applications" :key="app.id" class="app-row">
+          <div>
+            <strong>{{ app.name }}</strong>
+            <span class="muted">{{ app.framework_label || app.framework }} · {{ app.runtime_version || app.runtime }}</span>
+          </div>
+          <div class="app-actions">
+            <span class="pill" :class="app.status">{{ app.status }}</span>
+            <button
+              v-if="app.status === 'pending' || app.status === 'failed'"
+              type="button"
+              class="btn-primary"
+              :disabled="appBusy"
+              @click="emit('deployApplication', app.id)"
+            >
+              Deploy
+            </button>
+            <button type="button" class="btn-ghost" :disabled="appBusy" @click="emit('deleteApplication', app.id)">
+              Delete
+            </button>
+          </div>
+        </li>
+      </ul>
+      <p v-else class="muted mt">No applications yet.</p>
+      <div class="app-create mt">
+        <h4>Create application</h4>
+        <label class="field">
+          <span>Name</span>
+          <input
+            :value="newAppName"
+            type="text"
+            placeholder="My API"
+            @input="emit('update:newAppName', ($event.target as HTMLInputElement).value)"
+          />
+        </label>
+        <label class="field">
+          <span>Framework</span>
+          <select
+            :value="newAppFramework"
+            @change="emit('update:newAppFramework', ($event.target as HTMLSelectElement).value)"
+          >
+            <option v-for="f in appCatalog || []" :key="f.id" :value="f.id" :disabled="!f.allowed">
+              {{ f.label }}{{ f.allowed ? '' : ' (upgrade)' }}
+            </option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Git URL (optional)</span>
+          <input
+            :value="newAppGitUrl"
+            type="url"
+            placeholder="https://github.com/you/repo.git"
+            @input="emit('update:newAppGitUrl', ($event.target as HTMLInputElement).value)"
+          />
+        </label>
+        <button type="button" class="btn-primary" :disabled="appBusy || !newAppName" @click="emit('createApplication')">
+          Create application
+        </button>
+      </div>
+      <p v-if="appMsg" class="muted mt">{{ appMsg }}</p>
     </div>
 
     <div v-else-if="siteTab === 'stack'" class="block">

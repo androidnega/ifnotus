@@ -82,6 +82,7 @@ from app.schemas.platform import (
     EnvironmentDatabaseV2Response,
     ApplicationInstanceCreateRequest,
     ApplicationInstanceResponse,
+    ApplicationCatalogEntry,
     EnvironmentDnsResponse,
     EnvironmentBackupResponse,
     EnvironmentBackupRestoreResponse,
@@ -928,6 +929,27 @@ async def list_env_databases_v2(
 
 
 @router.get(
+    "/environments/{environment_id}/applications/catalog",
+    response_model=list[ApplicationCatalogEntry],
+)
+async def list_application_catalog(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> list[ApplicationCatalogEntry]:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    tenant = TenantService(session)
+    env = await tenant.get_owned_environment(customer.id, environment_id)
+    plan = await tenant.plan_for_environment(env)
+    from app.services.platform.application_runtime import ApplicationRuntimeService
+
+    rows = ApplicationRuntimeService(settings, session).list_catalog(plan)
+    return [ApplicationCatalogEntry.model_validate(r) for r in rows]
+
+
+@router.get(
     "/environments/{environment_id}/applications",
     response_model=list[ApplicationInstanceResponse],
 )
@@ -937,32 +959,13 @@ async def list_env_applications(
     session: DbSession,
     settings: SettingsDep,
 ) -> list[ApplicationInstanceResponse]:
-    """PHASE 10 stub: list ApplicationInstance rows (empty until model ships)."""
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.services.platform.application_runtime import ApplicationRuntimeService, app_to_response
 
-    try:
-        from app.models.platform import ApplicationInstance  # type: ignore[attr-defined]
-
-        result = await session.execute(
-            select(ApplicationInstance).where(ApplicationInstance.environment_id == env.id)
-        )
-        out: list[ApplicationInstanceResponse] = []
-        for item in result.scalars().all():
-            out.append(
-                ApplicationInstanceResponse(
-                    id=str(getattr(item, "id", "")),
-                    environment_id=env.id,
-                    name=str(getattr(item, "name", "") or "app"),
-                    stack=str(getattr(item, "stack", "") or "static"),
-                    status=str(getattr(item, "status", "pending") or "pending"),
-                    port=getattr(item, "port", None),
-                )
-            )
-        return out
-    except ImportError:
-        return []
+    apps = await ApplicationRuntimeService(settings, session).list_apps(env)
+    return [ApplicationInstanceResponse.model_validate(app_to_response(a)) for a in apps]
 
 
 @router.post(
@@ -976,57 +979,92 @@ async def create_env_application(
     session: DbSession,
     settings: SettingsDep,
 ) -> ApplicationInstanceResponse:
-    """PHASE 10 stub: entitlement-checked application create."""
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     tenant = TenantService(session)
     env = await tenant.get_owned_environment(customer.id, environment_id)
     plan = await tenant.plan_for_environment(env)
+    from app.services.platform.application_runtime import ApplicationRuntimeService, app_to_response
 
-    from app.services.platform.plan_matrix import pack_denied_message, stack_allowed
+    svc = ApplicationRuntimeService(settings, session)
+    item = await svc.create(
+        env,
+        plan=plan,
+        name=body.name,
+        framework=body.framework,
+        git_url=body.git_url,
+        runtime_version=body.runtime_version,
+        build_command=body.build_command,
+        start_command=body.start_command,
+        env_vars=body.env_vars,
+    )
+    row = ApplicationInstanceResponse.model_validate(app_to_response(item))
+    row.message = "Application created. Deploy to start."
+    return row
 
-    stack = body.stack.strip().lower()
-    if not stack_allowed(plan, stack):
-        raise AppException(pack_denied_message(f"Stack '{stack}'"), code="pack_feature")
 
-    try:
-        from uuid import uuid4
+@router.post(
+    "/environments/{environment_id}/applications/{application_id}/deploy",
+    response_model=ApplicationInstanceResponse,
+)
+async def deploy_env_application(
+    environment_id: UUID,
+    application_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> ApplicationInstanceResponse:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.services.platform.application_runtime import ApplicationRuntimeService, app_to_response
 
-        from app.models.platform import ApplicationInstance  # type: ignore[attr-defined]
+    svc = ApplicationRuntimeService(settings, session)
+    item = await svc.deploy(env, application_id)
+    row = ApplicationInstanceResponse.model_validate(app_to_response(item))
+    row.message = "Deployed."
+    return row
 
-        item = ApplicationInstance(
-            id=uuid4(),
-            environment_id=env.id,
-            name=body.name.strip(),
-            stack=stack,
-            status="pending",
-            git_url=body.git_url,
-        )
-        session.add(item)
-        await session.flush()
-        return ApplicationInstanceResponse(
-            id=str(item.id),
-            environment_id=env.id,
-            name=item.name,
-            stack=item.stack,
-            status=getattr(item, "status", "pending"),
-            port=getattr(item, "port", None),
-            message="Application registered.",
-        )
-    except ImportError:
-        return ApplicationInstanceResponse(
-            id=f"pending-{environment_id}-{stack}",
-            environment_id=env.id,
-            name=body.name.strip(),
-            stack=stack,
-            status="pending",
-            message="Application runtime registry is not provisioned yet; entitlement check passed.",
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise AppException(
-            f"Could not create application: {str(exc)[:240]}",
-            code="application_create_failed",
-        ) from exc
+
+@router.post(
+    "/environments/{environment_id}/applications/{application_id}/restart",
+    response_model=ApplicationInstanceResponse,
+)
+async def restart_env_application(
+    environment_id: UUID,
+    application_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> ApplicationInstanceResponse:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.services.platform.application_runtime import ApplicationRuntimeService, app_to_response
+
+    item = await ApplicationRuntimeService(settings, session).restart(env, application_id)
+    row = ApplicationInstanceResponse.model_validate(app_to_response(item))
+    row.message = "Restarted."
+    return row
+
+
+@router.delete(
+    "/environments/{environment_id}/applications/{application_id}",
+    status_code=204,
+)
+async def delete_env_application(
+    environment_id: UUID,
+    application_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> None:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.services.platform.application_runtime import ApplicationRuntimeService
+
+    await ApplicationRuntimeService(settings, session).delete(env, application_id)
 
 
 def _env_db_id(env) -> str:

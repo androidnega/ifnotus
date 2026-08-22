@@ -766,17 +766,40 @@ class DomainAvailabilityResponse(SchemaBase):
 
 class ApplicationInstanceCreateRequest(SchemaBase):
     name: str = Field(min_length=1, max_length=120)
-    stack: str = Field(min_length=1, max_length=64)
+    framework: str = Field(min_length=1, max_length=64)
     git_url: str | None = Field(default=None, max_length=512)
+    runtime_version: str | None = Field(default=None, max_length=32)
+    build_command: str | None = Field(default=None, max_length=512)
+    start_command: str | None = Field(default=None, max_length=512)
+    env_vars: dict[str, str] = Field(default_factory=dict)
+
+
+class ApplicationCatalogEntry(SchemaBase):
+    id: str
+    runtime: str
+    label: str
+    stack_key: str
+    stack_label: str
+    runtime_version: str
+    default_build: str
+    default_start: str
+    allowed: bool
 
 
 class ApplicationInstanceResponse(SchemaBase):
     id: str
     environment_id: UUID
     name: str
-    stack: str
+    runtime: str
+    framework: str | None = None
+    framework_label: str | None = None
+    runtime_version: str | None = None
     status: str = "pending"
     port: int | None = None
+    git_url: str | None = None
+    slug: str | None = None
+    build_command: str | None = None
+    start_command: str | None = None
     message: str | None = None
 
 

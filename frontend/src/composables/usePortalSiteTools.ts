@@ -4,7 +4,7 @@ import type { CustomerDashboard } from '@/types/platform'
 import type { DbQueryResult, DbSchema } from '@/types/databases'
 import { formatCpu, formatRamGb } from '@/lib/planResources'
 
-export type PortalSiteTab = 'files' | 'stack' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail' | ''
+export type PortalSiteTab = 'files' | 'stack' | 'applications' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail' | ''
 
 export function usePortalSiteTools(
   dash: Ref<CustomerDashboard | null>,
@@ -163,6 +163,34 @@ export function usePortalSiteTools(
   const cronCommand = ref('php artisan schedule:run')
   const cronMsg = ref('')
   const cronBusy = ref(false)
+  const appCatalog = ref<
+    Array<{
+      id: string
+      runtime: string
+      label: string
+      stack_key: string
+      allowed: boolean
+      runtime_version?: string
+    }>
+  >([])
+  const applications = ref<
+    Array<{
+      id: string
+      name: string
+      runtime: string
+      framework?: string | null
+      framework_label?: string | null
+      runtime_version?: string | null
+      status: string
+      port?: number | null
+      slug?: string | null
+    }>
+  >([])
+  const appMsg = ref('')
+  const appBusy = ref(false)
+  const newAppName = ref('')
+  const newAppFramework = ref('fastapi')
+  const newAppGitUrl = ref('')
 
   const lockedEnvId = computed(() => {
     if (!options?.lockEnvId) return ''
@@ -845,6 +873,81 @@ export function usePortalSiteTools(
     }
   }
 
+  async function loadAppCatalog() {
+    if (!activeEnv.value) return
+    try {
+      const { data } = await customersApi.listEnvApplicationCatalog(activeEnv.value.id)
+      appCatalog.value = data
+      const firstAllowed = data.find((f) => f.allowed)
+      if (firstAllowed && !newAppFramework.value) newAppFramework.value = firstAllowed.id
+    } catch {
+      appCatalog.value = []
+    }
+  }
+
+  async function loadApplications() {
+    if (!activeEnv.value) return
+    try {
+      const { data } = await customersApi.listEnvApplications(activeEnv.value.id)
+      applications.value = data
+    } catch {
+      applications.value = []
+    }
+  }
+
+  async function createApplication() {
+    if (!activeEnv.value || !newAppName.value.trim()) return
+    appBusy.value = true
+    appMsg.value = ''
+    try {
+      const { data } = await customersApi.createEnvApplication(activeEnv.value.id, {
+        name: newAppName.value.trim(),
+        framework: newAppFramework.value,
+        git_url: newAppGitUrl.value.trim() || undefined,
+      })
+      appMsg.value = data.message || 'Application created.'
+      newAppName.value = ''
+      newAppGitUrl.value = ''
+      await loadApplications()
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      appMsg.value = err.response?.data?.error?.message ?? 'Could not create application.'
+    } finally {
+      appBusy.value = false
+    }
+  }
+
+  async function deployApplication(id: string) {
+    if (!activeEnv.value) return
+    appBusy.value = true
+    appMsg.value = ''
+    try {
+      const { data } = await customersApi.deployEnvApplication(activeEnv.value.id, id)
+      appMsg.value = data.message || 'Deployed.'
+      await loadApplications()
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { message?: string } } }
+      appMsg.value = err.response?.data?.message ?? 'Deploy failed.'
+    } finally {
+      appBusy.value = false
+    }
+  }
+
+  async function deleteApplication(id: string) {
+    if (!activeEnv.value || !confirm('Delete this application?')) return
+    appBusy.value = true
+    try {
+      await customersApi.deleteEnvApplication(activeEnv.value.id, id)
+      appMsg.value = 'Application removed.'
+      await loadApplications()
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      appMsg.value = err.response?.data?.error?.message ?? 'Delete failed.'
+    } finally {
+      appBusy.value = false
+    }
+  }
+
   async function installStack() {
     if (!activeEnv.value || !selectedStack.value) return
     const pick = stacks.value.find((s) => s.id === selectedStack.value)
@@ -1111,6 +1214,13 @@ export function usePortalSiteTools(
     cronCommand,
     cronMsg,
     cronBusy,
+    appCatalog,
+    applications,
+    appMsg,
+    appBusy,
+    newAppName,
+    newAppFramework,
+    newAppGitUrl,
     setActiveEnvId,
     selectEnv,
     hydrateActiveEnv,
@@ -1144,6 +1254,11 @@ export function usePortalSiteTools(
     createBackup,
     restoreBackup,
     loadStacks,
+    loadAppCatalog,
+    loadApplications,
+    createApplication,
+    deployApplication,
+    deleteApplication,
     installStack,
     clearStack,
     loadLogs,
