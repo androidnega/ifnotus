@@ -193,8 +193,8 @@ class EnvironmentLifecycleService:
                     )
                     for row in result.scalars().all():
                         await self._session.delete(row)
-        except Exception:  # noqa: BLE001
-            pass
+            except Exception:  # noqa: BLE001
+                pass
         try:
             from app.services.platform.environment_mail import EnvironmentMailService
 
