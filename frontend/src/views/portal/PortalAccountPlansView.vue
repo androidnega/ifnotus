@@ -221,84 +221,86 @@ async function checkout() {
       </p>
 
       <!-- Step 1: plans -->
-      <div v-else-if="!selected" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <button
-          v-for="plan in sortedPlans"
-          :key="plan.id"
-          type="button"
-          class="group flex flex-col rounded-2xl border bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-4 focus:ring-slate-900/10 sm:p-5"
-          :class="
-            plan.id === featuredId
-              ? 'border-slate-900 ring-1 ring-slate-900'
-              : 'border-slate-200 hover:border-slate-300'
-          "
-          @click="choose(plan)"
-        >
-          <div class="flex items-start justify-between gap-2">
-            <h2 class="text-base font-bold text-slate-900 sm:text-lg">{{ plan.name }}</h2>
+      <div v-else-if="!selected">
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <button
+            v-for="plan in sortedPlans"
+            :key="plan.id"
+            type="button"
+            class="group flex flex-col rounded-2xl border bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-4 focus:ring-slate-900/10 sm:p-5"
+            :class="
+              plan.id === featuredId
+                ? 'border-slate-900 ring-1 ring-slate-900'
+                : 'border-slate-200 hover:border-slate-300'
+            "
+            @click="choose(plan)"
+          >
+            <div class="flex items-start justify-between gap-2">
+              <h2 class="text-base font-bold text-slate-900 sm:text-lg">{{ plan.name }}</h2>
+              <span
+                v-if="plan.id === featuredId"
+                class="shrink-0 rounded-full bg-slate-900 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white"
+              >
+                Popular
+              </span>
+            </div>
+            <p class="mt-3 flex items-baseline gap-1 text-slate-900">
+              <span class="text-sm font-semibold text-slate-500">GHS</span>
+              <span class="text-3xl font-extrabold tracking-tight">{{ priceLabel(plan) }}</span>
+              <span class="text-sm text-slate-500">/mo</span>
+            </p>
+            <p class="mt-1 text-xs font-medium text-slate-500">{{ sshHeadline(plan) }}</p>
+            <dl class="mt-4 grid grid-cols-2 gap-2 text-xs text-slate-600">
+              <div class="rounded-xl bg-slate-50 px-2.5 py-2">
+                <dt class="text-slate-400">CPU</dt>
+                <dd class="mt-0.5 font-semibold text-slate-800">{{ formatCpu(plan.cpu_cores) }} vCPU</dd>
+              </div>
+              <div class="rounded-xl bg-slate-50 px-2.5 py-2">
+                <dt class="text-slate-400">RAM</dt>
+                <dd class="mt-0.5 font-semibold text-slate-800">{{ formatRamGb(plan.ram_gb) }}</dd>
+              </div>
+              <div class="rounded-xl bg-slate-50 px-2.5 py-2">
+                <dt class="text-slate-400">Disk</dt>
+                <dd class="mt-0.5 font-semibold text-slate-800">{{ plan.storage_gb }} GB</dd>
+              </div>
+              <div class="rounded-xl bg-slate-50 px-2.5 py-2">
+                <dt class="text-slate-400">AI</dt>
+                <dd class="mt-0.5 font-semibold text-slate-800">{{ plan.ai_credits }} credits</dd>
+              </div>
+            </dl>
+            <p class="mt-3 line-clamp-2 text-[11px] leading-snug text-slate-500">
+              {{ stacksPreview(plan) }}
+            </p>
             <span
-              v-if="plan.id === featuredId"
-              class="shrink-0 rounded-full bg-slate-900 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white"
+              class="mt-4 inline-flex w-full items-center justify-center rounded-xl bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white transition group-hover:bg-slate-800"
             >
-              Popular
+              Select {{ plan.name }}
             </span>
-          </div>
-          <p class="mt-3 flex items-baseline gap-1 text-slate-900">
-            <span class="text-sm font-semibold text-slate-500">GHS</span>
-            <span class="text-3xl font-extrabold tracking-tight">{{ priceLabel(plan) }}</span>
-            <span class="text-sm text-slate-500">/mo</span>
-          </p>
-          <p class="mt-1 text-xs font-medium text-slate-500">{{ sshHeadline(plan) }}</p>
-          <dl class="mt-4 grid grid-cols-2 gap-2 text-xs text-slate-600">
-            <div class="rounded-xl bg-slate-50 px-2.5 py-2">
-              <dt class="text-slate-400">CPU</dt>
-              <dd class="mt-0.5 font-semibold text-slate-800">{{ formatCpu(plan.cpu_cores) }} vCPU</dd>
-            </div>
-            <div class="rounded-xl bg-slate-50 px-2.5 py-2">
-              <dt class="text-slate-400">RAM</dt>
-              <dd class="mt-0.5 font-semibold text-slate-800">{{ formatRamGb(plan.ram_gb) }}</dd>
-            </div>
-            <div class="rounded-xl bg-slate-50 px-2.5 py-2">
-              <dt class="text-slate-400">Disk</dt>
-              <dd class="mt-0.5 font-semibold text-slate-800">{{ plan.storage_gb }} GB</dd>
-            </div>
-            <div class="rounded-xl bg-slate-50 px-2.5 py-2">
-              <dt class="text-slate-400">AI</dt>
-              <dd class="mt-0.5 font-semibold text-slate-800">{{ plan.ai_credits }} credits</dd>
-            </div>
-          </dl>
-          <p class="mt-3 line-clamp-2 text-[11px] leading-snug text-slate-500">
-            {{ stacksPreview(plan) }}
-          </p>
-          <span
-            class="mt-4 inline-flex w-full items-center justify-center rounded-xl bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white transition group-hover:bg-slate-800"
-          >
-            Select {{ plan.name }}
-          </span>
-        </button>
-      </div>
-
-      <section
-        v-if="!loading && !error && !selected && comingSoon.length"
-        class="mt-8 border-t border-slate-200 pt-6"
-        aria-label="Coming soon"
-      >
-        <h2 class="text-base font-bold text-slate-900">Coming soon</h2>
-        <p class="mt-1 max-w-xl text-sm text-slate-600">
-          Dedicated VMs need their own provisioning path — not sold on this shared node.
-        </p>
-        <div class="mt-4 grid gap-3 sm:grid-cols-2">
-          <article
-            v-for="item in comingSoon"
-            :key="item.slug"
-            class="rounded-2xl border border-dashed border-slate-300 bg-slate-50/80 px-4 py-4"
-          >
-            <p class="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Coming soon</p>
-            <h3 class="mt-2 text-lg font-bold text-slate-900">{{ item.name }}</h3>
-            <p class="mt-1 text-sm leading-relaxed text-slate-600">{{ item.blurb }}</p>
-          </article>
+          </button>
         </div>
-      </section>
+
+        <section
+          v-if="comingSoon.length"
+          class="mt-8 border-t border-slate-200 pt-6"
+          aria-label="Coming soon"
+        >
+          <h2 class="text-base font-bold text-slate-900">Coming soon</h2>
+          <p class="mt-1 max-w-xl text-sm text-slate-600">
+            Dedicated VMs need their own provisioning path — not sold on this shared node.
+          </p>
+          <div class="mt-4 grid gap-3 sm:grid-cols-2">
+            <article
+              v-for="item in comingSoon"
+              :key="item.slug"
+              class="rounded-2xl border border-dashed border-slate-300 bg-slate-50/80 px-4 py-4"
+            >
+              <p class="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Coming soon</p>
+              <h3 class="mt-2 text-lg font-bold text-slate-900">{{ item.name }}</h3>
+              <p class="mt-1 text-sm leading-relaxed text-slate-600">{{ item.blurb }}</p>
+            </article>
+          </div>
+        </section>
+      </div>
 
       <!-- Step 2: domain -->
       <section v-else class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
