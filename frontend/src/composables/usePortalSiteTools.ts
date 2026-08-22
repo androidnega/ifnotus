@@ -38,6 +38,27 @@ export function usePortalSiteTools(
   const dbSelectedTable = ref('')
   const dbRowOffset = ref(0)
   const dbSql = ref('SELECT * FROM ')
+  const dbList = ref<
+    Array<{
+      id: string
+      engine?: string | null
+      logical_name?: string | null
+      name?: string | null
+      username?: string | null
+      host?: string | null
+      port?: number | null
+      password_set?: boolean
+      legacy?: boolean
+      status?: string | null
+      size_mb?: number | null
+      message?: string | null
+    }>
+  >([])
+  const selectedDbId = ref('')
+  const dbBusy = ref(false)
+  const dbActionMsg = ref('')
+  const newDbEngine = ref('mysql')
+  const newDbName = ref('')
   const ftpInfo = ref('')
   const ftpCreds = ref<{
     enabled?: boolean
@@ -340,10 +361,71 @@ export function usePortalSiteTools(
     }
   }
 
+  async function loadDbList() {
+    if (!activeEnv.value) return
+    dbActionMsg.value = ''
+    try {
+      const { data } = await customersApi.listEnvDatabases(activeEnv.value.id)
+      dbList.value = data
+      if (!selectedDbId.value && data.length) {
+        selectedDbId.value = data[0].id
+      } else if (selectedDbId.value && !data.some((d) => d.id === selectedDbId.value)) {
+        selectedDbId.value = data[0]?.id || ''
+      }
+      if (selectedDbId.value) {
+        await loadDb(true)
+      } else {
+        dbCreds.value = { empty: true }
+        dbInfo.value = 'No databases yet. Create one below or install WordPress/Laravel from Stack.'
+      }
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      dbActionMsg.value = err.response?.data?.error?.message ?? 'Could not load databases.'
+    }
+  }
+
   async function loadDb(reveal = true) {
     if (!activeEnv.value) return
     dbInfo.value = 'Loading…'
     try {
+      if (selectedDbId.value) {
+        if (!reveal) {
+          const row = dbList.value.find((d) => d.id === selectedDbId.value)
+          if (row) {
+            dbCreds.value = {
+              engine: row.engine,
+              name: row.name,
+              username: row.username,
+              host: row.host || 'localhost',
+              port: row.port || 3306,
+              password_set: row.password_set,
+              password: null,
+            }
+            dbInfo.value = ''
+            return
+          }
+        }
+        const { data } = await customersApi.revealEnvDatabase(activeEnv.value.id, selectedDbId.value)
+        if (!data.name && !data.engine) {
+          dbCreds.value = { empty: true }
+          dbInfo.value = 'No database on this site yet.'
+          dbSchema.value = null
+          dbRows.value = null
+          return
+        }
+        dbCreds.value = {
+          engine: data.engine,
+          name: data.name,
+          username: data.username,
+          host: data.host || 'localhost',
+          port: data.port || 3306,
+          password_set: Boolean(data.password),
+          password: data.password || null,
+        }
+        dbInfo.value = ''
+        await loadDbSchema()
+        return
+      }
       const { data } = await customersApi.getEnvDatabase(activeEnv.value.id, reveal)
       if (!data.name && !data.engine) {
         dbCreds.value = { empty: true }
@@ -369,6 +451,76 @@ export function usePortalSiteTools(
       dbInfo.value = msg
       dbCreds.value = { error: msg }
     }
+  }
+
+  async function createDatabase() {
+    if (!activeEnv.value || !newDbName.value.trim()) return
+    dbBusy.value = true
+    dbActionMsg.value = 'Creating…'
+    try {
+      await customersApi.createEnvDatabase(activeEnv.value.id, {
+        engine: newDbEngine.value,
+        logical_name: newDbName.value.trim(),
+      })
+      newDbName.value = ''
+      dbActionMsg.value = 'Database created.'
+      await loadDbList()
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      dbActionMsg.value = err.response?.data?.error?.message ?? 'Create failed.'
+    } finally {
+      dbBusy.value = false
+    }
+  }
+
+  async function deleteDatabase(dbId: string) {
+    if (!activeEnv.value) return
+    if (!confirm('Delete this database? A backup is taken first when supported.')) return
+    dbBusy.value = true
+    dbActionMsg.value = 'Deleting…'
+    try {
+      await customersApi.deleteEnvDatabase(activeEnv.value.id, dbId)
+      if (selectedDbId.value === dbId) selectedDbId.value = ''
+      dbActionMsg.value = 'Database deleted.'
+      await loadDbList()
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      dbActionMsg.value = err.response?.data?.error?.message ?? 'Delete failed.'
+    } finally {
+      dbBusy.value = false
+    }
+  }
+
+  async function resetDbPassword(dbId: string) {
+    if (!activeEnv.value) return
+    if (!confirm('Generate a new password for this database?')) return
+    dbBusy.value = true
+    dbActionMsg.value = 'Resetting password…'
+    try {
+      const { data } = await customersApi.resetEnvDatabasePassword(activeEnv.value.id, dbId)
+      if (selectedDbId.value === dbId && data) {
+        dbCreds.value = {
+          engine: data.engine,
+          name: data.name,
+          username: data.username,
+          host: data.host || 'localhost',
+          port: data.port || 3306,
+          password_set: Boolean(data.password),
+          password: data.password || null,
+        }
+      }
+      dbActionMsg.value = 'Password reset — copy the new value now.'
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      dbActionMsg.value = err.response?.data?.error?.message ?? 'Reset failed.'
+    } finally {
+      dbBusy.value = false
+    }
+  }
+
+  function selectDatabase(dbId: string) {
+    selectedDbId.value = dbId
+    loadDb(true)
   }
 
   async function loadDbSchema() {
@@ -1120,6 +1272,9 @@ export function usePortalSiteTools(
     fileContent.value = ''
     dbInfo.value = ''
     dbCreds.value = null
+    dbList.value = []
+    selectedDbId.value = ''
+    dbActionMsg.value = ''
     dbSchema.value = null
     dbRows.value = null
     ftpInfo.value = ''
@@ -1182,6 +1337,12 @@ export function usePortalSiteTools(
     dbSelectedTable,
     dbRowOffset,
     dbSql,
+    dbList,
+    selectedDbId,
+    dbBusy,
+    dbActionMsg,
+    newDbEngine,
+    newDbName,
     ftpInfo,
     ftpCreds,
     sftpCreds,
@@ -1229,9 +1390,14 @@ export function usePortalSiteTools(
     goUp,
     saveFile,
     loadDb,
+    loadDbList,
     loadDbSchema,
     loadDbRows,
     runDbQuery,
+    createDatabase,
+    deleteDatabase,
+    resetDbPassword,
+    selectDatabase,
     loadFtp,
     loadSftp,
     ensureSftp,

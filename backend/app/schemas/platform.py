@@ -810,10 +810,32 @@ class EnvironmentDatabaseV2Response(SchemaBase):
     id: str
     environment_id: UUID
     engine: str | None = None
+    logical_name: str | None = None
     name: str | None = None
     username: str | None = None
     host: str | None = None
     port: int | None = None
     password_set: bool = False
     legacy: bool = False
+    status: str | None = "active"
+    size_mb: float | None = None
+    storage_limit_mb: int | None = None
+    remote_access_mode: str | None = None
     message: str | None = None
+
+
+class EnvironmentDatabaseCreateRequest(SchemaBase):
+    engine: str = Field(min_length=3, max_length=24)
+    logical_name: str | None = Field(default=None, max_length=64)
+    name: str | None = Field(default=None, max_length=64)
+
+
+class EnvironmentDatabaseRevealResponse(SchemaBase):
+    id: str
+    engine: str | None = None
+    name: str | None = None
+    username: str | None = None
+    host: str | None = None
+    port: int | None = None
+    password: str | None = None
+    connection_uri: str | None = None

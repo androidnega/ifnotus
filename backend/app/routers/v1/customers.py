@@ -79,6 +79,8 @@ from app.schemas.platform import (
     TotpConfirmRequest,
     TotpSetupResponse,
     EnvironmentDatabaseResponse,
+    EnvironmentDatabaseCreateRequest,
+    EnvironmentDatabaseRevealResponse,
     EnvironmentDatabaseV2Response,
     ApplicationInstanceCreateRequest,
     ApplicationInstanceResponse,
@@ -873,59 +875,126 @@ async def get_env_database(
     "/environments/{environment_id}/databases-v2",
     response_model=list[EnvironmentDatabaseV2Response],
 )
+@router.get(
+    "/environments/{environment_id}/databases",
+    response_model=list[EnvironmentDatabaseV2Response],
+)
 async def list_env_databases_v2(
     environment_id: UUID,
     user: CurrentUser,
     session: DbSession,
     settings: SettingsDep,
 ) -> list[EnvironmentDatabaseV2Response]:
-    """PHASE 11 stub: EnvironmentDatabase registry + legacy db_* as synthetic rows."""
+    """List MySQL/PostgreSQL databases for this environment (legacy row included)."""
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
-    rows: list[EnvironmentDatabaseV2Response] = []
+    plan = await TenantService(session).require_capability(env, "db_manage", label="Database management")
+    from app.services.platform.environment_databases import EnvironmentDatabaseService
 
-    try:
-        from app.models.platform import EnvironmentDatabase  # type: ignore[attr-defined]
+    return await EnvironmentDatabaseService(settings, session).list_databases(env, plan)
 
-        result = await session.execute(
-            select(EnvironmentDatabase).where(EnvironmentDatabase.environment_id == env.id)
-        )
-        for item in result.scalars().all():
-            rows.append(
-                EnvironmentDatabaseV2Response(
-                    id=str(getattr(item, "id", "")),
-                    environment_id=env.id,
-                    engine=getattr(item, "engine", None),
-                    name=getattr(item, "name", None),
-                    username=getattr(item, "username", None),
-                    host=_customer_db_host(getattr(item, "host", None)),
-                    port=getattr(item, "port", None),
-                    password_set=bool(getattr(item, "password_encrypted", None)),
-                    legacy=False,
-                )
-            )
-    except ImportError:
-        rows = []
 
-    if env.db_name or env.db_engine:
-        legacy_id = str(getattr(env, "db_registry_id", None) or f"legacy-{env.id}")
-        if not any(r.id == legacy_id or (r.name == env.db_name and r.legacy) for r in rows):
-            rows.append(
-                EnvironmentDatabaseV2Response(
-                    id=legacy_id,
-                    environment_id=env.id,
-                    engine=env.db_engine,
-                    name=env.db_name,
-                    username=env.db_username,
-                    host=_customer_db_host(env.db_host),
-                    port=env.db_port,
-                    password_set=bool(env.db_password_encrypted),
-                    legacy=True,
-                    message="Migrated from environment db_* fields.",
-                )
-            )
-    return rows
+@router.post(
+    "/environments/{environment_id}/databases",
+    response_model=EnvironmentDatabaseV2Response,
+)
+async def create_env_database(
+    environment_id: UUID,
+    body: EnvironmentDatabaseCreateRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> EnvironmentDatabaseV2Response:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    plan = await TenantService(session).require_capability(env, "db_manage", label="Database management")
+    from app.services.platform.environment_databases import EnvironmentDatabaseService
+
+    return await EnvironmentDatabaseService(settings, session).create(env, plan, body)
+
+
+@router.post(
+    "/environments/{environment_id}/databases/{database_id}/reveal",
+    response_model=EnvironmentDatabaseRevealResponse,
+)
+async def reveal_env_database(
+    environment_id: UUID,
+    database_id: str,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> EnvironmentDatabaseRevealResponse:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "db_manage", label="Database management")
+    from app.services.platform.environment_databases import EnvironmentDatabaseService
+
+    return await EnvironmentDatabaseService(settings, session).reveal(env, database_id)
+
+
+@router.post(
+    "/environments/{environment_id}/databases/{database_id}/reset-password",
+    response_model=EnvironmentDatabaseRevealResponse,
+)
+async def reset_env_database_password(
+    environment_id: UUID,
+    database_id: str,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> EnvironmentDatabaseRevealResponse:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    plan = await TenantService(session).require_capability(env, "db_manage", label="Database management")
+    _require_db_write(plan)
+    from app.services.platform.environment_databases import EnvironmentDatabaseService
+
+    return await EnvironmentDatabaseService(settings, session).reset_password(env, database_id)
+
+
+@router.delete(
+    "/environments/{environment_id}/databases/{database_id}",
+    response_model=OperationResult,
+)
+async def delete_env_database(
+    environment_id: UUID,
+    database_id: str,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> OperationResult:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    plan = await TenantService(session).require_capability(env, "db_manage", label="Database management")
+    _require_db_write(plan)
+    from app.services.platform.environment_databases import EnvironmentDatabaseService
+
+    await EnvironmentDatabaseService(settings, session).delete(env, plan, database_id)
+    return OperationResult(success=True, message="Database deleted.")
+
+
+@router.post(
+    "/environments/{environment_id}/databases/{database_id}/backup",
+)
+async def backup_env_database(
+    environment_id: UUID,
+    database_id: str,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> dict:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    plan = await TenantService(session).require_capability(env, "db_manage", label="Database management")
+    from app.services.platform.environment_databases import EnvironmentDatabaseService
+
+    return await EnvironmentDatabaseService(settings, session).backup(env, plan, database_id)
 
 
 @router.get(

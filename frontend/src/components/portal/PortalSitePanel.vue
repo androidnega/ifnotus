@@ -104,6 +104,25 @@ const props = defineProps<{
   dbRowOffset?: number
   dbSql?: string
   dbCanWrite?: boolean
+  dbList?: Array<{
+    id: string
+    engine?: string | null
+    logical_name?: string | null
+    name?: string | null
+    username?: string | null
+    host?: string | null
+    port?: number | null
+    password_set?: boolean
+    legacy?: boolean
+    status?: string | null
+    size_mb?: number | null
+    message?: string | null
+  }>
+  selectedDbId?: string
+  dbBusy?: boolean
+  dbActionMsg?: string
+  newDbEngine?: string
+  newDbName?: string
   ftpInfo?: string
   ftpCreds?: {
     enabled?: boolean
@@ -215,9 +234,16 @@ const emit = defineEmits<{
   ]
   deleteCron: [string]
   loadDb: [boolean]
+  loadDbList: []
   loadDbSchema: []
   loadDbRows: [string, number?]
   runDbQuery: []
+  createDatabase: []
+  deleteDatabase: [string]
+  resetDbPassword: [string]
+  selectDatabase: [string]
+  'update:newDbEngine': [string]
+  'update:newDbName': [string]
   updateDbSql: [string]
   loadFtp: [boolean?]
   ensureFtp: [boolean?]
@@ -306,7 +332,7 @@ watch(siteTab, (tab) => {
   if (tab === 'applications') emit('loadApplications')
   if (tab === 'database') {
     showPassword.value = false
-    emit('loadDb', true)
+    emit('loadDbList')
   }
   if (tab === 'ftp') {
     showFtpPassword.value = false
@@ -810,10 +836,9 @@ function formatBytes(n?: number | null) {
     <div v-else-if="siteTab === 'database'" class="block">
       <div class="db-head">
         <div>
-          <h3>MySQL / Database</h3>
+          <h3>Databases</h3>
           <p class="muted">
-            Connection details for your site database, plus a full SQL studio (structure, browse, edit, run queries) —
-            the same jobs phpMyAdmin covers on classic cPanel.
+            MySQL and PostgreSQL on this site — create extra databases, reveal credentials, and open SQL studio for the primary stack database.
           </p>
         </div>
         <button
@@ -825,9 +850,65 @@ function formatBytes(n?: number | null) {
           Open SQL studio
         </button>
       </div>
-      <p v-if="dbCreds && !dbCreds.empty && !dbCreds.error" class="hint mt">
-        SQL studio opens in a new page — browse tables, edit rows, and run SQL without leaving your account.
-      </p>
+
+      <ul v-if="dbList?.length" class="app-list mt">
+        <li
+          v-for="db in dbList"
+          :key="db.id"
+          class="app-row"
+          :class="{ on: selectedDbId === db.id }"
+        >
+          <button type="button" class="db-pick" @click="emit('selectDatabase', db.id)">
+            <strong>{{ db.logical_name || db.name }}</strong>
+            <span class="muted">
+              {{ db.engine }} · {{ db.name }}
+              <template v-if="db.size_mb != null"> · {{ db.size_mb }} MB</template>
+              <template v-if="db.legacy"> · primary</template>
+            </span>
+          </button>
+          <div class="app-actions">
+            <button type="button" class="btn-ghost" :disabled="dbBusy || db.legacy" @click="emit('resetDbPassword', db.id)">
+              Reset password
+            </button>
+            <button
+              type="button"
+              class="btn-ghost"
+              :disabled="dbBusy || db.legacy"
+              @click="emit('deleteDatabase', db.id)"
+            >
+              Delete
+            </button>
+          </div>
+        </li>
+      </ul>
+
+      <div class="app-create mt">
+        <h4>Create database</h4>
+        <label class="field">
+          <span>Engine</span>
+          <select
+            :value="newDbEngine"
+            @change="emit('update:newDbEngine', ($event.target as HTMLSelectElement).value)"
+          >
+            <option value="mysql">MySQL</option>
+            <option value="postgresql">PostgreSQL</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Label</span>
+          <input
+            :value="newDbName"
+            type="text"
+            placeholder="analytics"
+            @input="emit('update:newDbName', ($event.target as HTMLInputElement).value)"
+          />
+        </label>
+        <button type="button" class="btn-primary" :disabled="dbBusy || !newDbName" @click="emit('createDatabase')">
+          Create database
+        </button>
+      </div>
+      <p v-if="dbActionMsg" class="muted mt">{{ dbActionMsg }}</p>
+
       <p v-if="dbEngineLabel === 'PostgreSQL'" class="muted mt">
         This login is PostgreSQL. WordPress and Laravel on this pack use MySQL — install that stack when you need MySQL for those apps.
       </p>

@@ -57,6 +57,12 @@ const {
   dbSelectedTable,
   dbRowOffset,
   dbSql,
+  dbList,
+  selectedDbId,
+  dbBusy,
+  dbActionMsg,
+  newDbEngine,
+  newDbName,
   ftpInfo,
   ftpCreds,
   sftpCreds,
@@ -96,9 +102,14 @@ const {
   goUp,
   saveFile,
   loadDb,
+  loadDbList,
   loadDbSchema,
   loadDbRows,
   runDbQuery,
+  createDatabase,
+  deleteDatabase,
+  resetDbPassword,
+  selectDatabase,
   loadFtp,
   loadSftp,
   ensureSftp,
@@ -426,6 +437,12 @@ watch(
         :db-row-offset="dbRowOffset"
         :db-sql="dbSql"
         :db-can-write="dbCanWrite"
+        :db-list="dbList"
+        :selected-db-id="selectedDbId"
+        :db-busy="dbBusy"
+        :db-action-msg="dbActionMsg"
+        :new-db-engine="newDbEngine"
+        :new-db-name="newDbName"
         :ftp-info="ftpInfo"
         :ftp-creds="ftpCreds"
         :sftp-creds="sftpCreds"
@@ -454,8 +471,15 @@ watch(
         @toggle-cron="toggleCron"
         @delete-cron="deleteCron"
         @load-db="loadDb"
+        @load-db-list="loadDbList"
         @load-db-schema="loadDbSchema"
         @load-db-rows="loadDbRows"
+        @create-database="createDatabase"
+        @delete-database="deleteDatabase"
+        @reset-db-password="resetDbPassword"
+        @select-database="selectDatabase"
+        @update:new-db-engine="(v) => (newDbEngine = v)"
+        @update:new-db-name="(v) => (newDbName = v)"
         @run-db-query="runDbQuery"
         @update-db-sql="(v) => (dbSql = v)"
         @load-ftp="loadFtp"

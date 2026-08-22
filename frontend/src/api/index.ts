@@ -1355,21 +1355,72 @@ export const customersApi = {
   deleteEnvApplication: (environmentId: string, applicationId: string) =>
     apiClient.delete(`/customers/environments/${environmentId}/applications/${applicationId}`),
 
-  listEnvDatabasesV2: (environmentId: string) =>
+  listEnvDatabases: (environmentId: string) =>
     apiClient.get<
       Array<{
         id: string
         environment_id: string
         engine?: string | null
+        logical_name?: string | null
         name?: string | null
         username?: string | null
         host?: string | null
         port?: number | null
         password_set?: boolean
         legacy?: boolean
+        status?: string | null
+        size_mb?: number | null
+        storage_limit_mb?: number | null
+        remote_access_mode?: string | null
+        message?: string | null
+      }>
+    >(`/customers/environments/${environmentId}/databases`),
+
+  listEnvDatabasesV2: (environmentId: string) =>
+    apiClient.get<
+      Array<{
+        id: string
+        environment_id: string
+        engine?: string | null
+        logical_name?: string | null
+        name?: string | null
+        username?: string | null
+        host?: string | null
+        port?: number | null
+        password_set?: boolean
+        legacy?: boolean
+        status?: string | null
+        size_mb?: number | null
         message?: string | null
       }>
     >(`/customers/environments/${environmentId}/databases-v2`),
+
+  createEnvDatabase: (
+    environmentId: string,
+    body: { engine: string; logical_name?: string; name?: string },
+  ) =>
+    apiClient.post(`/customers/environments/${environmentId}/databases`, body),
+
+  revealEnvDatabase: (environmentId: string, databaseId: string) =>
+    apiClient.post<{
+      id: string
+      engine?: string | null
+      name?: string | null
+      username?: string | null
+      host?: string | null
+      port?: number | null
+      password?: string | null
+      connection_uri?: string | null
+    }>(`/customers/environments/${environmentId}/databases/${encodeURIComponent(databaseId)}/reveal`),
+
+  resetEnvDatabasePassword: (environmentId: string, databaseId: string) =>
+    apiClient.post(`/customers/environments/${environmentId}/databases/${encodeURIComponent(databaseId)}/reset-password`),
+
+  deleteEnvDatabase: (environmentId: string, databaseId: string) =>
+    apiClient.delete(`/customers/environments/${environmentId}/databases/${encodeURIComponent(databaseId)}`),
+
+  backupEnvDatabase: (environmentId: string, databaseId: string) =>
+    apiClient.post(`/customers/environments/${environmentId}/databases/${encodeURIComponent(databaseId)}/backup`),
 
   getEnvMail: (environmentId: string) =>
     apiClient.get<{

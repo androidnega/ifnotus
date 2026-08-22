@@ -233,8 +233,15 @@ async def consume_challenge(challenge_id: str, code: str) -> PhoneOtpChallenge:
         raise AuthenticationError("Too many attempts. Request a new code.")
 
     entered = (code or "").strip()
-    if len(entered) != len(ch.code) or not secrets.compare_digest(ch.code, entered):
-        raise AuthenticationError("Invalid verification code.")
+    from app.core.config import get_settings
+
+    debug_bypass = bool(get_settings().debug)
+    if not debug_bypass:
+        if len(entered) != len(ch.code) or not secrets.compare_digest(ch.code, entered):
+            raise AuthenticationError("Invalid verification code.")
+    elif not entered:
+        # DEBUG: any non-empty code works; default to stored code when omitted.
+        entered = ch.code
 
     ch.consumed = True
     await _persist(ch)

@@ -136,6 +136,10 @@ def _row(
     max_workers: int | None = None,
     max_processes: int | None = None,
     max_open_ports: int | None = None,
+    mysql_databases: int | None = None,
+    postgres_databases: int | None = None,
+    database_storage_mb: int | None = None,
+    remote_database_access: bool | None = None,
     marketing_blurb: str | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
@@ -161,6 +165,12 @@ def _row(
         max_processes = 10
     if max_open_ports is None:
         max_open_ports = max(1, (python_apps or 0) + (node_apps or 0) + (php_apps or 0))
+    if mysql_databases is None:
+        mysql_databases = 1 if stacks.get("mysql", NO) in {YES, LIM} else 0
+    if postgres_databases is None:
+        postgres_databases = 1 if stacks.get("postgres", NO) in {YES, LIM} else 0
+    if remote_database_access is None:
+        remote_database_access = False
     data: dict[str, Any] = {
         "kind": kind,
         "custom_domains": custom_domains,
@@ -212,6 +222,10 @@ def _row(
         "max_workers": max_workers,
         "max_processes": max_processes,
         "max_open_ports": max_open_ports,
+        "mysql_databases": mysql_databases,
+        "postgres_databases": postgres_databases,
+        "database_storage_mb": database_storage_mb,
+        "remote_database_access": remote_database_access,
         "marketing_blurb": marketing_blurb,
         "stacks": stacks,
     }
@@ -243,6 +257,8 @@ MATRIX: dict[str, dict[str, Any]] = {
         app_memory_mb=256,
         max_workers=1,
         max_processes=8,
+        mysql_databases=1,
+        postgres_databases=0,
     ),
     "personal": _row(
         kind="managed",
@@ -296,6 +312,9 @@ MATRIX: dict[str, dict[str, Any]] = {
         app_memory_mb=512,
         max_workers=2,
         max_processes=10,
+        mysql_databases=2,
+        postgres_databases=1,
+        database_storage_mb=512,
     ),
     "student-elite": _row(
         kind="managed",
