@@ -1815,6 +1815,13 @@ async def env_usage(
         os_quota=dict(composite.get("os_quota") or {}),
         host=dict(composite.get("host") or {}),
         message=str(composite.get("message") or disk.get("message") or ""),
+        note=str(
+            composite.get("note")
+            or (
+                "CPU/RAM are plan limits. Live disk usage is measured under your site folder. "
+                "OS quotas apply when the filesystem supports them."
+            )
+        ),
     )
 
 

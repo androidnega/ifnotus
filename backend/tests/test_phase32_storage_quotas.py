@@ -65,10 +65,14 @@ def test_setquota_invoked_when_available(tmp_path) -> None:
 
     settings = MagicMock(os_user_quota_enabled=True)
     with (
-        patch("app.services.platform.environment_storage.shutil.which", return_value="/usr/sbin/setquota"),
+        patch("app.services.platform.environment_storage.quota_tools_present", return_value=True),
         patch(
             "app.services.platform.environment_storage._detect_mount",
             return_value=("/", "ext4"),
+        ),
+        patch(
+            "app.services.platform.environment_storage.mount_supports_usrquota",
+            return_value=True,
         ),
         patch("app.services.platform.environment_storage.subprocess.run") as run,
     ):
@@ -80,4 +84,5 @@ def test_setquota_invoked_when_available(tmp_path) -> None:
             storage_limit_gb=5,
         )
     assert result["applied"] is True
+    assert result["hard_enforced"] is True
     assert run.called

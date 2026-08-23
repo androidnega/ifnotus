@@ -1,4 +1,4 @@
-"""PHASE 32 — real environment + host storage quotas."""
+"""PHASE 32 / 38F — real environment + host storage quotas."""
 
 from __future__ import annotations
 
@@ -111,6 +111,83 @@ def _detect_mount(path: Path) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _mount_options(mount: str) -> str:
+    try:
+        proc = subprocess.run(
+            ["findmnt", "-n", "-o", "OPTIONS", mount],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        if proc.returncode == 0:
+            return (proc.stdout or "").strip().lower()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return ""
+
+
+def mount_supports_usrquota(mount: str | None) -> bool:
+    """True when mount options advertise usrquota / quota (ext4/xfs style)."""
+    if not mount:
+        return False
+    opts = _mount_options(mount)
+    tokens = {p.strip() for p in opts.replace(",", " ").split() if p.strip()}
+    # Also accept journaled quota option forms.
+    if "usrquota" in tokens or "quota" in tokens:
+        return True
+    return any(t.startswith("usrjquota=") or t.startswith("jqfmt=") for t in tokens)
+
+
+def quota_tools_present() -> bool:
+    return shutil.which("setquota") is not None and shutil.which("quotaon") is not None
+
+
+def build_setquota_argv(
+    *,
+    username: str,
+    mount: str,
+    storage_limit_gb: float,
+    warn_pct: float = WARN_PCT,
+) -> list[str]:
+    """Build ``setquota -u`` argv. Blocks are KiB (1024-byte)."""
+    limit_gb = max(float(storage_limit_gb or 0), 0.0)
+    hard_kb = max(int(limit_gb * 1024 * 1024), 1)
+    soft_kb = max(int(hard_kb * (float(warn_pct) / 100.0)), 1)
+    hard_inodes = max(10_000, min(2_000_000, int(limit_gb * 50_000)))
+    soft_inodes = max(1, int(hard_inodes * (float(warn_pct) / 100.0)))
+    return [
+        "setquota",
+        "-u",
+        username,
+        str(soft_kb),
+        str(hard_kb),
+        str(soft_inodes),
+        str(hard_inodes),
+        mount,
+    ]
+
+
+def os_quota_runtime_ready(settings: Settings, home: str | Path | None) -> dict[str, Any]:
+    """Probe whether hard OS user quotas can actually be applied on this host."""
+    enabled = bool(getattr(settings, "os_user_quota_enabled", True))
+    mount, fstype = _detect_mount(
+        Path(home or getattr(settings, "customer_environments_root", "/") or "/")
+    )
+    tools = quota_tools_present()
+    usrquota = mount_supports_usrquota(mount)
+    ready = bool(enabled and tools and usrquota and mount)
+    return {
+        "settings_enabled": enabled,
+        "tools_present": tools,
+        "mount": mount,
+        "fstype": fstype,
+        "usrquota_enabled": usrquota,
+        "ready": ready,
+        "soft_tracking_only": not ready,
+    }
+
+
 def apply_os_user_quota(
     settings: Settings,
     *,
@@ -118,78 +195,97 @@ def apply_os_user_quota(
     home: str | Path | None,
     storage_limit_gb: int | float | None,
 ) -> dict[str, Any]:
-    """Best-effort Linux user quota via ``setquota`` (ext4/xfs when quota is on)."""
+    """Apply Linux user quota via ``setquota`` when the filesystem is quota-ready.
+
+    Never reports ``applied=True`` unless setquota succeeds. When settings claim
+    quotas are on but the host is not ready, returns an honest soft-tracking state.
+    """
     result: dict[str, Any] = {
         "applied": False,
         "available": False,
+        "hard_enforced": False,
+        "soft_tracking_only": True,
         "username": username,
         "message": "OS quotas not applied",
     }
-    if not getattr(settings, "os_user_quota_enabled", True):
-        result["message"] = "OS user quotas disabled in settings"
+    probe = os_quota_runtime_ready(settings, home)
+    result.update(
+        {
+            "settings_enabled": probe["settings_enabled"],
+            "tools_present": probe["tools_present"],
+            "mount": probe["mount"],
+            "fstype": probe["fstype"],
+            "usrquota_enabled": probe["usrquota_enabled"],
+        }
+    )
+
+    if not probe["settings_enabled"]:
+        result["message"] = "OS user quotas disabled in settings (soft panel tracking only)"
         return result
     if not username or not home:
         result["message"] = "Missing unix user or home"
         return result
-    if shutil.which("setquota") is None:
-        result["message"] = "setquota binary not found"
+    if not probe["tools_present"]:
+        result["message"] = "quota tools missing (setquota/quotaon) — soft panel tracking only"
+        logger.warning("os_quota_tools_missing", username=username)
         return result
-
-    mount, fstype = _detect_mount(Path(home))
-    if not mount:
+    if not probe["mount"]:
         result["message"] = "Could not detect filesystem mount"
+        return result
+    if not probe["usrquota_enabled"]:
+        result["message"] = (
+            f"Mount {probe['mount']} has no usrquota — soft panel tracking only"
+        )
+        logger.warning(
+            "os_quota_mount_not_ready",
+            username=username,
+            mount=probe["mount"],
+            fstype=probe["fstype"],
+        )
         return result
 
     limit_gb = max(float(storage_limit_gb or 0), 0.0)
     if limit_gb <= 0:
         result["message"] = "No storage limit"
+        result["available"] = True
         return result
 
-    # Soft = warn threshold of plan; hard = plan cap (1k blocks = 1 MiB for setquota -u)
-    hard_kb = int(limit_gb * 1024 * 1024)
-    soft_kb = max(int(hard_kb * (WARN_PCT / 100.0)), 1)
-    # Rough inode budget: ~50k inodes per GB (capped)
-    hard_inodes = max(10_000, min(2_000_000, int(limit_gb * 50_000)))
-    soft_inodes = max(1, int(hard_inodes * (WARN_PCT / 100.0)))
+    argv = build_setquota_argv(
+        username=username,
+        mount=str(probe["mount"]),
+        storage_limit_gb=limit_gb,
+    )
+    result["soft_kb"] = int(argv[3])
+    result["hard_kb"] = int(argv[4])
+    result["soft_inodes"] = int(argv[5])
+    result["hard_inodes"] = int(argv[6])
+    result["available"] = True
 
     try:
         proc = subprocess.run(
-            [
-                "setquota",
-                "-u",
-                username,
-                str(soft_kb),
-                str(hard_kb),
-                str(soft_inodes),
-                str(hard_inodes),
-                mount,
-            ],
+            argv,
             capture_output=True,
             text=True,
             check=False,
             timeout=15,
         )
-        result["available"] = True
-        result["mount"] = mount
-        result["fstype"] = fstype
-        result["soft_kb"] = soft_kb
-        result["hard_kb"] = hard_kb
-        result["soft_inodes"] = soft_inodes
-        result["hard_inodes"] = hard_inodes
         if proc.returncode == 0:
             result["applied"] = True
-            result["message"] = "OS user quota applied"
+            result["hard_enforced"] = True
+            result["soft_tracking_only"] = False
+            result["message"] = "OS user hard quota applied"
         else:
             err = (proc.stderr or proc.stdout or "").strip()[-300:]
             result["message"] = err or f"setquota exit {proc.returncode}"
-            logger.info(
+            logger.warning(
                 "os_quota_not_applied",
                 username=username,
-                mount=mount,
+                mount=probe["mount"],
                 error=result["message"],
             )
     except (OSError, subprocess.SubprocessError) as exc:
         result["message"] = str(exc)
+        logger.warning("os_quota_apply_error", username=username, error=str(exc))
     return result
 
 
@@ -208,7 +304,7 @@ class EnvironmentStorageService:
         root = env.document_root
         disk = usage_snapshot(root, env.storage_limit_gb)
 
-        logs_bytes, logs_files = await asyncio.to_thread(
+        logs_bytes, _logs_files = await asyncio.to_thread(
             measure_path_usage, Path(root or ".") / ".ifnotus" / "cron-logs" if root else None
         )
         ifnotus_bytes, _ = await asyncio.to_thread(
@@ -254,7 +350,6 @@ class EnvironmentStorageService:
             "inode_file_count": int(disk["file_count"]),
         }
 
-        # Charged usage = site files (plan disk). Other components are tracked for ops.
         status = str(disk["storage_status"])
         pct = float(disk["storage_pct"])
         if pct >= HARD_PCT:
@@ -273,6 +368,13 @@ class EnvironmentStorageService:
             storage_limit_gb=env.storage_limit_gb,
         )
 
+        if os_quota.get("hard_enforced"):
+            note = "Panel usage tracking plus OS hard quota on the tenant Unix user."
+        else:
+            note = (
+                "Panel soft usage tracking only — OS hard quota is not active on this host yet."
+            )
+
         return {
             "environment_id": str(env.id),
             "domain": env.domain,
@@ -284,6 +386,7 @@ class EnvironmentStorageService:
             "host": host_storage_pressure(self._settings),
             "storage_status": status,
             "message": disk.get("message"),
+            "note": note,
         }
 
     def apply_quota_for_env(self, env: CustomerEnvironment) -> dict[str, Any]:
