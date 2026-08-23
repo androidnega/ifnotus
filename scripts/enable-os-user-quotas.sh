@@ -16,6 +16,15 @@ if ! command -v setquota >/dev/null 2>&1; then
   apt-get update -qq
   apt-get install -y -qq quota
 fi
+# Ubuntu kernels ship quota_v2 in linux-modules-extra
+KVER="$(uname -r)"
+if [[ ! -e "/lib/modules/${KVER}/kernel/fs/quota/quota_v2.ko.zst" && ! -e "/lib/modules/${KVER}/kernel/fs/quota/quota_v2.ko" ]]; then
+  apt-get update -qq
+  apt-get install -y -qq "linux-modules-extra-${KVER}" || true
+fi
+modprobe quota_tree 2>/dev/null || true
+modprobe quota_v2 2>/dev/null || true
+modprobe quota_v1 2>/dev/null || true
 
 mkdir -p /var/lib/ifnotus "$MNT_TMP"
 
@@ -46,7 +55,11 @@ if ! tune2fs -l "$IMG" 2>/dev/null | grep -qi 'Filesystem features:.*quota'; the
 fi
 
 umount "$MNT_TMP" 2>/dev/null || true
-mount -o loop,usrquota "$IMG" "$MNT_TMP"
+# Mount; usrquota option optional when native quota feature is on
+if ! mount -o loop,usrquota "$IMG" "$MNT_TMP" 2>/dev/null; then
+  mount -o loop "$IMG" "$MNT_TMP"
+fi
+quotaon -uv "$MNT_TMP" 2>/dev/null || true
 
 echo "Syncing $CUSTOMERS -> $MNT_TMP (this can take a few minutes)"
 # Brief service pause to reduce writers

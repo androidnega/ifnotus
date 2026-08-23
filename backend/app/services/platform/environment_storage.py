@@ -201,13 +201,14 @@ def os_quota_runtime_ready(settings: Settings, home: str | Path | None) -> dict[
     tools = quota_tools_present()
     usrquota = mount_supports_usrquota(mount)
     active = quotas_actively_on(mount) if (tools and mount) else False
-    ready = bool(enabled and tools and usrquota and active and mount)
+    # Native ext4 quotas may be on without an explicit usrquota mount option.
+    ready = bool(enabled and tools and active and mount)
     return {
         "settings_enabled": enabled,
         "tools_present": tools,
         "mount": mount,
         "fstype": fstype,
-        "usrquota_enabled": usrquota,
+        "usrquota_enabled": usrquota or active,
         "quotas_active": active,
         "ready": ready,
         "soft_tracking_only": not ready,
@@ -259,7 +260,7 @@ def apply_os_user_quota(
     if not probe["mount"]:
         result["message"] = "Could not detect filesystem mount"
         return result
-    if not probe["usrquota_enabled"] or not probe.get("quotas_active"):
+    if not probe.get("quotas_active"):
         result["message"] = (
             f"Mount {probe['mount']} quotas not active — soft panel tracking only"
         )
