@@ -71,9 +71,11 @@ async def main() -> None:
         time.sleep(1)
 
         ctx = ssl.create_default_context()
+        tls_host = MAIL_HOSTNAME
+        print("TLS_HOST", tls_host)
 
         def imap_login(user: str, password: str) -> None:
-            with imaplib.IMAP4_SSL(MAIL_HOSTNAME, 993, ssl_context=ctx) as imap:
+            with imaplib.IMAP4_SSL(tls_host, 993, ssl_context=ctx) as imap:
                 imap.login(user, password)
                 imap.select("INBOX")
                 print("IMAP_OK", user)
@@ -84,7 +86,7 @@ async def main() -> None:
             msg["To"] = to
             msg["Subject"] = subject
             msg.set_content(f"IFNOTUS 38L drill {subject}\n")
-            with smtplib.SMTP(MAIL_HOSTNAME, 587, timeout=30) as smtp:
+            with smtplib.SMTP(tls_host, 587, timeout=30) as smtp:
                 smtp.ehlo()
                 smtp.starttls(context=ctx)
                 smtp.ehlo()
@@ -97,7 +99,7 @@ async def main() -> None:
 
         # Wait briefly for local delivery
         time.sleep(2)
-        with imaplib.IMAP4_SSL(MAIL_HOSTNAME, 993, ssl_context=ctx) as imap:
+        with imaplib.IMAP4_SSL(tls_host, 993, ssl_context=ctx) as imap:
             imap.login(email, PASSWORD)
             imap.select("INBOX")
             typ, data = imap.search(None, "SUBJECT", f"38L-self-{LOCAL}")
