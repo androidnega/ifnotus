@@ -46,6 +46,42 @@ SYSTEM_PG = {"postgres", "template0", "template1"}
 DEFAULT_SQLITE_ROOT = Path("/srv/apps")
 
 
+def mysql_user_grant_sql(
+    *,
+    username: str,
+    password: str,
+    database: str,
+    allow_remote: bool,
+    escape,
+) -> list[str]:
+    """Build MySQL CREATE USER / GRANT statements scoped by remote entitlement.
+
+    Always creates ``user@localhost``. Only creates ``user@'%'`` when
+    ``allow_remote`` is True (PHASE 38H).
+    """
+    u = escape(username)
+    p = escape(password)
+    db = database.replace("`", "``")
+    sql = [
+        f"CREATE USER IF NOT EXISTS '{u}'@'localhost' IDENTIFIED BY '{p}';",
+        f"GRANT ALL PRIVILEGES ON `{db}`.* TO '{u}'@'localhost';",
+    ]
+    if allow_remote:
+        sql.append(f"CREATE USER IF NOT EXISTS '{u}'@'%' IDENTIFIED BY '{p}';")
+        sql.append(f"GRANT ALL PRIVILEGES ON `{db}`.* TO '{u}'@'%';")
+    sql.append("FLUSH PRIVILEGES;")
+    return sql
+
+
+def mysql_revoke_remote_sql(*, username: str, escape) -> list[str]:
+    """Drop the remote ``user@'%'`` account if present (localhost-only repair)."""
+    u = escape(username)
+    return [
+        f"DROP USER IF EXISTS '{u}'@'%';",
+        "FLUSH PRIVILEGES;",
+    ]
+
+
 class DatabaseManagerService:
     """Host-level database provisioning for operators and SNR Dev."""
 
@@ -777,28 +813,32 @@ class DatabaseManagerService:
         if not shutil.which("mysql"):
             raise AppException("mysql client not available on this host.", code="db_mysql_missing")
         name = body.name
+        allow_remote = bool(getattr(body, "remote_access", False))
         # Create DB
         sql = [
             f"CREATE DATABASE IF NOT EXISTS `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
         ]
         if body.create_user and username and password:
-            # MySQL 8
-            sql.append(
-                f"CREATE USER IF NOT EXISTS '{username}'@'localhost' IDENTIFIED BY '{self._sql_escape(password)}';"
+            sql.extend(
+                mysql_user_grant_sql(
+                    username=username,
+                    password=password,
+                    database=name,
+                    allow_remote=allow_remote,
+                    escape=self._sql_escape,
+                )
             )
-            sql.append(f"CREATE USER IF NOT EXISTS '{username}'@'%' IDENTIFIED BY '{self._sql_escape(password)}';")
-            sql.append(f"GRANT ALL PRIVILEGES ON `{name}`.* TO '{username}'@'localhost';")
-            sql.append(f"GRANT ALL PRIVILEGES ON `{name}`.* TO '{username}'@'%';")
-            sql.append("FLUSH PRIVILEGES;")
         code, _, err = self._run(["mysql", "-e", "\n".join(sql)])
         if code != 0:
             raise AppException(f"MySQL create failed: {err or 'unknown error'}", code="db_mysql_create_failed")
+        access = "localhost + remote (%)" if allow_remote else "localhost only"
         return {
             "host": body.host or "127.0.0.1",
             "port": body.port or 3306,
             "path": None,
+            "remote_access": allow_remote,
             "message": f"MySQL database `{name}` created"
-            + (f" with user `{username}`" if username else "")
+            + (f" with user `{username}` ({access})" if username else "")
             + ".",
         }
 

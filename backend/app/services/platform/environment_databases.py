@@ -108,6 +108,11 @@ class EnvironmentDatabaseService:
                     size_mb=size_mb,
                     storage_limit_mb=item.storage_limit_mb,
                     remote_access_mode=item.remote_access_mode,
+                    message=(
+                        "Remote DB clients allowed."
+                        if (item.remote_access_mode or "") not in {"", "localhost", "off"}
+                        else "Access: localhost only (apps on this server)."
+                    ),
                 )
             )
 
@@ -174,13 +179,14 @@ class EnvironmentDatabaseService:
                 engine=engine,
                 name=db_name,
                 create_user=True,
+                remote_access=bool(ent.remote_database_access),
                 notes=f"IFNOTUS env DB {env.id} / {logical}",
             )
         )
         password = created.password or ""
         host = created.database.host or "127.0.0.1"
         port = created.database.port or (5432 if engine == "postgresql" else 3306)
-        remote_mode = "localhost" if not ent.remote_database_access else "subnet"
+        remote_mode = "subnet" if ent.remote_database_access else "localhost"
 
         row = EnvironmentDatabase(
             environment_id=env.id,
@@ -213,7 +219,14 @@ class EnvironmentDatabaseService:
             size_mb=0.0,
             storage_limit_mb=row.storage_limit_mb,
             remote_access_mode=row.remote_access_mode,
-            message=f"{engine.title()} database created.",
+            message=(
+                f"{engine.title()} database created. "
+                + (
+                    "Remote DB clients allowed per package."
+                    if remote_mode != "localhost"
+                    else "MySQL login is localhost-only (apps on this server)."
+                )
+            ),
         )
 
     async def reveal(self, env: CustomerEnvironment, db_id: str) -> EnvironmentDatabaseRevealResponse:
@@ -398,14 +411,20 @@ class EnvironmentDatabaseService:
         esc = self._db._sql_escape(password)
         user_esc = self._db._sql_escape(username)
         if engine == "mysql":
-            sql = "\n".join(
+            # Always reset localhost. Only touch @'%' when that account exists.
+            stmts = [f"ALTER USER '{user_esc}'@'localhost' IDENTIFIED BY '{esc}';"]
+            code_chk, out, _ = self._db._run(
                 [
-                    f"ALTER USER '{user_esc}'@'localhost' IDENTIFIED BY '{esc}';",
-                    f"ALTER USER '{user_esc}'@'%' IDENTIFIED BY '{esc}';",
-                    "FLUSH PRIVILEGES;",
+                    "mysql",
+                    "-N",
+                    "-e",
+                    f"SELECT COUNT(*) FROM mysql.user WHERE User='{user_esc}' AND Host='%';",
                 ]
             )
-            code, _, err = self._db._run(["mysql", "-e", sql])
+            if code_chk == 0 and (out or "").strip() not in {"", "0"}:
+                stmts.append(f"ALTER USER '{user_esc}'@'%' IDENTIFIED BY '{esc}';")
+            stmts.append("FLUSH PRIVILEGES;")
+            code, _, err = self._db._run(["mysql", "-e", "\n".join(stmts)])
             if code != 0:
                 raise AppException(f"MySQL password reset failed: {err}", code="db_mysql_reset_failed")
         elif engine == "postgresql":
@@ -416,6 +435,60 @@ class EnvironmentDatabaseService:
                 raise AppException(f"PostgreSQL password reset failed: {err}", code="db_pg_reset_failed")
         else:
             raise ValidationError(f"Unsupported engine: {engine}", code="db_engine_unsupported")
+
+    async def repair_mysql_remote_scope(
+        self,
+        env: CustomerEnvironment,
+        plan: HostingPlan | None,
+        *,
+        actor: str = "system",
+    ) -> dict[str, Any]:
+        """Drop MySQL user@'%' when the plan is localhost-only (PHASE 38H repair)."""
+        from app.services.hosting.databases import mysql_revoke_remote_sql
+        from app.services.platform.plan_matrix import entitlements_for_plan
+
+        ent = entitlements_for_plan(plan)
+        allow_remote = bool(ent.remote_database_access)
+        repaired: list[str] = []
+        skipped: list[str] = []
+
+        result = await self._session.execute(
+            select(EnvironmentDatabase).where(
+                EnvironmentDatabase.environment_id == env.id,
+                EnvironmentDatabase.engine == "mysql",
+            )
+        )
+        for row in result.scalars().all():
+            if not row.username:
+                continue
+            if allow_remote:
+                row.remote_access_mode = "subnet"
+                skipped.append(row.username)
+                continue
+            sql = "\n".join(mysql_revoke_remote_sql(username=row.username, escape=self._db._sql_escape))
+            code, _, err = self._db._run(["mysql", "-e", sql])
+            if code != 0:
+                skipped.append(f"{row.username}:{(err or 'fail')[-80:]}")
+                continue
+            row.remote_access_mode = "localhost"
+            repaired.append(row.username)
+
+        # Legacy primary MySQL on the environment row
+        if (env.db_engine or "").lower() == "mysql" and env.db_username and not allow_remote:
+            sql = "\n".join(mysql_revoke_remote_sql(username=env.db_username, escape=self._db._sql_escape))
+            code, _, err = self._db._run(["mysql", "-e", sql])
+            if code == 0:
+                repaired.append(env.db_username)
+            elif err:
+                skipped.append(f"legacy:{(err or '')[-80:]}")
+
+        await self._audit(
+            env,
+            "database_repair_remote_scope",
+            {"repaired": repaired, "skipped": skipped, "allow_remote": allow_remote, "actor": actor},
+        )
+        await self._session.flush()
+        return {"repaired": repaired, "skipped": skipped, "allow_remote": allow_remote}
 
     async def _audit(self, env: CustomerEnvironment, action: str, details: dict[str, Any]) -> None:
         self._session.add(

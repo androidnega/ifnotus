@@ -58,6 +58,8 @@ class DatabaseCreateRequest(SchemaBase):
     host: str | None = None
     port: int | None = None
     create_user: bool = True
+    # PHASE 38H — only create user@'%' when True (plan remote DB entitlement).
+    remote_access: bool = False
     notes: str | None = Field(default=None, max_length=500)
     overwrite: bool = False
 

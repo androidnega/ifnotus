@@ -51,6 +51,7 @@ export function usePortalSiteTools(
       legacy?: boolean
       status?: string | null
       size_mb?: number | null
+      remote_access_mode?: string | null
       message?: string | null
     }>
   >([])
@@ -423,6 +424,8 @@ export function usePortalSiteTools(
               port: row.port || 3306,
               password_set: row.password_set,
               password: null,
+              remote_access_mode: row.remote_access_mode || 'localhost',
+              message: row.message || null,
             }
             dbInfo.value = ''
             return

@@ -91,6 +91,8 @@ const props = defineProps<{
     port?: number | null
     password_set?: boolean
     password?: string | null
+    remote_access_mode?: string | null
+    message?: string | null
     empty?: boolean
     error?: string
   } | null
@@ -995,7 +997,15 @@ function formatBytes(n?: number | null) {
           <div>
             <p class="cred-label">Server</p>
             <p class="cred-value">{{ dbCreds.host || 'localhost' }}</p>
-            <p class="hint">Usually leave this as localhost. Port {{ dbCreds.port || 3306 }}.</p>
+            <p class="hint">
+              <template v-if="dbCreds.remote_access_mode && dbCreds.remote_access_mode !== 'localhost'">
+                Package allows remote DB clients. Port {{ dbCreds.port || 3306 }}.
+              </template>
+              <template v-else>
+                Localhost only — apps on this server. Port {{ dbCreds.port || 3306 }}.
+              </template>
+            </p>
+            <p v-if="dbCreds.message" class="hint">{{ dbCreds.message }}</p>
           </div>
           <button type="button" class="btn-ghost" @click="copyValue('host', dbCreds.host || 'localhost')">
             {{ copiedKey === 'host' ? 'Copied' : 'Copy' }}
