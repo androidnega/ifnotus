@@ -162,7 +162,7 @@ def pick_free_port(
 def port_bind_available(port: int, host: str = "127.0.0.1") -> bool:
     """True when we can bind the port (not owned by a live process)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Do not set SO_REUSEADDR — that can falsely report busy ports as free on Linux.
         try:
             sock.bind((host, port))
             return True
