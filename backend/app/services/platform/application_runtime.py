@@ -1,4 +1,7 @@
-"""PHASE 25 — customer application runtime manager (IFNOTUS-managed supervisor)."""
+"""PHASE 25 — customer application runtime manager (IFNOTUS-managed supervisor).
+
+PHASE 38J — node-global port registry, OS bind checks, always inject PORT.
+"""
 
 from __future__ import annotations
 
@@ -7,13 +10,14 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -26,6 +30,13 @@ from app.services.platform.plan_matrix import STACK_LABELS, pack_denied_message,
 logger = get_logger(__name__)
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+# Shared-node application listen ports (loopback only). Distinct from domain proxy 8xxx.
+APP_PORT_MIN = 31000
+APP_PORT_MAX = 39999
+# Transaction-scoped advisory lock so concurrent creates cannot collide.
+_PORT_ALLOC_LOCK_KEY = 0x1F38A
+_ACTIVE_APP_STATUSES = ("pending", "deploying", "running", "failed", "restarting", "stopped")
 
 
 @dataclass(frozen=True)
@@ -116,6 +127,99 @@ def slugify(name: str) -> str:
 
 def supervisor_program_name(env_id: UUID, app_id: UUID) -> str:
     return f"ifnotus_{str(env_id).split('-')[0]}_{str(app_id).split('-')[0]}"
+
+
+def preferred_port_base(env_id: UUID) -> int:
+    """Stable preferred start within the global range (spread tenants; uniqueness is global)."""
+    span = APP_PORT_MAX - APP_PORT_MIN - 50
+    return APP_PORT_MIN + (int(str(env_id).replace("-", ""), 16) % max(span, 1))
+
+
+def pick_free_port(
+    *,
+    used: set[int],
+    listening: set[int],
+    preferred_base: int,
+    port_available,
+) -> int:
+    """Choose a free port from the node pool. ``port_available`` is a callable(port)->bool."""
+    base = preferred_base
+    if base < APP_PORT_MIN or base > APP_PORT_MAX - 50:
+        base = APP_PORT_MIN
+    blocked = used | listening
+    candidates = list(range(base, APP_PORT_MAX + 1)) + list(range(APP_PORT_MIN, base))
+    for port in candidates:
+        if port in blocked:
+            continue
+        if not port_available(port):
+            continue
+        return port
+    raise AppException(
+        "No free application ports on this node.",
+        code="port_exhausted",
+    )
+
+
+def port_bind_available(port: int, host: str = "127.0.0.1") -> bool:
+    """True when we can bind the port (not owned by a live process)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def listening_tcp_ports() -> set[int]:
+    """Best-effort set of ports currently in LISTEN state."""
+    ports: set[int] = set()
+    try:
+        import psutil
+
+        for conn in psutil.net_connections(kind="inet"):
+            if conn.status == psutil.CONN_LISTEN and conn.laddr:
+                ports.add(int(conn.laddr.port))
+    except Exception:  # noqa: BLE001 — optional inventory
+        try:
+            proc = subprocess.run(
+                ["ss", "-ltnH"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            for line in (proc.stdout or "").splitlines():
+                # Local Address:Port e.g. 127.0.0.1:31001 or *:80
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                addr = parts[3]
+                if ":" not in addr:
+                    continue
+                try:
+                    ports.add(int(addr.rsplit(":", 1)[-1]))
+                except ValueError:
+                    continue
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return ports
+
+
+def supervisor_environment_line(env_map: dict[str, str]) -> str:
+    """Single supervisor ``environment=`` line (multiple keys)."""
+    if not env_map:
+        return ""
+    parts: list[str] = []
+    for key, value in env_map.items():
+        k = str(key).strip()
+        if not k or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k):
+            continue
+        v = str(value).replace("\\", "\\\\").replace('"', '\\"')
+        parts.append(f'{k}="{v}"')
+    if not parts:
+        return ""
+    return "environment=" + ",".join(parts)
 
 
 class ApplicationRuntimeService:
@@ -262,7 +366,14 @@ class ApplicationRuntimeService:
                 cpu_shares=int(limits_cfg.get("cpu_shares", 256)),
             )
             if build:
-                self._run_shell(build, app_root, env, cfg.get("env_vars") or {}, limits=limits)
+                self._run_shell(
+                    build,
+                    app_root,
+                    env,
+                    cfg.get("env_vars") or {},
+                    limits=limits,
+                    port=app.allocated_port,
+                )
 
             if app.framework == "static":
                 self._write_static_stub(app_root, cfg.get("name") or "App")
@@ -271,6 +382,8 @@ class ApplicationRuntimeService:
 
             port = app.allocated_port or await self._allocate_port(env)
             app.allocated_port = port
+            # Persist before supervisor write so concurrent allocators see it.
+            await self._session.flush()
             start = str(cfg.get("start_command") or "").strip()
             spec = FRAMEWORKS.get(app.framework or "")
             needs_supervisor = bool(start) and (spec is None or spec.needs_proxy)
@@ -335,23 +448,72 @@ class ApplicationRuntimeService:
         app_root = cfg.get("app_root")
         if app_root:
             shutil.rmtree(app_root, ignore_errors=True)
+        # Release registry slot; next allocate still refuses if the OS socket is held.
+        app.allocated_port = None
+        await self._session.flush()
         await self._session.delete(app)
         await self._session.flush()
 
     async def _allocate_port(self, env: CustomerEnvironment) -> int:
-        base = 31000 + (int(str(env.id).replace("-", ""), 16) % 2000)
+        """Allocate a node-global port (PHASE 38J) — not scoped to one environment."""
+        try:
+            await self._session.execute(
+                text("SELECT pg_advisory_xact_lock(:k)"),
+                {"k": _PORT_ALLOC_LOCK_KEY},
+            )
+        except Exception:  # noqa: BLE001 — SQLite/tests may lack advisory locks
+            logger.debug("port_advisory_lock_unavailable")
+
         result = await self._session.execute(
             select(ApplicationInstance.allocated_port).where(
-                ApplicationInstance.environment_id == env.id,
                 ApplicationInstance.allocated_port.isnot(None),
+                ApplicationInstance.status.in_(_ACTIVE_APP_STATUSES),
             )
         )
-        used = {p for p in result.scalars().all() if p}
-        for offset in range(50):
-            port = base + offset
-            if port not in used:
-                return port
-        return base + secrets.randbelow(1000)
+        used = {int(p) for p in result.scalars().all() if p is not None}
+        listening = listening_tcp_ports()
+        port = pick_free_port(
+            used=used,
+            listening=listening,
+            preferred_base=preferred_port_base(env.id),
+            port_available=port_bind_available,
+        )
+        logger.info(
+            "port_allocated",
+            port=port,
+            environment_id=str(env.id),
+            used_count=len(used),
+        )
+        return port
+
+    async def reconcile_ports(self) -> dict[str, Any]:
+        """Compare DB registry vs live listeners (repair/report helper)."""
+        result = await self._session.execute(
+            select(ApplicationInstance).where(ApplicationInstance.allocated_port.isnot(None))
+        )
+        apps = list(result.scalars().all())
+        by_port: dict[int, list[str]] = {}
+        for app in apps:
+            p = int(app.allocated_port or 0)
+            by_port.setdefault(p, []).append(str(app.id))
+        listening = listening_tcp_ports()
+        duplicates = {p: ids for p, ids in by_port.items() if len(ids) > 1}
+        listening_registered = sorted(
+            p for p in by_port if p in listening and APP_PORT_MIN <= p <= APP_PORT_MAX
+        )
+        registry_only = sorted(
+            p for p in by_port if p not in listening and APP_PORT_MIN <= p <= APP_PORT_MAX
+        )
+        orphan_listeners = sorted(
+            p for p in listening if APP_PORT_MIN <= p <= APP_PORT_MAX and p not in by_port
+        )
+        return {
+            "registered": len(by_port),
+            "duplicates": duplicates,
+            "listening_registered": listening_registered,
+            "registered_not_listening": registry_only,
+            "orphan_listeners": orphan_listeners,
+        }
 
     def _run_shell(
         self,
@@ -361,6 +523,7 @@ class ApplicationRuntimeService:
         extra_env: dict[str, str],
         *,
         limits=None,
+        port: int | None = None,
     ) -> None:
         from app.services.platform.resource_enforcement import AppResourceLimits, ResourceEnforcementService
 
@@ -368,6 +531,8 @@ class ApplicationRuntimeService:
             limits = AppResourceLimits(1, 1, 2, 512, 2, 10, 5, 256)
         cmd = ResourceEnforcementService.wrap_command(cmd, limits)
         run_env = {**os.environ, **{str(k): str(v) for k, v in extra_env.items()}}
+        if port is not None:
+            run_env["PORT"] = str(port)
         if env.unix_uid is not None and hasattr(os, "setuid"):
             # Run via su if root
             if hasattr(os, "geteuid") and os.geteuid() == 0 and env.unix_username:
@@ -437,7 +602,14 @@ class ApplicationRuntimeService:
         )
         log = app_root / ".ifnotus" / "app.log"
         log.parent.mkdir(parents=True, exist_ok=True)
-        env_lines = "\n".join(f'environment={k}="{v}"' for k, v in extra_env.items())
+        port = app.allocated_port
+        if not port:
+            raise AppException("Application has no allocated port.", code="port_missing")
+        # Always inject platform PORT (PHASE 38J) — Node stubs and custom starts rely on it.
+        merged = {str(k): str(v) for k, v in (extra_env or {}).items()}
+        merged["PORT"] = str(port)
+        merged.setdefault("HOST", "127.0.0.1")
+        env_lines = supervisor_environment_line(merged)
         user_line = f"user={env.unix_username}\n" if env.unix_username else ""
         conf = ResourceEnforcementService.supervisor_program_block(
             program=prog,
@@ -499,14 +671,17 @@ class ApplicationRuntimeService:
                 encoding="utf-8",
             )
         elif fw in {"express", "nodejs"}:
+            port = int(app.allocated_port or 0) or 3000
             (root / "package.json").write_text(
                 '{"name":"app","scripts":{"start":"node server.js"},"dependencies":{"express":"^4"}}',
                 encoding="utf-8",
             )
+            # Prefer platform-injected PORT; fall back to allocated port never bare 3000 alone.
             (root / "server.js").write_text(
                 'const express=require("express");const app=express();'
                 'app.get("/",(q,r)=>r.json({ok:true}));'
-                'app.listen(process.env.PORT||3000);',
+                f"const port=Number(process.env.PORT)||{port};"
+                "app.listen(port,'127.0.0.1',()=>console.log('listening',port));\n",
                 encoding="utf-8",
             )
         else:

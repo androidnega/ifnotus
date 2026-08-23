@@ -14,12 +14,14 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -228,6 +230,15 @@ class ApplicationInstance(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """Managed application runtime attached to a customer environment (PHASE 10)."""
 
     __tablename__ = "application_instances"
+    __table_args__ = (
+        # PHASE 38J — one listen port per node across all environments.
+        Index(
+            "uq_application_instances_allocated_port",
+            "allocated_port",
+            unique=True,
+            postgresql_where=text("allocated_port IS NOT NULL"),
+        ),
+    )
 
     environment_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
