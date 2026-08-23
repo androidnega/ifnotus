@@ -28,6 +28,8 @@ export function usePortalSiteTools(
     port?: number | null
     password_set?: boolean
     password?: string | null
+    remote_access_mode?: string | null
+    message?: string | null
     empty?: boolean
     error?: string
   } | null>(null)
