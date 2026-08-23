@@ -5,7 +5,6 @@ PHASE 38J — node-global port registry, OS bind checks, always inject PORT.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import secrets
