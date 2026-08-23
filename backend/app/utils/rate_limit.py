@@ -8,8 +8,10 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse
 
+from app.core.config import Environment
 from app.core.logging import get_logger
 from app.services.security_actions import client_ip
+from app.utils import limit_store
 
 logger = get_logger(__name__)
 
@@ -28,9 +30,11 @@ _AUTH_RULES: list[tuple[str, set[str] | None, int, int]] = [
     ("/api/v1/customers/phone/verify-otp", {"POST"}, 20, 60),
 ]
 
+_SENSITIVE_BUCKETS = {prefix for prefix, _, _, _ in _AUTH_RULES}
+
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Fixed-window counters in Redis; fails open if Redis is unavailable."""
+    """Fixed-window counters in Redis with file fallback; auth/OTP fail closed if both stores fail."""
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
@@ -93,7 +97,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         try:
             redis = request.app.state.container.redis_client()
         except Exception:  # noqa: BLE001
-            return True
+            return self._consume_via_file(settings, ip=ip, bucket=bucket, limit=limit, window=window)
+
         key = f"ifnotus:rl:{bucket}:{ip}:{int(time.time() // window)}"
         try:
             count = await redis.incr(key)
@@ -102,4 +107,30 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return int(count) <= limit
         except Exception as exc:  # noqa: BLE001
             logger.warning("rate_limit_redis_failed", error=str(exc))
+            return self._consume_via_file(settings, ip=ip, bucket=bucket, limit=limit, window=window)
+
+    def _consume_via_file(
+        self,
+        settings,
+        *,
+        ip: str,
+        bucket: str,
+        limit: int,
+        window: int,
+    ) -> bool:
+        store_key = f"ifnotus:rl:{bucket}:{ip}"
+        allowed, _count = limit_store.incr(store_key, window_seconds=window, limit=limit)
+        if allowed:
             return True
+        if _count > limit:
+            return False
+        return self._fail_closed_when_store_unavailable(settings, bucket)
+
+    @staticmethod
+    def _fail_closed_when_store_unavailable(settings, bucket: str) -> bool:
+        env = getattr(settings, "environment", None)
+        is_prod = env == Environment.PRODUCTION or str(env) == "production"
+        if is_prod and bucket in _SENSITIVE_BUCKETS:
+            logger.warning("rate_limit_fail_closed", bucket=bucket)
+            return False
+        return True

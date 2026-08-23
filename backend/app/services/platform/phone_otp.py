@@ -117,32 +117,33 @@ async def _redis():
 
 
 async def assert_can_request(phone: str, *, settings: object | None = None) -> None:
-    """Enforce resend cooldown; fail closed in production if Redis is down."""
-    from app.core.config import Environment
-    from app.core.exceptions import AppException, ValidationError
+    """Enforce resend cooldown; file-backed fallback when Redis is down (PHASE 38M)."""
+    from app.core.exceptions import ValidationError
+    from app.utils import limit_store
 
     redis = await _redis()
-    is_prod = False
-    if settings is not None:
-        env = getattr(settings, "environment", None)
-        is_prod = env == Environment.PRODUCTION or str(env) == "production"
+    cooldown_key = f"{KEY_PREFIX}cooldown:{phone}"
 
     if redis is None:
-        if is_prod:
-            raise AppException(
-                "Verification is temporarily unavailable. Please try again shortly.",
-                code="otp_store_unavailable",
-            )
-        return
-
-    try:
-        key = f"{KEY_PREFIX}cooldown:{phone}"
-        if await redis.exists(key):
+        if limit_store.in_cooldown(cooldown_key):
             raise ValidationError(
                 f"Please wait {RESEND_COOLDOWN_SECONDS} seconds before requesting another code.",
                 code="otp_cooldown",
             )
-        await redis.setex(key, RESEND_COOLDOWN_SECONDS, "1")
+        if not limit_store.set_cooldown(cooldown_key, RESEND_COOLDOWN_SECONDS):
+            raise ValidationError(
+                f"Please wait {RESEND_COOLDOWN_SECONDS} seconds before requesting another code.",
+                code="otp_cooldown",
+            )
+        return
+
+    try:
+        if await redis.exists(cooldown_key):
+            raise ValidationError(
+                f"Please wait {RESEND_COOLDOWN_SECONDS} seconds before requesting another code.",
+                code="otp_cooldown",
+            )
+        await redis.setex(cooldown_key, RESEND_COOLDOWN_SECONDS, "1")
     finally:
         try:
             await redis.aclose()
@@ -151,9 +152,6 @@ async def assert_can_request(phone: str, *, settings: object | None = None) -> N
 
 
 async def create_challenge(phone: str, *, settings: object | None = None) -> PhoneOtpChallenge:
-    from app.core.config import Environment
-    from app.core.exceptions import AppException
-
     now = datetime.now(UTC)
     ch = PhoneOtpChallenge(
         challenge_id=_new_id(),
@@ -163,10 +161,6 @@ async def create_challenge(phone: str, *, settings: object | None = None) -> Pho
         expires_at=(now + timedelta(minutes=OTP_TTL_MINUTES)).isoformat(),
     )
     redis = await _redis()
-    is_prod = False
-    if settings is not None:
-        env = getattr(settings, "environment", None)
-        is_prod = env == Environment.PRODUCTION or str(env) == "production"
 
     if redis is not None:
         try:
@@ -182,16 +176,6 @@ async def create_challenge(phone: str, *, settings: object | None = None) -> Pho
                 await redis.aclose()
             except Exception:  # noqa: BLE001
                 pass
-            if is_prod:
-                raise AppException(
-                    "Verification is temporarily unavailable. Please try again shortly.",
-                    code="otp_store_unavailable",
-                ) from exc
-    elif is_prod:
-        raise AppException(
-            "Verification is temporarily unavailable. Please try again shortly.",
-            code="otp_store_unavailable",
-        )
 
     with _lock:
         data = _load_file()
@@ -249,6 +233,8 @@ async def consume_challenge(challenge_id: str, code: str) -> PhoneOtpChallenge:
 
 
 async def _bump_attempts(challenge_id: str) -> int:
+    from app.utils import limit_store
+
     redis = await _redis()
     if redis is not None:
         try:
@@ -262,7 +248,10 @@ async def _bump_attempts(challenge_id: str) -> int:
                 await redis.aclose()
             except Exception:  # noqa: BLE001
                 pass
-    return 1
+
+    key = f"{ATTEMPTS_PREFIX}{challenge_id}"
+    _, count = limit_store.incr(key, window_seconds=OTP_TTL_MINUTES * 60, limit=MAX_ATTEMPTS + 1)
+    return count
 
 
 async def _persist(ch: PhoneOtpChallenge) -> None:
