@@ -439,6 +439,7 @@ export function usePortalSiteTools(
           dbRows.value = null
           return
         }
+        const listed = dbList.value.find((d) => d.id === selectedDbId.value)
         dbCreds.value = {
           engine: data.engine,
           name: data.name,
@@ -447,6 +448,8 @@ export function usePortalSiteTools(
           port: data.port || 3306,
           password_set: Boolean(data.password),
           password: data.password || null,
+          remote_access_mode: listed?.remote_access_mode || 'localhost',
+          message: listed?.message || null,
         }
         dbInfo.value = ''
         await loadDbSchema()
@@ -468,6 +471,8 @@ export function usePortalSiteTools(
         port: data.port || 3306,
         password_set: data.password_set,
         password: data.password || null,
+        remote_access_mode: 'localhost',
+        message: null,
       }
       dbInfo.value = ''
       await loadDbSchema()
