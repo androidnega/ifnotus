@@ -1,4 +1,4 @@
-"""PHASE 31 — package-aware cron safety."""
+"""PHASE 31 + 38B — package-aware cron safety; never execute as worker/root."""
 
 from __future__ import annotations
 
@@ -7,13 +7,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.core.exceptions import ValidationError
+from app.core.exceptions import AppException, ValidationError
 from app.services.platform.env_cron import (
+    EnvironmentCronService,
     estimate_min_interval_minutes,
     entitlements_for_plan,
     validate_command,
     validate_schedule,
-    EnvironmentCronService,
 )
 
 
@@ -55,10 +55,55 @@ def test_validate_command_blocks_shell_metachar() -> None:
 
 
 def test_build_argv_uses_runuser() -> None:
-    env = MagicMock(unix_username="u_demo", id="x", domain="demo.test")
+    env = MagicMock(unix_username="u_demo", id="x", domain="demo.test", status="active")
     svc = EnvironmentCronService(MagicMock(), MagicMock())
-    with patch("app.services.platform.env_cron.shutil.which", side_effect=lambda n: f"/usr/sbin/{n}" if n == "runuser" else None):
+    with (
+        patch("app.services.platform.env_cron.shutil.which", side_effect=lambda n: f"/usr/sbin/{n}" if n == "runuser" else None),
+        patch("pwd.getpwnam", return_value=SimpleNamespace(pw_name="u_demo")),
+    ):
         argv = svc._build_argv(env, "php artisan schedule:run")
     assert argv[0].endswith("runuser")
     assert "u_demo" in argv
     assert "bash" in argv
+    # Never a bare worker bash -lc without runuser/sudo
+    assert argv[0] != "bash"
+
+
+def test_build_argv_rejects_missing_unix_user() -> None:
+    env = MagicMock(unix_username="", id="x", domain="demo.test", status="active")
+    svc = EnvironmentCronService(MagicMock(), MagicMock())
+    with pytest.raises(AppException, match="Unix user"):
+        svc._build_argv(env, "php -v")
+
+
+def test_build_argv_rejects_unknown_unix_user() -> None:
+    env = MagicMock(unix_username="ifn_missing", id="x", domain="demo.test", status="active")
+    svc = EnvironmentCronService(MagicMock(), MagicMock())
+    with patch("pwd.getpwnam", side_effect=KeyError("ifn_missing")):
+        with pytest.raises(AppException, match="does not exist"):
+            svc._build_argv(env, "php -v")
+
+
+def test_build_argv_rejects_when_helpers_missing() -> None:
+    env = MagicMock(unix_username="u_demo", id="x", domain="demo.test", status="active")
+    svc = EnvironmentCronService(MagicMock(), MagicMock())
+    with (
+        patch("pwd.getpwnam", return_value=SimpleNamespace(pw_name="u_demo")),
+        patch("app.services.platform.env_cron.shutil.which", return_value=None),
+    ):
+        with pytest.raises(AppException, match="runuser"):
+            svc._build_argv(env, "php -v")
+
+
+def test_run_job_rejects_suspended_environment(tmp_path) -> None:
+    env = SimpleNamespace(
+        id="e1",
+        unix_username="u_demo",
+        domain="demo.test",
+        status="suspended",
+        document_root=str(tmp_path),
+    )
+    svc = EnvironmentCronService(MagicMock(), MagicMock())
+    svc._load = MagicMock(return_value=[{"id": "j1", "command": "php -v", "schedule": "0 * * * *", "enabled": True}])  # type: ignore[method-assign]
+    with pytest.raises(AppException, match="not active"):
+        svc.run_job(env, "j1")  # type: ignore[arg-type]

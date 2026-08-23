@@ -381,28 +381,50 @@ class EnvironmentCronService:
         self._save(env, new_jobs)
 
     def run_job(self, env: CustomerEnvironment, job_id: str) -> dict[str, Any]:
+        if str(getattr(env, "status", "") or "").lower() != "active":
+            raise AppException(
+                "Cron is disabled while this hosting environment is not active.",
+                code="cron_env_not_active",
+            )
         jobs = self._load(env)
         for job in jobs:
             if job.get("id") == job_id:
                 return self._execute(env, job, jobs)
         raise NotFoundError("Cron job not found.")
 
-    def _build_argv(self, env: CustomerEnvironment, command: str) -> list[str]:
-        """Run as the tenant unix user when available — never as root in production."""
-        username = (env.unix_username or "").strip()
-        inner = ["bash", "-lc", command]
-        if not username:
-            logger.warning("cron_run_without_unix_user", environment_id=str(env.id))
-            return inner
+    def _require_tenant_unix_user(self, env: CustomerEnvironment) -> str:
+        """PHASE 38B — cron must never fall back to the worker (often root)."""
+        import pwd
 
+        username = (getattr(env, "unix_username", None) or "").strip()
+        if not username:
+            raise AppException(
+                "Cron cannot run until a tenant Unix user is provisioned for this environment.",
+                code="cron_missing_unix_user",
+            )
+        try:
+            pwd.getpwnam(username)
+        except KeyError as exc:
+            raise AppException(
+                f"Tenant Unix user {username!r} does not exist on this host.",
+                code="cron_unix_user_missing",
+            ) from exc
+        return username
+
+    def _build_argv(self, env: CustomerEnvironment, command: str) -> list[str]:
+        """Build argv that always runs as the tenant Unix user — never as the worker."""
+        username = self._require_tenant_unix_user(env)
+        inner = ["bash", "-lc", command]
         runuser = shutil.which("runuser")
         if runuser:
             return [runuser, "-u", username, "--", *inner]
         sudo = shutil.which("sudo")
         if sudo:
             return [sudo, "-n", "-u", username, "--", *inner]
-        logger.warning("cron_no_runuser_fallback", username=username, environment_id=str(env.id))
-        return inner
+        raise AppException(
+            "Cannot run cron as tenant: neither runuser nor sudo is available on this host.",
+            code="cron_run_helper_unavailable",
+        )
 
     def _execute(
         self,
@@ -410,24 +432,48 @@ class EnvironmentCronService:
         job: dict[str, Any],
         jobs: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        if str(getattr(env, "status", "") or "").lower() != "active":
+            raise AppException(
+                "Cron is disabled while this hosting environment is not active.",
+                code="cron_env_not_active",
+            )
         root = Path(env.document_root or ".")
         if not root.is_dir():
             raise AppException("Document root missing.")
+        try:
+            resolved = root.resolve(strict=True)
+        except OSError as exc:
+            raise AppException("Document root is not usable.") from exc
         command = str(job.get("command") or "")
         validate_command(command, domain=env.domain)
+        username = self._require_tenant_unix_user(env)
         started = datetime.now(UTC)
-        argv = self._build_argv(env, command)
+        try:
+            argv = self._build_argv(env, command)
+        except AppException as exc:
+            job["last_run_at"] = started.isoformat()
+            job["last_status"] = "error"
+            job["last_exit_code"] = -1
+            job["last_output"] = str(exc)[:1000]
+            job["last_execution_user"] = None
+            job["last_failure_reason"] = getattr(exc, "code", None) or "cron_rejected"
+            self._save(env, jobs)
+            raise
+
         run_env = {
             "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "HOME": str(root),
+            "HOME": str(resolved),
             "IFNOTUS_ENV_ID": str(env.id),
             "IFNOTUS_DOMAIN": env.domain or "",
-            "IFNOTUS_UNIX_USER": env.unix_username or "",
+            "IFNOTUS_UNIX_USER": username,
+            "USER": username,
+            "LOGNAME": username,
         }
+        failure_reason: str | None = None
         try:
             proc = subprocess.run(
                 argv,
-                cwd=str(root),
+                cwd=str(resolved),
                 capture_output=True,
                 text=True,
                 timeout=_RUN_TIMEOUT_SECONDS,
@@ -437,19 +483,27 @@ class EnvironmentCronService:
             output = ((proc.stdout or "") + (proc.stderr or ""))[-4000:]
             status = "success" if proc.returncode == 0 else "failed"
             exit_code = proc.returncode
+            if status != "success":
+                failure_reason = f"exit_{exit_code}"
         except subprocess.TimeoutExpired:
             output = f"Job timed out after {_RUN_TIMEOUT_SECONDS} seconds."
             status = "timeout"
             exit_code = -1
+            failure_reason = "timeout"
         except Exception as exc:  # noqa: BLE001
             output = str(exc)[:4000]
             status = "error"
             exit_code = -1
+            failure_reason = "exception"
 
+        runtime_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
         job["last_run_at"] = started.isoformat()
         job["last_status"] = status
         job["last_exit_code"] = exit_code
         job["last_output"] = output[-1000:]
+        job["last_execution_user"] = username
+        job["last_runtime_ms"] = runtime_ms
+        job["last_failure_reason"] = failure_reason
         self._save(env, jobs)
 
         log_dir = self._log_dir(env)
@@ -459,7 +513,7 @@ class EnvironmentCronService:
             with log_file.open("a", encoding="utf-8") as fh:
                 fh.write(
                     f"\n--- {started.isoformat()} status={status} exit={exit_code} "
-                    f"user={env.unix_username or 'worker'} ---\n"
+                    f"user={username} runtime_ms={runtime_ms} ---\n"
                 )
                 fh.write(output)
                 fh.write("\n")
@@ -472,7 +526,9 @@ class EnvironmentCronService:
             job_id=job.get("id"),
             status=status,
             exit_code=exit_code,
-            unix_user=env.unix_username,
+            unix_user=username,
+            runtime_ms=runtime_ms,
+            failure_reason=failure_reason,
         )
         return job
 
