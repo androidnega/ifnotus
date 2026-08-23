@@ -1,8 +1,8 @@
 """Real SFTP for customer environments via OpenSSH internal-sftp.
 
-PHASE 19 — Per-environment Unix user, chroot jail to document root,
-password + SSH key auth. Does NOT grant interactive shell; that remains
-``EnvironmentSshService`` gated by ``ssh.mode``.
+PHASE 19 / 38D — Per-environment Unix user, chroot jail with writable
+``public/`` content child, password + SSH key auth. Does NOT grant
+interactive shell; that remains ``EnvironmentSshService`` gated by ``ssh.mode``.
 """
 
 from __future__ import annotations
@@ -12,11 +12,14 @@ import ipaddress
 import os
 import re
 import secrets
+import shutil
 import subprocess
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -28,6 +31,7 @@ from app.services.hosting.databases import DatabaseManagerService
 logger = get_logger(__name__)
 
 SFTP_GROUP = "ifnotus-sftp"
+SFTP_CONTENT_DIR = "public"
 SSHD_DROPIN = Path("/etc/ssh/sshd_config.d/ifnotus-sftp.conf")
 AUTHORIZED_KEYS_DIR = Path("/etc/ssh/ifnotus_authorized_keys")
 NOLOGIN = "/usr/sbin/nologin"
@@ -115,36 +119,161 @@ class EnvironmentSftpService:
     def _ensure_group(self) -> None:
         subprocess.run(["groupadd", "-f", SFTP_GROUP], capture_output=True, check=False)
 
-    def _write_sshd_dropin(self) -> None:
+    @staticmethod
+    def render_sshd_dropin(*, authorized_keys_dir: Path = AUTHORIZED_KEYS_DIR) -> str:
+        """Render sshd Match block for SFTP-only tenants.
+
+        Does not redefine ``Subsystem sftp`` — main sshd_config already has one;
+        ``ForceCommand internal-sftp`` is enough. Exclude interactive SSH group so
+        dual membership does not force SFTP over the customer shell Match.
+        """
+        return "\n".join(
+            [
+                "# IFNOTUS PHASE 38D — SFTP only (no interactive shell).",
+                "# Do not add a second Subsystem sftp line (duplicate fails sshd -t).",
+                f"Match Group {SFTP_GROUP},!ifnotus-ssh",
+                "    PasswordAuthentication yes",
+                "    PubkeyAuthentication yes",
+                f"    AuthorizedKeysFile {authorized_keys_dir}/%u",
+                "    AllowTcpForwarding no",
+                "    X11Forwarding no",
+                "    PermitTunnel no",
+                "    PermitRootLogin no",
+                "    AllowAgentForwarding no",
+                f"    ForceCommand internal-sftp -d /{SFTP_CONTENT_DIR}",
+                "    ChrootDirectory %h",
+                "",
+            ]
+        )
+
+    def install_sshd_dropin(self, *, reload: bool = True) -> None:
+        """Write drop-in only after ``sshd -t`` succeeds (never reload on bad config)."""
         AUTHORIZED_KEYS_DIR.mkdir(parents=True, exist_ok=True)
         try:
             AUTHORIZED_KEYS_DIR.chmod(0o755)
         except OSError:
             pass
         SSHD_DROPIN.parent.mkdir(parents=True, exist_ok=True)
-        SSHD_DROPIN.write_text(
-            "\n".join(
-                [
-                    "# IFNOTUS PHASE 19 — SFTP only (no interactive shell).",
-                    "Subsystem sftp internal-sftp",
-                    f"Match Group {SFTP_GROUP}",
-                    "    PasswordAuthentication yes",
-                    "    PubkeyAuthentication yes",
-                    f"    AuthorizedKeysFile {AUTHORIZED_KEYS_DIR}/%u",
-                    "    AllowTcpForwarding no",
-                    "    X11Forwarding no",
-                    "    PermitTunnel no",
-                    "    PermitRootLogin no",
-                    "    AllowAgentForwarding no",
-                    "    ForceCommand internal-sftp",
-                    "    ChrootDirectory %h",
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
+        content = self.render_sshd_dropin()
+        previous = SSHD_DROPIN.read_text(encoding="utf-8") if SSHD_DROPIN.exists() else None
+        fd, tmp_name = tempfile.mkstemp(prefix="ifnotus-sftp-", suffix=".conf", dir=str(SSHD_DROPIN.parent))
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            tmp_path.chmod(0o644)
+            tmp_path.replace(SSHD_DROPIN)
+            test = subprocess.run(["sshd", "-t"], capture_output=True, text=True, check=False)
+            if test.returncode != 0:
+                if previous is None:
+                    SSHD_DROPIN.unlink(missing_ok=True)
+                else:
+                    SSHD_DROPIN.write_text(previous, encoding="utf-8")
+                err = (test.stderr or test.stdout or "").strip()[-500:]
+                raise AppException(
+                    f"sshd -t failed; SFTP drop-in not installed: {err}",
+                    code="sftp_sshd_invalid",
+                )
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
+            raise
+        if not reload:
+            return
         subprocess.run(["systemctl", "reload", "ssh"], capture_output=True, check=False)
         subprocess.run(["systemctl", "reload", "sshd"], capture_output=True, check=False)
+
+    def _write_sshd_dropin(self) -> None:
+        self.install_sshd_dropin(reload=True)
+
+    def jail_paths(self, env: CustomerEnvironment) -> tuple[Path, Path]:
+        """Return (chroot_root, writable_content_dir) under the customer tree."""
+        raw = Path(env.document_root or "")
+        if not str(raw):
+            raise AppException("Environment has no document root.", code="sftp_no_docroot")
+        doc = raw.resolve()
+        root = self._customers_root()
+        customer_prefix = (root / str(env.customer_id)).resolve()
+        try:
+            doc.relative_to(customer_prefix)
+        except ValueError as exc:
+            raise AppException(
+                "SFTP home must stay inside this customer's hosting space.",
+                code="sftp_home_outside_tenant",
+            ) from exc
+        if doc.name == SFTP_CONTENT_DIR:
+            chroot = doc.parent
+            content = doc
+        else:
+            chroot = doc
+            content = doc / SFTP_CONTENT_DIR
+        try:
+            chroot.resolve().relative_to(customer_prefix)
+        except ValueError as exc:
+            raise AppException(
+                "SFTP chroot must stay inside this customer's hosting space.",
+                code="sftp_home_outside_tenant",
+            ) from exc
+        return chroot, content
+
+    def ensure_jail_layout(self, env: CustomerEnvironment) -> tuple[Path, Path]:
+        """Ensure chroot root + writable public/ child; migrate flat docroots in place."""
+        chroot, content = self.jail_paths(env)
+        chroot.mkdir(parents=True, exist_ok=True)
+        if not content.exists():
+            content.mkdir(parents=True, exist_ok=True)
+            for child in list(chroot.iterdir()):
+                if child.name == SFTP_CONTENT_DIR:
+                    continue
+                dest = content / child.name
+                if dest.exists():
+                    continue
+                try:
+                    shutil.move(str(child), str(dest))
+                except OSError as exc:
+                    logger.warning("sftp_jail_migrate_failed", path=str(child), error=str(exc))
+        env.document_root = str(content.resolve())
+        # OpenSSH: chroot must be root-owned and not group/world-writable.
+        subprocess.run(["chown", "root:root", str(chroot)], capture_output=True, check=False)
+        subprocess.run(["chmod", "755", str(chroot)], capture_output=True, check=False)
+        return chroot.resolve(), content.resolve()
+
+    async def _sync_document_root_refs(self, env: CustomerEnvironment, content: Path) -> None:
+        """Keep Domain rows + managed nginx root in sync after jail migration."""
+        from app.models.hosting import Domain
+
+        result = await self._session.execute(select(Domain).where(Domain.name == env.domain))
+        for domain in result.scalars().all():
+            domain.document_root = str(content)
+        if not env.domain:
+            return
+        try:
+            from app.services.hosting.nginx_provisioner import MANAGED_MARKER, DomainNginxProvisioner
+
+            provisioner = DomainNginxProvisioner(self._settings)
+            available, _enabled = provisioner.site_paths(env.domain)
+            if not available.exists():
+                return
+            text = available.read_text(encoding="utf-8", errors="replace")
+            if MANAGED_MARKER not in text and "managed-by-ifnotus" not in text:
+                return
+            updated = re.sub(
+                r"(?m)^(\s*root\s+)\S+(\s*;)",
+                lambda m: f"{m.group(1)}{content}{m.group(2)}",
+                text,
+                count=1,
+            )
+            if updated == text:
+                return
+            available.write_text(updated, encoding="utf-8")
+            test = subprocess.run(["nginx", "-t"], capture_output=True, text=True, check=False)
+            if test.returncode != 0:
+                available.write_text(text, encoding="utf-8")
+                logger.warning("sftp_nginx_root_sync_reverted", domain=env.domain)
+                return
+            subprocess.run(["systemctl", "reload", "nginx"], capture_output=True, check=False)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("sftp_nginx_root_sync_failed", error=str(exc), domain=env.domain)
 
     def _user_exists(self, username: str) -> bool:
         try:
@@ -417,16 +546,23 @@ class EnvironmentSftpService:
         identity = unix.ensure_identity(env, actor=actor)
         username = identity["username"]
         env.sftp_username = username
-        home = Path(identity["home"])
-        home = self._assert_tenant_home(env, home)
+
+        chroot, content = self.ensure_jail_layout(env)
+        await self._sync_document_root_refs(env, content)
 
         password: str | None = None
         if enable_password:
             password = self.ensure_password(env, reset=reset_password)
 
         self._ensure_group()
-        self._write_sshd_dropin()
-        # Attach SFTP Match group; keep shell nologin (no interactive access from SFTP alone).
+        self.install_sshd_dropin(reload=True)
+        # Home = chroot root (%h); writable site files live in /public inside the jail.
+        subprocess.run(
+            ["usermod", "-d", str(chroot), "-s", NOLOGIN, username],
+            capture_output=True,
+            check=False,
+        )
+        # Attach SFTP Match group; never grant interactive SSH group here.
         subprocess.run(["usermod", "-aG", SFTP_GROUP, username], capture_output=True, check=False)
         subprocess.run(["usermod", "-U", username], capture_output=True, check=False)
         if password:
@@ -442,7 +578,6 @@ class EnvironmentSftpService:
                     f"Could not set SFTP password: {(proc.stderr or '')[-300:]}",
                     code="sftp_password_failed",
                 )
-        # OpenSSH chroot: root-owned jail root, tenant-owned contents.
         unix.apply_ownership(env, prepare_sftp_jail=True)
 
         env.sftp_enabled = True
@@ -450,7 +585,13 @@ class EnvironmentSftpService:
         self._audit(
             env,
             "sftp.ensure",
-            detail={"username": username, "reset_password": reset_password, "actor": actor},
+            detail={
+                "username": username,
+                "reset_password": reset_password,
+                "actor": actor,
+                "chroot": str(chroot),
+                "content": str(content),
+            },
         )
         await self._session.flush()
         return self.status_payload(env, allowed=True, reveal=True, password=password)

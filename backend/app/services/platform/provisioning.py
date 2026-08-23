@@ -203,7 +203,13 @@ class ProvisioningEngine:
 
         # --- CREATING_STORAGE ---
         await self._set_step(job, env, "CREATING_STORAGE")
-        doc_root = str(Path(self._settings.customer_environments_root) / str(order.customer_id) / hostname)
+        doc_root = str(
+            Path(self._settings.customer_environments_root)
+            / str(order.customer_id)
+            / hostname
+            / "public"
+        )
+        Path(doc_root).parent.mkdir(parents=True, exist_ok=True)
         self._nginx.ensure_document_root(doc_root)
         self._touch_created(job, doc_root=doc_root)
 

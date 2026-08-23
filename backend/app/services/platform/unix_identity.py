@@ -231,8 +231,9 @@ class UnixIdentityService:
     def apply_ownership(self, env: CustomerEnvironment, *, prepare_sftp_jail: bool = False) -> None:
         """chown tree to tenant; never chmod 777.
 
-        When ``prepare_sftp_jail`` is True, the document root itself is root:root
-        755 (OpenSSH ChrootDirectory) while children stay tenant-owned.
+        When ``prepare_sftp_jail`` is True, the SFTP chroot root is root:root
+        755 (OpenSSH ChrootDirectory) while the writable ``public/`` content
+        child stays tenant-owned.
         """
         home = self.assert_env_home(env)
         uid, gid = self.ensure_ids(env)
@@ -245,10 +246,15 @@ class UnixIdentityService:
         effective_gid = web_gid if web_gid is not None else gid
 
         if prepare_sftp_jail:
-            subprocess.run(["chown", "root:root", str(home)], capture_output=True, check=False)
-            os.chmod(home, JAIL_ROOT_MODE)
-            for child in home.iterdir():
-                self._chown_tree(child, uid, effective_gid)
+            content = home
+            chroot = home.parent if home.name == "public" else home
+            if home.name != "public":
+                content = home / "public"
+                content.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["chown", "root:root", str(chroot)], capture_output=True, check=False)
+            os.chmod(chroot, JAIL_ROOT_MODE)
+            if content.exists():
+                self._chown_tree(content, uid, effective_gid)
         else:
             self._chown_tree(home, uid, effective_gid)
 
