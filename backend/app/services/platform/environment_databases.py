@@ -445,7 +445,6 @@ class EnvironmentDatabaseService:
     ) -> dict[str, Any]:
         """Drop MySQL user@'%' when the plan is localhost-only (PHASE 38H repair)."""
         from app.services.hosting.databases import mysql_revoke_remote_sql
-        from app.services.platform.plan_matrix import entitlements_for_plan
 
         ent = entitlements_for_plan(plan)
         allow_remote = bool(ent.remote_database_access)
