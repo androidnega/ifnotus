@@ -520,14 +520,14 @@ async def staff_repair_env_filesystem(
     from pathlib import Path
 
     from app.core.exceptions import AppException
-    from app.services.platform.fs_ownership import fix_web_ownership
+    from app.services.platform.unix_identity import UnixIdentityService
 
     env = await StaffPlatformService(settings, session).get_environment(environment_id)
     if not env.document_root:
         raise AppException("No site folder yet.")
-    root = Path(env.document_root)
-    fix_web_ownership(root, user=settings.web_run_user)
-    cfg = root / "wp-config.php"
+    unix = UnixIdentityService(settings, session)
+    unix.repair_dac(env, dry_run=False, actor="staff")
+    cfg = Path(env.document_root) / "wp-config.php"
     if cfg.exists():
         text = cfg.read_text(encoding="utf-8", errors="replace")
         if "FS_METHOD" not in text:
@@ -538,8 +538,9 @@ async def staff_repair_env_filesystem(
             else:
                 text += "\n" + inject
             cfg.write_text(text, encoding="utf-8")
-            fix_web_ownership(cfg, user=settings.web_run_user)
-    return MessageResponse(message="Site folder permissions repaired.")
+            unix.apply_ownership(env, prepare_sftp_jail=False)
+    await session.flush()
+    return MessageResponse(message="Site folder DAC repaired (tenant ownership).")
 
 
 @router.post(

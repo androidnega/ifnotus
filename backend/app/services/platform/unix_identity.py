@@ -33,10 +33,12 @@ from app.services.platform.fs_ownership import (
 logger = get_logger(__name__)
 
 NOLOGIN = "/usr/sbin/nologin"
-# Never world-writable.
-DIR_MODE = 0o2755  # setgid so new files inherit group where supported
-FILE_MODE = 0o664
+# Owner + web group only — never world-readable/writable (PHASE 38G).
+DIR_MODE = 0o2750  # setgid; www-data group can traverse when used as group
+FILE_MODE = 0o640
 JAIL_ROOT_MODE = 0o755  # OpenSSH chroot requirement when used as SFTP jail
+CUSTOMER_PREFIX_MODE = 0o750  # root:www-data — other tenants cannot enter
+CUSTOMERS_ROOT_MODE = 0o750
 
 
 class UnixIdentityService:
@@ -257,6 +259,49 @@ class UnixIdentityService:
                 self._chown_tree(content, uid, effective_gid)
         else:
             self._chown_tree(home, uid, effective_gid)
+        self.harden_path_prefixes(env)
+
+    def harden_path_prefixes(self, env: CustomerEnvironment) -> dict[str, Any]:
+        """Lock customers root + per-customer prefix so other tenants cannot traverse."""
+        from app.services.platform.fs_ownership import harden_customer_prefixes
+
+        web = self._settings.web_run_user or "www-data"
+        return harden_customer_prefixes(
+            self._customers_root(),
+            customer_id=env.customer_id,
+            web_user=web,
+        )
+
+    def repair_dac(self, env: CustomerEnvironment, *, dry_run: bool = False, actor: str = "system") -> dict[str, Any]:
+        """Re-apply tenant ownership + prefix DAC (legacy www-data / world modes)."""
+        plan: dict[str, Any] = {
+            "environment_id": str(env.id),
+            "document_root": env.document_root,
+            "unix_username": env.unix_username,
+            "dry_run": dry_run,
+            "actions": [],
+        }
+        if not env.document_root:
+            plan["actions"].append({"skip": "no_document_root"})
+            return plan
+        if dry_run:
+            plan["actions"].append(
+                {
+                    "would": "ensure_identity+apply_ownership+harden_prefixes",
+                    "dir_mode": oct(DIR_MODE),
+                    "file_mode": oct(FILE_MODE),
+                }
+            )
+            return plan
+        self.ensure_identity(env, actor=actor)
+        self.apply_ownership(env, prepare_sftp_jail=False)
+        doc = Path(env.document_root)
+        if doc.name == "public" or (doc / "public").is_dir():
+            self.apply_ownership(env, prepare_sftp_jail=True)
+        prefixes = self.harden_path_prefixes(env)
+        plan["actions"].append({"applied": "ownership", "prefixes": prefixes})
+        self._audit(env, "unix.repair_dac", detail={"actor": actor, "prefixes": prefixes})
+        return plan
 
     def _chown_tree(self, path: Path, uid: int, gid: int) -> None:
         if not path.exists():

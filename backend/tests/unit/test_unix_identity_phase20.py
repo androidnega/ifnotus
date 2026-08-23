@@ -74,9 +74,12 @@ def test_assert_mode_rejects_777(tmp_path: Path) -> None:
         UnixIdentityService.assert_mode_not_world_writable(f)
 
 
-def test_default_modes_not_world_writable() -> None:
+def test_default_modes_not_world_accessible() -> None:
     assert DIR_MODE & stat.S_IWOTH == 0
     assert FILE_MODE & stat.S_IWOTH == 0
+    assert DIR_MODE & stat.S_IROTH == 0
+    assert FILE_MODE & stat.S_IROTH == 0
+    assert DIR_MODE & stat.S_IXOTH == 0
     assert DIR_MODE != 0o777
     assert FILE_MODE != 0o777
 

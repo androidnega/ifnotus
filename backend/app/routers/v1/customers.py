@@ -1684,18 +1684,13 @@ async def repair_env_filesystem(
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     from pathlib import Path
 
-    from app.services.platform.fs_ownership import fix_web_ownership
-
     if not env.document_root:
         raise AppException("No site folder yet.")
-    root = Path(env.document_root)
-    fix_web_ownership(
-        root,
-        user=settings.web_run_user,
-        uid=getattr(env, "unix_uid", None),
-        gid=getattr(env, "unix_gid", None),
-    )
-    cfg = root / "wp-config.php"
+    from app.services.platform.unix_identity import UnixIdentityService
+
+    unix = UnixIdentityService(settings, session)
+    unix.repair_dac(env, dry_run=False, actor=f"user:{user.id}")
+    cfg = Path(env.document_root) / "wp-config.php"
     if cfg.exists():
         text = cfg.read_text(encoding="utf-8", errors="replace")
         if "FS_METHOD" not in text:
@@ -1706,13 +1701,11 @@ async def repair_env_filesystem(
             else:
                 text += "\n" + inject
             cfg.write_text(text, encoding="utf-8")
-            fix_web_ownership(
-                cfg,
-                user=settings.web_run_user,
-                uid=getattr(env, "unix_uid", None),
-                gid=getattr(env, "unix_gid", None),
-            )
-    return MessageResponse(message="Site folder permissions repaired. Try WordPress again.")
+            unix.apply_ownership(env, prepare_sftp_jail=False)
+    await session.flush()
+    return MessageResponse(
+        message="Site folder DAC repaired (tenant ownership, no world access).",
+    )
 
 
 @router.post(
