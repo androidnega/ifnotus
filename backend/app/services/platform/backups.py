@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import shutil
 import tarfile
@@ -213,6 +214,10 @@ class EnvironmentBackupService:
 
         try:
             archive_path, checksum, size, meta = await self._build_archive(env)
+            # Explicit local verification (PHASE 38K) — re-hash before marking success.
+            local_ok, local_err = self.verify_archive_checksum(archive_path, checksum)
+            if not local_ok:
+                raise AppException(f"Local backup checksum failed: {local_err}", code="backup_checksum")
             backup.filename = str(archive_path)
             backup.checksum = checksum
             backup.file_size = size
@@ -220,6 +225,12 @@ class EnvironmentBackupService:
             backup.verified_at = datetime.now(UTC)
             backup.retention_until = await self._retention_until(env.id)
             offsite_meta = await self._push_offsite(backup, archive_path)
+            meta["verification"] = {
+                "local_archive": True,
+                "checksum": checksum,
+                "offsite": offsite_meta,
+                "verified_at": backup.verified_at.isoformat(),
+            }
             meta["offsite"] = offsite_meta
             self._session.add(
                 PlatformAuditLog(
@@ -252,10 +263,18 @@ class EnvironmentBackupService:
         if not await self._ensure_local_archive(backup):
             raise AppException("Backup archive missing on disk and off-site.")
         archive = Path(backup.filename)
+        ok, err = self.verify_archive_checksum(archive, backup.checksum)
+        if not ok:
+            raise AppException(
+                f"Backup checksum mismatch — refusing restore ({err}).",
+                code="backup_checksum_mismatch",
+            )
         if not env.document_root:
             raise AppException("Environment has no document root.")
 
         meta = await self._extract_archive(archive, Path(env.document_root), env)
+        meta["checksum_verified"] = True
+        meta["checksum"] = backup.checksum
         await NotificationService(self._session, self._settings).notify(
             env.customer_id,
             title="Backup restored",
@@ -737,8 +756,15 @@ class EnvironmentBackupService:
         result = provider.put(archive_path, key)
         backup.storage_provider = result.provider if result.ok or not result.skipped else "local"
         backup.storage_key = result.key if result.ok else None
+        verify: dict = {"attempted": False, "ok": False}
         if result.ok:
             backup.offsite_status = "synced"
+            verify = self._verify_offsite_object(provider, result.key, backup.checksum or "")
+            if verify.get("ok"):
+                backup.offsite_status = "verified"
+            elif verify.get("attempted") and not verify.get("skipped"):
+                # Put succeeded but fetch/verify failed — keep synced, surface error.
+                backup.offsite_status = "synced_unverified"
             if not getattr(self._settings, "backup_keep_local_after_offsite", True):
                 try:
                     archive_path.unlink(missing_ok=True)
@@ -756,7 +782,50 @@ class EnvironmentBackupService:
             "provider": result.provider,
             "key": result.key,
             "error": result.error,
+            "remote_key": result.key if result.ok else None,
+            "verification": verify,
         }
+
+    def _verify_offsite_object(self, provider, key: str, expected_checksum: str) -> dict:
+        """Fetch offsite object to a temp path and compare checksum (PHASE 38K)."""
+        if not expected_checksum:
+            return {"attempted": False, "ok": False, "skipped": True, "error": "no_checksum"}
+        with tempfile.TemporaryDirectory(prefix="ifnotus-offsite-v-") as tmp:
+            dest = Path(tmp) / Path(key).name
+            result = provider.fetch(key, dest)
+            if result.skipped:
+                return {
+                    "attempted": False,
+                    "ok": False,
+                    "skipped": True,
+                    "error": result.error,
+                }
+            if not result.ok or not dest.exists():
+                return {
+                    "attempted": True,
+                    "ok": False,
+                    "skipped": False,
+                    "error": result.error or "fetch_failed",
+                }
+            ok, err = self.verify_archive_checksum(dest, expected_checksum)
+            return {
+                "attempted": True,
+                "ok": ok,
+                "skipped": False,
+                "error": err,
+                "bytes": dest.stat().st_size,
+            }
+
+    @staticmethod
+    def verify_archive_checksum(path: Path, expected: str | None) -> tuple[bool, str | None]:
+        if not path.exists():
+            return False, "missing_file"
+        if not expected:
+            return False, "missing_expected_checksum"
+        actual = EnvironmentBackupService._sha256(path)
+        if not hmac.compare_digest(actual, expected):
+            return False, f"expected {expected[:12]}… got {actual[:12]}…"
+        return True, None
 
     async def _ensure_local_archive(self, backup: EnvironmentBackup) -> bool:
         path = Path(backup.filename) if backup.filename and not backup.filename.startswith("offsite:") else None

@@ -248,6 +248,9 @@ class Settings(BaseSettings):
     backup_offsite_provider: str = "none"
     # command provider: {path} archive, {key} object key, {dir} parent
     backup_offsite_cmd: str = ""
+    # Restore-from-offsite for command provider: {key} {path} {dir} {basename}
+    backup_offsite_fetch_cmd: str = ""
+    backup_offsite_delete_cmd: str = ""
     backup_s3_endpoint: str = ""
     backup_s3_bucket: str = ""
     backup_s3_access_key: str = ""

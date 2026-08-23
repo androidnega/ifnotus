@@ -69,13 +69,23 @@ class NullOffsiteProvider:
 class CommandOffsiteProvider:
     """Shell command offsite (rsync, rclone, aws s3 cp, scp, …).
 
-    Placeholders: {path} local file, {key} object key, {dir} parent dir.
+    Put placeholders: {path} local file, {key} object key, {dir} parent dir, {basename}.
+    Fetch/delete use BACKUP_OFFSITE_FETCH_CMD / BACKUP_OFFSITE_DELETE_CMD with the same
+    placeholders ({path} = destination for fetch).
     """
 
     name = "command"
 
-    def __init__(self, cmd_template: str) -> None:
+    def __init__(
+        self,
+        cmd_template: str,
+        *,
+        fetch_cmd: str = "",
+        delete_cmd: str = "",
+    ) -> None:
         self._cmd = (cmd_template or "").strip()
+        self._fetch = (fetch_cmd or "").strip()
+        self._delete = (delete_cmd or "").strip()
 
     def configured(self) -> bool:
         return bool(self._cmd)
@@ -83,26 +93,39 @@ class CommandOffsiteProvider:
     def put(self, local_path: Path, key: str) -> BackupPutResult:
         if not self._cmd:
             return BackupPutResult(ok=False, provider=self.name, key=key, skipped=True, error="empty_cmd")
-        cmd = (
-            self._cmd.replace("{path}", str(local_path))
-            .replace("{key}", key)
-            .replace("{dir}", str(local_path.parent))
-        )
+        cmd = self._render(self._cmd, path=local_path, key=key)
         return self._run(cmd, key, local_path.stat().st_size if local_path.exists() else None)
 
     def fetch(self, key: str, dest: Path) -> BackupPutResult:
-        # Optional fetch template via same cmd with IFNOTUS_BACKUP_OP=fetch is too magic.
-        # Prefer S3 provider for restore-from-offsite; command fetch uses BACKUP_OFFSITE_FETCH_CMD.
-        return BackupPutResult(
-            ok=False,
-            provider=self.name,
-            key=key,
-            skipped=True,
-            error="command provider put-only; use s3 provider or keep a local copy for restore",
-        )
+        if not self._fetch:
+            # Best-effort for flat cp mirrors: copy basename beside a known put target is not
+            # recoverable without fetch_cmd — fail clearly (PHASE 38K).
+            return BackupPutResult(
+                ok=False,
+                provider=self.name,
+                key=key,
+                skipped=True,
+                error="BACKUP_OFFSITE_FETCH_CMD not set — cannot restore from offsite command mirror",
+            )
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        cmd = self._render(self._fetch, path=dest, key=key)
+        return self._run(cmd, key, None)
 
     def delete(self, key: str) -> BackupPutResult:
-        return BackupPutResult(ok=True, provider=self.name, key=key, skipped=True)
+        if not self._delete:
+            return BackupPutResult(ok=True, provider=self.name, key=key, skipped=True)
+        cmd = self._render(self._delete, path=Path("/dev/null"), key=key)
+        return self._run(cmd, key, None)
+
+    @staticmethod
+    def _render(template: str, *, path: Path, key: str) -> str:
+        basename = Path(key).name
+        return (
+            template.replace("{path}", str(path))
+            .replace("{key}", key)
+            .replace("{dir}", str(path.parent))
+            .replace("{basename}", basename)
+        )
 
     def _run(self, cmd: str, key: str, size: int | None) -> BackupPutResult:
         try:
@@ -245,16 +268,22 @@ class S3CompatibleBackupProvider:
 
 def resolve_backup_provider(settings: Settings) -> BackupProvider:
     kind = (getattr(settings, "backup_offsite_provider", None) or "none").strip().lower()
+    fetch_cmd = getattr(settings, "backup_offsite_fetch_cmd", "") or ""
+    delete_cmd = getattr(settings, "backup_offsite_delete_cmd", "") or ""
     if kind in {"", "none", "local", "off"}:
         # Fall back to legacy platform cmd for environment archives when set
         legacy = (getattr(settings, "platform_backup_offsite_cmd", None) or "").strip()
         env_cmd = (getattr(settings, "backup_offsite_cmd", None) or "").strip()
         cmd = env_cmd or legacy
         if cmd:
-            return CommandOffsiteProvider(cmd)
+            return CommandOffsiteProvider(cmd, fetch_cmd=fetch_cmd, delete_cmd=delete_cmd)
         return NullOffsiteProvider()
     if kind == "command":
-        return CommandOffsiteProvider(getattr(settings, "backup_offsite_cmd", "") or "")
+        return CommandOffsiteProvider(
+            getattr(settings, "backup_offsite_cmd", "") or "",
+            fetch_cmd=fetch_cmd,
+            delete_cmd=delete_cmd,
+        )
     if kind == "s3":
         return S3CompatibleBackupProvider(
             endpoint=getattr(settings, "backup_s3_endpoint", "") or "",
