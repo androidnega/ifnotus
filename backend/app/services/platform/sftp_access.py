@@ -478,6 +478,8 @@ class EnvironmentSftpService:
             except Exception:  # noqa: BLE001
                 pass
         env.sftp_password_encrypted = self._crypto._encrypt(password)
+        # Keep SSH ciphertext aligned — same Unix account (PHASE 38E).
+        env.ssh_password_encrypted = env.sftp_password_encrypted
         return password
 
     def reveal_password(self, env: CustomerEnvironment) -> str | None:
@@ -566,18 +568,12 @@ class EnvironmentSftpService:
         subprocess.run(["usermod", "-aG", SFTP_GROUP, username], capture_output=True, check=False)
         subprocess.run(["usermod", "-U", username], capture_output=True, check=False)
         if password:
-            proc = subprocess.run(
-                ["chpasswd"],
-                input=f"{username}:{password}\n",
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            if proc.returncode != 0:
-                raise AppException(
-                    f"Could not set SFTP password: {(proc.stderr or '')[-300:]}",
-                    code="sftp_password_failed",
-                )
+            # PHASE 38E — Unix login password is shared by SSH+SFTP; never FTP.
+            if env.ftp_username and env.ftp_username == username:
+                from app.services.platform.ftp import EnvironmentFtpService
+
+                await EnvironmentFtpService(self._settings, self._session).ensure_account(env)
+            unix.set_login_password(env, password, actor=actor)
         unix.apply_ownership(env, prepare_sftp_jail=True)
 
         env.sftp_enabled = True
@@ -708,7 +704,8 @@ class EnvironmentSftpService:
             hint = (
                 f"SFTP (SSH File Transfer) on port 22. Host {host}"
                 + (f" ({shared_ip})" if shared_ip else "")
-                + ". This account has no interactive shell — file transfer only."
+                + ". This account has no interactive shell — file transfer only. "
+                "SSH (when entitled) uses the same Unix login; FTP is a separate account."
             )
         elif allowed:
             hint = "SFTP is included on this package. Create your SFTP login to upload files securely."
@@ -728,6 +725,7 @@ class EnvironmentSftpService:
             "connection_type": "SFTP",
             "protocol": "sftp",
             "shell_access": False,
+            "shares_password_with_ssh": True,
             "keys": keys,
             "command": f"sftp {username}@{host}" if enabled and username else None,
             "hint": hint,

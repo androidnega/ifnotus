@@ -37,11 +37,23 @@ class EnvironmentFtpService:
         self._crypto = DatabaseManagerService(settings)
 
     def _username_for(self, env: CustomerEnvironment) -> str:
-        if env.ftp_username:
+        """Dedicated FTP OS identity — never the tenant Unix/SSH/SFTP username."""
+        unix = env.unix_username or env.sftp_username
+        if env.ftp_username and env.ftp_username != unix:
             return env.ftp_username
         short = str(env.id).replace("-", "")[:10]
-        # Linux usernames: max 32, start with letter
-        return f"u{short}"
+        candidate = f"u{short}"
+        if unix and candidate == unix:
+            candidate = f"ftp{short}"[:32]
+        return candidate
+
+    def _assert_not_unix_identity(self, env: CustomerEnvironment, username: str) -> None:
+        unix = env.unix_username or env.sftp_username
+        if unix and username == unix:
+            raise AppException(
+                "FTP must use a dedicated OS user, not the SSH/SFTP Unix identity.",
+                code="ftp_unix_identity_collision",
+            )
 
     def _customers_root(self) -> Path:
         return Path(self._settings.customer_environments_root).resolve()
@@ -235,9 +247,22 @@ class EnvironmentFtpService:
         unix.apply_ownership(env, prepare_sftp_jail=False)
 
         username = self._username_for(env)
+        self._assert_not_unix_identity(env, username)
         password: str | None = None
         if reset_password or not env.ftp_password_encrypted:
             password = DatabaseManagerService._strong_password(20)
+            # Must not equal the Unix/SSH/SFTP secret when present.
+            for attr in ("ssh_password_encrypted", "sftp_password_encrypted"):
+                blob = getattr(env, attr, None)
+                if not blob:
+                    continue
+                try:
+                    other = self._crypto._decrypt(blob)
+                    if password == other:
+                        password = DatabaseManagerService._strong_password(24)
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
             env.ftp_password_encrypted = self._crypto._encrypt(password)
         else:
             password = self._crypto._decrypt(env.ftp_password_encrypted)
@@ -245,14 +270,14 @@ class EnvironmentFtpService:
         if not password:
             raise AppException("FTP password missing.", code="ftp_password_missing")
 
-        # Separate FTP OS user (keeps password distinct from SFTP), but primary
-        # group is the tenant group so files share tenant ownership.
+        # Separate FTP OS user (password independent of SSH/SFTP Unix login).
         tenant_group = env.unix_username if env.unix_username else None
         self._create_system_user(username, home, password, primary_group=tenant_group)
         env.ftp_username = username
         env.ftp_home = str(home)
         env.ftp_enabled = True
         await self._session.flush()
+        # Shell entitlement may attach to Unix identity — never chpasswd this FTP user from SSH.
         try:
             from app.services.platform.ssh_access import EnvironmentSshService
 
@@ -335,10 +360,11 @@ class EnvironmentFtpService:
             "password_set": bool(env.ftp_password_encrypted),
             "password": password,
             "connection_type": "FTP",
-            "sftp_coming_note": "Prefer SFTP (port 22) from the Transfer tab when available — FTP remains for WordPress prompts.",
+            "sftp_coming_note": None,
+            "separate_from_ssh_sftp": True,
             "hint": (
                 f"In FileZilla use host {self._public_host()} and port {self._settings.ftp_port} "
-                f"with protocol FTP (not SFTP). "
+                f"with protocol FTP (not SFTP). This FTP login is separate from SSH/SFTP. "
                 f"If WordPress asks for a hostname, enter {WORDPRESS_FTP_HOSTNAME}."
             ),
         }

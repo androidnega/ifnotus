@@ -1022,6 +1022,7 @@ function formatBytes(n?: number | null) {
       <h3>SFTP (recommended)</h3>
       <p class="muted">
         Secure file transfer over SSH (port 22). Jailed to this site only — no interactive shell.
+        SSH (when entitled) uses the same Unix login; legacy FTP below is a separate account.
       </p>
       <p v-if="sftpInfo === 'Loading…'" class="muted mt">Loading…</p>
       <p v-else-if="sftpCreds?.error" class="empty-note mt err">{{ sftpCreds.error }}</p>
@@ -1112,7 +1113,8 @@ function formatBytes(n?: number | null) {
 
       <h3 class="mt">Legacy FTP</h3>
       <p class="muted">
-        Still available for WordPress “FTP credentials” prompts. Prefer SFTP above for normal uploads.
+        Separate username and password from SSH/SFTP. Kept for WordPress “FTP credentials” prompts.
+        Prefer SFTP above for normal uploads.
       </p>
 
       <p v-if="ftpInfo === 'Loading…'" class="muted mt">Loading…</p>
@@ -1209,6 +1211,7 @@ function formatBytes(n?: number | null) {
       <h3 class="mt">SSH access</h3>
       <p class="muted">
         Every site gets the shared access host. Jailed SSH (not root) unlocks from ₵{{ sshCreds?.min_price_ghs || 300 }}/month.
+        When enabled, SSH uses the same Unix login as SFTP — not the FTP password.
       </p>
       <p v-if="sshCreds?.error" class="empty-note mt err">{{ sshCreds.error }}</p>
       <div v-else class="cred-list mt">

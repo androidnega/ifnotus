@@ -324,9 +324,8 @@ class EnvironmentFtpResponse(SchemaBase):
     password: str | None = None
     connection_type: str = "FTP"
     hint: str = "Use ftp.ifnotus.space in FileZilla. If WordPress asks for a hostname, enter localhost."
-    sftp_coming_note: str | None = (
-        "Prefer SFTP (port 22) from the Transfer tab when available — FTP remains for WordPress prompts."
-    )
+    sftp_coming_note: str | None = None
+    separate_from_ssh_sftp: bool = True
     message: str | None = None
 
 
@@ -356,6 +355,7 @@ class EnvironmentSftpResponse(SchemaBase):
     connection_type: str = "SFTP"
     protocol: str = "sftp"
     shell_access: bool = False
+    shares_password_with_ssh: bool = True
     keys: list[EnvironmentSftpKeyResponse] = Field(default_factory=list)
     command: str | None = None
     hint: str = ""
@@ -373,6 +373,7 @@ class EnvironmentSshResponse(SchemaBase):
     password_set: bool = False
     password: str | None = None
     passwords_differ_from_ftp: bool = True
+    shares_password_with_sftp: bool = True
     command: str | None = None
     min_price_ghs: int = 300
     hint: str = ""

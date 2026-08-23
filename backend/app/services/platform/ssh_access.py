@@ -4,8 +4,8 @@ All customers see a shared access host/IP (ssh.ifnotus.space).
 SSH login is enabled only when the plan is ₵300/month or higher.
 Lower packs still see the shared address but cannot open a shell.
 
-PHASE 9 — SSH password is stored separately from FTP (``ssh_password_encrypted``).
-Do not reuse the FTP password when ensuring SSH. Panel copy must say they differ.
+PHASE 38E — SSH/SFTP use the tenant Unix identity. Legacy FTP keeps a
+separate OS user. Never chpasswd the FTP account from this service.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.core.exceptions import AppException
 from app.core.logging import get_logger
 from app.models.platform import CustomerEnvironment, HostingPlan, Subscription
 from app.services.hosting.databases import DatabaseManagerService
@@ -58,6 +59,9 @@ class EnvironmentSshService:
             logger.warning("customer_shared_ip_matches_host_ip_ignored")
             return None
         return raw
+
+    def unix_username(self, env: CustomerEnvironment) -> str | None:
+        return env.unix_username or env.sftp_username
 
     async def plan_price(self, env: CustomerEnvironment) -> float:
         sub = await self._session.get(Subscription, env.subscription_id)
@@ -137,31 +141,21 @@ class EnvironmentSshService:
         else:
             subprocess.run(["gpasswd", "-d", username, SSH_GROUP], capture_output=True, check=False)
 
-    def _apply_password(self, username: str, password: str) -> None:
-        if not self._user_exists(username):
-            return
-        subprocess.run(
-            ["chpasswd"],
-            input=f"{username}:{password}\n",
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-
     def ensure_ssh_password(self, env: CustomerEnvironment, *, reset: bool = False) -> str:
-        """Return SSH password; never reuse FTP password.
-
-        Uses ``ssh_password_encrypted`` when set; otherwise generates a new
-        secret distinct from ``ftp_password_encrypted``.
-        """
+        """Return the Unix login password used for SSH (same OS account as SFTP)."""
         if not reset and env.ssh_password_encrypted:
             try:
                 return self._crypto._decrypt(env.ssh_password_encrypted)
             except Exception:  # noqa: BLE001
                 logger.warning("ssh_password_decrypt_failed", env=str(env.id))
+        if not reset and env.sftp_password_encrypted:
+            try:
+                return self._crypto._decrypt(env.sftp_password_encrypted)
+            except Exception:  # noqa: BLE001
+                pass
 
         password = DatabaseManagerService._strong_password(20)
-        # Guarantee it is not accidentally identical to the stored FTP secret.
+        # Must differ from the dedicated FTP secret when present.
         if env.ftp_password_encrypted:
             try:
                 ftp_pw = self._crypto._decrypt(env.ftp_password_encrypted)
@@ -169,47 +163,71 @@ class EnvironmentSshService:
                     password = DatabaseManagerService._strong_password(24)
             except Exception:  # noqa: BLE001
                 pass
-        env.ssh_password_encrypted = self._crypto._encrypt(password)
         return password
 
     def reveal_password(self, env: CustomerEnvironment) -> str | None:
-        if not env.ssh_password_encrypted:
-            return None
-        try:
-            return self._crypto._decrypt(env.ssh_password_encrypted)
-        except Exception:  # noqa: BLE001
-            return None
+        for attr in ("ssh_password_encrypted", "sftp_password_encrypted"):
+            blob = getattr(env, attr, None)
+            if not blob:
+                continue
+            try:
+                return self._crypto._decrypt(blob)
+            except Exception:  # noqa: BLE001
+                continue
+        return None
 
-    async def ensure_access(self, env: CustomerEnvironment) -> dict[str, Any]:
-        """Enable jailed SSH and ensure a dedicated SSH password (≠ FTP)."""
+    async def ensure_access(self, env: CustomerEnvironment, *, reset_password: bool = False) -> dict[str, Any]:
+        """Enable jailed SSH on the tenant Unix identity (never the FTP OS user)."""
         allowed = await self.ssh_allowed(env)
         password: str | None = None
-        username = env.ftp_username
-        if allowed and username:
-            password = self.ensure_ssh_password(env)
+        from app.services.platform.unix_identity import UnixIdentityService
+
+        unix = UnixIdentityService(self._settings, self._session)
+        if allowed:
+            identity = unix.ensure_identity(env, actor="ssh")
+            username = identity["username"]
+            if env.ftp_username and env.ftp_username == username:
+                from app.services.platform.ftp import EnvironmentFtpService
+
+                # Split legacy shared OS account into dedicated FTP identity.
+                await EnvironmentFtpService(self._settings, self._session).ensure_account(env)
+            password = self.ensure_ssh_password(env, reset=reset_password)
             self._ensure_group()
             self._write_customer_shell()
             self._write_sshd_dropin()
             self._set_shell(username, enable=True)
-            self._apply_password(username, password)
+            unix.set_login_password(env, password, actor="ssh")
             await self._session.flush()
-        elif username and self._user_exists(username):
-            self._set_shell(username, enable=False)
+        else:
+            username = self.unix_username(env)
+            if username and self._user_exists(username):
+                self._set_shell(username, enable=False)
         return self.status_payload(env, allowed=allowed, reveal=True, password=password)
 
     async def sync_from_environment(self, env: CustomerEnvironment) -> dict[str, Any]:
-        """Enable jailed SSH for entitled packs; disable it otherwise."""
+        """Enable jailed SSH for entitled packs on the Unix identity only."""
         allowed = await self.ssh_allowed(env)
-        username = env.ftp_username
+        username = self.unix_username(env)
         if username and self._user_exists(username):
+            # Never operate on the dedicated FTP OS user.
+            if env.ftp_username and username == env.ftp_username:
+                logger.warning(
+                    "ssh_sync_skipped_ftp_collision",
+                    env=str(env.id),
+                    username=username,
+                )
+                return self.status_payload(env, allowed=allowed)
             self._ensure_group()
             self._write_customer_shell()
             self._write_sshd_dropin()
             self._set_shell(username, enable=allowed)
             if allowed:
-                # Keep OS password aligned with dedicated SSH secret when present.
+                from app.services.platform.unix_identity import UnixIdentityService
+
                 pw = self.ensure_ssh_password(env)
-                self._apply_password(username, pw)
+                UnixIdentityService(self._settings, self._session).set_login_password(
+                    env, pw, actor="ssh_sync"
+                )
                 await self._session.flush()
         return self.status_payload(env, allowed=allowed)
 
@@ -223,33 +241,41 @@ class EnvironmentSshService:
     ) -> dict[str, Any]:
         host = self.public_host()
         shared_ip = self.shared_ip()
-        username = env.ftp_username
+        username = self.unix_username(env)
         enabled = bool(allowed and username)
         command = f"ssh {username}@{host}" if enabled and username else None
         min_price = int(self.min_price())
-        passwords_differ = True  # SSH secret is never the FTP password by design.
+        ftp_separate = bool(
+            env.ftp_username and username and env.ftp_username != username
+        )
         if allowed:
             hint = (
                 f"SSH is on for this site. Connect to {host}"
                 + (f" ({shared_ip})" if shared_ip else "")
-                + ". SSH password is separate from FTP — do not reuse the FTP password."
+                + ". SSH and SFTP share this Unix login"
+                + (
+                    "; FTP uses a separate username and password."
+                    if ftp_separate
+                    else "."
+                )
             )
         else:
             hint = (
                 f"This pack includes the shared access address, but SSH is locked "
-                f"until ₵{min_price}/month. Use FTP on ftp.ifnotus.space until you upgrade."
+                f"until ₵{min_price}/month. Use SFTP or FTP for file transfer until you upgrade."
             )
         return {
             "environment_id": env.id,
             "ssh_allowed": allowed,
             "enabled": enabled,
-            "username": username if allowed else username,
+            "username": username,
             "host": host,
             "shared_ip": shared_ip,
             "port": 22,
-            "password_set": bool(env.ssh_password_encrypted),
+            "password_set": bool(env.ssh_password_encrypted or env.sftp_password_encrypted),
             "password": password if (reveal and allowed) else None,
-            "passwords_differ_from_ftp": passwords_differ,
+            "passwords_differ_from_ftp": ftp_separate,
+            "shares_password_with_sftp": True,
             "command": command,
             "min_price_ghs": min_price,
             "hint": hint,

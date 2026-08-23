@@ -1655,18 +1655,15 @@ async def ensure_env_ssh(
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
-    from app.services.platform.ftp import EnvironmentFtpService
     from app.services.platform.ssh_access import EnvironmentSshService
 
-    ftp = EnvironmentFtpService(settings, session)
-    if not env.ftp_username:
-        await ftp.ensure_account(env)
     ssh = EnvironmentSshService(settings, session)
     data = await ssh.ensure_access(env)
     if data.get("ssh_allowed"):
         data["message"] = (
-            "Jailed SSH is ready. SSH password is separate from FTP "
-            "(passwords_differ_from_ftp=true). This is not root and not the operator IP."
+            "Jailed SSH is ready on your site Unix login (same password as SFTP). "
+            "FTP uses a separate username and password when enabled. "
+            "This is not root and not the operator IP."
         )
     return EnvironmentSshResponse(**data)
 

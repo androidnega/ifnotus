@@ -307,6 +307,54 @@ class UnixIdentityService:
                 except OSError as exc:
                     logger.warning("chown_file_failed", path=str(target), error=str(exc))
 
+    def set_login_password(
+        self,
+        env: CustomerEnvironment,
+        password: str,
+        *,
+        actor: str = "system",
+    ) -> str:
+        """Set the tenant Unix login password (SSH + SFTP share this OS account).
+
+        Never touches the legacy FTP OS user. Keeps ``ssh_password_encrypted`` and
+        ``sftp_password_encrypted`` in sync so the panel matches ``passwd``.
+        """
+        username = env.unix_username or self.username_for(env)
+        if not username:
+            raise AppException("Unix identity missing.", code="unix_user_missing")
+        if not self._user_exists(username):
+            raise AppException("Unix user missing on host.", code="unix_user_missing")
+        # Refuse to clobber a dedicated FTP account when names collide in legacy data.
+        if env.ftp_username and env.ftp_username == username:
+            raise AppException(
+                "FTP still shares this Unix account — create a dedicated FTP login first.",
+                code="unix_ftp_identity_collision",
+            )
+        from app.services.hosting.databases import DatabaseManagerService
+
+        proc = subprocess.run(
+            ["chpasswd"],
+            input=f"{username}:{password}\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise AppException(
+                f"Could not set Unix password: {(proc.stderr or '')[-300:]}",
+                code="unix_password_failed",
+            )
+        crypto = DatabaseManagerService(self._settings)
+        enc = crypto._encrypt(password)
+        env.ssh_password_encrypted = enc
+        env.sftp_password_encrypted = enc
+        self._audit(
+            env,
+            "unix.password_set",
+            detail={"username": username, "actor": actor, "protocols": ["ssh", "sftp"]},
+        )
+        return username
+
     def set_shell(self, env: CustomerEnvironment, *, enable_jail_shell: bool, jail_shell: str) -> None:
         username = env.unix_username or self.username_for(env)
         if not self._user_exists(username):
