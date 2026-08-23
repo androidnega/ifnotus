@@ -20,6 +20,7 @@ from app.core.exceptions import AppException
 from app.core.logging import get_logger
 from app.models.platform import CustomerEnvironment
 from app.services.hosting.databases import DatabaseManagerService
+from app.services.platform.plan_matrix import SFTP_BETA_NOTE
 
 logger = get_logger(__name__)
 
@@ -360,7 +361,7 @@ class EnvironmentFtpService:
             "password_set": bool(env.ftp_password_encrypted),
             "password": password,
             "connection_type": "FTP",
-            "sftp_coming_note": None,
+            "sftp_coming_note": SFTP_BETA_NOTE,
             "separate_from_ssh_sftp": True,
             "hint": (
                 f"In FileZilla use host {self._public_host()} and port {self._settings.ftp_port} "

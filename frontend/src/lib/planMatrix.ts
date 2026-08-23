@@ -77,52 +77,52 @@ const N = 'no' as const
 const FALLBACK: Record<string, Pick<PlanMatrix, 'kind' | 'custom_domains' | 'ssh' | 'stacks' | 'sftp' | 'file_manager' | 'cron' | 'ssl' | 'db_manage' | 'ai'>> = {
   'student-starter': {
     kind: 'managed', custom_domains: 1, ssh: 'limited',
-    sftp: Y, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
+    sftp: L, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
     stacks: { php: Y, laravel: Y, wordpress: Y, mysql: Y, python: N, django: N, fastapi: N, flask: N, nodejs: N, nextjs: N, express: N, react: N, vue: N, postgres: N, mongodb: N, redis: N, docker: N },
   },
   personal: {
     kind: 'managed', custom_domains: 1, ssh: 'no',
-    sftp: Y, file_manager: Y, cron: L, ssl: Y, db_manage: L, ai: L,
+    sftp: L, file_manager: Y, cron: L, ssl: Y, db_manage: L, ai: L,
     stacks: { php: Y, laravel: L, wordpress: Y, mysql: L, python: L, django: N, fastapi: N, flask: L, nodejs: L, nextjs: N, express: L, react: Y, vue: L, postgres: L, mongodb: N, redis: N, docker: N },
   },
   'club-connect': {
     kind: 'managed', custom_domains: 3, ssh: 'limited',
-    sftp: Y, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
+    sftp: L, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
     stacks: { php: Y, laravel: Y, wordpress: Y, mysql: Y, python: Y, django: Y, fastapi: Y, flask: Y, nodejs: Y, nextjs: Y, express: Y, react: Y, vue: Y, postgres: Y, mongodb: L, redis: L, docker: N },
   },
   'student-pro': {
     kind: 'managed', custom_domains: 5, ssh: 'jail',
-    sftp: Y, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
+    sftp: L, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
     stacks: { php: Y, laravel: Y, wordpress: Y, mysql: Y, python: Y, django: Y, fastapi: Y, flask: Y, nodejs: Y, nextjs: Y, express: Y, react: Y, vue: Y, postgres: Y, mongodb: Y, redis: L, docker: L },
   },
   'student-elite': {
     kind: 'managed', custom_domains: 10, ssh: 'jail',
-    sftp: Y, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
+    sftp: L, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
     stacks: { php: Y, laravel: Y, wordpress: Y, mysql: Y, python: Y, django: Y, fastapi: Y, flask: Y, nodejs: Y, nextjs: Y, express: Y, react: Y, vue: Y, postgres: Y, mongodb: Y, redis: Y, docker: L },
   },
   'business-pro': {
     kind: 'managed', custom_domains: 20, ssh: 'jail',
-    sftp: Y, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
+    sftp: L, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
     stacks: { php: Y, laravel: Y, wordpress: Y, mysql: Y, python: Y, django: Y, fastapi: Y, flask: Y, nodejs: Y, nextjs: Y, express: Y, react: Y, vue: Y, postgres: Y, mongodb: Y, redis: Y, docker: Y },
   },
   'macho-power': {
     kind: 'managed', custom_domains: 40, ssh: 'jail',
-    sftp: Y, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
+    sftp: L, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
     stacks: { php: Y, laravel: Y, wordpress: Y, mysql: Y, python: Y, django: Y, fastapi: Y, flask: Y, nodejs: Y, nextjs: Y, express: Y, react: Y, vue: Y, postgres: Y, mongodb: Y, redis: Y, docker: Y },
   },
   'monster-cloud': {
     kind: 'managed', custom_domains: 100, ssh: 'jail',
-    sftp: Y, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
+    sftp: L, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
     stacks: { php: Y, laravel: Y, wordpress: Y, mysql: Y, python: Y, django: Y, fastapi: Y, flask: Y, nodejs: Y, nextjs: Y, express: Y, react: Y, vue: Y, postgres: Y, mongodb: Y, redis: Y, docker: Y },
   },
   'cloud-vps': {
     kind: 'vps', custom_domains: null, ssh: 'root',
-    sftp: Y, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
+    sftp: L, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
     stacks: { php: Y, laravel: Y, wordpress: Y, mysql: Y, python: Y, django: Y, fastapi: Y, flask: Y, nodejs: Y, nextjs: Y, express: Y, react: Y, vue: Y, postgres: Y, mongodb: Y, redis: Y, docker: Y },
   },
   'cloud-vds': {
     kind: 'vds', custom_domains: null, ssh: 'root',
-    sftp: Y, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
+    sftp: L, file_manager: Y, cron: Y, ssl: Y, db_manage: Y, ai: Y,
     stacks: { php: Y, laravel: Y, wordpress: Y, mysql: Y, python: Y, django: Y, fastapi: Y, flask: Y, nodejs: Y, nextjs: Y, express: Y, react: Y, vue: Y, postgres: Y, mongodb: Y, redis: Y, docker: Y },
   },
 }
@@ -247,7 +247,16 @@ export function packStacksForDisplay(plan: HostingPlan | null | undefined) {
 }
 
 export function sshHeadline(plan: HostingPlan | null | undefined) {
-  const mode = String(plan?.capabilities?.ssh_mode || plan?.catalog_card?.ssh_mode || planMatrix(plan).ssh)
+  const card = plan?.catalog_card
+  const transfer = card?.transfer
+  if (transfer?.sftp === 'beta') {
+    const mode = String(plan?.capabilities?.ssh_mode || card?.ssh_mode || planMatrix(plan).ssh)
+    if (mode === 'no') return 'FTP included · SFTP beta'
+    if (mode === 'jail') return 'SSH/SFTP beta'
+    if (mode === 'limited') return 'SSH/SFTP beta (limited)'
+    return 'SSH/SFTP beta'
+  }
+  const mode = String(plan?.capabilities?.ssh_mode || card?.ssh_mode || planMatrix(plan).ssh)
   if (mode === 'root') return 'Full root SSH'
   if (mode === 'jail') return 'SSH included'
   if (mode === 'limited') return 'SSH with limits'

@@ -163,6 +163,7 @@ const props = defineProps<{
     command?: string | null
     hint?: string
     message?: string | null
+    beta_note?: string | null
     error?: string
   } | null
   sftpInfo?: string
@@ -1029,11 +1030,13 @@ function formatBytes(n?: number | null) {
       <p>{{ packLocked('SFTP / FTP') }}</p>
     </div>
     <div v-else-if="siteTab === 'ftp'" class="block">
-      <h3>SFTP (recommended)</h3>
+      <h3>SFTP (beta)</h3>
       <p class="muted">
         Secure file transfer over SSH (port 22). Jailed to this site only — no interactive shell.
-        SSH (when entitled) uses the same Unix login; legacy FTP below is a separate account.
+        SFTP is in beta on shared hosting; prefer legacy FTP below until your site is certified.
       </p>
+      <p v-if="sftpCreds?.beta_note" class="empty-note mt">{{ sftpCreds.beta_note }}</p>
+      <p v-else-if="ftpCreds?.sftp_coming_note" class="empty-note mt">{{ ftpCreds.sftp_coming_note }}</p>
       <p v-if="sftpInfo === 'Loading…'" class="muted mt">Loading…</p>
       <p v-else-if="sftpCreds?.error" class="empty-note mt err">{{ sftpCreds.error }}</p>
       <div v-else-if="sftpCreds?.username" class="cred-list mt">

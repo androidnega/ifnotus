@@ -122,6 +122,22 @@ COMING_SOON_COPY: dict[str, dict[str, str]] = {
     },
 }
 
+# PHASE 38O — production truth overlay (catalog + panel honesty).
+# Entitlement gates may still allow beta features; public copy must not over-promise.
+PRODUCTION_PRODUCT_STATUS = "beta"
+SFTP_LIVE_VERIFIED = False
+OFFSITE_DR_VERIFIED = False
+OS_QUOTAS_LIVE_VERIFIED = "beta"  # tools installed; per-tenant enforcement not fully certified
+STUDENT_ZONE_DNS_LIVE = False
+MULTI_TENANT_ISOLATION_CERTIFIED = False
+
+SFTP_BETA_NOTE = (
+    "SFTP is in beta on shared hosting. Use FTP for uploads until SFTP is certified for your site."
+)
+BACKUP_TRUTH_NOTE = "On-server backups with same-VPS mirror — not multi-datacenter disaster recovery."
+STORAGE_TRUTH_NOTE = "Plan storage limit applies; OS disk quota enforcement is in beta."
+SHARED_HOSTING_NOTE = "Shared node resources — not dedicated CPU/RAM/disk."
+
 
 def _row(
     *,
@@ -129,7 +145,7 @@ def _row(
     custom_domains: int | None,
     ssh: str,
     stacks: dict[str, Level],
-    sftp: Level = YES,
+    sftp: Level = LIM,
     file_manager: Level = YES,
     cron: Level = YES,
     env_vars: Level = YES,
@@ -335,7 +351,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         cron_min_interval_minutes=15,
         catalog_listed=True,
         display_name="Student Basic",
-        marketing_blurb="Starter student site — PHP/WordPress, 1 domain, modest disk and mail.",
+        marketing_blurb="Starter student site on shared hosting — PHP/WordPress, FTP, modest disk and mail (beta).",
     ),
     "personal": _row(
         kind="managed",
@@ -353,7 +369,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         cron_min_interval_minutes=15,
         catalog_listed=True,
         display_name="Personal Hosting",
-        marketing_blurb="Simple personal site hosting with limited runtimes.",
+        marketing_blurb="Simple personal site on shared hosting — limited runtimes (beta stacks).",
     ),
     "club-connect": _row(
         kind="managed",
@@ -373,7 +389,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         monitoring=YES, uptime=YES, ai_errors=YES, priority_support=LIM,
         catalog_listed=True,
         display_name="Student Developer",
-        marketing_blurb="Student build pack — Python/Node stacks, more domains and mailboxes.",
+        marketing_blurb="Student build pack on shared hosting — Python/Node stacks in beta; more domains and mail.",
     ),
     "student-pro": _row(
         kind="managed",
@@ -404,7 +420,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         cron_min_interval_minutes=5,
         catalog_listed=True,
         display_name="Student Pro",
-        marketing_blurb="Full student stack — SSH jail, Postgres, apps, backups, monitoring.",
+        marketing_blurb="Full student stack on shared hosting — SSH/SFTP beta, Postgres/apps, on-server backups.",
     ),
     "student-elite": _row(
         kind="managed",
@@ -425,7 +441,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         retention_days=14,
         catalog_listed=True,
         display_name="Student Advanced",
-        marketing_blurb="Advanced student / project hosting with more domains, mail, and Redis.",
+        marketing_blurb="Advanced student hosting on shared node — more domains/mail; Redis/Docker beta.",
     ),
     "business-pro": _row(
         kind="managed",
@@ -446,7 +462,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         retention_days=14,
         catalog_listed=True,
         display_name="Business Hosting",
-        marketing_blurb="Business sites on shared hosting — more domains, mail, and Docker-ready stacks.",
+        marketing_blurb="Business sites on shared hosting — more domains/mail; Docker/monitoring beta.",
     ),
     "macho-power": _row(
         kind="managed",
@@ -647,6 +663,87 @@ def listed_in_public_catalog(plan: HostingPlan | None) -> bool:
     return key in PUBLIC_CATALOG_KEYS
 
 
+def production_truth_for(plan: HostingPlan | None) -> dict[str, Any]:
+    """Buyer-facing production readiness — separate from entitlement gates."""
+    feats = features_for(plan)
+    key = str(feats.get("matrix_key") or "")
+    stacks = feats.get("stacks") if isinstance(feats.get("stacks"), dict) else {}
+    beta_stacks = [
+        k for k, v in stacks.items()
+        if v in {YES, LIM} and k not in {"php", "wordpress", "mysql", "laravel"}
+    ]
+    notes = [SHARED_HOSTING_NOTE, STORAGE_TRUTH_NOTE]
+    if not SFTP_LIVE_VERIFIED:
+        notes.append(SFTP_BETA_NOTE)
+    if feats.get("backup_enabled"):
+        notes.append(BACKUP_TRUTH_NOTE)
+    if not STUDENT_ZONE_DNS_LIVE and (key.startswith("student") or key == "club-connect"):
+        notes.append("Student hostname zone (serverlabsttu.space) requires public DNS cutover before wide launch.")
+    if not MULTI_TENANT_ISOLATION_CERTIFIED:
+        notes.append("Multi-tenant filesystem isolation is not yet fully certified on production.")
+    return {
+        "product_status": PRODUCTION_PRODUCT_STATUS if sellable_on_shared_node(plan) else "coming_soon",
+        "sftp_live_verified": SFTP_LIVE_VERIFIED,
+        "offsite_dr_verified": OFFSITE_DR_VERIFIED,
+        "os_quotas_enforced": OS_QUOTAS_LIVE_VERIFIED,
+        "student_zone_dns_live": STUDENT_ZONE_DNS_LIVE,
+        "isolation_certified": MULTI_TENANT_ISOLATION_CERTIFIED,
+        "transfer": {
+            "ftp": "included",
+            "sftp": "beta" if not SFTP_LIVE_VERIFIED else "included",
+        },
+        "stacks_beta": beta_stacks,
+        "production_notes": notes,
+    }
+
+
+def ssh_mode_for_truth(plan: HostingPlan | None) -> str:
+    return ssh_mode(plan)
+
+
+def _truth_transfer_detail() -> str:
+    if SFTP_LIVE_VERIFIED:
+        return "FTP and SFTP included"
+    return "FTP included · SFTP beta (not production-certified yet)"
+
+
+def _truth_backup_detail(feats: dict[str, Any]) -> str:
+    if not feats.get("backup_enabled"):
+        return "Manual / not included on this pack"
+    freq = feats.get("backup_frequency") or "manual"
+    return f"On-server {freq} backups · same-VPS mirror (not multi-DC DR)"
+
+
+def _truth_storage_detail(plan: HostingPlan | None, feats: dict[str, Any]) -> str:
+    gb = getattr(plan, "storage_gb", None) if plan is not None else None
+    if gb is None:
+        gb = feats.get("storage_gb")
+    label = f"{gb} GB" if gb is not None else "Plan limit"
+    quota = "enforced" if OS_QUOTAS_LIVE_VERIFIED is True else "beta"
+    return f"{label} · OS disk quota {quota}"
+
+
+def _truth_ssh_detail(mode: str) -> str:
+    if mode in {"", "no"}:
+        return "Not included"
+    suffix = "" if mode == "root" else " (beta)"
+    labels = {
+        "limited": "Limited SSH",
+        "jail": "Jailed SSH",
+        "root": "Root SSH (external VM only)",
+    }
+    return (labels.get(mode) or mode) + suffix
+
+
+def _truth_monitoring_detail(on: bool, feats: dict[str, Any]) -> str:
+    if not on:
+        return "Limited / upgrade"
+    level = str(feats.get("monitoring") or "no")
+    if level == YES:
+        return "Resource monitoring (beta on shared hosting)"
+    return "Limited monitoring"
+
+
 def catalog_card_for(plan: HostingPlan | None) -> dict[str, Any]:
     """Buyer-facing capability summary — frontend must not invent another matrix."""
     feats = features_for(plan)
@@ -655,6 +752,7 @@ def catalog_card_for(plan: HostingPlan | None) -> dict[str, Any]:
     included = [k for k, v in stacks.items() if v == YES]
     limited = [k for k, v in stacks.items() if v == LIM]
     key = str(feats.get("matrix_key") or "")
+    truth = production_truth_for(plan)
     return {
         "matrix_key": key,
         "display_name": feats.get("display_name") or PUBLIC_DISPLAY_NAMES.get(key),
@@ -685,17 +783,44 @@ def catalog_card_for(plan: HostingPlan | None) -> dict[str, Any]:
         },
         "stacks_included": included,
         "stacks_limited": limited,
+        "stacks_beta": truth.get("stacks_beta") or [],
         "support": "priority" if feats.get("priority_support") == YES else "standard",
-        "highlights": _catalog_highlights(feats, caps),
+        "highlights": _catalog_highlights(plan, feats, caps),
+        **truth,
     }
 
 
-def _catalog_highlights(feats: dict[str, Any], caps: dict[str, Any]) -> list[dict[str, str]]:
+def _catalog_highlights(
+    plan: HostingPlan | None,
+    feats: dict[str, Any],
+    caps: dict[str, Any],
+) -> list[dict[str, str]]:
     on = caps.get("on") if isinstance(caps.get("on"), dict) else {}
     items: list[dict[str, str]] = []
+    items.append(
+        {
+            "id": "hosting",
+            "label": "Hosting",
+            "detail": "Shared node (not dedicated VPS)",
+        }
+    )
+    items.append(
+        {
+            "id": "storage",
+            "label": "Storage",
+            "detail": _truth_storage_detail(plan, feats),
+        }
+    )
     domains = feats.get("custom_domains")
     if domains is not None:
         items.append({"id": "domains", "label": "Domains", "detail": f"{domains} professional"})
+    items.append(
+        {
+            "id": "transfer",
+            "label": "File transfer",
+            "detail": _truth_transfer_detail(),
+        }
+    )
     items.append(
         {
             "id": "mail",
@@ -722,7 +847,13 @@ def _catalog_highlights(feats: dict[str, Any], caps: dict[str, Any]) -> list[dic
             "detail": f"{cron} jobs · ≥{interval} min" if on.get("cron") else "Not included",
         }
     )
-    items.append({"id": "ssh", "label": "SSH", "detail": str(caps.get("ssh_mode") or "no")})
+    items.append(
+        {
+            "id": "ssh",
+            "label": "SSH",
+            "detail": _truth_ssh_detail(str(caps.get("ssh_mode") or "no")),
+        }
+    )
     items.append(
         {
             "id": "git",
@@ -734,14 +865,14 @@ def _catalog_highlights(feats: dict[str, Any], caps: dict[str, Any]) -> list[dic
         {
             "id": "backups",
             "label": "Backups",
-            "detail": "Included" if feats.get("backup_enabled") else "Manual / limited",
+            "detail": _truth_backup_detail(feats),
         }
     )
     items.append(
         {
             "id": "monitoring",
             "label": "Monitoring",
-            "detail": "Included" if on.get("monitoring") else "Limited / upgrade",
+            "detail": _truth_monitoring_detail(bool(on.get("monitoring")), feats),
         }
     )
     return items
@@ -837,8 +968,9 @@ def capabilities_for(plan: HostingPlan | None) -> dict[str, Any]:
             "min_interval_minutes": int(feats.get("cron_min_interval_minutes") or 15),
         },
         "ssh_mode": mode,
-        "sftp": {"enabled": on["sftp.enabled"]},
+        "sftp": {"enabled": on["sftp.enabled"], "live_verified": SFTP_LIVE_VERIFIED},
         "ssh": {"enabled": on["ssh.enabled"], "mode": mode},
+        "production": production_truth_for(plan),
         "on": on,
         "levels": {key: str(feats.get(key) or "no") for key in flags},
         "stacks": dict(stacks),

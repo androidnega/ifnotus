@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.core.exceptions import AppException, ValidationError
 from app.core.logging import get_logger
+from app.services.platform.plan_matrix import SFTP_BETA_NOTE, SFTP_LIVE_VERIFIED
 from app.models.platform import CustomerEnvironment, HostingPlan, PlatformAuditLog, Subscription
 from app.services.hosting.databases import DatabaseManagerService
 
@@ -708,9 +709,12 @@ class EnvironmentSftpService:
                 "SSH (when entitled) uses the same Unix login; FTP is a separate account."
             )
         elif allowed:
-            hint = "SFTP is included on this package. Create your SFTP login to upload files securely."
+            hint = "SFTP is included on this package (beta). Create your SFTP login or use FTP meanwhile."
         else:
             hint = "SFTP is not included on this package."
+        beta_note = None if SFTP_LIVE_VERIFIED else SFTP_BETA_NOTE
+        if beta_note and allowed:
+            hint = f"{hint} {beta_note}"
         return {
             "environment_id": env.id,
             "sftp_allowed": allowed,
@@ -730,4 +734,5 @@ class EnvironmentSftpService:
             "command": f"sftp {username}@{host}" if enabled and username else None,
             "hint": hint,
             "message": hint,
+            "beta_note": beta_note,
         }

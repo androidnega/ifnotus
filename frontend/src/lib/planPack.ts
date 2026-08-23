@@ -43,6 +43,23 @@ export function publicPackItems(plan: HostingPlan): PackItem[] {
         detail: card.stacks_limited.slice(0, 6).join(', '),
       })
     }
+    if (card.stacks_beta?.length) {
+      base.push({
+        id: 'beta-stacks',
+        label: 'Beta stacks',
+        detail: `${card.stacks_beta.slice(0, 8).join(', ')} (verify before customer use)`,
+      })
+    }
+    if (card.product_status === 'beta') {
+      base.push({ id: 'status', label: 'Availability', detail: 'Limited beta on shared hosting' })
+    }
+    if (card.production_notes?.length) {
+      base.push({
+        id: 'notes',
+        label: 'Good to know',
+        detail: card.production_notes[0],
+      })
+    }
     if (card.blurb) {
       base.push({ id: 'blurb', label: 'About', detail: card.blurb })
     }
@@ -75,8 +92,13 @@ export function publicPackItems(plan: HostingPlan): PackItem[] {
     { id: 'ssh', label: 'SSH', detail: sshHeadline(plan) },
     {
       id: 'ftp',
-      label: 'SFTP',
-      detail: matrix.sftp === 'no' ? 'Not on this pack' : 'Included',
+      label: 'File transfer',
+      detail:
+        matrix.sftp === 'no'
+          ? 'FTP only on this pack'
+          : matrix.sftp === 'limited'
+            ? 'FTP included · SFTP beta'
+            : 'FTP and SFTP included',
     },
     {
       id: 'stacks',

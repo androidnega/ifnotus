@@ -1259,6 +1259,7 @@ export const customersApi = {
       command?: string | null
       hint?: string
       message?: string | null
+      beta_note?: string | null
     }>(`/customers/environments/${environmentId}/sftp`, { params: { reveal } }),
 
   ensureEnvSftp: (environmentId: string, resetPassword = false) =>

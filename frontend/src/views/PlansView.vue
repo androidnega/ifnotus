@@ -69,6 +69,7 @@ function choose(plan: HostingPlan) {
         <p class="sub">
           This is the storefront. Manage prices and resources from
           <router-link :to="{ name: 'platform-plans' }">Accounts → Plans</router-link>.
+          Public copy reflects production beta status (SFTP, DR, quotas).
         </p>
       </header>
       <p v-if="loading" class="muted">Loading plans…</p>
@@ -104,7 +105,10 @@ function choose(plan: HostingPlan) {
         <p class="eyebrow">Hosting</p>
         <h1>Simple plans. Clear limits.</h1>
         <p class="sub">
-          Prices in GHS. Hover a card to flip it and see what’s included — resources, SSL, apps, and support.
+          Prices in GHS. Shared hosting is in limited beta — hover a card to see honest limits, FTP/SFTP status, and backups.
+        </p>
+        <p v-if="!loading && !error && sortedPlans.length" class="beta-banner">
+          Limited beta: SFTP, advanced stacks, and student-zone DNS are not fully production-certified yet. FTP and core PHP sites are the most proven path today.
         </p>
       </header>
 
@@ -200,6 +204,21 @@ function choose(plan: HostingPlan) {
   font-size: 1.02rem;
   line-height: 1.55;
   color: var(--if-muted, #5a6570);
+}
+.beta-banner {
+  margin: 1rem 0 0;
+  padding: 0.85rem 1rem;
+  border-radius: 0.75rem;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #9a3412;
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+.server-dark .beta-banner {
+  background: rgba(234, 88, 12, 0.12);
+  border-color: rgba(251, 146, 60, 0.35);
+  color: #fdba74;
 }
 .server-dark .sub {
   color: rgba(245, 247, 250, 0.68);

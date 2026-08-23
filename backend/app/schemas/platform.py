@@ -360,6 +360,7 @@ class EnvironmentSftpResponse(SchemaBase):
     command: str | None = None
     hint: str = ""
     message: str | None = None
+    beta_note: str | None = None
 
 
 class EnvironmentSshResponse(SchemaBase):

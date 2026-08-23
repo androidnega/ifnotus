@@ -30,6 +30,10 @@ export type HostingPlan = {
   catalog_card?: {
     display_name?: string
     blurb?: string
+    product_status?: string
+    production_notes?: string[]
+    transfer?: { ftp?: string; sftp?: string }
+    stacks_beta?: string[]
     highlights?: Array<{ id: string; label: string; detail: string }>
     stacks_included?: string[]
     stacks_limited?: string[]

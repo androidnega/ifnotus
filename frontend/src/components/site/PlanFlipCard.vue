@@ -80,7 +80,8 @@ watch(flipped, async (on) => {
       <div class="face front">
         <div class="name-row">
           <h2>{{ plan.name }}</h2>
-          <span v-if="featured" class="badge">Popular</span>
+          <span v-if="plan.catalog_card?.product_status === 'beta'" class="badge beta">Beta</span>
+          <span v-else-if="featured" class="badge">Popular</span>
         </div>
         <p class="price">
           <span class="currency">₵</span>
@@ -189,6 +190,10 @@ h2 {
   background: var(--plan-accent-soft);
   padding: 0.25rem 0.5rem;
   border-radius: 999px;
+}
+.badge.beta {
+  color: #92400e;
+  background: #fef3c7;
 }
 .price {
   margin: 1rem 0 0;
