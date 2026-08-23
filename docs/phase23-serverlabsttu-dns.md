@@ -72,3 +72,6 @@ No per-student BIND A writes are required.
 - [ ] Reserved labels rejected by `StudentHostnameService._require_base`
 - [ ] Student terminate removes nginx site
 - [ ] Registrar NS cutover (ops; outside git)
+- [ ] `bash scripts/verify-serverlabsttu-dns.sh` → `RESULT: PUBLIC DNS OK` (PHASE 38A)
+
+See also: [phase38a-public-dns.md](./phase38a-public-dns.md).
