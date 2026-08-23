@@ -41,10 +41,18 @@ class EnvironmentLifecycleService:
             raise NotFoundError("Environment not found.")
         return env
 
-    async def suspend(self, customer_id: UUID, environment_id: UUID) -> CustomerEnvironment:
+    async def suspend(
+        self,
+        customer_id: UUID,
+        environment_id: UUID,
+        *,
+        notify_customer: bool = True,
+    ) -> CustomerEnvironment:
         env = await self.get_owned(customer_id, environment_id)
         if env.status == "terminated":
             raise AppException("Environment is terminated.")
+        if env.status == "suspended":
+            return env
         env.status = "suspended"
         env.health_status = "warning"
         sub = await self._session.get(Subscription, env.subscription_id)
@@ -85,12 +93,13 @@ class EnvironmentLifecycleService:
             pass
         IsolationService(self._settings).stop_container(env.container_id, env_id=str(env.id))
 
-        await NotificationService(self._session, self._settings).notify(
-            customer_id,
-            title="Environment suspended",
-            body=f"{env.domain or env.id} has been suspended.",
-            kind="suspend",
-        )
+        if notify_customer:
+            await NotificationService(self._session, self._settings).notify(
+                customer_id,
+                title="Environment suspended",
+                body=f"{env.domain or env.id} has been suspended.",
+                kind="suspend",
+            )
         self._session.add(
             PlatformAuditLog(
                 customer_id=customer_id,
@@ -103,10 +112,18 @@ class EnvironmentLifecycleService:
         await self._session.flush()
         return env
 
-    async def restore(self, customer_id: UUID, environment_id: UUID) -> CustomerEnvironment:
+    async def restore(
+        self,
+        customer_id: UUID,
+        environment_id: UUID,
+        *,
+        notify_customer: bool = True,
+    ) -> CustomerEnvironment:
         env = await self.get_owned(customer_id, environment_id)
         if env.status == "terminated":
             raise AppException("Cannot restore a terminated environment.")
+        if env.status == "active":
+            return env
         env.status = "active"
         env.health_status = "healthy"
         sub = await self._session.get(Subscription, env.subscription_id)
@@ -139,18 +156,27 @@ class EnvironmentLifecycleService:
         except Exception:  # noqa: BLE001
             pass
 
-        await NotificationService(self._session, self._settings).notify(
-            customer_id,
-            title="Environment restored",
-            body=f"{env.domain or env.id} is active again.",
-            kind="lifecycle",
-            deliver=False,
-        )
+        if notify_customer:
+            await NotificationService(self._session, self._settings).notify(
+                customer_id,
+                title="Environment restored",
+                body=f"{env.domain or env.id} is active again.",
+                kind="lifecycle",
+                deliver=False,
+            )
         await self._session.flush()
         return env
 
-    async def terminate(self, customer_id: UUID, environment_id: UUID) -> CustomerEnvironment:
+    async def terminate(
+        self,
+        customer_id: UUID,
+        environment_id: UUID,
+        *,
+        notify_customer: bool = True,
+    ) -> CustomerEnvironment:
         env = await self.get_owned(customer_id, environment_id)
+        if env.status == "terminated":
+            return env
         IsolationService(self._settings).stop_container(env.container_id, env_id=str(env.id))
         env.container_id = None
         try:
@@ -215,12 +241,13 @@ class EnvironmentLifecycleService:
             payload={"environment_id": str(env.id), "domain": env.domain},
         )
         self._session.add(job)
-        await NotificationService(self._session, self._settings).notify(
-            customer_id,
-            title="Environment terminated",
-            body=f"{env.domain or env.id} has been terminated.",
-            kind="terminate",
-        )
+        if notify_customer:
+            await NotificationService(self._session, self._settings).notify(
+                customer_id,
+                title="Environment terminated",
+                body=f"{env.domain or env.id} has been terminated.",
+                kind="terminate",
+            )
         self._session.add(
             PlatformAuditLog(
                 customer_id=customer_id,

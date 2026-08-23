@@ -20,7 +20,7 @@ from app.models.platform import (
     Subscription,
 )
 from app.services.platform import email_templates
-from app.services.platform.isolation import IsolationService
+from app.services.platform.lifecycle import EnvironmentLifecycleService
 from app.services.platform.notifications import NotificationService
 from app.services.platform.resources import ResourceManager
 
@@ -39,7 +39,6 @@ class SubscriptionBillingService:
         self._settings = settings
         self._session = session
         self._resources = ResourceManager(session)
-        self._isolation = IsolationService(settings)
         self._notify = NotificationService(session, settings)
 
     async def list_for_customer(self, customer_id: UUID) -> list[Subscription]:
@@ -439,11 +438,26 @@ class SubscriptionBillingService:
         return list(result.scalars().all())
 
     async def _suspend_environments(self, sub: Subscription, *, reason: str) -> None:
+        lifecycle = EnvironmentLifecycleService(self._settings, self._session)
         for env in await self._envs(sub.id):
             if env.status == "terminated":
                 continue
-            env.status = "suspended"
-            env.health_status = "warning"
+            try:
+                await lifecycle.suspend(sub.customer_id, env.id, notify_customer=False)
+            except AppException as exc:
+                logger.warning(
+                    "billing_suspend_env_failed",
+                    subscription_id=str(sub.id),
+                    env_id=str(env.id),
+                    error=str(exc),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "billing_suspend_env_failed",
+                    subscription_id=str(sub.id),
+                    env_id=str(env.id),
+                    error=str(exc),
+                )
         customer = await self._session.get(Customer, sub.customer_id)
         name = (customer.full_name if customer else None) or "there"
         title, text, html, sms = email_templates.hosting_suspended(name=name, reason=reason)
@@ -458,16 +472,48 @@ class SubscriptionBillingService:
         )
 
     async def _restore_environments(self, sub: Subscription) -> None:
+        lifecycle = EnvironmentLifecycleService(self._settings, self._session)
         for env in await self._envs(sub.id):
-            if env.status == "suspended":
-                env.status = "active"
-                env.health_status = "healthy"
+            if env.status != "suspended":
+                continue
+            try:
+                await lifecycle.restore(sub.customer_id, env.id, notify_customer=False)
+            except AppException as exc:
+                logger.warning(
+                    "billing_restore_env_failed",
+                    subscription_id=str(sub.id),
+                    env_id=str(env.id),
+                    error=str(exc),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "billing_restore_env_failed",
+                    subscription_id=str(sub.id),
+                    env_id=str(env.id),
+                    error=str(exc),
+                )
 
     async def _terminate_environments(self, sub: Subscription) -> None:
+        lifecycle = EnvironmentLifecycleService(self._settings, self._session)
         for env in await self._envs(sub.id):
-            env.status = "terminated"
-            env.health_status = "critical"
-            self._isolation.stop_container(env.container_id, env_id=str(env.id))
+            if env.status == "terminated":
+                continue
+            try:
+                await lifecycle.terminate(sub.customer_id, env.id, notify_customer=False)
+            except AppException as exc:
+                logger.warning(
+                    "billing_terminate_env_failed",
+                    subscription_id=str(sub.id),
+                    env_id=str(env.id),
+                    error=str(exc),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "billing_terminate_env_failed",
+                    subscription_id=str(sub.id),
+                    env_id=str(env.id),
+                    error=str(exc),
+                )
         await self._notify.notify(
             sub.customer_id,
             title="Hosting terminated",
