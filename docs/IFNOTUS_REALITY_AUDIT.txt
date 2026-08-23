@@ -1,0 +1,552 @@
+IFNOTUS.SPACE — PRODUCTION REALITY AUDIT
+========================================
+Audit date: 23 August 2026
+Auditor role: senior hosting engineer / SRE / security / platform operator
+Method: Source code + models + workers + frontend routes + READ-ONLY live host checks
+Rules followed: no code changes, no migrations, no service restarts, no deploy, no secret exposure
+Live host checked: Contabo VPS (ifnotus.space / 80.241.223.82), app path /srv/apps/ifnotus
+Git HEAD at audit time (local repo): ac89492 area (docs status commits present)
+
+IMPORTANT
+---------
+Documentation and phase-complete markdown are NOT treated as proof.
+Only code + live observation count as evidence.
+
+
+======================================================================
+1. EXECUTIVE SUMMARY
+======================================================================
+
+Overall readiness percentage (strict, production-paying-customer bar): ~45–55%
+
+Architecture readiness:           ~70%  (control plane, orders, panel, workers exist)
+Security / isolation readiness:   ~35%  (serious DAC/SSH/cron/billing gaps)
+Hosting functionality readiness:  ~55%  (many features coded; live tenant path immature)
+Production verification readiness:~20%  (checklist unchecked; few ifn_* tenants; DNS cutover missing)
+
+Final classification:
+  READY FOR LIMITED BETA ONLY
+
+NOT "READY FOR PAYING CUSTOMERS" at public scale.
+NOT "NOT READY" entirely — phone OTP, MoMo staff-confirm, managed catalog honesty,
+staff capacity, and local BIND for student zone exist — but public student DNS,
+OS quotas, Real SFTP live config, and OS isolation strength are not production-safe
+for unrestricted paid growth.
+
+
+======================================================================
+2. STATUS MATRIX
+======================================================================
+
+AREA                              | STATUS              | CODE EXISTS | LIVE VERIFIED | RISK | NOTES
+----------------------------------|---------------------|-------------|---------------|------|------
+A Auth / OTP / progressive profile| DONE / PARTIAL      | YES         | PARTIAL       | MED  | Prod OTP secrecy DONE; RL fail-open w/o Redis
+B Purchase → ACTIVE               | PARTIAL             | YES         | UNVERIFIED    | HIGH | Requires staff MoMo confirm; end-to-end unpaid smoke not evidenced
+C Student DNS serverlabsttu       | BROKEN / UNSAFE     | YES         | YES           | P0   | Public NS still registrar; wildcard NXDOMAIN on internet
+D Provisioning engine             | DONE (logic)        | YES         | UNVERIFIED    | MED  | Hard-fail nginx/unix/storage; few/no new ifn_* envs live
+E Unix tenant isolation           | PARTIAL / UNSAFE    | YES         | YES           | P0   | 0 ifn_* users live; homes www-data/world-readable; SSH no chroot
+F FTP / SFTP / SSH                | PARTIAL / UNSAFE    | YES         | YES           | P0   | vsftpd live; Phase19 SFTP dropin ABSENT; SSH ForceCommand only; FTP+SSH share OS user
+G Application runtime             | PARTIAL             | YES         | PARTIAL       | MED  | Supervisor live for some apps; Node stub PORT bug; ports not global
+H Databases                       | PARTIAL / UNSAFE    | YES         | UNVERIFIED    | HIGH | Multi-DB code real; MySQL @'%' always; staff studio no write gate
+I Email                           | PARTIAL             | YES         | PARTIAL       | MED  | Postfix/Dovecot/OpenDKIM active; customer mailbox E2E UNVERIFIED
+J SSL                             | DONE / PARTIAL      | YES         | UNVERIFIED    | MED  | Certbot real; estimate +90d still written on issue
+K Backups / DR                    | PARTIAL             | YES         | PARTIAL       | HIGH | Provider=command SET; restore unproven; same-disk still primary
+L Resource enforcement            | PARTIAL             | YES         | PARTIAL       | HIGH | App checks + prlimit soft; OS quota not live
+M Storage quotas (OS)             | FOUNDATION / NOT LIVE| YES        | YES           | P1   | setquota binary missing; no usrquota mount
+N Cron safety                     | PARTIAL / UNSAFE    | YES         | YES           | P0   | Prefers runuser; worker runs as root; empty unix_username → root bash
+O Monitoring / abuse              | PARTIAL             | YES         | UNVERIFIED    | MED  | Graduated actions; no delete; live tick success UNVERIFIED
+P Staff panel / permissions       | DONE / PARTIAL      | YES         | UNVERIFIED    | MED  | Care blocked from terminal; admin gets host file roots
+Q Capacity / package honesty      | DONE                | YES         | YES           | LOW  | 6 public packs; VPS/VDS coming_soon; sellable gate
+R Multi-env tenancy / IDOR        | DONE                | YES         | UNVERIFIED    | MED  | customer_id+env_id filters in API
+S Route / UX contract             | DONE                | YES         | YES           | LOW  | /, /plans, /login, /signup, /account, /panel, /hosting/:id
+T VPS/VDS                         | NOT DONE BY DESIGN  | YES         | YES           | LOW  | Correctly blocked on shared node
+U Production smoke checklist      | NOT DONE            | YES (doc)   | NO            | HIGH | All boxes unchecked; no signed evidence
+
+
+======================================================================
+3. CONFIRMED DONE
+======================================================================
+
+(Feature — evidence)
+
+3.1 Phone OTP signup / verify
+- Files: backend/app/services/platform/customers.py, phone_otp.py
+- API: POST /customers/phone/request-otp, /verify-otp
+- Frontend: PortalSignupView.vue, route /signup
+- Tests: test_otp_response_policy.py, progressive onboarding tests
+- Live: API healthy; ENVIRONMENT=production; DEBUG=false; DEV_AUTH_BYPASS=false
+
+3.2 Production OTP secrecy (no debug_code when production)
+- Files: backend/app/core/dev_mode.py; customers.py response shaping
+- Tests: test_otp_response_policy.py (SMS ok + SMS fail)
+
+3.3 Progressive profile gates for checkout
+- Files: customers.py can_order / missing_for_order / update_profile
+- Frontend: PortalSignupView progressive steps
+- Tests: test_progressive_onboarding.py
+
+3.4 Staff vs customer route separation (frontend + API)
+- Files: frontend/src/router/index.ts guards; roles.ts; customers._require_customer_user
+- Live: / /plans /login /signup return HTTP 200
+
+3.5 Managed public catalog honesty (6 packs + coming soon)
+- Files: plan_matrix.py PUBLIC_CATALOG_KEYS, coming_soon_products; catalog.py list_plans
+- Live: catalog/plans returns 6 managed names + Cloud VPS/VDS coming_soon
+- Orders/billing/provision refuse kind=vps|vds
+
+3.6 Provisioning hard-fail for nginx / unix-transfer / storage
+- Files: provisioning.py HARD_FAIL_STEPS, _fail_job
+- Tests: test_provisioning_failures_phase22.py
+- ACTIVE cannot follow those hard failures (by code)
+
+3.7 Ownership filter on customer environment APIs
+- Files: TenantService.get_owned_environment; customers.py ownership pattern
+- Tests: test_environment_ownership.py
+
+3.8 Capacity settings aligned to node sizing
+- Live Settings: infra_cpu_total=12, infra_ram_total_gb=48, infra_storage_total_gb=256
+- Disk ~11% used on 242G root — capacity not currently critical
+
+3.9 vsftpd present and chroot_local_user configured
+- Live: vsftpd active; chroot_local_user=YES
+- Code: backend/app/services/platform/ftp.py
+
+3.10 Local BIND zone for serverlabsttu.space (on-box)
+- Live: named active; /etc/bind/zones/db.serverlabsttu.space has NS ns1/ns2.ifnotus.space + wildcard *
+- Local dig @127.0.0.1 resolves testaudit.serverlabsttu.space → 80.241.223.82
+
+
+======================================================================
+4. PARTIALLY DONE
+======================================================================
+
+4.1 Purchase → ACTIVE
+MISSING: Self-serve payment (by design MoMo+staff). No evidenced live paid provision creating ifn_* users.
+Customer can order + submit MoMo ID; staff must confirm; worker/API must provision on host.
+
+4.2 OTP rate limiting
+MISSING: Fail-closed HTTP rate limit and attempt counters when Redis is down (fail-open paths exist).
+
+4.3 Unix isolation
+MISSING: Live ifn_* users (count=0). Existing envs use u* FTP users; docroots often www-data; SSH without chroot.
+Code path for useradd exists (unix_identity.py) but not proven on current live tenants.
+
+4.4 Real SFTP (Phase 19)
+MISSING on live: /etc/ssh/sshd_config.d/ifnotus-sftp.conf ABSENT; group ifnotus-sftp not configured for tenants; 0 ifn_* accounts.
+Code writes Match Group ifnotus-sftp + ChrootDirectory %h — not applied on host observed.
+
+4.5 SSH
+Present: ifnotus-customers.conf Match Group ifnotus-ssh ForceCommand customer-shell.
+MISSING: Chroot; password separation from FTP on same OS user; proven entitlement gating on all packs.
+
+4.6 Application runtime
+MISSING: Global unique ports; Node ApplicationRuntime PORT injection; full one-click for all matrix stacks.
+Supervisor is live for some non-IFNOTUS-panel apps (quizsnap, etc.).
+
+4.7 Databases
+MISSING: Enforce localhost-only grants when remote_access_mode=localhost; staff SQL studio write gate (is_write_sql unused).
+
+4.8 Email
+MISSING: Proven customer mailbox E2E (send/receive/webmail login) in this audit; SPF/DKIM live for customer domains beyond platform apex TXT.
+
+4.9 SSL
+MISSING: Always prefer cert notAfter after renew; avoid persisting +90d estimate as truth.
+
+4.10 Backups / DR
+MISSING: Proven restore; S3 fetch path; confidence that command offsite put actually runs successfully for environment archives (command provider configured but restore/offsite success not verified).
+
+4.11 Storage quotas
+MISSING: quota tools + filesystem usrquota. os_user_quota_enabled=True but setquota not installed and mount has no quota options → app-only enforcement.
+
+4.12 Cron
+MISSING: Hard refuse when unix_username missing or runuser unavailable (currently falls back to worker argv = root).
+
+4.13 Billing suspend/terminate
+MISSING: Call EnvironmentLifecycleService (lock unix, disable SFTP/FTP, nginx off, userdel). Currently status flags + stop_container only.
+
+4.14 Explicit subscription cancel API
+MISSING: Customer cancel endpoint (only auto-renew off / wait / staff terminate).
+
+
+======================================================================
+5. FOUNDATION ONLY
+======================================================================
+
+5.1 Cloud VPS/VDS as products — matrix rows + coming_soon UI; no external VM provider.
+5.2 allocate_unix_ids advisory UIDs without guaranteed host user.
+5.3 Docker isolation optional; often filesystem.
+5.4 Off-site BackupProvider abstraction — usable, default historically none; live provider=command but unproven DR.
+5.5 Many framework entries in ApplicationRuntime FRAMEWORKS without hardened one-click installers (vs STACKS one-click set).
+5.6 Email webmail — URL/branding more than Roundcube auto-provision of customer accounts.
+
+
+======================================================================
+6. NOT DONE
+======================================================================
+
+6.1 Public DNS cutover for serverlabsttu.space to ns1/ns2.ifnotus.space (registrar still authoritative).
+6.2 OS disk quotas enabled on customer filesystem (tools + mount options).
+6.3 Live deployment of Phase-19 SFTP sshd drop-in + ifn_* population for managed envs.
+6.4 Signed production smoke checklist (docs/production-hosting-checklist.md all [ ] unchecked).
+6.5 External dedicated VPS/VDS provisioning (by design).
+6.6 Customer self-serve card/MoMo auto-capture (by design currently staff confirm).
+6.7 Automated proof of backup restore in CI.
+
+
+======================================================================
+7. UNVERIFIED
+======================================================================
+
+7.1 End-to-end paid student order → ACTIVE with surname.serverlabsttu.space HTTPS working from public DNS.
+7.2 SMS OTP delivery reliability in production.
+7.3 abuse_protection_tick actually firing and acting on live worker.
+7.4 Offsite command backup put success / retention / restore from offsite.
+7.5 Multi-DB create from Hosting Panel on a real entitled customer.
+7.6 Mailbox create → IMAP/SMTP auth → Roundcube login for a customer domain.
+7.7 Certbot issuance/renewal success rate on student hosts (blocked until public DNS works for those names).
+7.8 Cross-tenant read via SSH entitled user (plausible given DAC; not exploit-tested here — MANUAL LIVE TEST REQUIRED).
+7.9 Server reboot recovery of pending jobs.
+7.10 Exact count of customers/environments (DB CLI Settings() did not load systemd EnvironmentFile in this read-only probe; filesystem shows 3 env directories).
+
+
+======================================================================
+8. BROKEN OR UNSAFE
+======================================================================
+
+------------------------------------------------------------------------
+ISSUE 1
+SEVERITY: P0
+FILE: Live DNS / registrar configuration (code: docs/phase23 + deploy/dns; live NS)
+FUNCTION / CLASS: N/A (infrastructure)
+PROBLEM: Public NS for serverlabsttu.space are dns1/dns2.registrar-servers.com.
+         Local BIND has correct wildcard zone, but the internet does not use it.
+         dig @1.1.1.1 A testaudit.serverlabsttu.space → NXDOMAIN.
+WHY IT MATTERS: New student sites will not resolve for the public. SSL issuance for
+         those hostnames will fail. Product promise for student hosting is broken live.
+RECOMMENDED FIX: At registrar, set NS to ns1.ifnotus.space / ns2.ifnotus.space
+         (already A→80.241.223.82). Verify dig NS + wildcard A via 1.1.1.1.
+         Do NOT claim student hosting production-ready until this passes.
+
+------------------------------------------------------------------------
+ISSUE 2
+SEVERITY: P0
+FILE: backend/app/services/platform/env_cron.py
+FUNCTION / CLASS: EnvironmentCronService._build_argv
+PROBLEM: Docstring says never as root; if unix_username empty, returns bare
+         bash -lc under worker. Live ifnotus-worker.service User=root.
+WHY IT MATTERS: Cron can execute as root on the Contabo host.
+RECOMMENDED FIX: Hard-fail if unix_username missing or runuser/sudo -u fails.
+         Never fall back to worker identity. Prefer dedicated non-root worker UID.
+
+------------------------------------------------------------------------
+ISSUE 3
+SEVERITY: P0
+FILE: Live /etc/ssh/sshd_config.d/ (missing ifnotus-sftp.conf);
+      backend/app/services/platform/sftp_access.py
+FUNCTION / CLASS: EnvironmentSftpService (sshd drop-in writer)
+PROBLEM: Phase-19 Real SFTP config is not present on the live sshd drop-in set.
+         ifn_* user count = 0. Existing access is FTP (vsftpd) + SSH group ifnotus-ssh
+         without ChrootDirectory.
+WHY IT MATTERS: Marketing/docs claiming Real SFTP DONE are overstated for live.
+         Interactive SSH users are not SFTP-chrooted.
+RECOMMENDED FIX: Ensure ensure_account path runs and reloads sshd; create ifn_* at
+         provision; verify Match Group ifnotus-sftp + ChrootDirectory live.
+         Keep FTP labelled FTP until SFTP is verified.
+
+------------------------------------------------------------------------
+ISSUE 4
+SEVERITY: P0
+FILE: backend/app/services/platform/ssh_access.py + ftp.py
+FUNCTION / CLASS: EnvironmentSshService.ensure_access / sync_from_environment
+PROBLEM: SSH password is applied via chpasswd to the FTP OS user (u*). Separate
+         ciphertext fields do not create separate OS passwords.
+WHY IT MATTERS: “SSH password separate from FTP” is false at OS layer once SSH enabled.
+RECOMMENDED FIX: Dedicated OS identity for SSH or never share FTP account; stop
+         overwriting FTP passwd; panel must reflect OS truth.
+
+------------------------------------------------------------------------
+ISSUE 5
+SEVERITY: P0
+FILE: backend/app/services/platform/billing.py
+FUNCTION / CLASS: _suspend_environments / _terminate_environments
+PROBLEM: Sets DB status (and stop_container on terminate) but does NOT call
+         EnvironmentLifecycleService (no unix lock, no SFTP/FTP disable, no nginx off,
+         no userdel).
+WHY IT MATTERS: Non-renewal “terminate” leaves live OS credentials and possibly
+         web serving until something else cleans up.
+RECOMMENDED FIX: Delegate to lifecycle.suspend / lifecycle.terminate.
+
+------------------------------------------------------------------------
+ISSUE 6
+SEVERITY: P1
+FILE: Live filesystem + environment_storage.py
+FUNCTION / CLASS: apply_os_user_quota
+PROBLEM: os_user_quota_enabled=True but setquota/quotaon not installed; mount
+         options lack usrquota. Quotas cannot apply.
+WHY IT MATTERS: Disk limits are app/API soft checks; SFTP/FTP/direct writes can
+         bypass panel assert_write_allowed.
+RECOMMENDED FIX: Install quota tools; remount with usrquota (or project quotas);
+         verify setquota -u for ifn_* users; alert if applied=False.
+
+------------------------------------------------------------------------
+ISSUE 7
+SEVERITY: P1
+FILE: backend/app/services/hosting/databases.py
+FUNCTION / CLASS: DatabaseManagerService.create (MySQL grants)
+PROBLEM: Grants MySQL user@'%' even when entitlement remote_access_mode is localhost.
+WHY IT MATTERS: Unexpected remote DB exposure if MySQL listens beyond localhost.
+RECOMMENDED FIX: Grant @'localhost' unless remote entitlement true; bind MySQL
+         appropriately; firewall.
+
+------------------------------------------------------------------------
+ISSUE 8
+SEVERITY: P1
+FILE: backend/app/services/hosting/db_studio.py
+FUNCTION / CLASS: _run_query (is_write_sql unused)
+PROBLEM: Staff SQL studio executes arbitrary SQL including writes/DDL.
+WHY IT MATTERS: Privilege blast radius for staff accounts with databases:write.
+RECOMMENDED FIX: Enforce is_write_sql / role gates; default read-only studio.
+
+------------------------------------------------------------------------
+ISSUE 9
+SEVERITY: P1
+FILE: backend/app/services/platform/application_runtime.py
+FUNCTION / CLASS: Node stub / _allocate_port
+PROBLEM: Stub may listen on PORT||3000 without supervisor injecting allocated_port;
+         port allocator only uniqueness-checked within one environment.
+WHY IT MATTERS: Broken apps / cross-env port collisions under load.
+RECOMMENDED FIX: Always inject PORT; allocate from global used-port registry.
+
+------------------------------------------------------------------------
+ISSUE 10
+SEVERITY: P2
+FILE: Live customer docroots under /srv/apps/ifnotus-customers
+FUNCTION / CLASS: fs_ownership / nginx serving
+PROBLEM: Observed ownership www-data:www-data and permissive modes; parent dirs root-readable.
+WHY IT MATTERS: Weak DAC; SSH-entitled users without chroot may read other tenants.
+RECOMMENDED FIX: Per-tenant uid ownership; remove world-read; chroot SSH or disable
+         interactive SSH on shared node until jailed.
+
+
+======================================================================
+9. DOCUMENTATION VS REALITY
+======================================================================
+
+DOCUMENT CLAIM: Phases 0–37 complete and live; platform ready enough per status markdown.
+ACTUAL REALITY: Large code surface is real, but live DNS, OS quotas, SFTP drop-in,
+                ifn_* population, and smoke checklist are not production-complete.
+STATUS: CONTRADICTION — treat IFNOTUS_REDESIGN_COMPLETE_STATUS.md as delivery log, not readiness certificate.
+
+DOCUMENT CLAIM: Real SFTP DONE (phase 19).
+ACTUAL REALITY: Code exists; live sshd lacks ifnotus-sftp.conf; 0 ifn_* users.
+STATUS: OVERCLAIMED for live.
+
+DOCUMENT CLAIM: serverlabsttu.space student DNS ops ready.
+ACTUAL REALITY: BIND zone correct locally; public NS still registrar; public wildcard NXDOMAIN.
+STATUS: CODE/LOCAL DONE, PUBLIC DNS NOT DONE.
+
+DOCUMENT CLAIM: Storage quotas / setquota (phase 32).
+ACTUAL REALITY: Flag enabled; tools/mount missing → app-only.
+STATUS: OVERCLAIMED for live OS enforcement.
+
+DOCUMENT CLAIM: SSH password separate from FTP.
+ACTUAL REALITY: Separate encrypted fields; same OS account for SSH+FTP → chpasswd collision.
+STATUS: PARTIALLY FALSE.
+
+DOCUMENT CLAIM: Off-site DR pipeline DONE.
+ACTUAL REALITY: Provider=command configured on live; restore unproven; not proven DR-ready.
+STATUS: PARTIAL.
+
+DOCUMENT CLAIM: Production hosting checklist is the ops gate.
+ACTUAL REALITY: File exists; no checked items / no sign-off log entries observed.
+STATUS: PROCESS NOT EXECUTED.
+
+
+======================================================================
+10. PRODUCTION CHECKLIST RESULTS
+======================================================================
+Source: docs/production-hosting-checklist.md (all items were unchecked markdown).
+Evidence policy: PASS only with live/code proof from this audit.
+
+1. Signup                         UNVERIFIED (code DONE; live SMS path not exercised)
+2. OTP                            PARTIAL→UNVERIFIED delivery (secrecy code PASS)
+3. Returning login                UNVERIFIED
+4. Progressive profile            UNVERIFIED (code DONE)
+5. Student hostname               FAIL (public DNS NXDOMAIN for random labels)
+6. Existing custom domain         UNVERIFIED
+7. Order                          UNVERIFIED
+8. MoMo submission                UNVERIFIED
+9. Payment confirmation           UNVERIFIED (staff path coded)
+10. Provisioning                  UNVERIFIED (engine coded; live ifn_* absent)
+11. Unix user                     FAIL/UNVERIFIED (0 ifn_*; only legacy u* FTP users)
+12. nginx                         PARTIAL (platform sites exist; student public DNS fail)
+13. DNS                           FAIL (public NS wrong for student zone)
+14. SSL                           UNVERIFIED (certbot code; student names won't validate publicly)
+15. Hosting Panel                 UNVERIFIED (routes exist)
+16. Files                         UNVERIFIED
+17. FTP                           PASS (vsftpd active; users exist)
+18. SFTP                          FAIL/UNVERIFIED (drop-in missing; no ifn_*)
+19. SSH                           PARTIAL (ForceCommand SSH group exists; not chrooted)
+20. PHP                           UNVERIFIED
+21. Laravel                       UNVERIFIED
+22. WordPress                     UNVERIFIED
+23. Python                        UNVERIFIED
+24. FastAPI                       UNVERIFIED
+25. Node                          UNVERIFIED (code issues noted)
+26. MySQL                         UNVERIFIED
+27. PostgreSQL                    UNVERIFIED
+28. Email                         PARTIAL (MTA services active; customer E2E UNVERIFIED)
+29. Cron                          UNSAFE until root fallback fixed
+30. Backup                        UNVERIFIED
+31. Restore                       UNVERIFIED / NOT PROVEN
+32. Suspension                    PARTIAL (lifecycle vs billing diverge)
+33. Restoration                   UNVERIFIED
+34. Renewal                       UNVERIFIED
+35. Package upgrade               UNVERIFIED
+36. Downgrade                     UNVERIFIED
+37. Termination                   PARTIAL/UNSAFE (billing path incomplete)
+38. Multi-hosting                 UNVERIFIED (API allows; not smoke-tested)
+39. Disk-pressure protection      PARTIAL (code + settings; not force-tested)
+40. Provisioning retry            UNVERIFIED (code DONE)
+41. Server reboot recovery        UNVERIFIED — MANUAL LIVE TEST REQUIRED
+
+
+======================================================================
+11. PACKAGE SAFETY
+======================================================================
+
+Public packs (from live catalog):
+
+Pack                 | Sellable now? | Limits enforceable? | Stacks real? | DB limits | Mail | SSH/SFTP | Backup promise | Recommended
+---------------------|---------------|---------------------|--------------|-----------|------|----------|----------------|-----------
+Student Basic        | YES (catalog) | PARTIAL (app-level)| Matrix+gates | Code yes  | Code | FTP yes; SFTP live NO; SSH limited | Local only honest | BETA ONLY
+Student Developer    | YES           | PARTIAL            | PARTIAL      | Code yes  | Code | same     | Local/command UNVERIFIED | BETA ONLY
+Student Pro          | YES           | PARTIAL            | PARTIAL      | Code yes  | Code | SSH group exists | same | BETA ONLY
+Student Advanced     | YES           | PARTIAL            | PARTIAL      | Code yes  | Code | same     | same | BETA ONLY
+Personal Hosting     | YES           | PARTIAL            | PARTIAL      | Code yes  | Code | same     | same | BETA ONLY
+Business Hosting     | YES           | PARTIAL            | PARTIAL      | Code yes  | Code | same     | same | BETA ONLY
+Cloud VPS            | NO            | N/A                | N/A          | N/A       | N/A  | root not real | N/A | DO NOT SELL (correct)
+Cloud VDS            | NO            | N/A                | N/A          | N/A       | N/A  | same     | N/A | DO NOT SELL (correct)
+
+None rated SAFE TO SELL for unrestricted public launch until DNS cutover, isolation,
+SFTP live, quota tools, billing lifecycle, and smoke PASS for core path.
+
+
+======================================================================
+12. TOP 10 REMAINING TASKS
+======================================================================
+(Ranked by business/server risk — not cosmetics)
+
+1. Cut over public NS for serverlabsttu.space to ns1/ns2.ifnotus.space; verify wildcard A via public resolvers.
+2. Fix cron root fallback; run worker as non-root; refuse cron without unix_username.
+3. Wire billing suspend/terminate to EnvironmentLifecycleService (OS lock/cleanup + nginx).
+4. Deploy/verify Real SFTP sshd drop-in + ensure provision creates ifn_* + chroot; stop overselling SFTP.
+5. Fix SSH vs FTP OS password sharing (separate identities or single truthful credential model).
+6. Install quota tools + enable filesystem quotas; verify setquota applied=True for tenants.
+7. Harden MySQL grants to localhost by default; gate staff SQL studio writes.
+8. Execute production checklist smoke (paid order → ACTIVE → SFTP → SSL → panel) and record sign-off.
+9. Prove backup restore + offsite put/fetch for at least one environment.
+10. Tighten DAC (per-tenant ownership, no world-read) and chroot or restrict interactive SSH.
+
+
+======================================================================
+13. RECOMMENDED NEXT PHASE
+======================================================================
+
+Phase name:
+  PHASE 38 — Production Hardening Gate (DNS + Isolation + Lifecycle)
+
+Goal:
+  Make limited paid beta honest and safe: public student DNS works; cron cannot run
+  as root; non-renewal actually locks OS access; Real SFTP either verified live or
+  UI clearly FTP-only until verified; OS quotas either live or feature-flagged off.
+
+Likely files/modules:
+  - Registrar / BIND cutover (ops) + docs/phase23 verification
+  - backend/app/services/platform/env_cron.py
+  - backend/app/services/platform/billing.py (delegate to lifecycle.py)
+  - backend/app/services/platform/sftp_access.py + provisioning CONFIGURING_TRANSFER
+  - backend/app/services/platform/ssh_access.py / ftp.py password model
+  - backend/app/services/platform/environment_storage.py + host package install/mount
+  - systemd ifnotus-worker.service User=
+  - backend/app/services/hosting/databases.py grants + db_studio.py write gate
+
+Acceptance criteria:
+  - dig NS serverlabsttu.space @1.1.1.1 → ns1/ns2.ifnotus.space
+  - dig A randomlabel.serverlabsttu.space @1.1.1.1 → platform A
+  - Cron without unix_username raises; worker not root OR runuser always used
+  - Billing terminate locks/deletes OS transfer users and disables nginx via lifecycle
+  - Either ifnotus-sftp.conf present + ifn_* created on provision OR panel never claims SFTP
+  - setquota works OR os_user_quota_enabled=false with clear ops alert
+  - One paid/staff-confirmed smoke env reaches ACTIVE with public HTTPS
+
+Tests required:
+  - Unit: cron refuses root fallback
+  - Unit: billing terminate invokes lifecycle hooks (mocked)
+  - Unit: MySQL grant host selection
+  - Integration/smoke: provision creates ifn_* when SFTP entitled
+  - DNS public resolver assertions in ops script (non-destructive)
+
+Manual live checks required:
+  - Registrar NS change
+  - Paid or staff-confirmed provision smoke
+  - SFTP login chroot test
+  - Cron as tenant identity test
+  - Quota write beyond limit test
+
+
+======================================================================
+14. FINAL VERDICT
+======================================================================
+
+1. Can IFNOTUS safely accept 5 paying customers today?
+   ONLY as LIMITED BETA with eyes-on staff, AFTER DNS cutover for student zone,
+   and with honest labelling (FTP until SFTP verified). Without DNS cutover: NO
+   for student-hostname product. Custom-domain-only beta possible with staff care.
+
+2. Can IFNOTUS safely accept 50?
+   NO — isolation, quotas, billing OS cleanup, cron root risk, and unverified smoke
+   are too weak.
+
+3. Can IFNOTUS safely accept 200?
+   NO — capacity math exists but enforcement and multi-tenant DAC/SSH are not ready.
+
+4. First likely infrastructure bottleneck?
+   Public student DNS (immediate product break), then disk/inode without OS quotas,
+   then port collisions / noisy neighbors without hard cgroup/quota isolation.
+
+5. What can currently bring down the whole server?
+   - Cron/jobs as root worker compromise or runaway cron
+   - Disk fill without OS quotas
+   - Cross-tenant SSH read + abuse
+   - Unbounded remote MySQL grants if mysqld exposed
+   - Fork/CPU abuse until abuse worker proven effective
+
+6. What customer-facing promise should NOT yet be made?
+   - “Student sites on serverlabsttu.space just work on the public Internet”
+   - “Real SFTP jail for every pack”
+   - “SSH password is different from FTP” (OS truth)
+   - “Hard disk quotas / cannot exceed plan disk”
+   - “Off-site disaster recovery / guaranteed restore”
+   - “Dedicated VPS/VDS”
+   - “Fully automatic unpaid→ACTIVE without staff”
+
+7. What must be completed before public launch?
+   - PHASE 38 items (DNS, cron root, billing lifecycle, SFTP truth, quotas truth)
+   - Signed production checklist PASS for core path
+   - At least one successful backup restore drill
+   - Clear beta vs GA packaging (SAFE TO SELL only after isolation+DNS+smoke)
+
+
+AUDIT COMPLETE
+--------------
+Classification: READY FOR LIMITED BETA ONLY
+Counts (matrix rows / major findings buckets):
+  DONE:              10
+  PARTIAL:           14
+  FOUNDATION ONLY:    6
+  NOT DONE:           7
+  UNVERIFIED:        10
+  BROKEN / UNSAFE:   10 (issues listed; some overlap with PARTIAL)
+
+Report path: docs/IFNOTUS_REALITY_AUDIT.txt
