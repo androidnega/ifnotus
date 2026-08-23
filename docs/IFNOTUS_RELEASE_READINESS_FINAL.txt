@@ -1,0 +1,240 @@
+IFNOTUS — FINAL SECURITY / RELEASE GATE (PHASE 38P)
+=====================================================
+
+Date (UTC):     2026-08-23
+Repo SHA:       a2f1e9a (38O catalog truth; includes 38M OTP limiter)
+Server:         Contabo VPS 80.241.223.82 / ifnotus.space
+App path:       /srv/apps/ifnotus
+Tester:         Cursor agent (ops evidence + automated suite)
+Environment:    production
+
+
+1. READINESS SCORE
+------------------
+Score: 62 / 100
+
+Breakdown (approx):
+  Platform health / services ........ 12/12
+  Automated tests / build ........... 10/10
+  Catalog honesty (38O) .............  8/8
+  Backup / restore drill (38K) ......  7/8
+  Mail E2E (38L) ....................  6/7
+  OTP limiter fail-closed (38M) .....  6/6
+  SFTP code + sshd Match (38D) ......  5/8  (beta; live customers not enabled)
+  OS quotas tooling (38F) ...........  4/8  (usrjquota on; ifn soft/hard not certified)
+  Billing lifecycle code (38C) ......  5/7  (code; live suspend drill UNVERIFIED)
+  Cron non-root path (38B) ..........  5/7  (code refuses root; worker still User=root)
+  Production smoke (38N) ............  4/10 (PARTIAL)
+  Student public DNS (38A) ..........  2/8  (NS still registrar; A may resolve)
+  Tenant DAC isolation (38G) ........  0/8  (FAIL — cross-tenant read proven)
+  Custom-domain live path ...........  1/5  (matadtech.org unresolved)
+
+
+2. P0 OPEN ISSUES (block public paid launch)
+--------------------------------------------
+P0-1  Cross-tenant filesystem access
+      Evidence: ifn_92f66085 and ifn_317225d0 both in group www-data;
+      sudo -u ifn_92f66085 ls <peer_home> lists peer files (exit 0).
+      Fix: repair-tenant-dac.sh --apply + stop supplementing tenants into www-data
+      (or ACL/group model that does not grant peer docroot read).
+
+P0-2  Public student-zone DNS not authoritative on IFNOTUS NS
+      Evidence: dig NS serverlabsttu.space @1.1.1.1 →
+      dns1/dns2.registrar-servers.com (not ns1/ns2.ifnotus.space).
+      Wildcard A may still answer via registrar; product cannot claim
+      “IFNOTUS DNS manages student hostnames” until NS cutover.
+
+P0-3  Production smoke not fully PASS
+      Evidence: docs/production-smoke-results.md Overall=PARTIAL.
+      No ACTIVE *.serverlabsttu.space env; custom domain matadtech.org
+      does not resolve; entitlement_snapshots=0.
+
+
+3. P1 OPEN ISSUES
+-----------------
+P1-1  ifnotus-api / ifnotus-worker run as User=root
+      Cron code refuses root fallback for tenant jobs, but worker process
+      itself is still root — residual blast radius.
+
+P1-2  SFTP not production-certified for live customers
+      sshd Match Group ifnotus-sftp present; ACTIVE envs have sftp_enabled=false.
+      Catalog correctly labels SFTP beta (38O).
+
+P1-3  OS user quotas not proven on ifn_* accounts
+      usrjquota=aquota.user on /; repquota shows system users with soft/hard=0;
+      ifn_* soft/hard limits not observed in 38P spot check.
+
+P1-4  Off-site DR is same-VPS mirror only
+      Backup/restore drill passed; not multi-datacenter DR.
+      Catalog correctly discloses same-VPS mirror (38O).
+
+P1-5  No live app/DB instance rows to certify stacks from production DB
+      application_instances=0, environment_databases=0 at 38N snapshot.
+
+P1-6  Server git checkout diverges from GitHub (rsync deploy)
+      Server behind origin with dirty tree; do not git pull blindly.
+
+
+4. PACKAGE SELLABILITY
+----------------------
+Public packs (all product_status=beta on live API 2026-08-23):
+
+  student-starter     Student Basic         SELLABLE as LIMITED BETA
+  club-connect        Student Developer     SELLABLE as LIMITED BETA
+  student-pro         Student Pro           SELLABLE as LIMITED BETA
+  student-elite       Student Advanced      SELLABLE as LIMITED BETA
+  personal-launch     Personal Hosting      SELLABLE as LIMITED BETA
+  business-pro        Business Hosting      SELLABLE as LIMITED BETA
+  cloud-vps / cloud-vds                     NOT SELLABLE (coming_soon)
+
+Staff eyes-on required. Do not advertise GA / dedicated / multi-DC DR.
+
+
+5. CUSTOMER PROMISES (must match UI)
+------------------------------------
+ALLOWED now (honest beta):
+  - Shared-node managed hosting
+  - FTP for file transfer
+  - PHP / WordPress oriented Student Basic path
+  - On-server backups with same-VPS mirror (where pack includes backups)
+  - SSL for platform addon hostnames that resolve
+  - Catalog “Beta” badge and Limited beta banner on /plans
+
+Must NOT promise until fixed/proven:
+  - Hard isolation between tenants (DAC FAIL)
+  - Public IFNOTUS-authoritative student DNS (NS cutover pending)
+  - Production-certified SFTP for every pack
+  - Hard OS disk quotas that cannot be exceeded
+  - Multi-datacenter disaster recovery
+  - Dedicated VPS/VDS on this node
+  - Guaranteed custom-domain go-live without customer DNS
+
+
+6. PRODUCTION SMOKE RESULT
+--------------------------
+Status: PARTIAL (docs/production-smoke-results.md)
+
+Proven: demo30.customers.ifnotus.space → ACTIVE, unix ifn_*, nginx, SSL, HTTPS 200,
+student-starter paid path historically.
+
+Failed / unverified: DAC isolation, student-zone ACTIVE env, matadtech.org DNS,
+full app/DB/SFTP/SSH panel smoke.
+
+
+7. BACKUP / RESTORE PROOF
+-------------------------
+Status: PASS (drill) — Phase 38K
+Script: scripts/backup-restore-drill.sh present on server
+Note: offsite = same-VPS mirror (/srv/backups/ifnotus/offsite-mirror) — not true DR
+environment_backups rows present (19 at 38N)
+
+
+8. ISOLATION PROOF
+------------------
+Status: FAIL
+
+Unix users exist (2 ifn_*). Document roots owned by tenant.
+Cross-tenant directory listing still succeeds via www-data supplementary group.
+Verdict: NOT isolation-safe for unsupervised multi-tenant scale.
+
+
+9. DNS PROOF
+------------
+Status: PARTIAL
+
+  ifnotus.space / demo30.customers.ifnotus.space A @1.1.1.1 → 80.241.223.82 PASS
+  named-checkconf OK; named-checkzone serverlabsttu.space serial 2026082301 OK
+  Public NS for serverlabsttu.space still registrar → FAIL for IFNOTUS authority
+  BIND may serve correctly on-box; public cutover incomplete (38A manual)
+
+
+10. SFTP PROOF
+--------------
+Status: CODE PASS / LIVE BETA
+
+  /etc/ssh/sshd_config.d/ifnotus-sftp.conf present
+  Match Group ifnotus-sftp,!ifnotus-ssh; ForceCommand internal-sftp; ChrootDirectory %h
+  sshd -t OK
+  Live ACTIVE envs: sftp_enabled=false
+  Catalog: SFTP beta (SFTP_LIVE_VERIFIED=false)
+
+
+11. QUOTA PROOF
+---------------
+Status: PARTIAL / BETA
+
+  Filesystem mounted with usrjquota=aquota.user
+  scripts/enable-os-user-quotas.sh present
+  Catalog discloses OS disk quota beta
+  Per-tenant ifn_* soft/hard limits not confirmed in 38P spot check
+
+
+12. LIFECYCLE PROOF
+-------------------
+Status: CODE PASS / LIVE UNVERIFIED
+
+  Billing → lifecycle suspend/restore/terminate wired (38C)
+  Live suspended env count was 0 at 38N; terminate row exists historically
+  Full suspend→restore→terminate live drill not re-run in 38P
+
+
+13. AUTOMATED / CONFIG GATE (this run)
+--------------------------------------
+  Backend pytest:           240 passed
+  Frontend production build: PASS (local)
+  nginx -t:                 PASS (warn: protocol options redefined on one site)
+  sshd -t:                  PASS
+  named-checkconf:          PASS
+  named-checkzone:          PASS (serverlabsttu.space)
+  ufw:                      active (22 LIMIT; 80/443/mail open)
+  Services:                 api, worker, redis, postgres, nginx ACTIVE
+  Worker User=:             root (see P1-1)
+
+
+14. VERDICT
+-----------
+READY FOR LIMITED BETA ONLY
+
+NOT READY FOR PUBLIC PAID LAUNCH.
+
+Launch requirements still violated (roadmap gate):
+  [X] public student DNS not fully IFNOTUS-authoritative
+  [ ] customer cron as root — mitigated in code; worker still root (P1)
+  [ ] terminate/suspend leaves credentials — code path exists; live re-verify pending
+  [X] cross-tenant file access possible
+  [ ] SFTP advertised but not live — mitigated by 38O beta labelling
+  [ ] hard quotas claimed but absent — mitigated by 38O beta labelling
+  [X] paid order → ACTIVE smoke not full PASS
+  [ ] backup restore where promised — drill PASS (same-VPS)
+
+
+15. CONDITIONS FOR LIMITED BETA (5–15 customers, staff eyes-on)
+--------------------------------------------------------------
+  - Sell only with Beta labelling (already live on catalog/UI)
+  - Prefer FTP until SFTP ensure verified per customer
+  - Prefer custom domains with customer DNS guidance OR addon *.customers.ifnotus.space
+  - Do not sell student hostnames as “just works on public Internet” until NS cutover
+  - Staff confirm MoMo; watch provisioning to ACTIVE
+  - Run repair-tenant-dac.sh --apply before accepting more concurrent tenants
+
+
+16. EXIT CRITERIA TO REACH PUBLIC PAID LAUNCH
+---------------------------------------------
+  1. DAC: peer ifn_* cannot list/read other customer trees (re-prove)
+  2. dig NS serverlabsttu.space @1.1.1.1 → ns1/ns2.ifnotus.space + wildcard A
+  3. One ACTIVE surname.serverlabsttu.space with public HTTPS PASS
+  4. Smoke matrix Overall=PASS for core path (docs/production-smoke-results.md)
+  5. SFTP ensure + chroot login proven on at least one live pack OR keep beta forever
+  6. setquota applied=True for ifn_* with write-beyond-limit test OR keep quota beta
+  7. Optional: run worker as non-root with proven runuser for cron
+
+
+RELATED DOCS
+------------
+  docs/production-smoke-results.md
+  docs/production-hosting-checklist.md
+  docs/IFNOTUS_REALITY_AUDIT.txt
+  docs/roadmap.txt (PHASE 38P)
+
+
+END OF RELEASE GATE
