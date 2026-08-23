@@ -2,12 +2,16 @@
 
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 
-from app.api.deps import CurrentUser, RequirePermission, get_auth_service
+from app.api.deps import CurrentUser, DbSession, RequirePermission, get_auth_service
+from app.core.exceptions import AppException, AuthorizationError
 from app.core.permissions import Permission
+from app.models.platform import PlatformAuditLog
+from app.schemas.auth import AuthenticatedUser
 from app.schemas.databases import (
     DatabaseAdoptRequest,
     DatabaseBackupListResponse,
@@ -44,6 +48,98 @@ def _db_service(request: Request) -> DatabaseManagerService:
 def _studio(request: Request) -> DatabaseStudioService:
     return DatabaseStudioService(_db_service(request))
 
+
+async def _gate_staff_studio_write(
+    *,
+    user: AuthenticatedUser,
+    auth_service: AuthService,
+    body: DbQueryRequest,
+    engine: str,
+    database: str,
+    target_id: str | None = None,
+) -> str:
+    """Enforce read vs write permission and destructive password confirm (PHASE 38I).
+
+    Returns query_class: read | write | destructive.
+    """
+    qclass = DatabaseStudioService.query_class(
+        sql=body.sql, script=body.script, engine=engine
+    )
+    if qclass == "read":
+        return qclass
+    if not auth_service.user_has_permission(user, Permission.DATABASES_WRITE.value):
+        raise AuthorizationError(
+            "Permission 'databases:write' required for write or DDL queries."
+        )
+    if qclass == "destructive":
+        if not (body.confirm_password or "").strip():
+            raise AppException(
+                "Confirm your dashboard password to run destructive SQL (CREATE/ALTER/DROP/…).",
+                code="db_confirm_required",
+            )
+        await auth_service.confirm_password(user, body.confirm_password)
+    return qclass
+
+
+def _audit_studio_write(
+    session: Any,
+    user: AuthenticatedUser,
+    *,
+    query_class: str,
+    engine: str,
+    database: str,
+    target_id: str | None,
+    body: DbQueryRequest,
+) -> None:
+    if query_class == "read":
+        return
+    verb = DatabaseStudioService.sql_verb(body.sql or body.script or "")
+    session.add(
+        PlatformAuditLog(
+            customer_id=None,
+            actor_id=user.id,
+            action="database.studio_write",
+            target_type="database",
+            target_id=(target_id or database)[:64],
+            result="success",
+            metadata_json={
+                "query_class": query_class,
+                "engine": engine,
+                "database": database[:128],
+                "verb": verb,
+                "actor": user.username,
+            },
+        )
+    )
+
+
+def _audit_row_mutation(
+    session: Any,
+    user: AuthenticatedUser,
+    *,
+    action: str,
+    engine: str,
+    database: str,
+    target_id: str | None,
+    table: str | None,
+) -> None:
+    session.add(
+        PlatformAuditLog(
+            customer_id=None,
+            actor_id=user.id,
+            action=f"database.studio_{action}",
+            target_type="database",
+            target_id=(target_id or database)[:64],
+            result="success",
+            metadata_json={
+                "query_class": "write",
+                "engine": engine,
+                "database": database[:128],
+                "table": (table or "")[:128] or None,
+                "actor": user.username,
+            },
+        )
+    )
 
 @router.get(
     "",
@@ -241,17 +337,37 @@ async def live_rows(
 @router.post(
     "/live/{engine}/{name}/query",
     response_model=DbQueryResponse,
-    dependencies=[Depends(RequirePermission(Permission.DATABASES_WRITE))],
+    dependencies=[Depends(RequirePermission(Permission.DATABASES_READ))],
 )
 async def live_query(
     engine: DatabaseEngine,
     name: str,
     body: DbQueryRequest,
     request: Request,
-    _user: CurrentUser,
+    user: CurrentUser,
+    session: DbSession,
     path: str | None = None,
+    auth_service: AuthService = Depends(get_auth_service),
 ) -> DbQueryResponse:
-    return await _studio(request).query_live(engine, name, body, path)
+    qclass = await _gate_staff_studio_write(
+        user=user,
+        auth_service=auth_service,
+        body=body,
+        engine=engine,
+        database=name,
+        target_id=f"live:{engine}:{name}",
+    )
+    result = await _studio(request).query_live(engine, name, body, path)
+    _audit_studio_write(
+        session,
+        user,
+        query_class=qclass,
+        engine=engine,
+        database=name,
+        target_id=f"live:{engine}:{name}",
+        body=body,
+    )
+    return result
 
 
 @router.post(
@@ -264,10 +380,21 @@ async def live_insert_row(
     name: str,
     body: DbRowMutationRequest,
     request: Request,
-    _user: CurrentUser,
+    user: CurrentUser,
+    session: DbSession,
     path: str | None = None,
 ) -> DbQueryResponse:
-    return await _studio(request).insert_row_live(engine, name, body, path)
+    result = await _studio(request).insert_row_live(engine, name, body, path)
+    _audit_row_mutation(
+        session,
+        user,
+        action="insert",
+        engine=engine,
+        database=name,
+        target_id=f"live:{engine}:{name}",
+        table=body.table or body.collection,
+    )
+    return result
 
 
 @router.patch(
@@ -280,10 +407,21 @@ async def live_update_row(
     name: str,
     body: DbRowMutationRequest,
     request: Request,
-    _user: CurrentUser,
+    user: CurrentUser,
+    session: DbSession,
     path: str | None = None,
 ) -> DbQueryResponse:
-    return await _studio(request).update_row_live(engine, name, body, path)
+    result = await _studio(request).update_row_live(engine, name, body, path)
+    _audit_row_mutation(
+        session,
+        user,
+        action="update",
+        engine=engine,
+        database=name,
+        target_id=f"live:{engine}:{name}",
+        table=body.table or body.collection,
+    )
+    return result
 
 
 @router.post(
@@ -296,10 +434,21 @@ async def live_delete_row(
     name: str,
     body: DbRowMutationRequest,
     request: Request,
-    _user: CurrentUser,
+    user: CurrentUser,
+    session: DbSession,
     path: str | None = None,
 ) -> DbQueryResponse:
-    return await _studio(request).delete_row_live(engine, name, body, path)
+    result = await _studio(request).delete_row_live(engine, name, body, path)
+    _audit_row_mutation(
+        session,
+        user,
+        action="delete",
+        engine=engine,
+        database=name,
+        target_id=f"live:{engine}:{name}",
+        table=body.table or body.collection,
+    )
+    return result
 
 
 # ── Managed studio ─────────────────────────────────────────────────────────
@@ -338,15 +487,38 @@ async def managed_rows(
 @router.post(
     "/{db_id}/query",
     response_model=DbQueryResponse,
-    dependencies=[Depends(RequirePermission(Permission.DATABASES_WRITE))],
+    dependencies=[Depends(RequirePermission(Permission.DATABASES_READ))],
 )
 async def managed_query(
     db_id: str,
     body: DbQueryRequest,
     request: Request,
-    _user: CurrentUser,
+    user: CurrentUser,
+    session: DbSession,
+    auth_service: AuthService = Depends(get_auth_service),
 ) -> DbQueryResponse:
-    return await _studio(request).query_managed(db_id, body)
+    conn = _studio(request)._managed(db_id)
+    engine = str(conn.get("engine") or "mysql")
+    database = str(conn.get("name") or db_id)
+    qclass = await _gate_staff_studio_write(
+        user=user,
+        auth_service=auth_service,
+        body=body,
+        engine=engine,
+        database=database,
+        target_id=db_id,
+    )
+    result = await _studio(request).query_managed(db_id, body)
+    _audit_studio_write(
+        session,
+        user,
+        query_class=qclass,
+        engine=engine,
+        database=database,
+        target_id=db_id,
+        body=body,
+    )
+    return result
 
 
 @router.post(
@@ -358,9 +530,21 @@ async def managed_insert_row(
     db_id: str,
     body: DbRowMutationRequest,
     request: Request,
-    _user: CurrentUser,
+    user: CurrentUser,
+    session: DbSession,
 ) -> DbQueryResponse:
-    return await _studio(request).insert_row_managed(db_id, body)
+    conn = _studio(request)._managed(db_id)
+    result = await _studio(request).insert_row_managed(db_id, body)
+    _audit_row_mutation(
+        session,
+        user,
+        action="insert",
+        engine=str(conn.get("engine") or ""),
+        database=str(conn.get("name") or db_id),
+        target_id=db_id,
+        table=body.table or body.collection,
+    )
+    return result
 
 
 @router.patch(
@@ -372,9 +556,21 @@ async def managed_update_row(
     db_id: str,
     body: DbRowMutationRequest,
     request: Request,
-    _user: CurrentUser,
+    user: CurrentUser,
+    session: DbSession,
 ) -> DbQueryResponse:
-    return await _studio(request).update_row_managed(db_id, body)
+    conn = _studio(request)._managed(db_id)
+    result = await _studio(request).update_row_managed(db_id, body)
+    _audit_row_mutation(
+        session,
+        user,
+        action="update",
+        engine=str(conn.get("engine") or ""),
+        database=str(conn.get("name") or db_id),
+        target_id=db_id,
+        table=body.table or body.collection,
+    )
+    return result
 
 
 @router.post(
@@ -386,9 +582,21 @@ async def managed_delete_row(
     db_id: str,
     body: DbRowMutationRequest,
     request: Request,
-    _user: CurrentUser,
+    user: CurrentUser,
+    session: DbSession,
 ) -> DbQueryResponse:
-    return await _studio(request).delete_row_managed(db_id, body)
+    conn = _studio(request)._managed(db_id)
+    result = await _studio(request).delete_row_managed(db_id, body)
+    _audit_row_mutation(
+        session,
+        user,
+        action="delete",
+        engine=str(conn.get("engine") or ""),
+        database=str(conn.get("name") or db_id),
+        target_id=db_id,
+        table=body.table or body.collection,
+    )
+    return result
 
 
 @router.post(

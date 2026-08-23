@@ -21,6 +21,33 @@ const router = useRouter()
 const theme = useThemeStore()
 const { can } = usePermissions()
 const canWrite = computed(() => can(Permission.DATABASES_WRITE))
+const canRunQuery = computed(() => can(Permission.DATABASES_READ) || canWrite.value)
+
+function isStudioWrite(text: string): boolean {
+  const s = (text || '').trim()
+  if (!s) return false
+  if (isMongo.value) {
+    return /\.(insert(?:One|Many)?|update(?:One|Many)?|delete(?:One|Many)?|remove|drop|create(?:Index|Collection)?|bulkWrite|findAndModify|renameCollection|replaceOne)\b/i.test(s)
+      || /^\s*(?:db\.dropDatabase|dropDatabase)\b/i.test(s)
+  }
+  if (/^\s*(?:WITH\b[\s\S]*?\bAS\s*\([\s\S]*?\)\s*)*(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|TRUNCATE|REPLACE|GRANT|REVOKE|RENAME|CALL|EXEC(?:UTE)?|LOAD|COPY|MERGE)\b/i.test(s)) {
+    return true
+  }
+  if (/^\s*(WITH\b[\s\S]*?\bSELECT\b|SELECT\b|SHOW\b|DESCRIBE\b|DESC\b|EXPLAIN\b|PRAGMA\b)\b/i.test(s)) {
+    return false
+  }
+  return true
+}
+
+function isStudioDestructive(text: string): boolean {
+  const s = (text || '').trim()
+  if (!s) return false
+  if (isMongo.value) {
+    return /\.(?:drop(?:Index|Collection)?|create(?:Index|Collection)?|renameCollection)\b/i.test(s)
+      || /^\s*(?:db\.dropDatabase|dropDatabase)\b/i.test(s)
+  }
+  return /^\s*(?:WITH\b[\s\S]*?\bAS\s*\([\s\S]*?\)\s*)*(ALTER|DROP|CREATE|TRUNCATE|GRANT|REVOKE|RENAME)\b/i.test(s)
+}
 
 const unlocked = ref(false)
 const unlockBusy = ref(false)
@@ -218,15 +245,32 @@ async function loadRows(force = false) {
 }
 
 async function runQuery() {
-  if (!canWrite.value) {
-    message.value = { ok: false, text: 'databases:write required to run queries' }
+  if (queryRunning.value) return
+  const text = sql.value || ''
+  const write = isStudioWrite(text)
+  if (write && !canWrite.value) {
+    message.value = { ok: false, text: 'databases:write required for write or DDL queries' }
     return
   }
-  if (queryRunning.value) return
+  let confirmPassword: string | undefined
+  if (isStudioDestructive(text)) {
+    if (!canWrite.value) {
+      message.value = { ok: false, text: 'databases:write required for destructive SQL' }
+      return
+    }
+    const pw = window.prompt('Confirm your dashboard password to run this destructive SQL:')
+    if (!pw) {
+      message.value = { ok: false, text: 'Destructive SQL cancelled' }
+      return
+    }
+    confirmPassword = pw
+  }
   queryRunning.value = true
   message.value = null
   try {
-    const body = isMongo.value ? { script: sql.value, limit: 200 } : { sql: sql.value, limit: 200 }
+    const body = isMongo.value
+      ? { script: sql.value, limit: 200, confirm_password: confirmPassword }
+      : { sql: sql.value, limit: 200, confirm_password: confirmPassword }
     if (kind.value === 'managed') {
       const { data } = await databasesApi.query(dbId.value, body)
       result.value = data
@@ -597,7 +641,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               class="run-btn"
-              :disabled="queryRunning || !canWrite"
+              :disabled="queryRunning || !canRunQuery"
               @click="runQuery"
             >
               {{ queryRunning ? 'Running…' : 'Run' }}
@@ -608,7 +652,7 @@ onBeforeUnmount(() => {
               v-model="sql"
               :path="queryPath"
               :language="queryLanguage"
-              :readonly="!canWrite"
+              :readonly="!canRunQuery"
               :color-mode="colorMode"
               :font-size="13"
               :word-wrap="true"

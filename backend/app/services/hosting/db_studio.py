@@ -30,10 +30,34 @@ from app.schemas.databases import (
 from app.services.hosting.databases import DatabaseManagerService
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Fail-closed write detection for staff SQL studio (PHASE 38I).
 _WRITE_SQL = re.compile(
-    r"^\s*(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|TRUNCATE|REPLACE|GRANT|REVOKE|RENAME)\b",
+    r"^\s*(?:WITH\b[\s\S]*?\bAS\s*\([\s\S]*?\)\s*)*"
+    r"(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|TRUNCATE|REPLACE|GRANT|REVOKE|RENAME|"
+    r"CALL|EXEC(?:UTE)?|LOAD|COPY|MERGE|ATTACH|DETACH)\b",
     re.I,
 )
+_DESTRUCTIVE_SQL = re.compile(
+    r"^\s*(?:WITH\b[\s\S]*?\bAS\s*\([\s\S]*?\)\s*)*"
+    r"(ALTER|DROP|CREATE|TRUNCATE|GRANT|REVOKE|RENAME)\b",
+    re.I,
+)
+_READ_SQL = re.compile(
+    r"^\s*(WITH\b[\s\S]*?\bSELECT\b|SELECT\b|SHOW\b|DESCRIBE\b|DESC\b|EXPLAIN\b|PRAGMA\b)\b",
+    re.I,
+)
+_MONGO_WRITE = re.compile(
+    r"\.(?:insert(?:One|Many)?|update(?:One|Many)?|delete(?:One|Many)?|remove|drop|"
+    r"create(?:Index|Collection)?|bulkWrite|findAndModify|renameCollection|replaceOne)\b"
+    r"|^\s*(?:db\.dropDatabase|dropDatabase)\b",
+    re.I,
+)
+_MONGO_DESTRUCTIVE = re.compile(
+    r"\.(?:drop(?:Index|Collection)?|create(?:Index|Collection)?|renameCollection)\b"
+    r"|^\s*(?:db\.dropDatabase|dropDatabase)\b",
+    re.I,
+)
+_SQL_VERB = re.compile(r"^\s*(?:WITH\b[\s\S]*?\bAS\s*\([\s\S]*?\)\s*)*([A-Za-z]+)\b", re.I)
 
 
 def _jsonable(value: Any) -> Any:
@@ -777,4 +801,55 @@ class DatabaseStudioService:
 
     @staticmethod
     def is_write_sql(sql: str) -> bool:
-        return bool(_WRITE_SQL.match(sql or ""))
+        """True when SQL mutates data/schema. Unknown statements fail closed as write."""
+        text = (sql or "").strip()
+        if not text:
+            return False
+        if _WRITE_SQL.match(text):
+            return True
+        if _READ_SQL.match(text):
+            return False
+        return True
+
+    @staticmethod
+    def is_destructive_sql(sql: str) -> bool:
+        """DDL / privilege-changing SQL that requires password re-confirm for staff."""
+        return bool(_DESTRUCTIVE_SQL.match((sql or "").strip()))
+
+    @staticmethod
+    def is_write_mongo(script: str) -> bool:
+        text = (script or "").strip()
+        if not text:
+            return False
+        if _MONGO_WRITE.search(text):
+            return True
+        # find / aggregate / count / stats are treated as read; anything else fail-closed
+        if re.search(r"\.(?:find|aggregate|count(?:Documents)?|estimatedDocumentCount|stats|getCollectionNames)\b", text, re.I):
+            return False
+        return True
+
+    @staticmethod
+    def is_destructive_mongo(script: str) -> bool:
+        return bool(_MONGO_DESTRUCTIVE.search((script or "").strip()))
+
+    @classmethod
+    def query_class(cls, *, sql: str | None = None, script: str | None = None, engine: str | None = None) -> str:
+        """Classify studio request: read | write | destructive."""
+        if (engine or "").lower() == "mongodb" or (script and not sql):
+            text = script or sql or ""
+            if cls.is_destructive_mongo(text):
+                return "destructive"
+            if cls.is_write_mongo(text):
+                return "write"
+            return "read"
+        text = sql or script or ""
+        if cls.is_destructive_sql(text):
+            return "destructive"
+        if cls.is_write_sql(text):
+            return "write"
+        return "read"
+
+    @staticmethod
+    def sql_verb(sql: str) -> str:
+        m = _SQL_VERB.match((sql or "").strip())
+        return (m.group(1) if m else "unknown").upper()[:32]

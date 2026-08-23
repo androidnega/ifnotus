@@ -395,7 +395,7 @@ export const databasesApi = {
     id: string,
     params: { table?: string; collection?: string; schema_name?: string; limit?: number; offset?: number },
   ) => apiClient.get<import('@/types/databases').DbQueryResult>(`/databases/${id}/rows`, { params }),
-  query: (id: string, body: { sql?: string; script?: string; limit?: number }) =>
+  query: (id: string, body: { sql?: string; script?: string; limit?: number; confirm_password?: string }) =>
     apiClient.post<import('@/types/databases').DbQueryResult>(`/databases/${id}/query`, body),
   updateRow: (
     id: string,
@@ -452,7 +452,7 @@ export const databasesApi = {
   liveQuery: (
     engine: string,
     name: string,
-    body: { sql?: string; script?: string; limit?: number },
+    body: { sql?: string; script?: string; limit?: number; confirm_password?: string },
     path?: string,
   ) =>
     apiClient.post<import('@/types/databases').DbQueryResult>(

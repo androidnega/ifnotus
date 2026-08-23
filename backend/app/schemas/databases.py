@@ -180,6 +180,8 @@ class DbQueryRequest(SchemaBase):
     sql: str | None = Field(default=None, max_length=200_000)
     script: str | None = Field(default=None, max_length=200_000)
     limit: int = Field(default=200, ge=1, le=2000)
+    # Required for destructive DDL when staff run SQL Studio (PHASE 38I).
+    confirm_password: str | None = Field(default=None, max_length=128)
 
 
 class DbQueryResponse(SchemaBase):
