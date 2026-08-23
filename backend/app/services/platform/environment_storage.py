@@ -133,10 +133,34 @@ def mount_supports_usrquota(mount: str | None) -> bool:
         return False
     opts = _mount_options(mount)
     tokens = {p.strip() for p in opts.replace(",", " ").split() if p.strip()}
-    # Also accept journaled quota option forms.
     if "usrquota" in tokens or "quota" in tokens:
         return True
     return any(t.startswith("usrjquota=") or t.startswith("jqfmt=") for t in tokens)
+
+
+def quotas_actively_on(mount: str | None) -> bool:
+    """True when ``quotaon -p`` reports user quotas are on for mount."""
+    if not mount:
+        return False
+    try:
+        proc = subprocess.run(
+            ["quotaon", "-p", mount],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        text = f"{proc.stdout or ''}\n{proc.stderr or ''}".lower()
+        if "user quota" in text and ("is on" in text or "on" == text.strip()):
+            return True
+        # Common: "user quota on /dev/loopX (/path) is on"
+        if "user quota" in text and "is on" in text:
+            return True
+        if "user quotas are on" in text:
+            return True
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return False
 
 
 def quota_tools_present() -> bool:
@@ -176,13 +200,15 @@ def os_quota_runtime_ready(settings: Settings, home: str | Path | None) -> dict[
     )
     tools = quota_tools_present()
     usrquota = mount_supports_usrquota(mount)
-    ready = bool(enabled and tools and usrquota and mount)
+    active = quotas_actively_on(mount) if (tools and mount) else False
+    ready = bool(enabled and tools and usrquota and active and mount)
     return {
         "settings_enabled": enabled,
         "tools_present": tools,
         "mount": mount,
         "fstype": fstype,
         "usrquota_enabled": usrquota,
+        "quotas_active": active,
         "ready": ready,
         "soft_tracking_only": not ready,
     }
@@ -216,6 +242,7 @@ def apply_os_user_quota(
             "mount": probe["mount"],
             "fstype": probe["fstype"],
             "usrquota_enabled": probe["usrquota_enabled"],
+            "quotas_active": probe.get("quotas_active"),
         }
     )
 
@@ -232,15 +259,17 @@ def apply_os_user_quota(
     if not probe["mount"]:
         result["message"] = "Could not detect filesystem mount"
         return result
-    if not probe["usrquota_enabled"]:
+    if not probe["usrquota_enabled"] or not probe.get("quotas_active"):
         result["message"] = (
-            f"Mount {probe['mount']} has no usrquota — soft panel tracking only"
+            f"Mount {probe['mount']} quotas not active — soft panel tracking only"
         )
         logger.warning(
             "os_quota_mount_not_ready",
             username=username,
             mount=probe["mount"],
             fstype=probe["fstype"],
+            usrquota=probe["usrquota_enabled"],
+            active=probe.get("quotas_active"),
         )
         return result
 

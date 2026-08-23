@@ -47,6 +47,10 @@ def test_apply_reports_soft_only_when_mount_not_ready(tmp_path: Path) -> None:
             "app.services.platform.environment_storage.mount_supports_usrquota",
             return_value=False,
         ),
+        patch(
+            "app.services.platform.environment_storage.quotas_actively_on",
+            return_value=False,
+        ),
     ):
         result = apply_os_user_quota(
             settings,
@@ -57,7 +61,7 @@ def test_apply_reports_soft_only_when_mount_not_ready(tmp_path: Path) -> None:
     assert result["applied"] is False
     assert result["hard_enforced"] is False
     assert result["soft_tracking_only"] is True
-    assert "usrquota" in result["message"]
+    assert "quotas not active" in result["message"] or "usrquota" in result["message"]
 
 
 def test_apply_success_sets_hard_enforced(tmp_path: Path) -> None:
@@ -70,6 +74,10 @@ def test_apply_success_sets_hard_enforced(tmp_path: Path) -> None:
         ),
         patch(
             "app.services.platform.environment_storage.mount_supports_usrquota",
+            return_value=True,
+        ),
+        patch(
+            "app.services.platform.environment_storage.quotas_actively_on",
             return_value=True,
         ),
         patch("app.services.platform.environment_storage.subprocess.run") as run,

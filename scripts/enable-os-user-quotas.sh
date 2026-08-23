@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
-# PHASE 38F — Enable ext4 user quotas on the customer storage mount (usually /).
-# Safe-ish: updates fstab, remounts, quotacheck, quotaon. Run as root.
+# PHASE 38F — Enable real OS user quotas for IFNOTUS customer homes.
+#
+# Contabo/root reality: tune2fs -O quota on the root FS requires unmounting /.
+# This script instead creates a dedicated ext4 image with native quotas and
+# mounts it at the customer environments path (loop device).
 set -euo pipefail
 
-TARGET_PATH="${1:-/srv/apps/ifnotus-customers}"
-MOUNT="$(findmnt -n -o TARGET --target "$TARGET_PATH" 2>/dev/null || echo /)"
-SOURCE="$(findmnt -n -o SOURCE --target "$MOUNT" 2>/dev/null || true)"
-FSTYPE="$(findmnt -n -o FSTYPE --target "$MOUNT" 2>/dev/null || true)"
-
-echo "mount=$MOUNT source=$SOURCE fstype=$FSTYPE"
-
-if [[ "$FSTYPE" != "ext4" && "$FSTYPE" != "ext3" && "$FSTYPE" != "xfs" ]]; then
-  echo "Unsupported fstype for this script: $FSTYPE" >&2
-  exit 1
-fi
+CUSTOMERS="${1:-/srv/apps/ifnotus-customers}"
+IMG="${IFNOTUS_CUSTOMERS_IMG:-/var/lib/ifnotus/customers.ext4}"
+SIZE_G="${IFNOTUS_CUSTOMERS_IMG_GB:-180}"
+MNT_TMP=/mnt/ifnotus-customers-new
 
 export DEBIAN_FRONTEND=noninteractive
 if ! command -v setquota >/dev/null 2>&1; then
@@ -21,47 +17,64 @@ if ! command -v setquota >/dev/null 2>&1; then
   apt-get install -y -qq quota
 fi
 
-# Ensure fstab has usrquota for this mount
-FSTAB=/etc/fstab
-if ! awk -v m="$MOUNT" '$2==m && $4 ~ /(^|,)usrquota(,|$)/ {found=1} END{exit !found}' "$FSTAB"; then
-  cp -a "$FSTAB" "${FSTAB}.bak.ifnotus-quota"
-  python3 - <<PY
-from pathlib import Path
-mount = "$MOUNT"
-path = Path("/etc/fstab")
-lines = path.read_text().splitlines()
-out = []
-changed = False
-for line in lines:
-    raw = line
-    if not line.strip() or line.strip().startswith("#"):
-        out.append(raw)
-        continue
-    parts = line.split()
-    if len(parts) >= 4 and parts[1] == mount:
-        opts = parts[3].split(",")
-        if "usrquota" not in opts:
-            opts.append("usrquota")
-            parts[3] = ",".join(opts)
-            changed = True
-        out.append("\t".join(parts) if "\t" in raw else " ".join(parts))
-    else:
-        out.append(raw)
-if not changed:
-    # fallback: root mount often listed as /
-    pass
-path.write_text("\n".join(out) + "\n")
-print("fstab_updated", changed)
-PY
+mkdir -p /var/lib/ifnotus "$MNT_TMP"
+
+if findmnt -n "$CUSTOMERS" >/dev/null 2>&1; then
+  SRC="$(findmnt -n -o SOURCE --target "$CUSTOMERS" || true)"
+  if [[ "$SRC" == /dev/loop* ]] || [[ "$SRC" == *"customers.ext4"* ]]; then
+    echo "Customer path already on dedicated mount: $SRC"
+    mount -o remount,usrquota "$CUSTOMERS" 2>/dev/null || true
+    quotaon -uv "$CUSTOMERS" 2>/dev/null || true
+    findmnt -n -o TARGET,SOURCE,FSTYPE,OPTIONS "$CUSTOMERS"
+    quotaon -p "$CUSTOMERS" 2>&1 || true
+    echo OK_QUOTAS_ALREADY
+    exit 0
+  fi
 fi
 
-mount -o remount,usrquota "$MOUNT" || mount -o remount "$MOUNT"
-# Initialize quota files if missing
-quotacheck -cugm "$MOUNT" 2>/dev/null || quotacheck -cum "$MOUNT" || true
-quotaon -uv "$MOUNT" || quotaon -u "$MOUNT"
+if [[ ! -f "$IMG" ]]; then
+  echo "Creating sparse customer volume ${SIZE_G}G at $IMG"
+  truncate -s "${SIZE_G}G" "$IMG"
+  mkfs.ext4 -F -O quota -L ifnotus-customers "$IMG"
+fi
+
+# Ensure quota feature on existing image
+if ! tune2fs -l "$IMG" 2>/dev/null | grep -qi 'Filesystem features:.*quota'; then
+  # Image must be unmounted for tune2fs
+  umount "$MNT_TMP" 2>/dev/null || true
+  tune2fs -O quota "$IMG"
+fi
+
+umount "$MNT_TMP" 2>/dev/null || true
+mount -o loop,usrquota "$IMG" "$MNT_TMP"
+
+echo "Syncing $CUSTOMERS -> $MNT_TMP (this can take a few minutes)"
+# Brief service pause to reduce writers
+systemctl stop ifnotus-worker 2>/dev/null || true
+rsync -aHAX --delete --numeric-ids "$CUSTOMERS"/ "$MNT_TMP"/
+systemctl start ifnotus-worker 2>/dev/null || true
+
+# Swap into place
+STAMP="$(date +%Y%m%d%H%M%S)"
+BACKUP="${CUSTOMERS}.pre-quota-${STAMP}"
+systemctl stop ifnotus-api ifnotus-worker 2>/dev/null || true
+umount "$MNT_TMP"
+mv "$CUSTOMERS" "$BACKUP"
+mkdir -p "$CUSTOMERS"
+
+# fstab entry (idempotent)
+if ! grep -qF "$IMG" /etc/fstab; then
+  cp -a /etc/fstab "/etc/fstab.bak.ifnotus-quota.${STAMP}"
+  echo "$IMG  $CUSTOMERS  ext4  loop,usrquota,defaults,nofail  0  2" >> /etc/fstab
+fi
+
+mount "$CUSTOMERS"
+quotaon -uv "$CUSTOMERS" 2>&1 || quotaon -u "$CUSTOMERS" 2>&1 || true
+systemctl start ifnotus-api ifnotus-worker 2>/dev/null || true
 
 echo "=== verify ==="
-findmnt -n -o OPTIONS "$MOUNT"
-quotaon -p "$MOUNT" 2>&1 || true
+findmnt -n -o TARGET,SOURCE,FSTYPE,OPTIONS "$CUSTOMERS"
+quotaon -p "$CUSTOMERS" 2>&1 || true
 command -v setquota
+echo "backup_of_old_tree=$BACKUP"
 echo OK_QUOTAS_ENABLED

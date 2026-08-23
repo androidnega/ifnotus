@@ -74,6 +74,10 @@ def test_setquota_invoked_when_available(tmp_path) -> None:
             "app.services.platform.environment_storage.mount_supports_usrquota",
             return_value=True,
         ),
+        patch(
+            "app.services.platform.environment_storage.quotas_actively_on",
+            return_value=True,
+        ),
         patch("app.services.platform.environment_storage.subprocess.run") as run,
     ):
         run.return_value = MagicMock(returncode=0, stdout="", stderr="")
