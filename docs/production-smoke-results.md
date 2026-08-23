@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Date (UTC) | 2026-08-23 |
-| Git SHA (repo) | `d12ce25` (38M OTP limiter) |
+| Git SHA (repo) | `0032acc` (38N smoke results; includes `d12ce25` 38M OTP limiter) |
 | Git SHA (server checkout) | `1e30d8c` (older tree; 38M files rsynced) |
 | Environment | production (`ifnotus.space` / VPS `80.241.223.82`) |
 | Tester | Cursor agent (ops evidence) |
