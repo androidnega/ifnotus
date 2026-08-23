@@ -155,6 +155,12 @@ class EnvironmentLifecycleService:
             await EnvironmentSftpService(self._settings, self._session).enable(env, actor="lifecycle")
         except Exception:  # noqa: BLE001
             pass
+        try:
+            from app.services.platform.environment_mail import EnvironmentMailService
+
+            await EnvironmentMailService(self._settings, self._session).unsuspend_all_mailboxes(env)
+        except Exception:  # noqa: BLE001
+            pass
 
         if notify_customer:
             await NotificationService(self._session, self._settings).notify(

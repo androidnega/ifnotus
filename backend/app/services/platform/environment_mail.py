@@ -172,6 +172,19 @@ class EnvironmentMailService:
                     MailboxUpdate(suspended=True),
                 )
 
+    async def unsuspend_all_mailboxes(self, env: CustomerEnvironment) -> None:
+        """Re-enable mailboxes after environment restore (PHASE 38L)."""
+        if not env.hosting_domain_id:
+            return
+        boxes = await self._mail.list_mailboxes_for_domain(env.hosting_domain_id)
+        for box in boxes:
+            if box.suspended:
+                await self._mail.update_mailbox(
+                    env.hosting_domain_id,
+                    box.id,
+                    MailboxUpdate(suspended=False),
+                )
+
     async def purge_environment_mail(self, env: CustomerEnvironment) -> None:
         if not env.hosting_domain_id:
             return
