@@ -613,14 +613,24 @@ class EnvironmentBackupService:
                 shutil.copy2(sqlite_file, path)
                 manifest["restored_database"] = {"engine": "sqlite", "path": path}
             elif engine in {"postgresql", "mysql"} and sql_file.exists() and db_name:
-                self._db._restore_engine_db(
-                    engine=engine,
-                    name=db_name,
-                    path=None,
-                    source=sql_file,
-                    create_if_missing=True,
-                )
-                manifest["restored_database"] = {"engine": engine, "name": db_name}
+                # Dump lives under a 0700 tempfile tree — postgres/mysql OS users cannot
+                # traverse it. Stage a world-readable copy for the client tools.
+                import secrets
+
+                staged = Path("/tmp") / f"ifnotus-restore-{secrets.token_hex(8)}.sql"
+                shutil.copy2(sql_file, staged)
+                staged.chmod(0o644)
+                try:
+                    self._db._restore_engine_db(
+                        engine=engine,
+                        name=db_name,
+                        path=None,
+                        source=staged,
+                        create_if_missing=True,
+                    )
+                    manifest["restored_database"] = {"engine": engine, "name": db_name}
+                finally:
+                    staged.unlink(missing_ok=True)
 
             return {
                 "archive": str(archive),
