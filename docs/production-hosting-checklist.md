@@ -192,8 +192,8 @@ Copy a row per verification run:
 
 | Date (UTC) | Commit | Operator | Environment | Result | Notes |
 |---|---|---|---|---|---|
+| 2026-08-23 | `d12ce25` | Cursor agent | production | **partial** | See [production-smoke-results.md](./production-smoke-results.md). demo30 HTTPS+Unix+nginx PASS; DAC cross-tenant FAIL; student zone + matadtech.org DNS unverified/fail; entitlement snapshots=0. |
 | | | | staging / production | pass / fail / partial | |
-| | | | | | |
 
 ### Minimum for public launch
 
