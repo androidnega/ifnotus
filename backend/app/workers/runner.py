@@ -35,11 +35,21 @@ class WorkerRunner:
         ticker = asyncio.create_task(self._billing_ticker())
         backup_ticker = asyncio.create_task(self._backup_ticker())
         health_ticker = asyncio.create_task(self._health_ticker())
+        dns_ticker = asyncio.create_task(self._dns_sweep_ticker())
         storage_ticker = asyncio.create_task(self._storage_ticker())
         cron_ticker = asyncio.create_task(self._env_cron_ticker())
         abuse_ticker = asyncio.create_task(self._abuse_ticker())
+        discovery_ticker = asyncio.create_task(self._discovery_ticker())
         await asyncio.gather(
-            *workers, ticker, backup_ticker, health_ticker, storage_ticker, cron_ticker, abuse_ticker
+            *workers,
+            ticker,
+            backup_ticker,
+            health_ticker,
+            dns_ticker,
+            storage_ticker,
+            cron_ticker,
+            abuse_ticker,
+            discovery_ticker,
         )
 
     async def shutdown(self) -> None:
@@ -50,26 +60,40 @@ class WorkerRunner:
     async def _worker_loop(self, worker_id: int) -> None:
         logger.info("worker_loop_started", worker_id=worker_id)
         while self._running:
-            async with self._semaphore:
-                item = await self._queue.dequeue(
-                    timeout=int(self._settings.worker_poll_interval_seconds)
-                )
-                if item is None:
-                    continue
+            try:
+                async with self._semaphore:
+                    item = await self._queue.dequeue(
+                        timeout=int(self._settings.worker_poll_interval_seconds)
+                    )
+                    if item is None:
+                        continue
 
-                context, task_name, payload = item
-                task = task_registry.get(task_name)
-                if task is None:
-                    logger.warning("unknown_task", task_name=task_name)
-                    await self._queue.mark_failed(context.task_id, f"Unknown task: {task_name}")
-                    continue
+                    context, task_name, payload = item
+                    task = task_registry.get(task_name)
+                    if task is None:
+                        logger.warning("unknown_task", task_name=task_name)
+                        await self._queue.mark_failed(context.task_id, f"Unknown task: {task_name}")
+                        continue
 
-                try:
-                    result = await task.execute(payload, context)
-                    if result.status == TaskStatus.COMPLETED:
-                        await self._queue.mark_completed(context.task_id)
-                    else:
-                        await self._queue.mark_failed(context.task_id, result.error or "Unknown error")
+                    try:
+                        result = await task.execute(payload, context)
+                        if result.status == TaskStatus.COMPLETED:
+                            await self._queue.mark_completed(context.task_id)
+                        else:
+                            await self._queue.mark_failed(context.task_id, result.error or "Unknown error")
+                            attempt = int(payload.get("_attempt") or 1)
+                            if attempt < getattr(task, "max_attempts", 1):
+                                delay = min(60 * attempt, 300)
+                                asyncio.create_task(
+                                    self._requeue_after(
+                                        task_name,
+                                        {**payload, "_attempt": attempt + 1},
+                                        delay_seconds=delay,
+                                    )
+                                )
+                    except Exception as exc:
+                        logger.exception("task_execution_failed", task_name=task_name)
+                        await self._queue.mark_failed(context.task_id, str(exc))
                         attempt = int(payload.get("_attempt") or 1)
                         if attempt < getattr(task, "max_attempts", 1):
                             delay = min(60 * attempt, 300)
@@ -80,19 +104,9 @@ class WorkerRunner:
                                     delay_seconds=delay,
                                 )
                             )
-                except Exception as exc:
-                    logger.exception("task_execution_failed", task_name=task_name)
-                    await self._queue.mark_failed(context.task_id, str(exc))
-                    attempt = int(payload.get("_attempt") or 1)
-                    if attempt < getattr(task, "max_attempts", 1):
-                        delay = min(60 * attempt, 300)
-                        asyncio.create_task(
-                            self._requeue_after(
-                                task_name,
-                                {**payload, "_attempt": attempt + 1},
-                                delay_seconds=delay,
-                            )
-                        )
+            except Exception:  # noqa: BLE001 — keep other workers alive on transient Redis errors
+                logger.exception("worker_loop_iteration_failed", worker_id=worker_id)
+                await asyncio.sleep(1)
 
         logger.info("worker_loop_stopped", worker_id=worker_id)
 
@@ -157,6 +171,19 @@ class WorkerRunner:
                     return
                 await asyncio.sleep(30)
 
+    async def _dns_sweep_ticker(self) -> None:
+        """Reconcile custom-domain panel routing / SSL when public DNS changes (~5 min)."""
+        await asyncio.sleep(60)
+        while self._running:
+            try:
+                await self._queue.enqueue("dns_sweep_tick", {})
+            except Exception:  # noqa: BLE001
+                logger.exception("dns_sweep_tick_enqueue_failed")
+            for _ in range(10):
+                if not self._running:
+                    return
+                await asyncio.sleep(30)
+
     async def _storage_ticker(self) -> None:
         """Scan disk usage vs plan limits about once an hour."""
         await asyncio.sleep(90)
@@ -192,6 +219,19 @@ class WorkerRunner:
             except Exception:  # noqa: BLE001
                 logger.exception("abuse_tick_enqueue_failed")
             for _ in range(6):  # 6 * 30s ≈ 3 minutes
+                if not self._running:
+                    return
+                await asyncio.sleep(30)
+
+    async def _discovery_ticker(self) -> None:
+        """Import new nginx / customer hostnames into Domains + Apps every ~5 minutes."""
+        await asyncio.sleep(50)
+        while self._running:
+            try:
+                await self._queue.enqueue("discovery_tick", {})
+            except Exception:  # noqa: BLE001
+                logger.exception("discovery_tick_enqueue_failed")
+            for _ in range(10):  # 10 * 30s ≈ 5 minutes
                 if not self._running:
                     return
                 await asyncio.sleep(30)

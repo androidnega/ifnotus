@@ -46,6 +46,33 @@ SKIP_DIR_NAMES = frozenset(
     }
 )
 
+# Half of a split stack — not a complete hosted system on its own.
+STACK_FRAGMENT_NAMES = frozenset(
+    {
+        "frontend",
+        "front-end",
+        "frontend-app",
+        "client",
+        "client-app",
+        "web",
+        "webapp",
+        "ui",
+        "admin-ui",
+        "backend",
+        "back-end",
+        "backend-app",
+        "server",
+        "server-app",
+        "api",
+        "api-server",
+        "mobile",
+        "ios",
+        "android",
+    }
+)
+
+WEBROOT_NAMES = frozenset({"public", "dist", "html", "www", "htdocs", "build"})
+
 SKIP_NAME_MARKERS = (
     ".broken",
     ".bak",
@@ -188,6 +215,70 @@ def should_skip_path_name(name: str) -> bool:
     return any(marker in lowered for marker in SKIP_NAME_MARKERS)
 
 
+# Hostnames that do not mean a real public site binding.
+NON_PUBLIC_HOSTNAMES = frozenset({"", "_", "localhost", "127.0.0.1", "::1"})
+
+
+def meaningful_server_names(server_names: list[str] | None) -> list[str]:
+    out: list[str] = []
+    for name in server_names or []:
+        cleaned = (name or "").strip().lower().rstrip(".")
+        if cleaned in NON_PUBLIC_HOSTNAMES:
+            continue
+        out.append(name.strip())
+    return out
+
+
+def is_stack_fragment(path: Path) -> bool:
+    """True for frontend/backend/api-style halves of a larger project."""
+    return path.name.lower() in STACK_FRAGMENT_NAMES
+
+
+def has_stack_siblings(path: Path) -> bool:
+    """True when this folder sits beside a complementary frontend/backend half."""
+    name = path.name.lower()
+    try:
+        siblings = {child.name.lower() for child in path.parent.iterdir() if child.is_dir()}
+    except OSError:
+        return False
+    fronts = {"frontend", "front-end", "frontend-app", "client", "client-app", "web", "webapp", "ui"}
+    backs = {"backend", "back-end", "backend-app", "server", "server-app", "api", "api-server"}
+    if name in fronts and siblings & backs:
+        return True
+    if name in backs and siblings & fronts:
+        return True
+    return False
+
+
+def parent_looks_like_system(parent: Path) -> bool:
+    if not parent.is_dir():
+        return False
+    if (parent / ".git").exists():
+        return True
+    for compose in ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"):
+        if (parent / compose).exists():
+            return True
+    try:
+        children = {c.name.lower() for c in parent.iterdir() if c.is_dir()}
+    except OSError:
+        return False
+    fronts = {"frontend", "front-end", "client", "web", "ui"}
+    backs = {"backend", "back-end", "server", "api"}
+    return bool(children & fronts and children & backs)
+
+
+def lift_to_system_root(path: Path) -> Path:
+    """Prefer the deployable site/project root over public/dist or FE/BE halves."""
+    current = path.resolve()
+    if current.name.lower() in WEBROOT_NAMES and current.parent.is_dir():
+        current = current.parent
+    if is_stack_fragment(current) and (
+        has_stack_siblings(current) or parent_looks_like_system(current.parent)
+    ):
+        current = current.parent
+    return current
+
+
 def prune_nested_paths(paths: list[Path]) -> list[Path]:
     """Keep shallowest app roots; drop children of another discovered root."""
     resolved = sorted({p.resolve() for p in paths}, key=lambda p: (len(p.parts), str(p)))
@@ -221,4 +312,38 @@ def looks_like_app(path: Path) -> bool:
     return len(signals) >= 2 or any(
         marker in signals
         for marker in ("manage.py", "artisan", "package.json", "pyproject.toml", "index.php")
+    )
+
+
+def is_actual_system_root(path: Path, *, server_names: list[str] | None = None) -> bool:
+    """Whether this path represents a complete hosted system (not a FE/BE fragment).
+
+    Nginx-bound document roots with a public hostname count as systems even when
+    the folder is named ``frontend`` (dedicated SPA host). Fragments without a
+    real hostname are dropped so Apps only lists complete systems.
+    """
+    resolved = path.resolve()
+    names = meaningful_server_names(server_names)
+    if names:
+        return True
+    if resolved.name.lower() in WEBROOT_NAMES:
+        return False
+    if is_stack_fragment(resolved):
+        return False
+    # Half of a split monorepo sitting beside frontend/backend — prefer parent.
+    if has_stack_siblings(resolved):
+        return False
+    signals = set(collect_signals(resolved))
+    return bool(
+        signals
+        & {
+            "manage.py",
+            "artisan",
+            "index.php",
+            "package.json",
+            "pyproject.toml",
+            "composer.json",
+            "requirements.txt",
+            "Dockerfile",
+        }
     )

@@ -107,6 +107,16 @@ class ConfigureDnsTask(BaseTask):
                     job.status = "running"
                     job.started_at = datetime.now(UTC)
                 result = await EnvironmentDnsService(self._settings, session).ensure_a(env)
+                try:
+                    panel = await EnvironmentDnsService(self._settings, session).ensure_custom_domain_panel(env)
+                    result = {**(result or {}), "panel": panel}
+                    await EnvironmentDnsService(self._settings, session)._refresh_parking_ready_page(
+                        env, (env.domain or "").strip().lower()
+                    )
+                except Exception as pexc:  # noqa: BLE001
+                    result = {**(result or {}), "panel_error": str(pexc)[:200]}
+                if result.get("ok") and result.get("dns_live"):
+                    pass  # panel sync above already ran
                 if job:
                     job.status = "success" if result.get("ok") else "failed"
                     job.completed_at = datetime.now(UTC)
@@ -152,12 +162,31 @@ class IssueSslTask(BaseTask):
                 if not domain:
                     return TaskResult(status=TaskStatus.FAILED, error="No domain on environment")
 
+                from app.services.hosting.ssl import SslService
+                from app.services.platform.dns import EnvironmentDnsService
+
+                # Custom domains: only issue SSL after nameservers point here.
+                # Never cache/issue certs for domains that are only on an invoice / pending attach.
+                if not SslService.is_ifnotus_hostname(str(domain)):
+                    dns = EnvironmentDnsService(self._settings, session)
+                    if not dns._dns_ready(str(domain)):
+                        msg = (
+                            f"DNS for {domain} is not live yet — SSL was not issued. "
+                            "Point nameservers to IFNOTUS or add A records (@, www, cpanel, mail), then retry."
+                        )
+                        if job:
+                            job.status = "failed"
+                            job.completed_at = datetime.now(UTC)
+                            job.error_info = msg
+                            job.result = {"success": False, "message": msg, "domain": domain}
+                        await session.commit()
+                        return TaskResult(status=TaskStatus.FAILED, error=msg)
+
                 if job:
                     job.status = "running"
                     job.started_at = datetime.now(UTC)
 
                 from app.schemas.hosting import SslActionRequest
-                from app.services.hosting.ssl import SslService
 
                 ssl_result = await SslService(self._settings, session).issue(
                     SslActionRequest(domain=domain, webroot=webroot, dry_run=False)
@@ -172,6 +201,14 @@ class IssueSslTask(BaseTask):
                     # Certbot typically issues ~90d certs; exact expiry refreshed by discovery later
                     if env.ssl_expiry is None:
                         env.ssl_expiry = datetime.now(UTC) + timedelta(days=90)
+                    if not SslService.is_ifnotus_hostname(str(domain)):
+                        try:
+                            panel = await EnvironmentDnsService(self._settings, session).ensure_custom_domain_panel(
+                                env, str(domain)
+                            )
+                            data["panel"] = panel
+                        except Exception as pexc:  # noqa: BLE001
+                            data["panel_error"] = str(pexc)[:200]
                     if job:
                         job.status = "success"
                         job.completed_at = datetime.now(UTC)
@@ -189,6 +226,31 @@ class IssueSslTask(BaseTask):
             except Exception as exc:
                 await session.rollback()
                 logger.exception("issue_ssl_failed")
+                return TaskResult(status=TaskStatus.FAILED, error=str(exc))
+
+
+class DnsSweepTickTask(BaseTask):
+    name = "dns_sweep_tick"
+    queue = "default"
+    max_attempts = 1
+
+    def __init__(
+        self,
+        settings: Settings,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        self._settings = settings
+        self._session_factory = session_factory
+
+    async def execute(self, payload: dict[str, Any], context: TaskContext) -> TaskResult:
+        async with self._session_factory() as session:
+            try:
+                summary = await EnvironmentDnsService(self._settings, session).sweep_active_custom_domains()
+                await session.commit()
+                return TaskResult(status=TaskStatus.COMPLETED, data=summary)
+            except Exception as exc:
+                await session.rollback()
+                logger.exception("dns_sweep_tick_failed")
                 return TaskResult(status=TaskStatus.FAILED, error=str(exc))
 
 
@@ -736,4 +798,33 @@ class DeliverNotificationTask(BaseTask):
             except Exception as exc:
                 await session.rollback()
                 logger.exception("deliver_notification_failed")
+                return TaskResult(status=TaskStatus.FAILED, error=str(exc))
+
+
+class DiscoveryTickTask(BaseTask):
+    """Periodically import new nginx / customer hostnames into Domains + Apps."""
+
+    name = "discovery_tick"
+    queue = "default"
+    max_attempts = 1
+
+    def __init__(
+        self,
+        settings: Settings,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        self._settings = settings
+        self._session_factory = session_factory
+
+    async def execute(self, payload: dict[str, Any], context: TaskContext) -> TaskResult:
+        from app.services.hosting.host_inventory_sync import HostInventorySync
+
+        async with self._session_factory() as session:
+            try:
+                summary = await HostInventorySync(self._settings, session).sync()
+                await session.commit()
+                return TaskResult(status=TaskStatus.COMPLETED, data=summary)
+            except Exception as exc:
+                await session.rollback()
+                logger.exception("discovery_tick_failed")
                 return TaskResult(status=TaskStatus.FAILED, error=str(exc))

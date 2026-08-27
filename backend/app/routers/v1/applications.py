@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
 from app.api.applications import get_application_engine
-from app.api.deps import CurrentUser, DenyCustomerHost, RequirePermission, get_auth_service
+from app.api.deps import CurrentUser, DbSession, DenyCustomerHost, RequirePermission, get_auth_service
 from app.api.operations import get_application_actions
 from app.core.permissions import Permission
 from app.schemas.applications import (
@@ -20,6 +20,7 @@ from app.schemas.applications import (
 )
 from app.schemas.operations import OperationResult
 from app.services.auth import AuthService
+from app.services.hosting.host_inventory_sync import HostInventorySync
 
 router = APIRouter(dependencies=[Depends(DenyCustomerHost)])
 
@@ -51,8 +52,14 @@ class ClearAppLogsRequest(BaseModel):
 )
 async def list_applications(
     request: Request,
+    session: DbSession,
     _user: CurrentUser,
 ) -> ApplicationListResponse:
+    settings = request.app.state.container.config()
+    try:
+        await HostInventorySync(settings, session).sync()
+    except Exception:  # noqa: BLE001 — listing must still work if sync fails
+        pass
     return await get_application_engine(request).list_applications()
 
 

@@ -32,10 +32,11 @@ const emit = defineEmits<{
   liveWriteDone: [{ path: string; success: boolean }]
 }>()
 
+/** One chat thread per surface + root/app jail — NOT per folder/file path. */
 const SESSION_KEY = computed(() => {
-  const scope = (props.path || props.appId || props.rootId || props.cwd || 'default')
+  const scope = (props.rootId || props.appId || 'host')
     .replace(/[^a-zA-Z0-9._/-]+/g, '_')
-    .slice(0, 160)
+    .slice(0, 120)
   return `ifnotus.ai.session.${props.surface}.${scope}`
 })
 
@@ -59,6 +60,8 @@ const dropConfirmError = ref<string | null>(null)
 const pendingDropAction = ref<AiPendingAction | null>(null)
 
 const configured = computed(() => !!status.value?.configured)
+const agentName = computed(() => status.value?.agent_name?.trim() || 'SNR Dev')
+const agentInitial = computed(() => agentName.value.charAt(0).toUpperCase() || 'S')
 const sessionTitle = computed(() => {
   const hit = sessions.value.find((s) => s.id === sessionId.value)
   return hit?.title || 'New conversation'
@@ -117,7 +120,8 @@ async function loadStatus() {
 
 async function refreshSessions() {
   try {
-    const { data } = await aiApi.listSessions(props.surface, props.path)
+    // Do not filter by path — folder navigation must keep the same conversation list.
+    const { data } = await aiApi.listSessions(props.surface)
     sessions.value = data.sessions || []
   } catch {
     sessions.value = []
@@ -152,7 +156,7 @@ async function startNewChat() {
     const { data } = await aiApi.createSession({
       surface: props.surface,
       title: 'New conversation',
-      path: props.path,
+      // Keep sessions surface-scoped; path is only chat context, not identity.
       appId: props.appId,
       rootId: props.rootId,
     })
@@ -425,8 +429,9 @@ function onKeydown(ev: KeyboardEvent) {
   }
 }
 
+// Only reset the thread when the jail/surface changes — not when browsing folders/files.
 watch(
-  () => [props.surface, props.path, props.rootId, props.appId, props.cwd],
+  () => [props.surface, props.rootId, props.appId] as const,
   async () => {
     sessionId.value = null
     messages.value = []
@@ -447,9 +452,9 @@ onMounted(loadStatus)
   <aside class="ai-panel" :class="{ 'is-compact': compact }">
     <header class="ai-header">
       <div class="ai-brand">
-        <span class="ai-brand-mark">S</span>
+        <span class="ai-brand-mark">{{ agentInitial }}</span>
         <div class="min-w-0">
-          <p class="ai-brand-name">SNR Dev</p>
+          <p class="ai-brand-name">{{ agentName }}</p>
           <p class="ai-context">
             {{ sessionTitle }}
             <span v-if="path"> · {{ path }}</span>
@@ -519,7 +524,7 @@ onMounted(loadStatus)
     <template v-else>
       <div v-if="!configured" class="ai-setup">
         <p class="text-sm text-slate-700 dark:text-slate-200">
-          Add your API key in Settings to unlock SNR Dev.
+          Add your API key in Settings to unlock {{ agentName }}.
         </p>
         <RouterLink to="/settings" class="ai-link">Open Settings</RouterLink>
       </div>
@@ -566,7 +571,7 @@ onMounted(loadStatus)
             <button
               v-else-if="surface !== 'dashboard'"
               type="button"
-              @click="send('Find likely configuration or runtime issues in the current path.')"
+              @click="send('Find likely configuration or runtime issues in the current path. Use probe_site_http if a domain is involved, then read config/.env and propose a real fix.')"
             >
               Find issues here
             </button>
@@ -647,7 +652,7 @@ onMounted(loadStatus)
           rows="2"
           class="ai-input"
           :disabled="sending"
-          :placeholder="configured ? 'Ask SNR Dev…' : 'Configure SNR Dev in Settings first'"
+          :placeholder="configured ? `Ask ${agentName}…` : `Configure ${agentName} in Settings first`"
           @keydown="onKeydown"
         />
         <button
@@ -814,7 +819,9 @@ onMounted(loadStatus)
   flex: 1;
   min-height: 12rem;
   max-height: min(52vh, 28rem);
+  min-width: 0;
   overflow: auto;
+  overflow-x: hidden;
   padding: 0.85rem;
   display: flex;
   flex-direction: column;
@@ -846,12 +853,17 @@ onMounted(loadStatus)
   background: rgb(148 163 184 / 0.12);
 }
 .ai-bubble {
-  max-width: 95%;
+  box-sizing: border-box;
+  max-width: min(100%, 36rem);
+  min-width: 0;
   border: 1px solid transparent;
   border-radius: 0.9rem;
   padding: 0.7rem 0.8rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .ai-bubble.is-user {
+  max-width: min(100%, 30rem);
   align-self: flex-end;
   background: rgb(15 118 110 / 0.12);
   border-color: rgb(15 118 110 / 0.12);
@@ -887,6 +899,20 @@ onMounted(loadStatus)
   overflow-wrap: anywhere;
   word-break: break-word;
   line-height: 1.55;
+}
+.ai-md :deep(a) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.ai-md :deep(table) {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.ai-md :deep(th),
+.ai-md :deep(td) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .ai-md :deep(.ai-md-p:last-child) {
   margin-bottom: 0;

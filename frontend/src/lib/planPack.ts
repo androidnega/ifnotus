@@ -43,16 +43,6 @@ export function publicPackItems(plan: HostingPlan): PackItem[] {
         detail: card.stacks_limited.slice(0, 6).join(', '),
       })
     }
-    if (card.stacks_beta?.length) {
-      base.push({
-        id: 'beta-stacks',
-        label: 'Beta stacks',
-        detail: `${card.stacks_beta.slice(0, 8).join(', ')} (verify before customer use)`,
-      })
-    }
-    if (card.product_status === 'beta') {
-      base.push({ id: 'status', label: 'Availability', detail: 'Limited beta on shared hosting' })
-    }
     if (card.production_notes?.length) {
       base.push({
         id: 'notes',
@@ -97,7 +87,7 @@ export function publicPackItems(plan: HostingPlan): PackItem[] {
         matrix.sftp === 'no'
           ? 'FTP only on this pack'
           : matrix.sftp === 'limited'
-            ? 'FTP included · SFTP beta'
+            ? 'FTP and SFTP included'
             : 'FTP and SFTP included',
     },
     {

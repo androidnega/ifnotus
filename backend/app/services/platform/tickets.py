@@ -68,6 +68,20 @@ class SupportTicketService:
         await self._session.refresh(ticket)
         return ticket
 
+    async def count_awaiting_customer(self, customer_id: UUID) -> int:
+        """Tickets where staff replied last (status pending) — accurate support badge."""
+        from sqlalchemy import func
+
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(SupportTicket)
+            .where(
+                SupportTicket.customer_id == customer_id,
+                SupportTicket.status == "pending",
+            )
+        )
+        return int(result.scalar_one() or 0)
+
     async def list_customer(self, customer_id: UUID) -> list[SupportTicket]:
         result = await self._session.execute(
             select(SupportTicket)

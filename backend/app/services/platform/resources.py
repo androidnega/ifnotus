@@ -8,6 +8,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.exceptions import ValidationError
 from app.models.platform import CustomerEnvironment, HostingPlan, InfrastructureNode, Subscription
 
 
@@ -99,8 +100,9 @@ class ResourceManager:
         settings = get_settings()
         pressure = evaluate_disk_pressure(settings)
         if should_block_provisioning(settings, pressure=pressure):
-            raise RuntimeError(
-                "Host disk pressure is critical — provisioning is paused until space is freed."
+            raise ValidationError(
+                "Host disk pressure is critical — provisioning is paused until space is freed.",
+                code="disk_pressure",
             )
         nodes = await self.list_nodes()
         if not nodes:
@@ -108,7 +110,10 @@ class ResourceManager:
             nodes = await self.list_nodes()
         healthy = [n for n in nodes if n.status in {"healthy", "warning"}]
         if not healthy:
-            raise RuntimeError("No healthy infrastructure nodes available.")
+            raise ValidationError(
+                "No healthy infrastructure nodes available.",
+                code="no_healthy_nodes",
+            )
 
         min_free = int(getattr(settings, "infra_min_free_storage_gb", 20) or 20)
         need_storage = int(plan.storage_gb) + min_free
@@ -127,8 +132,9 @@ class ResourceManager:
                     best = node
                     best_free = free_score
         if best is None:
-            raise RuntimeError(
-                "Insufficient capacity for this plan. Contact IFNOTUS support or choose a smaller plan."
+            raise ValidationError(
+                "Insufficient capacity for this plan. Contact IFNOTUS support or choose a smaller plan.",
+                code="capacity_unavailable",
             )
         return best
 

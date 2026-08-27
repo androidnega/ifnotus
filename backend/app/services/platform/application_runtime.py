@@ -255,6 +255,109 @@ class ApplicationRuntimeService:
         )
         return list(result.scalars().all())
 
+    async def upsert_site_stack(
+        self,
+        env: CustomerEnvironment,
+        *,
+        stack: str,
+        result: dict[str, Any] | None = None,
+    ) -> ApplicationInstance | None:
+        """Create/update the site-root ApplicationInstance for a one-click stack.
+
+        Unlike ``create()``, this does **not** nest under ``apps/<slug>`` — the
+        document root *is* the application.
+        """
+        stack = (stack or "").strip().lower()
+        if not stack:
+            return None
+        spec = FRAMEWORKS.get(stack) or FRAMEWORKS.get("static")
+        if spec is None:
+            return None
+
+        site_root = Path(env.document_root or "").resolve() if env.document_root else Path()
+        if site_root.name == "public":
+            site_root = site_root.parent
+        if not str(site_root):
+            return None
+
+        result = result or {}
+        existing: ApplicationInstance | None = None
+        for app in await self.list_apps(env):
+            cfg = dict(app.config_json or {})
+            if cfg.get("source") == "one_click":
+                existing = app
+                break
+            app_root = str(cfg.get("app_root") or "")
+            if app_root and Path(app_root).resolve() == site_root:
+                existing = app
+                break
+
+        display = str(result.get("stack_name") or spec.label)
+        cfg: dict[str, Any] = {
+            "name": display,
+            "slug": "site",
+            "source": "one_click",
+            "app_root": str(site_root),
+            "runtime_version": spec.runtime_version,
+            "build_command": "",
+            "start_command": "",
+            "env_vars": {},
+            "stack": stack,
+            "installed_at": result.get("installed_at"),
+            "web_root": result.get("web_root"),
+        }
+        port = result.get("port") or result.get("proxy_port") or env.container_port
+        try:
+            port_i = int(port) if port is not None else None
+        except (TypeError, ValueError):
+            port_i = None
+
+        if existing is None:
+            existing = ApplicationInstance(
+                environment_id=env.id,
+                runtime=spec.runtime,
+                framework=spec.id,
+                status="running",
+                allocated_port=port_i if stack == "nodejs" else None,
+                config_json=cfg,
+            )
+            self._session.add(existing)
+        else:
+            existing.runtime = spec.runtime
+            existing.framework = spec.id
+            existing.status = "running"
+            if stack == "nodejs" and port_i:
+                existing.allocated_port = port_i
+            merged = dict(existing.config_json or {})
+            merged.update(cfg)
+            existing.config_json = merged
+        await self._session.flush()
+        return existing
+
+    async def clear_site_stack_apps(self, env: CustomerEnvironment) -> int:
+        """Remove or stop one-click site-root ApplicationInstance rows only."""
+        removed = 0
+        site_root = Path(env.document_root or "").resolve() if env.document_root else None
+        if site_root and site_root.name == "public":
+            site_root = site_root.parent
+        for app in await self.list_apps(env):
+            cfg = dict(app.config_json or {})
+            is_one_click = cfg.get("source") == "one_click"
+            app_root = str(cfg.get("app_root") or "")
+            is_site_root = bool(
+                site_root and app_root and Path(app_root).resolve() == site_root
+            )
+            # Never delete managed /apps/<slug> runtimes on stack clear.
+            under_apps = "/apps/" in app_root.replace("\\", "/")
+            if under_apps and not is_one_click:
+                continue
+            if is_one_click or is_site_root:
+                await self._session.delete(app)
+                removed += 1
+        if removed:
+            await self._session.flush()
+        return removed
+
     async def get_app(self, env: CustomerEnvironment, app_id: UUID) -> ApplicationInstance:
         result = await self._session.execute(
             select(ApplicationInstance).where(
@@ -282,8 +385,33 @@ class ApplicationRuntimeService:
     ) -> ApplicationInstance:
         if env.status == "terminated":
             raise AppException("Cannot add applications to a terminated site.")
-        if not env.document_root:
+        customers_root = Path(self._settings.customer_environments_root).resolve()
+        raw = (env.document_root or "").strip()
+        if not raw and env.domain:
+            from app.models.platform import Customer
+            from app.services.platform.customer_storage import environment_public_root
+
+            customer = await self._session.get(Customer, env.customer_id)
+            if customer is not None:
+                raw = str(Path(environment_public_root(self._settings, customer, env.domain)).parent)
+            else:
+                raw = str(customers_root / str(env.customer_id) / env.domain)
+        doc_root = Path(raw) if raw else Path()
+        if raw and not doc_root.is_absolute():
+            doc_root = customers_root / raw
+        if doc_root.name == "public":
+            doc_root = doc_root.parent
+        if not raw or not str(doc_root):
             raise AppException("Site has no document root yet.")
+        doc_root = doc_root.resolve()
+        try:
+            doc_root.relative_to(customers_root)
+        except ValueError as exc:
+            raise AppException(
+                "Application path is outside the customer hosting root.",
+                code="app_outside_tenant",
+            ) from exc
+        env.document_root = str(doc_root)
 
         fw = framework.strip().lower()
         spec = FRAMEWORKS.get(fw)
@@ -299,10 +427,11 @@ class ApplicationRuntimeService:
         )
 
         slug = slugify(name)
-        app_root = Path(env.document_root) / "apps" / slug
+        doc_root = doc_root.resolve()
+        app_root = (doc_root / "apps" / slug).resolve()
         if app_root.exists():
             slug = f"{slug}-{secrets.token_hex(3)}"
-            app_root = Path(env.document_root) / "apps" / slug
+            app_root = (doc_root / "apps" / slug).resolve()
 
         port = await self._allocate_port(env)
         cfg: dict[str, Any] = {
@@ -310,8 +439,14 @@ class ApplicationRuntimeService:
             "slug": slug,
             "git_url": (git_url or "").strip() or None,
             "runtime_version": runtime_version or spec.runtime_version,
-            "build_command": build_command or spec.default_build,
-            "start_command": start_command or spec.default_start,
+            # Empty string means "no build" (explicit); None means use framework default.
+            "build_command": spec.default_build if build_command is None else build_command,
+            # Blank start → framework default (Express needs `node server.js`, not a static serve).
+            "start_command": (
+                spec.default_start
+                if start_command is None or not str(start_command).strip()
+                else start_command
+            ),
             "env_vars": env_vars or {},
             "app_root": str(app_root),
         }
@@ -330,7 +465,20 @@ class ApplicationRuntimeService:
         item.config_json = dict(cfg)
         ResourceEnforcementService(self._session).apply_to_instance(item, limits)
         app_root.mkdir(parents=True, exist_ok=True)
-        fix_web_ownership(app_root, user=self._settings.web_run_user)
+        fix_web_ownership(
+            app_root,
+            user=self._settings.web_run_user,
+            uid=env.unix_uid,
+            gid=env.unix_gid,
+        )
+        if env.unix_username:
+            from app.services.platform.fs_ownership import grant_tenant_traverse
+
+            grant_tenant_traverse(
+                self._settings.customer_environments_root,
+                customer_id=env.customer_id,
+                unix_username=env.unix_username,
+            )
         await self._session.flush()
         return item
 
@@ -379,6 +527,37 @@ class ApplicationRuntimeService:
             elif not any(app_root.iterdir()):
                 self._write_framework_stub(app, app_root)
 
+            # Express/Node stubs ship package.json but skip build when build_command="".
+            if app.framework in {"express", "nodejs"} and not (app_root / "node_modules").is_dir():
+                npm = shutil.which("npm") or "npm"
+                proc = subprocess.run(
+                    [npm, "install", "--omit=dev"],
+                    cwd=str(app_root),
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    check=False,
+                )
+                if proc.returncode != 0:
+                    raise AppException(
+                        f"npm install failed: {(proc.stderr or proc.stdout or '')[-400:]}",
+                        code="npm_install_failed",
+                    )
+                fix_web_ownership(
+                    app_root,
+                    user=self._settings.web_run_user,
+                    uid=env.unix_uid,
+                    gid=env.unix_gid,
+                )
+                if env.unix_username:
+                    from app.services.platform.fs_ownership import grant_tenant_traverse
+
+                    grant_tenant_traverse(
+                        self._settings.customer_environments_root,
+                        customer_id=env.customer_id,
+                        unix_username=env.unix_username,
+                    )
+
             port = app.allocated_port or await self._allocate_port(env)
             app.allocated_port = port
             # Persist before supervisor write so concurrent allocators see it.
@@ -386,8 +565,13 @@ class ApplicationRuntimeService:
             start = str(cfg.get("start_command") or "").strip()
             spec = FRAMEWORKS.get(app.framework or "")
             needs_supervisor = bool(start) and (spec is None or spec.needs_proxy)
+            # React/Vue stubs with index.html are served by nginx try_files — no proxy needed.
+            static_disk = (
+                (app.framework or "") in {"react", "vue", "static"}
+                and (app_root / "index.html").is_file()
+            )
 
-            if needs_supervisor and start:
+            if needs_supervisor and start and not static_disk:
                 start_cmd = start.replace("{port}", str(port))
                 self._install_supervisor(app, env, app_root, start_cmd, cfg.get("env_vars") or {}, limits)
                 self._supervisor_action(cfg["supervisor_program"], "reread")
@@ -447,6 +631,13 @@ class ApplicationRuntimeService:
         app_root = cfg.get("app_root")
         if app_root:
             shutil.rmtree(app_root, ignore_errors=True)
+        slug = str(cfg.get("slug") or "").strip()
+        if slug and env.domain:
+            host = str(env.domain).strip().lower()
+            Path(f"/etc/nginx/ifnotus-apps/hosts/{host}/{slug}.conf").unlink(missing_ok=True)
+            Path(f"/etc/nginx/ifnotus-apps/{env.id}-{slug}.conf").unlink(missing_ok=True)
+            nginx = shutil.which("nginx") or "nginx"
+            subprocess.run([nginx, "-s", "reload"], capture_output=True, check=False)
         # Release registry slot; next allocate still refuses if the OS socket is held.
         app.allocated_port = None
         await self._session.flush()
@@ -529,9 +720,16 @@ class ApplicationRuntimeService:
         if limits is None:
             limits = AppResourceLimits(1, 1, 2, 512, 2, 10, 5, 256)
         cmd = ResourceEnforcementService.wrap_command(cmd, limits)
+        try:
+            from app.services.platform.systemd_env_slice import EnvironmentSliceService
+
+            cmd = EnvironmentSliceService().wrap_command_in_slice(cmd, env)
+        except Exception:  # noqa: BLE001
+            pass
         run_env = {**os.environ, **{str(k): str(v) for k, v in extra_env.items()}}
         if port is not None:
             run_env["PORT"] = str(port)
+        cwd = Path(cwd).resolve()
         if env.unix_uid is not None and hasattr(os, "setuid"):
             # Run via su if root
             if hasattr(os, "geteuid") and os.geteuid() == 0 and env.unix_username:
@@ -547,7 +745,7 @@ class ApplicationRuntimeService:
             else:
                 proc = subprocess.run(
                     ["bash", "-lc", cmd],
-                    cwd=cwd,
+                    cwd=str(cwd),
                     capture_output=True,
                     text=True,
                     env=run_env,
@@ -557,7 +755,7 @@ class ApplicationRuntimeService:
         else:
             proc = subprocess.run(
                 ["bash", "-lc", cmd],
-                cwd=cwd,
+                cwd=str(cwd),
                 capture_output=True,
                 text=True,
                 env=run_env,
@@ -608,6 +806,10 @@ class ApplicationRuntimeService:
         merged = {str(k): str(v) for k, v in (extra_env or {}).items()}
         merged["PORT"] = str(port)
         merged.setdefault("HOST", "127.0.0.1")
+        # System tenants often have an unusable passwd home; pin caches under the app.
+        merged.setdefault("HOME", str(app_root))
+        merged.setdefault("NPM_CONFIG_CACHE", str(app_root / ".ifnotus" / "npm-cache"))
+        merged.setdefault("XDG_CACHE_HOME", str(app_root / ".ifnotus" / "cache"))
         env_lines = supervisor_environment_line(merged)
         user_line = f"user={env.unix_username}\n" if env.unix_username else ""
         conf = ResourceEnforcementService.supervisor_program_block(
@@ -638,19 +840,72 @@ class ApplicationRuntimeService:
     async def _ensure_nginx_location(self, env: CustomerEnvironment, slug: str, port: int) -> None:
         if not env.domain:
             return
-        snippet_dir = Path("/etc/nginx/ifnotus-apps")
+        host = str(env.domain).strip().lower()
+        snippet_dir = Path(f"/etc/nginx/ifnotus-apps/hosts/{host}")
         snippet_dir.mkdir(parents=True, exist_ok=True)
-        snippet = snippet_dir / f"{env.id}-{slug}.conf"
-        snippet.write_text(
-            f"location /apps/{slug}/ {{\n"
-            f"    proxy_pass http://127.0.0.1:{port}/;\n"
-            f"    proxy_set_header Host $host;\n"
-            f"    proxy_set_header X-Real-IP $remote_addr;\n"
-            f"}}\n",
-            encoding="utf-8",
+        # Included verbatim inside server{} — keep indentation.
+        location_body = (
+            f"    location /apps/{slug}/ {{\n"
+            f"        proxy_pass http://127.0.0.1:{port}/;\n"
+            f"        proxy_http_version 1.1;\n"
+            f"        proxy_set_header Host $host;\n"
+            f"        proxy_set_header X-Real-IP $remote_addr;\n"
+            f"        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+            f"        proxy_set_header X-Forwarded-Proto $scheme;\n"
+            f"    }}\n"
         )
+        snippet = snippet_dir / f"{slug}.conf"
+        snippet.write_text(location_body, encoding="utf-8")
+        legacy = Path("/etc/nginx/ifnotus-apps") / f"{env.id}-{slug}.conf"
+        try:
+            legacy.parent.mkdir(parents=True, exist_ok=True)
+            legacy.write_text(location_body, encoding="utf-8")
+        except OSError:
+            pass
+        try:
+            from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
+
+            root = (env.document_root or "").strip()
+            if root:
+                proxy = env.container_port if (env.isolation_type or "") == "nodejs" else None
+                await DomainNginxProvisioner(self._settings).provision(
+                    hostname=host,
+                    document_root=root,
+                    proxy_port=proxy,
+                    create_docroot=False,
+                    enabled=True,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("app_nginx_reprovision_failed", domain=host, error=str(exc)[:200])
+        self._ensure_app_include_in_site(host)
         nginx = shutil.which("nginx") or "nginx"
-        subprocess.run([nginx, "-s", "reload"], capture_output=True, check=False)
+        test = subprocess.run([nginx, "-t"], capture_output=True, text=True, check=False)
+        if test.returncode == 0:
+            subprocess.run([nginx, "-s", "reload"], capture_output=True, check=False)
+        else:
+            logger.warning("app_nginx_test_failed", error=(test.stderr or test.stdout or "")[-300:])
+
+    def _ensure_app_include_in_site(self, hostname: str) -> None:
+        """Make sure the managed vhost includes /etc/nginx/ifnotus-apps/hosts/<host>/*.conf."""
+        available = Path(f"/etc/nginx/sites-available/{hostname}")
+        if not available.is_file():
+            return
+        try:
+            text = available.read_text(encoding="utf-8")
+        except OSError:
+            return
+        include_line = f"    include /etc/nginx/ifnotus-apps/hosts/{hostname}/*.conf;"
+        if include_line in text:
+            return
+        if "\n    location / {" in text:
+            text = text.replace("\n    location / {", f"\n{include_line}\n    location / {{", 1)
+        else:
+            return
+        try:
+            available.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            logger.warning("app_nginx_include_inject_failed", domain=hostname, error=str(exc)[:200:])
+
 
     @staticmethod
     def _write_static_stub(root: Path, title: str) -> None:
@@ -713,6 +968,10 @@ def app_to_response(app: ApplicationInstance) -> dict[str, Any]:
         "port": app.allocated_port,
         "git_url": cfg.get("git_url"),
         "slug": cfg.get("slug"),
+        "source": cfg.get("source"),
+        "installed_at": cfg.get("installed_at") or (
+            app.created_at.isoformat() if getattr(app, "created_at", None) else None
+        ),
         "build_command": cfg.get("build_command"),
         "start_command": cfg.get("start_command"),
         "memory_limit_mb": app.memory_limit_mb,

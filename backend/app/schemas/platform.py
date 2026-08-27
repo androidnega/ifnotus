@@ -75,10 +75,14 @@ class CatalogMetaResponse(SchemaBase):
     themes: list[dict] = Field(default_factory=list)
     colors: dict[str, str] = Field(default_factory=dict)
     plan_colors: list[dict[str, str]] = Field(default_factory=list)
+    home_layout: str = "split-right"
+    home_layouts: list[dict] = Field(default_factory=list)
+    maintenance_mode: bool = False
+    maintenance_message: str = ""
     registrar_enabled: bool = False
     nameservers: list[str] = Field(default_factory=lambda: ["ns1.ifnotus.space", "ns2.ifnotus.space"])
-    student_zone: str = "serverlabsttu.space"
-    legacy_student_zone: str = "ifnotus.space"
+    student_zone: str = "ifnotus.space"
+    legacy_student_zone: str = "serverlabsttu.space"
     support_hours: str = ""
     support_whatsapp: str = ""
     support_email: str = ""
@@ -90,6 +94,7 @@ class PublicStatusResponse(SchemaBase):
     ok: bool = True
     brand: str = "IFNOTUS"
     message: str = "IFNOTUS hosting is operating normally."
+    maintenance_mode: bool = False
     nameservers: list[str] = Field(default_factory=list)
     support_hours: str = ""
     updated_at: datetime | None = None
@@ -200,6 +205,8 @@ class CreateOrderRequest(SchemaBase):
     include_domain: bool = True
     domain_kind: str = "register"
     student_surname: str | None = None
+    billing_term_months: int = 1
+    coupon_code: str | None = None
 
     @field_validator("domain_kind")
     @classmethod
@@ -208,6 +215,17 @@ class CreateOrderRequest(SchemaBase):
         if kind not in {"register", "transfer", "own", "student"}:
             return "register"
         return kind
+
+    @field_validator("billing_term_months")
+    @classmethod
+    def _term(cls, value: int) -> int:
+        try:
+            months = int(value or 1)
+        except (TypeError, ValueError):
+            months = 1
+        if months not in {1, 3, 6, 12, 24, 36}:
+            raise ValueError("billing_term_months must be 1, 3, 6, 12, 24, or 36")
+        return months
 
 
 class MomoInstructions(SchemaBase):
@@ -241,6 +259,8 @@ class OrderResponse(SchemaBase):
     expires_at: datetime | None = None
     created_at: datetime
     order_kind: str | None = None
+    billing_term_months: int = 1
+    meta_json: dict = Field(default_factory=dict)
 
 
 class InvoiceViewResponse(SchemaBase):
@@ -251,6 +271,12 @@ class InvoiceViewResponse(SchemaBase):
     support_hours: str | None = None
     support_whatsapp: str | None = None
     support_email: str | None = None
+    # Bill-to (filled for staff receipt + customer invoice when available)
+    customer_name: str | None = None
+    customer_email: str | None = None
+    customer_phone: str | None = None
+    # Document kind for UI: pending/submitted → invoice; paid → receipt
+    document_kind: str = "invoice"
 
 
 class CreateOrderResponse(SchemaBase):
@@ -278,6 +304,7 @@ class EnvironmentResponse(SchemaBase):
     storage_limit_gb: int
     ip_address: str | None = Field(default=None, exclude=True)
     domain: str | None = None
+    hosting_name: str | None = None
     document_root: str | None = Field(default=None, exclude=True)
     health_status: str
     isolation_type: str = "filesystem"
@@ -346,7 +373,7 @@ class EnvironmentSftpResponse(SchemaBase):
     sftp_allowed: bool = False
     enabled: bool = False
     username: str | None = None
-    host: str = "serverlabsttu.space"
+    host: str = "ifnotus.space"
     shared_ip: str | None = None
     port: int = 22
     password_auth_enabled: bool = True
@@ -401,10 +428,25 @@ class EnvironmentUsageResponse(SchemaBase):
     components: dict = Field(default_factory=dict)
     os_quota: dict = Field(default_factory=dict)
     host: dict = Field(default_factory=dict)
+    # Live samples (Phase E) — best-effort from cgroup slice / unix user.
+    # cpu_usage_percent is relative to the plan vCPU quota when measurable.
+    cpu_usage_percent: float | None = None
+    cpu_usage_vcpu: float | None = None
+    memory_usage_mb: float | None = None
+    memory_limit_mb: float | None = None
+    memory_pct: float | None = None
+    process_count: int | None = None
+    process_limit: int | None = None
+    resources_enforced: bool = False
+    resource_slice: str | None = None
+    metrics_source: str | None = None
+    metrics_updated_at: str | None = None
+    resource_statuses: dict = Field(default_factory=dict)
     message: str | None = None
     note: str = (
-        "CPU/RAM are plan limits. Live disk usage is measured under your site folder. "
-        "OS quotas apply when the filesystem supports them."
+        "Live disk is measured under your site folder. CPU/RAM samples come from your "
+        "environment resource slice when available. Status labels show whether each limit "
+        "is allocated, reported, enforced, or monitored."
     )
 
 
@@ -571,21 +613,25 @@ class EnvironmentDnsResponse(SchemaBase):
     custom_domains_used: int = 0
     custom_domains_limit: int = 1
     can_assign: bool = False
-    recommended_ip: str = Field(default="", exclude=True)
+    recommended_ip: str = ""
     records: list[EnvironmentDnsRecordSchema] = Field(default_factory=list)
     namecheap_pushed: bool = False
     included_hostname: bool = False
     ns_live: bool | None = None
     resolves: bool | None = None
+    dns_live: bool = False
+    dns_mode: str | None = None
+    a_records_live: bool = False
+    cpanel_live: bool = False
     ssl_status: str | None = None
     ssl_ready: bool = False
     checklist: list[DnsChecklistItem] = Field(default_factory=list)
     status_summary: str = ""
     panel_hostname: str | None = None
     panel_url: str | None = None
+    mail_hostname: str | None = None
     message: str = (
-        "Set this domain’s nameservers to ns1.ifnotus.space and ns2.ifnotus.space. "
-        "Do not use a server IP address."
+        "Connect your domain with IFNOTUS nameservers or A records at your registrar — either works."
     )
 
 
@@ -677,6 +723,28 @@ class CustomerFileMkdirRequest(SchemaBase):
     path: str = Field(min_length=1, max_length=1024)
 
 
+class CustomerFileMoveRequest(SchemaBase):
+    source: str = Field(min_length=1, max_length=1024)
+    destination: str = Field(min_length=1, max_length=1024)
+
+
+class CustomerFileCopyRequest(SchemaBase):
+    source: str = Field(min_length=1, max_length=1024)
+    destination: str = Field(min_length=1, max_length=1024)
+
+
+class CustomerFileExtractRequest(SchemaBase):
+    path: str = Field(min_length=1, max_length=1024)
+    destination: str | None = Field(default=None, max_length=1024)
+    extract_here: bool = False
+
+
+class CustomerFileCompressRequest(SchemaBase):
+    paths: list[str] = Field(min_length=1, max_length=200)
+    archive_name: str | None = Field(default=None, max_length=255)
+    destination_dir: str | None = Field(default=None, max_length=1024)
+
+
 class SubscriptionResponse(SchemaBase):
     id: UUID
     customer_id: UUID
@@ -689,8 +757,42 @@ class SubscriptionResponse(SchemaBase):
     started_at: datetime | None = None
     expires_at: datetime | None = None
     auto_renew: bool
+    billing_term_months: int = 1
     grace_until: datetime | None = None
     last_reminder_days: int | None = None
+
+
+class RenewSubscriptionRequest(SchemaBase):
+    billing_term_months: int | None = None
+
+
+class BillingTermPublicSchema(SchemaBase):
+    months: int
+    enabled: bool = True
+    label: str
+    recommended: bool = False
+    discount_pct: float = 0
+    fixed_price: float | None = None
+    min_monthly_price: float | None = None
+    monthly_price: float | None = None
+    subtotal: float | None = None
+    discount_amount: float | None = None
+    plan_total: float | None = None
+    savings_pct: float | None = None
+
+
+class BillingTermsPublicResponse(SchemaBase):
+    terms: list[BillingTermPublicSchema] = Field(default_factory=list)
+    allowed_months: list[int] = Field(default_factory=lambda: [1, 3, 6, 12, 24, 36])
+
+
+class BillingTermsAdminResponse(SchemaBase):
+    terms: dict = Field(default_factory=dict)
+    updated_at: str | None = None
+
+
+class BillingTermsAdminUpdateRequest(SchemaBase):
+    terms: dict
 
 
 class RenewPaymentResponse(SchemaBase):
@@ -706,6 +808,23 @@ class RenewPaymentResponse(SchemaBase):
     applied: bool = False
     subscription: SubscriptionResponse | None = None
     message: str | None = None
+
+
+class HostingPanelThemePurchaseRequest(SchemaBase):
+    theme_id: str = Field(min_length=2, max_length=64)
+
+
+class HostingPanelThemeActivateRequest(SchemaBase):
+    theme_id: str = Field(min_length=2, max_length=64)
+
+
+class HostingPanelThemeStatusResponse(SchemaBase):
+    environment_id: str
+    active: str
+    owned: list[str] = Field(default_factory=list)
+    price_ghs: str = "2.00"
+    theme: dict = Field(default_factory=dict)
+    catalog: list[dict] = Field(default_factory=list)
 
 
 class ChangePlanRequest(SchemaBase):
@@ -834,6 +953,32 @@ class StudentHostnameResponse(SchemaBase):
     zone: str | None = None
 
 
+class PanelAliasResolveResponse(SchemaBase):
+    host: str
+    kind: str
+    environment_id: UUID
+    domain: str
+    status: str
+
+
+class PanelStatusResponse(SchemaBase):
+    username: str
+    domain: str | None = None
+    password_set: bool
+    environment_id: str | None = None
+
+
+class PanelPasswordCreateRequest(SchemaBase):
+    username: str = Field(min_length=2, max_length=16)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class PanelLoginRequest(SchemaBase):
+    username: str = Field(min_length=2, max_length=16)
+    password: str = Field(min_length=8, max_length=128)
+    device_fingerprint: str | None = Field(default=None, max_length=128)
+
+
 class DomainAvailabilityRequest(SchemaBase):
     name: str = Field(min_length=2, max_length=63)
     extension: str = Field(pattern=r"^\.(online|com|org|net)$")
@@ -923,3 +1068,10 @@ class EnvironmentDatabaseRevealResponse(SchemaBase):
     port: int | None = None
     password: str | None = None
     connection_uri: str | None = None
+
+
+class PhpMyAdminOpenResponse(SchemaBase):
+    url: str
+    engine: str = "mysql"
+    database: str | None = None
+    expires_in: int = 120

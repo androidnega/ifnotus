@@ -320,6 +320,23 @@ class FileMoveRequest(SchemaBase):
     destination: str
 
 
+class FileCopyRequest(SchemaBase):
+    source: str
+    destination: str
+
+
+class FileExtractRequest(SchemaBase):
+    path: str = Field(min_length=1, max_length=1024)
+    destination: str | None = Field(default=None, max_length=1024)
+    extract_here: bool = False
+
+
+class FileCompressRequest(SchemaBase):
+    paths: list[str] = Field(min_length=1, max_length=500)
+    archive_name: str | None = Field(default=None, max_length=255)
+    destination_dir: str | None = Field(default=None, max_length=1024)
+
+
 class FileChmodRequest(SchemaBase):
     path: str
     mode: str = Field(pattern=r"^[0-7]{3,4}$")

@@ -107,16 +107,21 @@ class StorageUsageService:
             level=level,
         )
         phone = (self._settings.operator_alert_phone or self._settings.support_whatsapp or "").strip()
-        if phone:
+        alert_body = (
+            f"Disk {snap.get('used_pct')}% ({level}), "
+            f"{snap.get('free_gb')} GB free. Provisioning "
+            f"{'BLOCKED' if snap.get('block_provisioning') else 'ok'}."
+        )
+        if phone or getattr(self._settings, "support_email", None):
             from app.services.platform.delivery import MessageDelivery
 
-            MessageDelivery(self._settings).send_sms(
-                to=phone,
-                body=(
-                    f"IFNOTUS disk {snap.get('used_pct')}% ({level}), "
-                    f"{snap.get('free_gb')} GB free. Provisioning "
-                    f"{'BLOCKED' if snap.get('block_provisioning') else 'ok'}."
-                )[:320],
+            delivery = MessageDelivery(self._settings)
+            if phone:
+                delivery.send_sms(to=phone, body=alert_body[:320])
+            delivery.mirror_sms_to_email(
+                to_email=getattr(self._settings, "support_email", None),
+                sms_body=alert_body,
+                subject="Host disk alert",
             )
         self._session.add(
             PlatformAuditLog(

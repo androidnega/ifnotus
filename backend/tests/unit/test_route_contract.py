@@ -18,6 +18,7 @@ FRONTEND_ROUTER = (
 CRITICAL_FRONTEND_PATHS = (
     "/",
     "/plans",
+    "/plans/:slug",
     "/login",
     "/signup",
     "/account",
@@ -28,6 +29,7 @@ CRITICAL_FRONTEND_PATHS = (
 CRITICAL_API_PATHS = {
     "/api/v1/health": {"get"},
     "/api/v1/catalog/plans": {"get"},
+    "/api/v1/catalog/plans/{slug}": {"get"},
     "/api/v1/catalog/meta": {"get"},
     "/api/v1/customers/phone/request-otp": {"post"},
     "/api/v1/customers/phone/verify-otp": {"post"},

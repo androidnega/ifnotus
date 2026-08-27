@@ -33,6 +33,11 @@ from app.services.platform.fs_ownership import (
 logger = get_logger(__name__)
 
 NOLOGIN = "/usr/sbin/nologin"
+USERADD = "/usr/sbin/useradd"
+USERMOD = "/usr/sbin/usermod"
+GROUPADD = "/usr/sbin/groupadd"
+GPASSWD = "/usr/bin/gpasswd"
+CHOWN = "/usr/bin/chown"
 # Owner + web group only — never world-readable/writable (PHASE 38G).
 DIR_MODE = 0o2750  # setgid; www-data group can traverse when used as group
 FILE_MODE = 0o640
@@ -51,6 +56,7 @@ class UnixIdentityService:
             return str(env.unix_username)
         if env.sftp_username:
             return env.sftp_username
+        # Separate from hosting_name / panel_username (spec).
         short = str(env.id).replace("-", "")[:8]
         return f"ifn_{short}"
 
@@ -64,7 +70,14 @@ class UnixIdentityService:
         if not str(raw):
             raise AppException("Environment has no document root.", code="unix_no_docroot")
         resolved = Path(raw).resolve()
-        customer_prefix = (root / str(env.customer_id)).resolve()
+        from app.services.platform.customer_storage import resolve_customer_prefix
+
+        customer_prefix = resolve_customer_prefix(
+            self._settings,
+            customer_id=env.customer_id,
+            storage_slug=getattr(env, "storage_slug", None),
+            document_root=str(resolved),
+        )
         try:
             resolved.relative_to(customer_prefix)
         except ValueError as exc:
@@ -92,13 +105,13 @@ class UnixIdentityService:
         if self._group_exists(group_name):
             return grp.getgrnam(group_name).gr_gid
         proc = subprocess.run(
-            ["groupadd", "-g", str(gid), group_name],
+            [GROUPADD, "-g", str(gid), group_name],
             capture_output=True,
             text=True,
             check=False,
         )
         if proc.returncode != 0 and "already exists" not in (proc.stderr or ""):
-            subprocess.run(["groupadd", group_name], capture_output=True, check=False)
+            subprocess.run([GROUPADD, group_name], capture_output=True, check=False)
         return grp.getgrnam(group_name).gr_gid
 
     def _web_gid(self) -> int | None:
@@ -147,7 +160,7 @@ class UnixIdentityService:
 
         if not self._user_exists(username):
             cmd = [
-                "useradd",
+                USERADD,
                 "-u",
                 str(uid),
                 "-g",
@@ -163,7 +176,7 @@ class UnixIdentityService:
             if proc.returncode != 0 and "already exists" not in (proc.stderr or ""):
                 proc2 = subprocess.run(
                     [
-                        "useradd",
+                        USERADD,
                         "-g",
                         username,
                         "-d",
@@ -184,15 +197,15 @@ class UnixIdentityService:
                     )
         else:
             subprocess.run(
-                ["usermod", "-d", str(home), "-s", shell_path, "-g", username, username],
+                [USERMOD, "-d", str(home), "-s", shell_path, "-g", username, username],
                 capture_output=True,
                 check=False,
             )
 
-        # Supplementary web group so nginx/php-fpm can read tenant files (not primary).
-        web = self._settings.web_run_user or "www-data"
-        if self._group_exists(web) or self._user_exists(web):
-            subprocess.run(["usermod", "-aG", web, username], capture_output=True, check=False)
+        # Never put tenants in the web group. Files are owned tenant:www-data so
+        # nginx/php-fpm (running as www-data) can read via group bits; if tenants
+        # also join www-data they inherit group access to every peer tree.
+        self._strip_web_group(username)
 
         # Persist actual ids from the host after create.
         try:
@@ -253,7 +266,7 @@ class UnixIdentityService:
             if home.name != "public":
                 content = home / "public"
                 content.mkdir(parents=True, exist_ok=True)
-            subprocess.run(["chown", "root:root", str(chroot)], capture_output=True, check=False)
+            subprocess.run([CHOWN, "root:root", str(chroot)], capture_output=True, check=False)
             os.chmod(chroot, JAIL_ROOT_MODE)
             if content.exists():
                 self._chown_tree(content, uid, effective_gid)
@@ -263,14 +276,45 @@ class UnixIdentityService:
 
     def harden_path_prefixes(self, env: CustomerEnvironment) -> dict[str, Any]:
         """Lock customers root + per-customer prefix so other tenants cannot traverse."""
-        from app.services.platform.fs_ownership import harden_customer_prefixes
+        from app.services.platform.fs_ownership import grant_tenant_traverse, harden_customer_prefixes
 
         web = self._settings.web_run_user or "www-data"
-        return harden_customer_prefixes(
+        from app.services.platform.customer_storage import resolve_customer_prefix
+
+        folder = resolve_customer_prefix(
+            self._settings,
+            customer_id=env.customer_id,
+            document_root=env.document_root,
+        ).name
+        result = harden_customer_prefixes(
             self._customers_root(),
             customer_id=env.customer_id,
             web_user=web,
+            customer_folder=folder,
         )
+        if env.unix_username:
+            result["tenant_traverse"] = grant_tenant_traverse(
+                self._customers_root(),
+                customer_id=env.customer_id,
+                unix_username=env.unix_username,
+                customer_folder=folder,
+            )
+        return result
+
+    def _strip_web_group(self, username: str) -> bool:
+        """Remove tenant from www-data (or configured web group). Returns True if removed/attempted."""
+        web = self._settings.web_run_user or "www-data"
+        if not username or not (self._group_exists(web) or self._user_exists(web)):
+            return False
+        # Drop supplementary membership even when primary is already correct.
+        proc = subprocess.run(
+            [GPASSWD, "-d", username, web],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # Also clear accidental primary-group == www-data by forcing tenant primary below in callers.
+        return proc.returncode == 0 or "not a member" in (proc.stderr or "").lower() or "not a member" in (proc.stdout or "").lower()
 
     def repair_dac(self, env: CustomerEnvironment, *, dry_run: bool = False, actor: str = "system") -> dict[str, Any]:
         """Re-apply tenant ownership + prefix DAC (legacy www-data / world modes)."""
@@ -287,20 +331,28 @@ class UnixIdentityService:
         if dry_run:
             plan["actions"].append(
                 {
-                    "would": "ensure_identity+apply_ownership+harden_prefixes",
+                    "would": "ensure_identity+strip_www_data+apply_ownership+harden_prefixes",
                     "dir_mode": oct(DIR_MODE),
                     "file_mode": oct(FILE_MODE),
                 }
             )
             return plan
         self.ensure_identity(env, actor=actor)
+        username = env.unix_username or self.username_for(env)
+        stripped = self._strip_web_group(username)
         self.apply_ownership(env, prepare_sftp_jail=False)
         doc = Path(env.document_root)
         if doc.name == "public" or (doc / "public").is_dir():
             self.apply_ownership(env, prepare_sftp_jail=True)
         prefixes = self.harden_path_prefixes(env)
-        plan["actions"].append({"applied": "ownership", "prefixes": prefixes})
-        self._audit(env, "unix.repair_dac", detail={"actor": actor, "prefixes": prefixes})
+        plan["actions"].append(
+            {
+                "applied": "ownership",
+                "stripped_web_group": stripped,
+                "prefixes": prefixes,
+            }
+        )
+        self._audit(env, "unix.repair_dac", detail={"actor": actor, "prefixes": prefixes, "stripped_web_group": stripped})
         return plan
 
     def _chown_tree(self, path: Path, uid: int, gid: int) -> None:
@@ -405,19 +457,19 @@ class UnixIdentityService:
         if not self._user_exists(username):
             return
         shell = jail_shell if enable_jail_shell else NOLOGIN
-        subprocess.run(["usermod", "-s", shell, username], capture_output=True, check=False)
+        subprocess.run([USERMOD, "-s", shell, username], capture_output=True, check=False)
 
     def lock(self, env: CustomerEnvironment, *, actor: str = "system") -> None:
         username = env.unix_username or env.sftp_username
         if username and self._user_exists(username):
-            subprocess.run(["usermod", "-L", username], capture_output=True, check=False)
-            subprocess.run(["usermod", "-s", NOLOGIN, username], capture_output=True, check=False)
+            subprocess.run([USERMOD, "-L", username], capture_output=True, check=False)
+            subprocess.run([USERMOD, "-s", NOLOGIN, username], capture_output=True, check=False)
         self._audit(env, "unix.lock", detail={"username": username, "actor": actor})
 
     def unlock(self, env: CustomerEnvironment, *, actor: str = "system") -> None:
         username = env.unix_username or env.sftp_username
         if username and self._user_exists(username):
-            subprocess.run(["usermod", "-U", username], capture_output=True, check=False)
+            subprocess.run([USERMOD, "-U", username], capture_output=True, check=False)
         self._audit(env, "unix.unlock", detail={"username": username, "actor": actor})
 
     def remove_identity(self, env: CustomerEnvironment, *, actor: str = "system") -> None:

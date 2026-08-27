@@ -89,9 +89,15 @@ class DomainService:
         self._provisioner = DomainNginxProvisioner(settings)
 
     async def list_domains(self) -> DomainListResponse:
-        nginx_sites = await asyncio.to_thread(self._nginx_discovery.scan_sites)
-        await self._sync_from_nginx(nginx_sites)
+        try:
+            from app.services.hosting.host_inventory_sync import HostInventorySync
 
+            await HostInventorySync(self._settings, self._session).sync()
+        except Exception:  # noqa: BLE001
+            nginx_sites = await asyncio.to_thread(self._nginx_discovery.scan_sites)
+            await self._sync_from_nginx(nginx_sites)
+
+        nginx_sites = await asyncio.to_thread(self._nginx_discovery.scan_sites)
         domains = await self._list_with_relations()
         site_by_name = {s.server_name: s for s in nginx_sites}
         enriched = [self._enrich_from_site(d, site_by_name.get(d.name)) for d in domains]
@@ -702,8 +708,8 @@ class DomainService:
             and entity.name
             not in {
                 "ifnotus.space",
-                getattr(self._settings, "student_zone", "serverlabsttu.space"),
-                getattr(self._settings, "legacy_student_zone", "ifnotus.space"),
+                getattr(self._settings, "student_zone", "ifnotus.space"),
+                getattr(self._settings, "legacy_student_zone", "serverlabsttu.space"),
             }
             and not le.exists()
         ):

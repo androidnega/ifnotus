@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -10,15 +11,18 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.models.platform import (
     AiCreditAccount,
     Customer,
     CustomerEnvironment,
     HostingPlan,
     Order,
+    PlatformAuditLog,
     Subscription,
+    SupportTicket,
 )
+from app.models.user import User
 from app.services.platform.lifecycle import EnvironmentLifecycleService
 
 
@@ -44,6 +48,7 @@ class StaffPlatformService:
                         func.lower(Customer.email).like(like),
                         func.lower(Customer.full_name).like(like),
                         func.lower(func.coalesce(Customer.company, "")).like(like),
+                        func.lower(func.coalesce(Customer.phone, "")).like(like),
                     )
                 )
                 .order_by(Customer.created_at.desc())
@@ -53,11 +58,18 @@ class StaffPlatformService:
         customers = list(result.scalars().all())
         out: list[dict] = []
         for c in customers:
-            env_count = await self._session.scalar(
-                select(func.count())
-                .select_from(CustomerEnvironment)
-                .where(CustomerEnvironment.customer_id == c.id)
+            envs = list(
+                (
+                    await self._session.execute(
+                        select(CustomerEnvironment)
+                        .where(CustomerEnvironment.customer_id == c.id)
+                        .order_by(CustomerEnvironment.created_at.desc())
+                    )
+                )
+                .scalars()
+                .all()
             )
+            env_count = len(envs)
             sub_count = await self._session.scalar(
                 select(func.count())
                 .select_from(Subscription)
@@ -68,6 +80,42 @@ class StaffPlatformService:
                     AiCreditAccount.customer_id == c.id
                 )
             )
+            awaiting = await self._session.scalar(
+                select(func.count())
+                .select_from(Order)
+                .where(
+                    Order.customer_id == c.id,
+                    Order.payment_status == "submitted",
+                )
+            )
+            setting_up = await self._session.scalar(
+                select(func.count())
+                .select_from(Order)
+                .where(
+                    Order.customer_id == c.id,
+                    Order.payment_status == "paid",
+                    Order.provisioning_status.in_(("pending", "queued", "running")),
+                )
+            )
+            live = [e for e in envs if (e.status or "").lower() == "active"]
+            suspended = [e for e in envs if (e.status or "").lower() == "suspended"]
+            if awaiting:
+                hosting_status = "awaiting_payment"
+            elif setting_up:
+                hosting_status = "setting_up"
+            elif live:
+                hosting_status = "live"
+            elif suspended:
+                hosting_status = "suspended"
+            elif env_count:
+                hosting_status = "inactive"
+            else:
+                hosting_status = "none"
+            primary = None
+            for e in live or suspended or envs:
+                if e.domain:
+                    primary = e.domain
+                    break
             out.append(
                 {
                     "id": c.id,
@@ -77,12 +125,136 @@ class StaffPlatformService:
                     "company": c.company,
                     "email_verified": c.email_verified,
                     "created_at": c.created_at,
-                    "environment_count": int(env_count or 0),
+                    "environment_count": env_count,
                     "subscription_count": int(sub_count or 0),
                     "credits_remaining": int(credits or 0),
+                    "hosting_status": hosting_status,
+                    "primary_domain": primary,
+                    "awaiting_payment_count": int(awaiting or 0),
                 }
             )
         return out
+
+    async def delete_customer(
+        self,
+        customer_id: UUID,
+        *,
+        confirm_email: str,
+        actor_id: UUID | None = None,
+    ) -> dict:
+        """Super-admin: tear down environments and remove customer + login."""
+        customer = await self._session.get(Customer, customer_id)
+        if customer is None:
+            raise NotFoundError("Customer not found.")
+        typed = (confirm_email or "").strip().lower()
+        if typed != (customer.email or "").strip().lower():
+            raise ValidationError(
+                "Type the customer email exactly to confirm deletion.",
+                code="confirm_email_mismatch",
+            )
+
+        user = await self._session.get(User, customer.user_id)
+        if user is not None:
+            roles = {str(r).lower() for r in (user.roles or [])}
+            if user.is_superuser or roles & {"superadmin", "admin", "hosting", "support"}:
+                raise ValidationError(
+                    "This account has staff roles. Remove staff access first, then delete.",
+                    code="staff_account_protected",
+                )
+
+        lifecycle = EnvironmentLifecycleService(self._settings, self._session)
+        from sqlalchemy import text
+
+        env_rows = (
+            await self._session.execute(
+                text(
+                    "SELECT id FROM customer_environments WHERE customer_id = :cid"
+                ),
+                {"cid": str(customer_id)},
+            )
+        ).all()
+        env_ids = [UUID(str(row[0])) for row in env_rows]
+        envs = []
+        for env_id in env_ids:
+            env = await self._session.get(CustomerEnvironment, env_id)
+            if env is not None:
+                envs.append(env)
+        terminated = 0
+        for env in envs:
+            if (env.status or "").lower() != "terminated":
+                await lifecycle.terminate(customer_id, env.id, notify_customer=False)
+                terminated += 1
+
+        for sub in (
+            await self._session.execute(
+                select(Subscription).where(Subscription.customer_id == customer_id)
+            )
+        ).scalars().all():
+            if (sub.status or "").lower() not in {"terminated", "cancelled"}:
+                sub.status = "terminated"
+                sub.auto_renew = False
+
+        email = customer.email
+        name = customer.full_name
+        user_id = customer.user_id
+        storage_slug = getattr(customer, "storage_slug", None)
+
+        from app.services.platform.customer_storage import purge_customer_storage
+
+        disk = purge_customer_storage(self._settings, customer, envs=envs)
+
+        self._session.add(
+            PlatformAuditLog(
+                customer_id=None,
+                actor_id=actor_id,
+                action="customer.deleted",
+                target_type="customer",
+                target_id=str(customer_id),
+                result="success",
+                metadata_json={
+                    "email": email,
+                    "full_name": name,
+                    "phone": customer.phone,
+                    "environments_terminated": terminated,
+                    "storage_removed": disk.get("removed_paths") or [],
+                    "storage_errors": disk.get("errors") or [],
+                },
+            )
+        )
+        await self._session.flush()
+
+        # ORM would try SET NULL on orders.customer_id (NOT NULL). Detach money +
+        # related rows first, then remove the customer so DB CASCADE can finish.
+        from sqlalchemy import delete, update
+
+        await self._session.execute(
+            update(Subscription)
+            .where(Subscription.customer_id == customer_id)
+            .values(order_id=None)
+        )
+        await self._session.execute(delete(Order).where(Order.customer_id == customer_id))
+        await self._session.execute(delete(Customer).where(Customer.id == customer_id))
+        await self._session.flush()
+
+        if user is not None:
+            await self._session.execute(delete(User).where(User.id == user_id))
+            await self._session.flush()
+
+        removed_note = ""
+        if disk.get("removed_paths"):
+            removed_note = f" Removed {len(disk['removed_paths'])} storage folder(s)."
+        elif storage_slug:
+            removed_note = " No on-disk storage folder found."
+
+        return {
+            "message": (
+                f"Deleted {name} ({email}). {terminated} environment(s) terminated."
+                f"{removed_note}"
+            ),
+            "customer_id": str(customer_id),
+            "environments_terminated": terminated,
+            "storage_removed": disk.get("removed_paths") or [],
+        }
 
     async def get_customer(self, customer_id: UUID) -> dict:
         customer = await self._session.get(Customer, customer_id)
@@ -180,6 +352,79 @@ class StaffPlatformService:
             ],
         }
 
+    async def update_customer(
+        self,
+        customer_id: UUID,
+        body,
+        *,
+        actor_id: UUID,
+    ) -> Customer:
+        """Staff: update tenant phone, email, and profile fields."""
+        from app.schemas.platform import CustomerProfileUpdateRequest
+        from app.services.platform.customers import CustomerService
+
+        customer = await self._session.get(Customer, customer_id)
+        if customer is None:
+            raise NotFoundError("Customer not found.")
+
+        patch_fields = {}
+        for key in ("email", "phone", "first_name", "last_name", "full_name", "company"):
+            val = getattr(body, key, None)
+            if val is not None:
+                patch_fields[key] = val
+
+        if patch_fields.get("phone"):
+            normalized = CustomerService.normalize_phone(patch_fields["phone"])
+            clash = (
+                await self._session.execute(
+                    select(Customer).where(Customer.phone == normalized, Customer.id != customer_id)
+                )
+            ).scalar_one_or_none()
+            if clash is not None:
+                raise ConflictError("Another account already uses this phone number.")
+            patch_fields["phone"] = normalized
+
+        if patch_fields:
+            patch = CustomerProfileUpdateRequest(**patch_fields)
+            user = await self._session.get(User, customer.user_id)
+            await CustomerService(self._settings, self._session).update_profile(
+                customer, patch, user=user
+            )
+
+        if getattr(body, "phone_verified", None) is not None:
+            customer.phone_verified = bool(body.phone_verified)
+        elif patch_fields.get("phone"):
+            customer.phone_verified = True
+
+        if getattr(body, "email_verified", None) is not None:
+            customer.email_verified = bool(body.email_verified)
+        elif patch_fields.get("email"):
+            pass  # update_profile clears email_verified until re-verified
+
+        self._session.add(
+            PlatformAuditLog(
+                customer_id=customer.id,
+                action="staff.customer.update",
+                target_type="customer",
+                target_id=str(customer.id),
+                result="success",
+                metadata_json={
+                    "actor_id": str(actor_id),
+                    "fields": sorted(patch_fields.keys())
+                    + [
+                        k
+                        for k, v in (
+                            ("phone_verified", getattr(body, "phone_verified", None)),
+                            ("email_verified", getattr(body, "email_verified", None)),
+                        )
+                        if v is not None
+                    ],
+                },
+            )
+        )
+        await self._session.flush()
+        return customer
+
     async def list_orders(
         self,
         *,
@@ -219,11 +464,99 @@ class StaffPlatformService:
                 "invoice_number": order.invoice_number,
                 "payment_method": order.payment_method,
                 "momo_transaction_id": order.momo_transaction_id,
+                "payment_amount_received": order.payment_amount_received,
+                "payment_notes": order.payment_notes,
+                "payment_confirmed_at": order.payment_confirmed_at,
                 "paid_at": order.paid_at,
                 "created_at": order.created_at,
             }
             for order, customer, plan in rows
         ]
+
+    async def ops_inbox(self, *, paid_within_hours: int = 48) -> dict:
+        """Staff cPanel inbox: MoMo awaiting confirm + recently paid invoices."""
+        submitted = await self.list_orders(payment_status="submitted", limit=50)
+        since = datetime.now(UTC) - timedelta(hours=max(1, min(paid_within_hours, 168)))
+        paid_stmt = (
+            select(Order, Customer, HostingPlan)
+            .join(Customer, Customer.id == Order.customer_id)
+            .join(HostingPlan, HostingPlan.id == Order.plan_id)
+            .where(
+                Order.payment_status == "paid",
+                Order.paid_at.is_not(None),
+                Order.paid_at >= since,
+            )
+            .order_by(Order.paid_at.desc())
+            .limit(30)
+        )
+        paid_rows = (await self._session.execute(paid_stmt)).all()
+
+        items: list[dict] = []
+        for row in submitted:
+            inv = row.get("invoice_number") or str(row["id"])[:8]
+            who = row.get("customer_name") or row.get("customer_email") or "Customer"
+            domain = row.get("domain_name") or "hosting"
+            amount = f"{row.get('currency') or 'GHS'} {row.get('total_price')}"
+            txn = row.get("momo_transaction_id") or "—"
+            items.append(
+                {
+                    "id": f"momo-submitted-{row['id']}",
+                    "kind": "momo_submitted",
+                    "title": "New payment to confirm",
+                    "message": (
+                        f"{inv} · {amount} · {who} · {domain}. "
+                        f"MoMo ID {txn}."
+                    ),
+                    "severity": "warning",
+                    "timestamp": row.get("created_at") or datetime.now(UTC),
+                    "href": "/platform/orders",
+                    "order_id": row["id"],
+                    "invoice_number": row.get("invoice_number"),
+                }
+            )
+
+        for order, customer, plan in paid_rows:
+            inv = order.invoice_number or str(order.id)[:8]
+            who = customer.full_name or customer.email or "Customer"
+            domain = order.domain_name or plan.name or "hosting"
+            amount = f"{order.currency} {order.total_price}"
+            items.append(
+                {
+                    "id": f"invoice-paid-{order.id}",
+                    "kind": "invoice_paid",
+                    "title": "Hosting invoice paid",
+                    "message": (
+                        f"{inv} · {amount} · {who} · {domain} "
+                        f"({order.provisioning_status})."
+                    ),
+                    "severity": "info",
+                    "timestamp": order.paid_at or order.created_at or datetime.now(UTC),
+                    "href": "/platform/orders",
+                    "order_id": order.id,
+                    "invoice_number": order.invoice_number,
+                }
+            )
+
+        items.sort(
+            key=lambda x: x["timestamp"] or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        open_support = int(
+            (
+                await self._session.execute(
+                    select(func.count())
+                    .select_from(SupportTicket)
+                    .where(SupportTicket.status == "open")
+                )
+            ).scalar_one()
+            or 0
+        )
+        return {
+            "awaiting_payment_confirm": len(submitted),
+            "recently_paid": len(paid_rows),
+            "open_support_tickets": open_support,
+            "items": items,
+        }
 
     async def list_plans(self, *, include_inactive: bool = True) -> list[HostingPlan]:
         stmt = select(HostingPlan).order_by(HostingPlan.sort_order, HostingPlan.name)

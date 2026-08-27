@@ -8,8 +8,8 @@ from app.services.platform.panel_access import control_panel_hostname, is_platfo
 def test_platform_hostname_covers_control_and_student_zones() -> None:
     assert is_platform_hostname("ifnotus.space")
     assert is_platform_hostname("ready.ifnotus.space")
-    assert is_platform_hostname("mensah.serverlabsttu.space")
-    assert is_platform_hostname("mensah1.ifnotus.space")  # legacy student
+    assert is_platform_hostname("mensah.ifnotus.space")
+    assert is_platform_hostname("mensah1.serverlabsttu.space")  # legacy student
     assert not is_platform_hostname("studio.online")
     assert not is_platform_hostname("shop.example.com")
 

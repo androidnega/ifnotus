@@ -43,6 +43,13 @@ class InventoryService:
 
     async def get_inventory(self) -> VpsInventoryResponse:
         now = datetime.now(UTC)
+        # Keep Domains + Apps registries current with live nginx / customer sites.
+        try:
+            from app.services.hosting.host_inventory_sync import HostInventorySync
+
+            await HostInventorySync(self._settings, self._session).sync()
+        except Exception:  # noqa: BLE001
+            pass
         # Auto-detect new nginx domains for /mail webmail (throttled), like app discovery.
         try:
             await self._webmail.ensure_webmail_for_domains(force=False)

@@ -64,15 +64,18 @@ class PasswordResetService:
 
         base = (self._settings.customer_portal_url or "https://ifnotus.space").rstrip("/")
         link = f"{base}/reset-password?token={raw}"
+        from app.services.platform import email_templates
+
+        name = (user.full_name or user.email or "there").strip() or "there"
+        title, text, html = email_templates.password_reset(
+            name=name, link=link, minutes=RESET_TTL_MINUTES
+        )
         delivery = MessageDelivery(self._settings)
         result_mail = delivery.send_email(
             to=user.email,
-            subject="IFNOTUS password reset",
-            body=(
-                "We received a request to reset your IFNOTUS password.\n\n"
-                f"Open this link within {RESET_TTL_MINUTES} minutes:\n{link}\n\n"
-                "If you did not request this, you can ignore this email.\n"
-            ),
+            subject=title,
+            body=text,
+            html=html,
         )
         if not result_mail.get("ok") and not result_mail.get("skipped"):
             logger.warning("password_reset_email_failed", user_id=str(user.id), result=result_mail)

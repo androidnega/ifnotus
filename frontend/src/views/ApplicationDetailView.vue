@@ -5,6 +5,7 @@ import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import ErrorState from '@/components/ui/ErrorState.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import ConfirmPasswordModal from '@/components/databases/ConfirmPasswordModal.vue'
 import { applicationsApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
@@ -142,29 +143,26 @@ watch(appId, load, { immediate: true })
     <ErrorState v-if="error && !app && !loading" :message="error" @retry="load" />
 
     <div v-else-if="app" class="animate-fade-in space-y-5">
-      <div class="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <RouterLink to="/applications" class="text-xs text-brand-600 hover:underline">← Applications</RouterLink>
-          <h1 class="text-lg font-semibold text-slate-900 dark:text-white">{{ app.name }}</h1>
-          <p class="text-sm text-surface-muted">{{ app.id }} · {{ app.root_path }}</p>
-        </div>
-        <div class="flex flex-wrap gap-2">
-          <button
-            type="button"
-            class="action-btn"
-            :disabled="!!actionLoading"
-            @click="run('refresh', () => applicationsApi.refresh(appId))"
-          >
-            Refresh status
-          </button>
-          <button
-            type="button"
-            class="action-btn"
-            :disabled="!!actionLoading"
-            @click="run('cache', () => applicationsApi.clearCache(appId))"
-          >
-            {{ actionLoading === 'cache' ? 'Clearing…' : 'Clear cache' }}
-          </button>
+      <UiPageHeader :title="app.name" :lede="`${app.id} · ${app.root_path}`">
+        <template #actions>
+          <div class="flex flex-wrap gap-2">
+            <RouterLink to="/applications" class="ds-btn-ghost text-xs">← Apps</RouterLink>
+            <button
+              type="button"
+              class="action-btn"
+              :disabled="!!actionLoading"
+              @click="run('refresh', () => applicationsApi.refresh(appId))"
+            >
+              Refresh status
+            </button>
+            <button
+              type="button"
+              class="action-btn"
+              :disabled="!!actionLoading"
+              @click="run('cache', () => applicationsApi.clearCache(appId))"
+            >
+              {{ actionLoading === 'cache' ? 'Clearing…' : 'Clear cache' }}
+            </button>
           <button
             type="button"
             class="action-btn"
@@ -197,8 +195,9 @@ watch(appId, load, { immediate: true })
           >
             {{ app.enabled ? 'Disable' : 'Enable' }}
           </button>
-        </div>
-      </div>
+          </div>
+        </template>
+      </UiPageHeader>
 
       <p
         v-if="message"

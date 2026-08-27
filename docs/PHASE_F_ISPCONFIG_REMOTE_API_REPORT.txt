@@ -1,0 +1,66 @@
+================================================================================
+PHASE F — ISPConfig remote API REPORT
+Date: 2026-08-27
+Server: 80.241.223.82
+Result: PASS
+================================================================================
+
+GOAL
+  Dedicated remote API user for IFNOTUS (least privilege), credentials only in
+  backend env, verify health + test client create/read/delete via adapter.
+  Do not use real customers. Do not flip HOSTING_PROVIDER_DEFAULT.
+
+REMOTE USER
+  username: ifnotus_api
+  remote_ips: 127.0.0.1 (localhost only; API co-located)
+  remote_access: y
+  functions: client_* + sites_web_* + sites_database_* + ftp/shell/cron
+             + server_get + quota_* (no mail/dns/admin/openvz)
+  secrets: /root/ifnotus-secrets/phase-f-remote-api.txt (root 600, not in git)
+
+BACKEND ENV (production /srv/apps/ifnotus/backend/.env)
+  ISPCONFIG_BASE_URL=https://127.0.0.1:8081
+  ISPCONFIG_REMOTE_USER=ifnotus_api
+  ISPCONFIG_REMOTE_PASSWORD=<server secrets file>
+  ISPCONFIG_VERIFY_SSL=false          # self-signed panel cert
+  ISPCONFIG_SERVER_ID=1
+  ISPCONFIG_RESELLER_ID=0             # under admin (no reseller yet)
+  HOSTING_PROVIDER_DEFAULT=legacy     # unchanged
+
+CODE FIXES (required for remoting to work)
+  - Rewrote ISPConfig JSON client to correct protocol:
+      POST /remote/json.php?{method}  with named JSON body params
+  - Added ispconfig_verify_ssl setting
+  - Added client_get / client_delete; fixed sites list via
+    client_get_sites_by_user
+  - Provider create_account: required web_php_options / ssh_chroot /
+    limit_cron_type; reseller_id 0 under admin
+  Deployed to production API; ifnotus-api restarted
+
+INFRA FIXES DURING VERIFY
+  - Installed php8.3-soap (SoapFault required by remoting)
+  - Granted SESSION_VARIABLES_ADMIN + SYSTEM_VARIABLES_ADMIN to
+    MySQL user ispconfig@{localhost,127.0.0.1,hostname}
+  - Panel IDS broke after PHP package refresh; temporarily disabled
+    ids_anon/user/admin in security_settings.ini so admin UI loads
+    (API remoting unaffected — REMOTE_API_CALL skips IDS)
+
+VERIFICATION
+  [PASS] provider health via ISPConfigHostingProvider → ok/configured/session
+  [PASS] create test client (adapter)
+  [PASS] read test client by username + by id
+  [PASS] delete test client
+  [PASS] HOSTING_PROVIDER_DEFAULT still legacy
+  [PASS] credentials not in git / frontend
+  [PASS] ifnotus.space still HTTP 200; ifnotus-api active
+  [PASS] panel login UI HTTP 200 on :8081 (IDS off)
+
+STOP — do not start Phase G until instructed.
+
+NEXT (Phase G when ready)
+  Complete ISPConfig client coverage for methods IFNOTUS needs
+  (website/DB/FTP/SSL/usage…); still no real customer migration until later.
+
+================================================================================
+END REPORT
+================================================================================

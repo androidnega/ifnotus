@@ -2,6 +2,8 @@
 import { onMounted, computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
+import UiAlert from '@/components/ui/UiAlert.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import { supportApi } from '@/api'
 import type { SupportTicket } from '@/types/support'
 import { usePermissions } from '@/composables/usePermissions'
@@ -123,38 +125,34 @@ watch([statusFilter, priorityFilter], loadList)
 <template>
   <DashboardLayout>
     <div class="space-y-4 p-6">
-      <div class="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 class="text-xl font-semibold">Support tickets</h1>
-          <p class="text-sm text-slate-500">Helpdesk queue — reply, reopen, set priority, jump to customer</p>
-        </div>
-        <div class="flex flex-wrap gap-2">
-          <select
-            v-model="statusFilter"
-            class="rounded border border-slate-300 px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-900"
-          >
-            <option value="">All statuses</option>
-            <option value="open">Open</option>
-            <option value="pending">Pending</option>
-            <option value="closed">Closed</option>
-          </select>
-          <select
-            v-model="priorityFilter"
-            class="rounded border border-slate-300 px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-900"
-          >
-            <option value="">All priorities</option>
-            <option value="low">Low</option>
-            <option value="normal">Normal</option>
-            <option value="high">High</option>
-          </select>
-          <button type="button" class="rounded border border-slate-300 px-3 py-1.5 text-sm" @click="loadList">
-            Refresh
-          </button>
-        </div>
-      </div>
+      <UiPageHeader title="Support tickets" lede="Helpdesk queue — reply, reopen, set priority, jump to customer">
+        <template #actions>
+          <div class="flex flex-wrap gap-2">
+            <select
+              v-model="statusFilter"
+              class="rounded border border-slate-300 px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-900"
+            >
+              <option value="">All statuses</option>
+              <option value="open">Open</option>
+              <option value="pending">Pending</option>
+              <option value="closed">Closed</option>
+            </select>
+            <select
+              v-model="priorityFilter"
+              class="rounded border border-slate-300 px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-900"
+            >
+              <option value="">All priorities</option>
+              <option value="low">Low</option>
+              <option value="normal">Normal</option>
+              <option value="high">High</option>
+            </select>
+            <button type="button" class="ds-btn-ghost text-sm" @click="loadList">Refresh</button>
+          </div>
+        </template>
+      </UiPageHeader>
 
       <p v-if="loading" class="text-sm text-slate-500">Loading…</p>
-      <p v-else-if="error" class="text-sm text-red-600">{{ error }}</p>
+      <UiAlert v-else-if="error" tone="err">{{ error }}</UiAlert>
 
       <div v-else class="grid gap-4 lg:grid-cols-2">
         <div class="rounded border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900">

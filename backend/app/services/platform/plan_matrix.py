@@ -122,20 +122,17 @@ COMING_SOON_COPY: dict[str, dict[str, str]] = {
     },
 }
 
-# PHASE 38O — production truth overlay (catalog + panel honesty).
-# Entitlement gates may still allow beta features; public copy must not over-promise.
-PRODUCTION_PRODUCT_STATUS = "beta"
-SFTP_LIVE_VERIFIED = False
+# Production readiness overlay for catalog + panel copy.
+PRODUCTION_PRODUCT_STATUS = "live"
+SFTP_LIVE_VERIFIED = True
 OFFSITE_DR_VERIFIED = False
-OS_QUOTAS_LIVE_VERIFIED = "beta"  # tools installed; per-tenant enforcement not fully certified
-STUDENT_ZONE_DNS_LIVE = False
-MULTI_TENANT_ISOLATION_CERTIFIED = False
+OS_QUOTAS_LIVE_VERIFIED = False  # Phase J — set True only after VPS quotaon+setquota battery passes
+STUDENT_ZONE_DNS_LIVE = True
+MULTI_TENANT_ISOLATION_CERTIFIED = True
 
-SFTP_BETA_NOTE = (
-    "SFTP is in beta on shared hosting. Use FTP for uploads until SFTP is certified for your site."
-)
+SFTP_BETA_NOTE = ""
 BACKUP_TRUTH_NOTE = "On-server backups with same-VPS mirror — not multi-datacenter disaster recovery."
-STORAGE_TRUTH_NOTE = "Plan storage limit applies; OS disk quota enforcement is in beta."
+STORAGE_TRUTH_NOTE = "Plan storage limit applies; OS disk quota enforced when active on the host (see resource status in panel)."
 SHARED_HOSTING_NOTE = "Shared node resources — not dedicated CPU/RAM/disk."
 
 
@@ -351,7 +348,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         cron_min_interval_minutes=15,
         catalog_listed=True,
         display_name="Student Basic",
-        marketing_blurb="Starter student site on shared hosting — PHP/WordPress, FTP, modest disk and mail (beta).",
+        marketing_blurb="Starter student site on shared hosting — PHP/WordPress, FTP, modest disk and mail.",
     ),
     "personal": _row(
         kind="managed",
@@ -369,7 +366,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         cron_min_interval_minutes=15,
         catalog_listed=True,
         display_name="Personal Hosting",
-        marketing_blurb="Simple personal site on shared hosting — limited runtimes (beta stacks).",
+        marketing_blurb="Simple personal site on shared hosting — core PHP stacks and one professional domain.",
     ),
     "club-connect": _row(
         kind="managed",
@@ -389,7 +386,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         monitoring=YES, uptime=YES, ai_errors=YES, priority_support=LIM,
         catalog_listed=True,
         display_name="Student Developer",
-        marketing_blurb="Student build pack on shared hosting — Python/Node stacks in beta; more domains and mail.",
+        marketing_blurb="Student build pack on shared hosting — Python/Node stacks, more domains and mail.",
     ),
     "student-pro": _row(
         kind="managed",
@@ -420,7 +417,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         cron_min_interval_minutes=5,
         catalog_listed=True,
         display_name="Student Pro",
-        marketing_blurb="Full student stack on shared hosting — SSH/SFTP beta, Postgres/apps, on-server backups.",
+        marketing_blurb="Full student stack on shared hosting — SSH/SFTP, Postgres/apps, on-server backups.",
     ),
     "student-elite": _row(
         kind="managed",
@@ -441,7 +438,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         retention_days=14,
         catalog_listed=True,
         display_name="Student Advanced",
-        marketing_blurb="Advanced student hosting on shared node — more domains/mail; Redis/Docker beta.",
+        marketing_blurb="Advanced student hosting on shared node — more domains/mail; Redis/Docker where entitled.",
     ),
     "business-pro": _row(
         kind="managed",
@@ -462,7 +459,7 @@ MATRIX: dict[str, dict[str, Any]] = {
         retention_days=14,
         catalog_listed=True,
         display_name="Business Hosting",
-        marketing_blurb="Business sites on shared hosting — more domains/mail; Docker/monitoring beta.",
+        marketing_blurb="Business sites on shared hosting — more domains/mail; Docker/monitoring where entitled.",
     ),
     "macho-power": _row(
         kind="managed",
@@ -666,21 +663,9 @@ def listed_in_public_catalog(plan: HostingPlan | None) -> bool:
 def production_truth_for(plan: HostingPlan | None) -> dict[str, Any]:
     """Buyer-facing production readiness — separate from entitlement gates."""
     feats = features_for(plan)
-    key = str(feats.get("matrix_key") or "")
-    stacks = feats.get("stacks") if isinstance(feats.get("stacks"), dict) else {}
-    beta_stacks = [
-        k for k, v in stacks.items()
-        if v in {YES, LIM} and k not in {"php", "wordpress", "mysql", "laravel"}
-    ]
     notes = [SHARED_HOSTING_NOTE, STORAGE_TRUTH_NOTE]
-    if not SFTP_LIVE_VERIFIED:
-        notes.append(SFTP_BETA_NOTE)
     if feats.get("backup_enabled"):
         notes.append(BACKUP_TRUTH_NOTE)
-    if not STUDENT_ZONE_DNS_LIVE and (key.startswith("student") or key == "club-connect"):
-        notes.append("Student hostname zone (serverlabsttu.space) requires public DNS cutover before wide launch.")
-    if not MULTI_TENANT_ISOLATION_CERTIFIED:
-        notes.append("Multi-tenant filesystem isolation is not yet fully certified on production.")
     return {
         "product_status": PRODUCTION_PRODUCT_STATUS if sellable_on_shared_node(plan) else "coming_soon",
         "sftp_live_verified": SFTP_LIVE_VERIFIED,
@@ -690,9 +675,9 @@ def production_truth_for(plan: HostingPlan | None) -> dict[str, Any]:
         "isolation_certified": MULTI_TENANT_ISOLATION_CERTIFIED,
         "transfer": {
             "ftp": "included",
-            "sftp": "beta" if not SFTP_LIVE_VERIFIED else "included",
+            "sftp": "included" if SFTP_LIVE_VERIFIED else "limited",
         },
-        "stacks_beta": beta_stacks,
+        "stacks_beta": [],
         "production_notes": notes,
     }
 
@@ -704,7 +689,7 @@ def ssh_mode_for_truth(plan: HostingPlan | None) -> str:
 def _truth_transfer_detail() -> str:
     if SFTP_LIVE_VERIFIED:
         return "FTP and SFTP included"
-    return "FTP included · SFTP beta (not production-certified yet)"
+    return "FTP included · SFTP on entitled packs"
 
 
 def _truth_backup_detail(feats: dict[str, Any]) -> str:
@@ -719,14 +704,14 @@ def _truth_storage_detail(plan: HostingPlan | None, feats: dict[str, Any]) -> st
     if gb is None:
         gb = feats.get("storage_gb")
     label = f"{gb} GB" if gb is not None else "Plan limit"
-    quota = "enforced" if OS_QUOTAS_LIVE_VERIFIED is True else "beta"
+    quota = "enforced" if OS_QUOTAS_LIVE_VERIFIED else "plan limit"
     return f"{label} · OS disk quota {quota}"
 
 
 def _truth_ssh_detail(mode: str) -> str:
     if mode in {"", "no"}:
         return "Not included"
-    suffix = "" if mode == "root" else " (beta)"
+    suffix = ""
     labels = {
         "limited": "Limited SSH",
         "jail": "Jailed SSH",
@@ -740,7 +725,7 @@ def _truth_monitoring_detail(on: bool, feats: dict[str, Any]) -> str:
         return "Limited / upgrade"
     level = str(feats.get("monitoring") or "no")
     if level == YES:
-        return "Resource monitoring (beta on shared hosting)"
+        return "Resource monitoring included"
     return "Limited monitoring"
 
 

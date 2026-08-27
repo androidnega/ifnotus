@@ -1,0 +1,845 @@
+================================================================================
+IFNOTUS PRODUCTION-READINESS & ARCHITECTURE AUDIT
+AUDIT ONLY — NO PRODUCTION CHANGES MADE
+Date: 2026-08-27
+Auditor scope: Actual VPS 80.241.223.82 + repository ifnotus
+Evidence: live SSH inspection + source code review
+Secrets: REDACTED (no passwords/tokens printed)
+================================================================================
+
+## 1. Executive conclusion
+
+IFNOTUS is a real, working Ghana-focused hosting *product* (billing, portal,
+tenant panel, student hostnames, nginx provisioning) running on a single
+powerful VPS. It is NOT yet a clean ISPConfig-backed production hosting engine.
+
+Current truth:
+  - Public HTTP(S) = nginx (active)
+  - All 7 customer environments = provider=legacy
+  - ISPConfig = NOT installed
+  - ISPConfig adapter = CODE ONLY (not wired into ProvisioningEngine)
+  - OLSPanel/OpenLiteSpeed = leftover install (stopped/disabled; dirs remain)
+  - Product apps (VoteBridge, QuizSnap, ExamFlow, …) share the same VPS
+
+GO / NO-GO: LIMITED BETA ONLY for carefully selected customers.
+Not ready for unrestricted public business hosting until ISPConfig cutover,
+firewall cleanup, resource isolation hardening, DNS redundancy, and offsite
+backups are completed.
+
+Highest priority fix themes:
+  1) Firewall surface left open by OLS attempt (3306/6379/7080/4958/19999…)
+  2) Wire HostingProvider into provisioning OR stay legacy consciously
+  3) Make resource limits REAL (OS quotas + cgroups), not mostly display/app
+  4) Separate product apps from tenant hosting operationally
+  5) Offsite backups + restore drills
+
+
+## 2. Current server architecture
+
+Host facts (verified):
+  Hostname:     vmi3379516
+  OS:           Ubuntu 24.04.4 LTS
+  Kernel:       6.8.0-137-generic
+  Public IP:    80.241.223.82/24 (eth0)
+  Also:         docker0 172.17.0.1/16
+  CPU:          12 cores
+  RAM:          47 GiB (~7 GiB used at audit)
+  Disk:         242G root, ~37G used, ~205G free (ext4 on /dev/sda1)
+  Timezone:     Europe/Berlin (CEST)
+  Swap:         (present via system; not a blocker)
+
+Service inventory (verified listening / active):
+
+| Service        | Installed | Running | Port(s)              | Purpose                         | Managed by        | Keep/Replace/Remove/Investigate |
+|----------------|----------:|--------:|----------------------|---------------------------------|-------------------|---------------------------------|
+| nginx          | yes       | yes     | 80, 443              | Public web + SPA + tenants      | IFNOTUS legacy    | KEEP until ISPConfig cutover    |
+| apache2        | pkg       | no      | —                    | Unused leftover                 | OS                | INVESTIGATE / REMOVE later      |
+| OpenLiteSpeed  | yes       | no      | (was 80/443/7080)    | OLS leftover                    | OLSPanel attempt  | REMOVE AFTER MIGRATION          |
+| olspanel cp    | yes       | no      | was 4958             | OLS leftover                    | OLSPanel          | REMOVE AFTER MIGRATION          |
+| ISPConfig      | NO        | no      | —                    | Target engine                   | —                 | ADD (install later)             |
+| PostgreSQL     | yes       | yes     | 5432 local           | IFNOTUS DB                      | IFNOTUS           | KEEP                            |
+| MySQL 8        | yes       | yes     | 3306 local           | Sibling apps + mail SQL          | OS/apps           | KEEP; firewall must stay closed |
+| Redis          | yes       | yes     | 6379 localhost       | Cache/queue                     | IFNOTUS           | KEEP; close UFW 6379            |
+| BIND named     | yes       | yes     | 53 TCP/UDP           | Authoritative DNS               | IFNOTUS/deploy    | KEEP / later ISPConfig DNS      |
+| PowerDNS       | no/idle   | no      | —                    | OLS attempt skipped             | —                 | N/A                             |
+| Postfix       | yes       | yes     | 25,587,465…          | SMTP                            | OS/IFNOTUS mail   | KEEP / later ISPConfig mail     |
+| Dovecot        | yes       | yes     | 993,143…             | IMAP                            | OS/IFNOTUS mail   | KEEP / later ISPConfig mail     |
+| Roundcube      | yes       | via nginx| mail.ifnotus.space  | Webmail                         | IFNOTUS           | KEEP (brand)                    |
+| Pure-FTPd-MySQL| yes       | yes     | 21                   | From OLS leftover               | OLS/OS            | INVESTIGATE vs IFNOTUS FTP      |
+| vsftpd         | yes       | no      | —                    | IFNOTUS FTP path historically   | IFNOTUS ftp.py    | INVESTIGATE                     |
+| sshd           | yes       | yes     | 22                   | Admin + SFTP Match blocks       | OS/IFNOTUS SFTP   | KEEP; harden root/password      |
+| fail2ban       | yes       | yes     | —                    | sshd jail only                  | OS                | KEEP; expand jails              |
+| ufw            | yes       | yes     | —                    | Firewall                        | OS                | TIGHTEN (critical)              |
+| Docker         | yes       | yes     | docker0              | Some env containers crash-loop  | IFNOTUS           | INVESTIGATE                     |
+| ifnotus-api    | yes       | yes     | 127.0.0.1:8010       | FastAPI                         | systemd           | KEEP                            |
+| Netdata        | yes       | yes     | 0.0.0.0:19999        | Host monitoring PUBLIC          | OS                | TIGHTEN (bind localhost/VPN)    |
+| cron           | yes       | yes     | —                    | System + app cron               | OS                | KEEP                            |
+| certbot        | yes       | —       | —                    | LE certs for many hosts         | IFNOTUS ssl.py    | KEEP until ISPConfig SSL owner  |
+
+UFW notable ALLOW (concerning after OLS attempt):
+  21, 22, 25, 53, 80, 110, 143, 443, 465, 587, 993, 995,
+  3306, 6379, 7080, 4958, 5353, 155, 220, 223, 2205,
+  40000:40100, 40110:40210, 19999 implied by netdata bind
+
+MySQL/Redis bind to localhost (good) BUT UFW still allows 3306/6379 worldwide
+(defense-in-depth failure — CRITICAL/HIGH).
+
+ns1.ifnotus.space and ns2.ifnotus.space BOTH resolve to 80.241.223.82
+→ no DNS redundancy (HIGH operational risk).
+
+Tenant count: 7 environments, all provider=legacy.
+Customer tree ~274MB under /srv/apps/ifnotus-customers.
+Product apps share disk (csdttu ~5.2G alone).
+
+
+## 3. Current IFNOTUS architecture
+
+Flow today:
+
+  CUSTOMER/STAFF
+      ↓
+  Vue SPA (/var/www/ifnotus) + tenant /cpanel → /go/hosting
+      ↓
+  FastAPI ifnotus-api :8010
+      ↓
+  Platform services (orders, billing, lifecycle, DNS, mail, files…)
+      ↓
+  Legacy ProvisioningEngine (nginx, unix, certbot, SFTP, FTP…)
+      ↓
+  Linux filesystem + nginx + BIND + Postfix/Dovecot
+
+HostingProvider abstraction EXISTS but ProvisioningEngine does NOT call it.
+ISPConfigHostingProvider + client = ready stubs for remoting, not live.
+OLSPanel provider = parked.
+
+Major surfaces:
+  Public site:        ifnotus.space
+  Staff panel:        cpanel.ifnotus.space
+  Customer portal:    /account + /hosting/:environmentId
+  Tenant entry:       https://{domain}/cpanel → portal /go/hosting
+  Webmail entry:      https://{domain}/mail → mail.ifnotus.space
+  API:                /api/v1/*
+
+Key code roots:
+  frontend/src/views/hosting/HostingPanelView.vue
+  frontend/src/composables/usePortalSiteTools.ts
+  frontend/src/lib/uiRegistry.ts (HOSTING_PANEL_TABS)
+  backend/app/routers/v1/customers.py
+  backend/app/services/platform/provisioning.py
+  backend/app/services/hosting_provider/*
+  backend/app/integrations/ispconfig/*
+  backend/app/integrations/olspanel/* (parked)
+
+
+## 4. Roles and permission matrix
+
+Actual roles (backend/app/core/permissions.py + frontend/src/lib/roles.ts):
+  superadmin, admin, operator, viewer, customer_care, customer
+
+Intended jobs:
+  superadmin   — everything including terminal, terminate, staff accounts
+  admin        — plans/billing/customers + env ops; not host shell
+  operator     — files/mail/dns/db + env ops; not plans/billing
+  customer_care— MoMo confirm + tickets
+  viewer       — read-only staff
+  customer     — portal only (empty staff permission set)
+
+| Action              | Customer | Staff(ops) | Admin | Super Admin |
+|---------------------|---------:|-----------:|------:|------------:|
+| View own hosting    | Y        | Y*         | Y*    | Y*          |
+| Create website      | via buy  | limited    | Y     | Y           |
+| Delete/terminate    | N (hard) | N          | N     | Y           |
+| Manage files (own)  | Y        | Y (host)   | read† | Y           |
+| Create DB           | Y (own)  | Y          | read† | Y           |
+| View DB credentials | Y (own)  | Y          | Y     | Y           |
+| Manage email        | Y (plan) | Y          | Y     | Y           |
+| Manage DNS          | Y (own)  | Y          | Y     | Y           |
+| Manage SSL          | Y        | Y          | Y     | Y           |
+| Manage FTP/SFTP     | Y        | Y          | Y     | Y           |
+| Restart app         | partial  | Y          | Y     | Y           |
+| Suspend customer    | own only | PLATFORM_OPS| Y    | Y           |
+| Terminate hosting   | N        | N          | N     | Y           |
+| Change package      | buy flow | N          | Y     | Y           |
+| Modify CPU/RAM      | N        | limited    | Y     | Y           |
+| Access server files | N        | operator‡  | limited| Y (broad)  |
+| View other tenants  | N        | Y (staff)  | Y     | Y           |
+| Server operations   | N        | limited    | limited| Y          |
+| ISPConfig access    | N (desired)| N        | N     | staff-only later |
+
+* Staff use platform routes; may also hit customer portal if customer row exists.
+† Admin FILES/DB write intentionally restricted in role matrix comments.
+‡ Operator has FILES_WRITE host-wide by design (WHM-like).
+
+Risks:
+  - Staff files/DB APIs are host-wide (by design) — any compromised staff token
+    with write perms is cross-tenant capable.
+  - DenyCustomerHost protects /hosting aggregate routes from pure customers.
+  - Tenant portal uses get_owned_environment — good IDOR baseline.
+  - _require_customer_user allows admin/superadmin into portal APIs — prefer
+    staff platform routes only.
+  - ISPConfig credentials must NEVER be customer-facing.
+
+Recommended hierarchy (keep/refine existing):
+  SUPER ADMIN → platform + infra + terminate + ISPConfig remoting secrets
+  ADMIN/STAFF → customer ops without root shell
+  CUSTOMER → own account only
+  SERVER ENGINE → ISPConfig/OS never exposed as customer credentials
+
+
+## 5. Current customer hosting panel
+
+Tabs (uiRegistry HOSTING_PANEL_TABS):
+  overview, files, databases, domains, email, transfer (FTP/SFTP),
+  stack, apps, cron, backups, logs
+
+| Feature     | Current backend              | Real or display | Legacy dep | ISPConfig replacement      | UI change |
+|-------------|------------------------------|-----------------|------------|----------------------------|-----------|
+| Overview    | customers usage/monitoring   | Mixed real      | Yes        | usage APIs later           | Keep      |
+| Files       | FileManagerService jailed    | Real            | Yes        | file API or path+SSO       | Keep      |
+| Databases   | customers DB + hosting DBs   | Real            | Yes        | sites_database_*           | Keep      |
+| Domains/DNS | dns.py + domains             | Partial (dual)  | Yes        | DNS zones later            | Keep      |
+| Email       | environment_mail + mail.py   | Real            | Yes        | mail_* APIs                | Keep      |
+| FTP/SFTP    | ftp.py / sftp_access.py      | Real            | Yes        | FTP users                  | Keep      |
+| SSL         | ssl.py certbot               | Real            | Yes        | LE via ISPConfig           | Keep      |
+| Stack/Apps  | stacks.py / applications     | Real/partial    | Yes        | + IFNOTUS app engine       | Keep/extend|
+| Cron        | env_cron.py                  | Real            | Yes        | cron API                   | Keep      |
+| Backups     | backups.py + workers         | Real/partial    | Yes        | optional parallel          | Keep      |
+| Logs        | env logs APIs                | Partial         | Yes        | + app logs                 | Improve   |
+| phpMyAdmin  | path/integration partial     | Partial         | Yes        | ISPConfig PMA / SSO        | Clarify   |
+
+HostingProvider abstraction: NOT used by panel APIs today (direct services).
+
+
+## 6. Current domain/cPanel/mail access behavior
+
+Verified conventions:
+  https://{tenant-domain}/cpanel
+      → nginx 302 → {portal}/go/hosting?host=$host
+      → resolvePanelAlias(host) ownership check
+      → /hosting/:environmentId
+  https://{tenant-domain}/mail
+      → 302 → https://mail.ifnotus.space (Roundcube)
+  Staff: cpanel.ifnotus.space
+  Shared mail host: mail.ifnotus.space (also on ifnotus.space cert SAN)
+
+Retired: dedicated cpanel.{customer-domain} vhosts (control_panel_hostname→None).
+
+Ports 2083/8080 customer cPanel: NOT used (good).
+OLS 7080/4958: leftover, should stay closed.
+
+
+## 7. Recommended standard domain behavior
+
+For custom domains on IFNOTUS nameservers:
+  example.com          A → shared IP
+  www.example.com      CNAME or A
+  mail.example.com     A → mail IP (same VPS today)
+  webmail.example.com  A/CNAME → webmail endpoint
+  MX → mail.example.com (or mail.ifnotus.space if shared MX policy)
+
+For student:
+  surname.ifnotus.space (wildcard zone already)
+  Optional: no per-student mail unless plan includes email
+
+Registrar vs IFNOTUS DNS:
+  If NS → ns1/ns2.ifnotus.space: IFNOTUS/BIND (later ISPConfig DNS) authoritative
+  If external DNS (Cloudflare etc.): customer must set A/MX manually; IFNOTUS
+  dual-mode already detects this.
+
+
+## 8. Recommended cPanel access model
+
+PREFERRED (matches current, safest to maintain):
+
+  https://domain.tld/cpanel
+      → detect Host
+      → map to owned environment
+      → require IFNOTUS auth / panel password / SSO token
+      → IFNOTUS hosting UI for THAT account only
+
+Do NOT expose ISPConfig :8080 to customers.
+Do NOT revive cpanel.domain.tld unless product marketing requires it
+(more certs/DNS complexity).
+
+Staff remain on cpanel.ifnotus.space.
+
+Security notes for /cpanel:
+  - Keep ownership check (panel-alias already refuses foreign hosts)
+  - Avoid open redirects (fixed portal base URL only)
+  - Prefer short-lived SSO tokens over host-only trust
+  - CSRF: cookie/session rules on /go/hosting
+
+
+## 9. Recommended mail/webmail access model
+
+PREFERRED:
+  IMAP/SMTP hostname: mail.domain.tld  (when DNS is on IFNOTUS)
+                   OR mail.ifnotus.space (shared) for student/simple plans
+  Webmail browser:    https://webmail.domain.tld
+                   OR keep convenience https://domain.tld/mail → Roundcube
+
+Today: domain.tld/mail → mail.ifnotus.space works and is fine as Phase-1 standard.
+
+Client settings (verify after ISPConfig mail ownership):
+  Incoming: IMAP 993 TLS
+  Outgoing: SMTP 587 STARTTLS or 465 SMTPS
+  Auth: mailbox full address
+
+DNS for mail-on-IFNOTUS zones:
+  A/AAAA mail, MX, SPF, DKIM, DMARC, optional autodiscover/autoconfig
+
+Student plans: email should be plan-gated (already entitlement-aware in
+environment_mail.py) — do not force mail.* for every student host.
+
+
+## 10. Domain purchase lifecycle
+
+Current flow (orders.py → payment → _activate_hosting → provision job):
+  search/availability → order → MoMo/Paystack → paid
+    → provision_environment (legacy)
+    → optional DomainRegistrar (Namecheap or stub)
+    → optional AuthoritativeDnsService.ensure_zone
+    → SSL best-effort
+    → ACTIVE
+
+Classification:
+  Order/payment/billing     IMPLEMENTED (IFNOTUS)
+  Provisioning              IMPLEMENTED (legacy)
+  Registrar                 PARTIAL (Namecheap when configured; else stub)
+  DNS zone                  PARTIAL (BIND ensure_zone; DB dns_records NOT synced to BIND)
+  SSL                       IMPLEMENTED (certbot; soft-fail allowed)
+  Mail records              PARTIAL (zone templates include basics)
+  Customer access /cpanel   IMPLEMENTED
+
+Standard end-to-end target:
+  Pay → create ISPConfig client+site → DNS → SSL → mail defaults → panel ready
+  with idempotent job + rollback markers.
+
+
+## 11. Subdomain hosting lifecycle
+
+Student flow (student_hostname.py + reserved_subdomains.py + wildcard zone):
+  purchase/allocate label → validate reserved → create env under
+  /srv/apps/ifnotus-customers/<slug>/<host>/public → nginx → SSL → panel
+
+surname.ifnotus.space/cpanel should continue to work via path redirect.
+mail.surname.ifnotus.space: only if plan includes email; otherwise omit.
+
+Do not invent extra DNS complexity for free/student tiers.
+
+
+## 12. Current DNS architecture
+
+  Authority: BIND named on this VPS
+  NS: ns1.ifnotus.space + ns2.ifnotus.space → SAME IP (no redundancy)
+  Platform zone: deploy/dns/db.ifnotus.space (wildcards for students)
+  Customer zones: authoritative_dns.py writes zone files + reload
+  IFNOTUS DB domain_dns_records: NOT written through to BIND on CRUD
+  Dual-mode UX: dns.py detects NS vs A-record setups
+
+Duplication risk: DB DNS UI vs BIND files vs future ISPConfig DNS.
+
+
+## 13. Current mail architecture
+
+  Postfix + Dovecot + SQL maps + Roundcube at mail.ifnotus.space
+  IFNOTUS mail.py / environment_mail.py manage mailboxes with plan gates
+  Nginx injects /mail redirect
+  Platform SMTP settings for notifications (separate from customer mail)
+
+PTR/rDNS, full DKIM automation, spam stack: need ongoing verification
+(not fully audited as perfect reputation setup).
+
+
+## 14. ISPConfig integration status
+
+Installed on VPS: NO
+Code present: YES
+
+| Operation            | Status              |
+|----------------------|---------------------|
+| client create        | IMPLEMENTED (code)  |
+| client update        | PARTIAL             |
+| client delete        | PARTIAL             |
+| suspend/unsuspend    | IMPLEMENTED (code)  |
+| website create       | IMPLEMENTED (code)  |
+| website update/delete| PARTIAL             |
+| subdomain/alias      | NOT IMPLEMENTED     |
+| database create      | IMPLEMENTED (code)  |
+| DB user flows        | PARTIAL             |
+| FTP create/delete    | NOT IMPLEMENTED     |
+| mail domain/mailbox  | NOT IMPLEMENTED     |
+| DNS zone/records     | NOT IMPLEMENTED     |
+| SSL                  | PLACEHOLDER         |
+| cron                 | NOT IMPLEMENTED     |
+| usage/quota          | PARTIAL/raw         |
+| SFTP/shell           | NOT IMPLEMENTED     |
+| Wired to provision   | NOT IMPLEMENTED     |
+| Live credentials     | NOT CONFIGURED      |
+
+API capability of ISPConfig itself: generally strong for above; IFNOTUS client
+coverage is incomplete.
+
+
+## 15. Legacy provisioning inventory
+
+| Legacy code                         | Responsibility           | Still used? | ISPConfig replacement        | Keep temp? | Delete later? |
+|-------------------------------------|--------------------------|------------:|------------------------------|-----------:|--------------:|
+| provisioning.py                     | Orchestrator             | YES         | Provider-based orchestrator  | YES        | after migrate |
+| nginx_provisioner.py                | vhosts /cpanel /mail     | YES         | ISPConfig web                | YES        | mostly        |
+| unix_identity.py                    | Linux users              | YES         | ISPConfig clients            | YES        | mostly        |
+| sftp_access.py                      | OpenSSH chroot SFTP      | YES         | ISPConfig shell/SFTP         | YES        | evaluate      |
+| ftp.py                              | vsftpd users             | YES/partial | ISPConfig FTP                | YES        | evaluate      |
+| ssl.py                              | certbot                  | YES         | ISPConfig LE                 | YES        | after cutover |
+| authoritative_dns.py                | BIND zones               | YES         | ISPConfig DNS                | YES        | evaluate      |
+| dns.py                              | dual-mode orchestration  | YES         | keep UX + call provider      | KEEP       | no            |
+| php_fpm.py                          | pools                    | YES         | ISPConfig PHP                | YES        | mostly        |
+| systemd_env_slice.py                | cgroup limits            | BEST-EFFORT | ISPConfig limits + cgroups   | KEEP       | no            |
+| resource_enforcement.py             | prlimit/app caps         | YES         | keep for app engine          | KEEP       | no            |
+| olspanel integration                | parked engine            | NO live     | —                            | FALLBACK   | REMOVE later  |
+| HostingProvider legacy methods      | raises not_implemented   | N/A         | —                            | KEEP iface | refine        |
+
+subprocess usage is generally argv-list based (better than shell=True) in
+sampled modules — still privileged root operations.
+
+
+## 16. Database / source-of-truth audit
+
+| Data                 | IFNOTUS | ISPConfig | Registrar | OS | Notes |
+|----------------------|--------:|----------:|----------:|---:|-------|
+| Customer identity    | YES     | no        | no        | no | Users/Customers |
+| Package price        | YES     | template map only | no | no | |
+| Invoice/subscription | YES     | no        | no        | no | |
+| Hosting status       | YES     | sync later| no        | no | dual during migrate |
+| Website/vhost        | pointer | YES later | no        | nginx today | |
+| Database instances   | registry| YES later | no        | MySQL/PG | |
+| FTP/SFTP users       | creds UI| YES later | no        | sshd/ftp | |
+| Mailbox              | entitlements | YES later | no   | Postfix/Dovecot | |
+| DNS records          | DB partial | YES later | maybe | BIND | conflict risk |
+| SSL                  | metadata| YES later | no        | certbot/LE | |
+| Disk quota           | limits  | YES later | no        | weak OS | |
+| Usage samples        | YES     | optional  | no        | psutil/cgroup | |
+
+CustomerEnvironment.provider* fields already model provider references.
+
+
+## 17. Tenant filesystem and isolation
+
+Layout:
+  /srv/apps/ifnotus-customers/<storage_slug>/<hostname>/public
+
+Permissions: mixed root/www-data; ACL-ish (+) on some dirs.
+SFTP chroot implemented in sftp_access.py.
+File manager jails to document_root (zip-slip checks present).
+
+ISPConfig default homes typically /var/www/clients/... or /home/...
+Migration: rsync copy → verify → switch provider → archive old (do not delete soon).
+
+Isolation gaps:
+  - App-level disk quota bypassable via SFTP if OS quotas off
+  - No active env-*.slice units observed at audit time
+  - Docker env containers crash-looping (noise/risk)
+
+
+## 18. SFTP / FTP audit
+
+SFTP: OpenSSH Match/chroot path — preferred direction for customers.
+FTP: vsftpd code path + Pure-FTPd-MySQL currently listening :21 (OLS leftover).
+SSH interactive shell: should remain package-gated / denied for shared plans.
+
+Policy recommendation:
+  Default = SFTP only, chrooted to site root, no shell.
+  FTP/FTPS only if required for legacy WordPress tools.
+  Never give customers ISPConfig or root SSH.
+
+
+## 19. SSL audit
+
+Current owner: certbot via hosting/ssl.py + nginx webroot ACME.
+Many live certs under /etc/letsencrypt/live/* (valid).
+ISPConfig issue_ssl = placeholder.
+
+Final rule: ONE owner per cert.
+  During migrate: disable IFNOTUS certbot renew for migrated domains
+  After migrate: ISPConfig LE owns tenant certs
+  Platform ifnotus.space: decide single owner explicitly
+
+
+## 20. Resource enforcement audit
+
+| Limit        | Status                                      |
+|--------------|---------------------------------------------|
+| Disk         | APPLICATION ENFORCED (file API); OS quota weak/optional |
+| CPU          | BEST-EFFORT (systemd slice / prlimit); slices not listed active |
+| RAM          | BEST-EFFORT same                            |
+| Process/app  | APPLICATION ENFORCED (resource_enforcement) |
+| DB count     | PLAN/APPLICATION gated                      |
+| Mailbox count| PLAN gated                                  |
+| Bandwidth    | MOSTLY DISPLAY / not hard OS                |
+
+If UI shows “0.5 CPU / 512MB” but no cgroup/ISPConfig limit → NOT FULLY REAL.
+Report honestly in customer UI until enforced.
+
+
+## 21. Backup audit
+
+Present:
+  /srv/backups/ols-cutover-20260827/ (~5.9G) — files, mysql, pg, nginx, LE, siblings
+  Platform backup settings/env keys for offsite commands exist
+  Per-env backup tasks in code
+
+Gaps:
+  Same-VPS copies are necessary but NOT sufficient
+  Offsite execution not verified as regularly succeeding in this audit
+  Restore drill cadence unclear
+  ISPConfig config N/A yet
+
+Recommendation: encrypted offsite + quarterly restore test.
+
+
+## 22. Monitoring audit
+
+Exists:
+  Netdata on :19999 (PUBLIC — security issue)
+  environment_live_stats / storage_alerts / host disk thresholds in settings
+  fail2ban sshd only
+
+Missing/weak:
+  Tenant capacity scheduler
+  Provider health (ISPConfig) monitoring
+  Alerting pipeline maturity
+  SSL expiry centralized dashboard (certs exist via certbot list)
+
+Recommend: Netdata bind to localhost/VPN first; Prometheus later if needed.
+
+
+## 23. Security audit
+
+CRITICAL
+  - UFW allows 3306 and 6379 from Anywhere (even if services bind local)
+  - Netdata publicly on 0.0.0.0:19999
+  - OLS ports 7080/4958 still allowed
+
+HIGH
+  - PermitRootLogin yes
+  - PasswordAuthentication conflict across sshd drop-ins (cloud-init yes vs others)
+  - ns1/ns2 same IP (availability)
+  - Pure-FTPd from OLS + IFNOTUS FTP model overlap
+  - Docker crash-loop containers
+  - Staff host-wide file write = blast radius
+
+MEDIUM
+  - Reserved-name list drift (hosting_names extras vs central set)
+  - DB DNS records not applied to BIND
+  - Disk quota bypass via SFTP without OS quotas
+  - fail2ban only sshd
+
+LOW
+  - apache2 package unused
+  - leftover olspanel/lsws directories
+  - timezone Europe/Berlin vs Ghana product (ops preference)
+
+Do not print secrets; .env present on server with many integration keys.
+
+
+## 24. Product application separation
+
+/srv/apps product trees (NOT tenants):
+  csdttu (ExamFlow, hangout, ceeu…), csdttumain, quizsnap, quiz,
+  serverlabsttu, votebridge
+
+Recommendation:
+  Class = dedicated product sites (manual or ISPConfig “admin sites”)
+  NEVER apply customer package quotas/permissions
+  Staff FM should label “Products” separately from “Tenants”
+  Backup & restore separately from tenant migrations
+
+
+## 25. What must remain in IFNOTUS
+
+  Branding & Vue UI
+  Auth / roles / panel passwords
+  MoMo/Paystack billing, orders, subscriptions, coupons
+  Plan catalog & marketing
+  Student hostname + reserved labels
+  /cpanel and /mail customer conventions
+  HostingProvider orchestration & reconciliation
+  App engine UX (Flask/Django/Node) on top of sites
+  Tickets, notifications, AI extras
+  Business audit logs
+
+
+## 26. What ISPConfig should own
+
+  Client accounts & packages/templates
+  Websites / PHP / SSL issuance
+  FTP accounts (and optionally shell flags)
+  MySQL DBs for tenants
+  Mail domains/mailboxes (when cut over)
+  DNS zones (when cut over) OR continue BIND with clear single writer
+  Disk/traffic template enforcement
+  Server-level site isolation primitives
+
+
+## 27. What legacy code should eventually be removed
+
+REMOVE AFTER MIGRATION:
+  Direct nginx site generation for tenants
+  Direct certbot tenant issuance (if ISPConfig owns SSL)
+  Direct unix_identity for new tenants
+  OLSPanel integration package
+  OpenLiteSpeed/olspanel packages/dirs
+  Stale cpanel.* customer host code paths in frontend guards
+
+KEEP AS FALLBACK during dual-provider period:
+  ProvisioningEngine legacy branch
+  nginx_provisioner for product apps / platform until moved
+
+KEEP PERMANENTLY:
+  Billing, DNS dual-mode policy, reserved names, panel UX, app engine
+
+
+## 28. What must be added
+
+  ISPConfig install + remote user
+  Wire ProvisioningEngine → ISPConfigHostingProvider
+  Provider reconciliation job (IFNOTUS status ↔ ISPConfig)
+  Idempotency keys on provision
+  OS disk quotas + real CPU/RAM cgroups per tenant
+  Offsite backup + restore tests
+  Firewall cleanup
+  DNS secondary NS (or external secondary)
+  Admin 2FA
+  Provider audit log
+  Complete ISPConfig methods (mail/DNS/FTP/SSL)
+  Crash-loop docker cleanup/policy
+
+
+## 29. What must be tightened
+
+  UFW (close 3306/6379/7080/4958/19999 public)
+  SSH root/password policy
+  Tenant FM + SFTP OS quotas
+  Staff permission blast radius documentation + confirmations
+  Single DNS writer
+  Single SSL owner
+  Secret storage permissions on .env
+  Cross-tenant tests in CI
+
+
+## 30. What must be improved
+
+  Honest usage meters (label “enforced” vs “reported”)
+  Provisioning progress UX
+  Domain DNS setup wizard (NS vs A-record)
+  Mail onboarding copy
+  Error messages without path leakage
+  Super-admin provider health page
+  Product vs tenant file manager IA
+
+
+## 31. Final target architecture
+
+Validated as correct direction (with notes):
+
+                         INTERNET
+                            │
+                           DNS (ns1/ns2 — need redundancy)
+                            │
+                          NGINX or ISPConfig-managed web
+                            │
+          ┌─────────────────┼─────────────────┐
+          ▼                 ▼                 ▼
+     IFNOTUS UI        CUSTOMER SITES     PRODUCT APPS
+          │                 │                 │
+          ▼                 ▼                 ▼
+      FastAPI            ISPConfig        Dedicated services
+          │                 │
+   HostingProvider ─────────┘
+          │
+   ISPConfig remote API
+          │
+   Web / DB / Mail / FTP / SSL / quotas
+
+Customers never use raw ISPConfig.
+Legacy remains until each tenant migrates.
+
+
+## 32. Migration strategy
+
+Dual-provider:
+  provider=legacy | ispconfig
+
+Per tenant:
+  1 backup → 2 create ISPConfig client/site → 3 rsync files → 4 DB attach
+  → 5 SSL → 6 smoke → 7 flip provider flag → 8 observe → 9 archive legacy
+
+Do not destroy old trees for 7–14+ days.
+Product apps: reattach as dedicated sites first (Phase before tenant migrate).
+OLS leftovers: purge only after ISPConfig stable.
+
+
+## 33. Production-readiness checklist
+
+[ ] Firewall tightened (no public DB/Redis/Netdata/OLS ports)
+[ ] SSH hardened (no password root)
+[ ] ISPConfig installed carefully preserving MySQL/PG/BIND/mail
+[ ] Remote API user + IFNOTUS .env configured
+[ ] ProvisioningEngine wired to ISPConfig
+[ ] Sibling product sites online on new front door
+[ ] At least 1 tenant migrated end-to-end with restore test
+[ ] OS quotas + cgroups proven
+[ ] Offsite backups proven
+[ ] Secondary DNS plan
+[ ] Admin 2FA
+[ ] Monitoring private
+[ ] Resource UI honesty
+[ ] Security regression tests for FM/DB IDOR
+
+
+## 34. Production-readiness score (0–100)
+
+Platform/business logic ........ 78
+Hosting provisioning ........... 62 (works legacy; not ISPConfig)
+Tenant isolation ............... 58
+Server security ................ 45
+DNS ............................ 60 (works; single-node NS)
+Mail ........................... 65
+SSL ............................ 70
+Databases ...................... 68
+Backups ........................ 50 (local strong; offsite unproven)
+Monitoring ..................... 55 (Netdata public)
+Resource enforcement ........... 40 (partial/not fully real)
+Customer panel ................. 75
+Admin controls ................. 72
+Operational recovery ........... 48
+Application hosting ............ 60
+ISPConfig integration .......... 25 (code only)
+
+Overall composite ≈ 58 / 100
+
+
+## 35. GO / NO-GO recommendation
+
+LIMITED BETA ONLY
+
+Why:
+  - Paying checkout + legacy provision works for small tenant set
+  - Security surface and resource enforcement not production-grade yet
+  - ISPConfig path incomplete
+  - Shared VPS with large product apps increases blast radius
+
+Minimum gates:
+  Internal testing: firewall cleanup + monitoring lockdown + adapter deploy
+  Beta customers: dual-provider + 1–2 migrated tenants + backups offsite
+  Student hosting: reserved names + wildcard DNS OK; enforce disk/CPU
+  General public: ISPConfig default + reconciliation + secondary DNS
+  Business hosting: mail reputation + SLA monitoring + isolation proven
+
+
+## 36. Exact files likely to require modification
+
+  backend/app/services/platform/provisioning.py
+  backend/app/services/platform/lifecycle.py
+  backend/app/services/hosting_provider/ispconfig_provider.py
+  backend/app/integrations/ispconfig/client.py
+  backend/app/services/hosting_provider/factory.py
+  backend/app/core/config.py
+  backend/app/routers/v1/customers.py
+  backend/app/routers/v1/platform_admin.py
+  backend/app/services/hosting/nginx_provisioner.py (until cutover)
+  backend/app/services/hosting/ssl.py
+  backend/app/services/platform/dns.py
+  backend/app/services/platform/authoritative_dns.py
+  backend/app/services/platform/sftp_access.py
+  backend/app/models/platform.py (provider fields already present)
+  frontend/src/views/hosting/HostingPanelView.vue
+  frontend/src/composables/usePortalSiteTools.ts
+  frontend/src/lib/platformHosts.ts
+  .env / .env.example
+  docs/ISPCONFIG_ENGINE_ROADMAP.md
+
+
+## 37. Exact files likely to become obsolete
+
+  backend/app/integrations/olspanel/* (after purge)
+  backend/app/services/hosting_provider/olspanel_provider.py
+  OLS-related scripts under scripts/ols-*
+  docs/OLSPANEL_ENGINE_ROADMAP.md (already superseded)
+  Tenant-only paths in nginx_provisioner once ISPConfig owns vhosts
+  Direct unix_identity for newly provisioned ispconfig tenants
+  Frontend legacy cpanel.* host special-cases (after cleanup)
+
+
+## 38. Recommended implementation phases
+
+Phase A — Stabilize security (no ISPConfig yet)
+  UFW tighten; Netdata private; SSH harden; stop advertising OLS ports;
+  document Pure-FTPd vs vsftpd decision.
+
+Phase B — Deploy ISPConfig adapter code to API (still legacy default)
+
+Phase C — Maintenance window: install ISPConfig carefully
+  Preserve MySQL/PG/BIND/Postfix; create remote API user; map templates.
+
+Phase D — Reattach product apps + platform hosts
+
+Phase E — Migrate tenants one-by-one (dual provider)
+
+Phase F — Wire panel actions through HostingProvider for ispconfig envs
+
+Phase G — Real quotas/cgroups; offsite backups; secondary DNS; 2FA
+
+Phase H — Purge OLS leftovers; retire legacy provision for new sales
+
+
+================================================================================
+FINAL MACHINE-READABLE SUMMARY
+================================================================================
+
+{
+  "production_ready": false,
+  "recommended_public_status": "beta",
+  "ispconfig_fit": "strong",
+  "legacy_provider_still_required": true,
+  "legacy_components_to_remove": [
+    "olspanel_integration",
+    "openlitespeed_leftovers",
+    "tenant_nginx_generation_after_migration",
+    "direct_certbot_for_migrated_tenants",
+    "duplicate_ftp_daemon_overlap"
+  ],
+  "missing_critical_components": [
+    "ispconfig_installed",
+    "provisioning_wired_to_ispconfig",
+    "os_enforced_cpu_ram_disk_quotas",
+    "offsite_backup_verification",
+    "dns_secondary",
+    "firewall_cleanup_post_ols",
+    "admin_2fa",
+    "provider_reconciliation_job"
+  ],
+  "security_critical_findings": [
+    "ufw_allows_3306_and_6379_public",
+    "netdata_public_19999",
+    "ols_ports_7080_4958_still_allowed",
+    "permit_root_login_yes",
+    "staff_hostwide_file_write_blast_radius",
+    "docker_env_containers_crash_looping"
+  ],
+  "domain_access_recommendation": "Keep IFNOTUS DNS dual-mode; use ns1/ns2 when on-platform; add secondary NS; custom domains get A/www/MX/SPF/DKIM/DMARC via single DNS writer.",
+  "cpanel_access_recommendation": "https://domain.tld/cpanel → authenticated IFNOTUS hosting UI (current model). Never expose ISPConfig to customers.",
+  "mail_access_recommendation": "domain.tld/mail → webmail; mail.domain.tld for IMAP/SMTP when DNS hosted; shared mail.ifnotus.space acceptable for simple/student plans.",
+  "dns_authority_recommendation": "BIND today; migrate customer zones to ISPConfig DNS later OR keep BIND with ISPConfig not writing DNS; eliminate dual writers; add NS redundancy.",
+  "ssl_authority_recommendation": "One owner per cert: certbot/legacy now; ISPConfig LE after tenant migration; no dual renew.",
+  "resource_enforcement_status": "partial_not_fully_real",
+  "tenant_isolation_status": "moderate_app_jail_weak_os_quotas",
+  "backup_status": "strong_local_unproven_offsite",
+  "monitoring_status": "netdata_present_but_public_exposure",
+  "highest_priority_fix": "Tighten UFW and remove public exposure of Netdata/DB/Redis/OLS ports before any further engine install.",
+  "recommended_next_phase": "Phase A security harden + Phase B deploy ISPConfig adapter; defer ISPConfig OS install until maintenance window after firewall cleanup."
+}
+
+================================================================================
+END OF AUDIT
+================================================================================

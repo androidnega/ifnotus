@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { catalogApi, customersApi } from '@/api'
+import { getApiErrorMessage } from '@/lib/apiError'
 import PortalAccountNav from '@/components/portal/PortalAccountNav.vue'
 import PortalDomainOptions, { type DomainKind } from '@/components/portal/PortalDomainOptions.vue'
 import PortalShell from '@/components/portal/PortalShell.vue'
@@ -14,7 +15,7 @@ import { sshHeadline, visibleStacks } from '@/lib/planMatrix'
 
 const DOMAIN_FEES: Record<string, number> = {
   '.online': 50,
-  '.com': 250,
+  '.com': 225,
   '.org': 180,
   '.net': 200,
 }
@@ -36,6 +37,22 @@ const domainLocal = ref('')
 const domainExt = ref('.online')
 const domainStatus = ref('')
 const busy = ref(false)
+const billingTerms = ref<
+  Array<{
+    months: number
+    label: string
+    recommended?: boolean
+    discount_pct?: number
+    subtotal?: number | null
+    discount_amount?: number | null
+    plan_total?: number | null
+  }>
+>([])
+const selectedTermMonths = ref(1)
+const couponCode = ref('')
+const couponMsg = ref('')
+const couponDiscount = ref(0)
+const couponBusy = ref(false)
 
 const featuredId = computed(() => {
   if (!plans.value.length) return ''
@@ -58,9 +75,55 @@ const domainFee = computed(() =>
   domainMode.value === 'register' ? DOMAIN_FEES[domainExt.value] || 0 : 0,
 )
 
-const invoiceTotal = computed(() => {
-  const plan = Number(selected.value?.price_monthly || 0)
-  return plan + domainFee.value
+const selectedTerm = computed(
+  () => billingTerms.value.find((t) => t.months === selectedTermMonths.value) || billingTerms.value[0] || null,
+)
+
+const planTermTotal = computed(() => {
+  if (selectedTerm.value?.plan_total != null) return Number(selectedTerm.value.plan_total)
+  return Number(selected.value?.price_monthly || 0) * (selectedTermMonths.value || 1)
+})
+
+const termSubtotal = computed(() => {
+  if (selectedTerm.value?.subtotal != null) return Number(selectedTerm.value.subtotal)
+  return Number(selected.value?.price_monthly || 0) * (selectedTermMonths.value || 1)
+})
+
+const termDiscount = computed(() => Number(selectedTerm.value?.discount_amount || 0))
+
+const invoiceTotal = computed(() =>
+  Math.max(0, planTermTotal.value - couponDiscount.value) + domainFee.value,
+)
+
+async function applyCoupon() {
+  if (!selected.value || !couponCode.value.trim()) {
+    couponMsg.value = 'Enter a coupon code.'
+    return
+  }
+  couponBusy.value = true
+  couponMsg.value = ''
+  try {
+    const { data } = await customersApi.previewCoupon({
+      code: couponCode.value.trim(),
+      plan_id: selected.value.id,
+      billing_term_months: selectedTermMonths.value || 1,
+    })
+    couponDiscount.value = Number(data.discount_amount || 0)
+    couponCode.value = data.code
+    couponMsg.value = `Saved GHS ${couponDiscount.value.toFixed(0)} with ${data.code}.`
+  } catch (e: unknown) {
+    couponDiscount.value = 0
+    couponMsg.value = getApiErrorMessage(e, 'Coupon could not be applied.')
+  } finally {
+    couponBusy.value = false
+  }
+}
+
+const renewsOnLabel = computed(() => {
+  const months = selectedTermMonths.value || 1
+  const d = new Date()
+  d.setMonth(d.getMonth() + months)
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 })
 
 const step = computed(() => (selected.value ? 2 : 1))
@@ -82,9 +145,10 @@ onMounted(async () => {
   await loadTheme()
   try {
     const me = await customersApi.me()
-    if (!me.data.profile_complete) {
+    // Incomplete profiles stay on /account with staged prompts — not guest signup.
+    if (!me.data.can_order && !me.data.profile_complete) {
       await router.replace({
-        name: 'portal-signup',
+        name: 'portal-dashboard',
         query: { plan: route.query.plan || undefined, complete: '1' },
       })
       return
@@ -101,7 +165,10 @@ onMounted(async () => {
     const pref = typeof route.query.plan === 'string' ? route.query.plan : ''
     if (pref) {
       const match = plans.value.find((p) => p.slug === pref)
-      if (match) selected.value = match
+      if (match) {
+        selected.value = match
+        await loadBillingTerms(match)
+      }
     }
   } catch (e: unknown) {
     const err = e as { response?: { data?: { error?: { message?: string } } } }
@@ -115,6 +182,29 @@ function choose(plan: HostingPlan) {
   selected.value = plan
   orderMsg.value = ''
   domainStatus.value = ''
+  void loadBillingTerms(plan)
+}
+
+async function loadBillingTerms(plan: HostingPlan | null) {
+  if (!plan) {
+    billingTerms.value = []
+    selectedTermMonths.value = 1
+    return
+  }
+  try {
+    const { data } = await catalogApi.billingTerms(Number(plan.price_monthly))
+    billingTerms.value = data.terms || []
+    const preferred =
+      billingTerms.value.find((t) => t.recommended) ||
+      billingTerms.value.find((t) => t.months === selectedTermMonths.value) ||
+      billingTerms.value[0]
+    selectedTermMonths.value = preferred?.months || 1
+  } catch {
+    billingTerms.value = [
+      { months: 1, label: '1 month', plan_total: Number(plan.price_monthly), subtotal: Number(plan.price_monthly) },
+    ]
+    selectedTermMonths.value = 1
+  }
 }
 
 async function checkDomain() {
@@ -152,11 +242,17 @@ async function checkout() {
       include_domain: domainMode.value === 'register' && !!fullDomain,
       domain_kind: domainMode.value,
       student_surname: domainMode.value === 'student' ? studentSurname.value.trim() : undefined,
+      billing_term_months: selectedTermMonths.value || 1,
+      coupon_code: couponCode.value.trim() || undefined,
     })
-    await router.push({ name: 'portal-invoice', params: { id: data.order.id } })
+    const orderId = data?.order?.id
+    if (!orderId) {
+      orderMsg.value = 'Invoice was created but could not be opened. Open it from Billing.'
+      return
+    }
+    await router.push(`/account/invoice/${orderId}`)
   } catch (e: unknown) {
-    const err = e as { response?: { data?: { error?: { message?: string } } } }
-    orderMsg.value = err.response?.data?.error?.message ?? 'Could not start checkout.'
+    orderMsg.value = getApiErrorMessage(e, 'Could not start checkout.')
   } finally {
     busy.value = false
   }
@@ -332,14 +428,97 @@ async function checkout() {
               @check-domain="checkDomain"
             />
           </div>
+
+          <div v-if="billingTerms.length" class="mt-6 border-t border-slate-100 pt-5">
+            <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Billing term</p>
+            <p class="mt-1 text-sm text-slate-600">Pay for more months up front when a discount is offered.</p>
+            <div class="mt-3 grid gap-2 sm:grid-cols-2">
+              <button
+                v-for="term in billingTerms"
+                :key="term.months"
+                type="button"
+                class="rounded-xl border px-3 py-3 text-left transition"
+                :class="
+                  selectedTermMonths === term.months
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-200 bg-white text-slate-800 hover:border-slate-400'
+                "
+                @click="selectedTermMonths = term.months"
+              >
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-sm font-bold">{{ term.label }}</span>
+                  <span
+                    v-if="term.recommended"
+                    class="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide"
+                    :class="selectedTermMonths === term.months ? 'bg-white/15 text-white' : 'bg-amber-50 text-amber-800'"
+                  >Best</span>
+                </div>
+                <p class="mt-1 text-xs" :class="selectedTermMonths === term.months ? 'text-white/80' : 'text-slate-500'">
+                  GHS {{ Number(term.plan_total ?? 0).toFixed(0) }}
+                  <span v-if="Number(term.discount_amount || 0) > 0">
+                    · save {{ Number(term.discount_pct || 0).toFixed(0) }}%
+                  </span>
+                </p>
+              </button>
+            </div>
+          </div>
         </div>
 
         <aside class="h-fit rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:sticky lg:top-4">
           <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Summary</p>
           <div class="mt-4 space-y-3 text-sm">
             <div class="flex justify-between gap-3">
-              <span class="text-slate-500">Hosting</span>
+              <span class="text-slate-500">Plan</span>
+              <span class="font-semibold text-slate-900">{{ selected.name }}</span>
+            </div>
+            <div class="flex justify-between gap-3">
+              <span class="text-slate-500">Monthly</span>
               <span class="font-semibold text-slate-900">GHS {{ Number(selected.price_monthly).toFixed(0) }}</span>
+            </div>
+            <div class="flex justify-between gap-3">
+              <span class="text-slate-500">Term</span>
+              <span class="font-semibold text-slate-900">{{ selectedTerm?.label || `${selectedTermMonths} mo` }}</span>
+            </div>
+            <div class="flex justify-between gap-3">
+              <span class="text-slate-500">Subtotal</span>
+              <span class="font-semibold text-slate-900">GHS {{ termSubtotal.toFixed(0) }}</span>
+            </div>
+            <div v-if="termDiscount > 0" class="flex justify-between gap-3">
+              <span class="text-slate-500">Term discount</span>
+              <span class="font-semibold text-emerald-700">− GHS {{ termDiscount.toFixed(0) }}</span>
+            </div>
+            <div class="space-y-2 border-t border-slate-100 pt-3">
+              <label class="block text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Coupon</label>
+              <div class="flex gap-2">
+                <input
+                  v-model="couponCode"
+                  type="text"
+                  class="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm uppercase"
+                  placeholder="TTU2026"
+                  @keydown.enter.prevent="applyCoupon"
+                />
+                <button
+                  type="button"
+                  class="rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white disabled:opacity-50"
+                  :disabled="couponBusy"
+                  @click="applyCoupon"
+                >
+                  Apply
+                </button>
+              </div>
+              <p v-if="couponMsg" class="text-xs" :class="couponDiscount > 0 ? 'text-emerald-700' : 'text-red-600'">
+                {{ couponMsg }}
+              </p>
+            </div>
+            <div v-if="couponDiscount > 0" class="flex justify-between gap-3">
+              <span class="text-slate-500">Coupon</span>
+              <span class="font-semibold text-emerald-700">− GHS {{ couponDiscount.toFixed(0) }}</span>
+            </div>
+            <div class="flex justify-between gap-3">
+              <span class="text-slate-500">Hosting</span>
+              <span class="font-semibold text-slate-900">
+                GHS {{ Math.max(0, planTermTotal - couponDiscount).toFixed(0) }}
+              </span>
             </div>
             <div class="flex justify-between gap-3">
               <span class="text-slate-500">Domain</span>
@@ -347,10 +526,14 @@ async function checkout() {
                 {{ domainFee ? `GHS ${domainFee}` : 'GHS 0' }}
               </span>
             </div>
+            <div class="flex justify-between gap-3">
+              <span class="text-slate-500">Renews / expires</span>
+              <span class="font-semibold text-slate-900">{{ renewsOnLabel }}</span>
+            </div>
             <div class="border-t border-slate-100 pt-3">
               <div class="flex items-baseline justify-between gap-3">
                 <span class="font-semibold text-slate-800">Invoice total</span>
-                <span class="text-2xl font-extrabold tracking-tight text-slate-900">GHS {{ invoiceTotal }}</span>
+                <span class="text-2xl font-extrabold tracking-tight text-slate-900">GHS {{ invoiceTotal.toFixed(0) }}</span>
               </div>
             </div>
           </div>

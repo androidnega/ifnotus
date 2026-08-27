@@ -32,6 +32,8 @@ def test_customer_care_can_confirm_momo_but_not_host_ops() -> None:
     assert not role_has_permission(care, Permission.FILES_WRITE)
     assert not role_has_permission(care, Permission.TERMINAL_EXECUTE)
     assert not role_has_permission(care, Permission.SYSTEM_ADMIN)
+    assert not role_has_permission(care, Permission.SYSTEM_READ)
+    assert not role_has_permission(care, Permission.MONITORING_READ)
 
 
 def test_operator_has_host_ops_without_plan_write() -> None:

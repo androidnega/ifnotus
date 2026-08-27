@@ -12,6 +12,7 @@ import hashlib
 import os
 import pwd
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -97,11 +98,63 @@ def ownership_plan(
     }
 
 
+def grant_tenant_traverse(
+    customers_root: str | Path,
+    *,
+    customer_id: UUID | str,
+    unix_username: str,
+    customer_folder: str | None = None,
+) -> dict[str, Any]:
+    """Allow the tenant OS user to traverse customers root + their prefix.
+
+    Prefer ACL ``u:tenant:--x`` so other tenants stay out. If ``setfacl`` is
+    unavailable, fall back to world-execute-only (``o+x``) on those two path
+    components — listing stays denied without read bit.
+    """
+    result: dict[str, Any] = {"unix_username": unix_username, "customer_id": str(customer_id)}
+    user = (unix_username or "").strip()
+    if not user:
+        result["skipped"] = "no_unix_username"
+        return result
+    root = Path(customers_root)
+    prefix = root / (customer_folder or str(customer_id))
+    setfacl = shutil.which("setfacl")
+    for path in (root, prefix):
+        if not path.exists():
+            continue
+        key = "customers_root" if path == root else "customer_prefix"
+        if setfacl:
+            proc = subprocess.run(
+                [setfacl, "-m", f"u:{user}:--x", str(path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if proc.returncode != 0:
+                result[f"{key}_error"] = (proc.stderr or proc.stdout or "")[-200:]
+            else:
+                result[key] = str(path)
+                result[f"{key}_via"] = "acl"
+            continue
+        # Fallback without ACL package: execute-only for others (no list/read).
+        try:
+            mode = path.stat().st_mode
+            os.chmod(path, mode | 0o001)
+            result[key] = str(path)
+            result[f"{key}_via"] = "other_execute"
+        except OSError as exc:
+            result[f"{key}_error"] = str(exc)
+    if not setfacl:
+        result["setfacl"] = "missing_used_fallback"
+    return result
+
+
 def harden_customer_prefixes(
     customers_root: str | Path,
     *,
     customer_id: UUID | str,
     web_user: str = "www-data",
+    customer_folder: str | None = None,
 ) -> dict[str, Any]:
     """Make customers root + per-customer prefix non-world-traversable."""
     root = Path(customers_root)

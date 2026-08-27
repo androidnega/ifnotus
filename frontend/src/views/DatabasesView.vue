@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import ConfirmPasswordModal from '@/components/databases/ConfirmPasswordModal.vue'
 import { authApi, databasesApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
@@ -66,6 +67,17 @@ const canWrite = computed(() => can(Permission.DATABASES_WRITE))
 const router = useRouter()
 
 function openManaged(db: ManagedDatabase) {
+  const eng = String(db.engine || '').toLowerCase()
+  if (eng === 'mysql' || eng === 'mariadb') {
+    void databasesApi
+      .openPhpMyAdmin(db.id)
+      .then(({ data }) => window.open(data.url, `ifnotus-pma-${db.id}`))
+      .catch(() => {
+        const href = router.resolve({ name: 'database-studio', query: { kind: 'managed', id: db.id } }).href
+        window.open(href, `ifnotus-db-${db.id}`)
+      })
+    return
+  }
   const href = router.resolve({ name: 'database-studio', query: { kind: 'managed', id: db.id } }).href
   window.open(href, `ifnotus-db-${db.id}`)
 }
@@ -411,46 +423,24 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-else class="db-page">
-      <section class="db-hero">
-        <div class="db-hero-copy">
-          <span class="db-eyebrow">Data infrastructure</span>
-          <h1>Databases</h1>
-          <p>
-            Browse, query, back up, and manage every database running on this server.
-          </p>
-          <div class="db-health-row">
-            <span><strong>{{ runningEngines }}/{{ engines.length }}</strong> engines online</span>
-            <span><strong>{{ live.length }}</strong> detected</span>
-            <span><strong>{{ totalObjects }}</strong> data objects</span>
+      <UiPageHeader eyebrow="Data infrastructure" title="Databases" lede="Browse, query, back up, and manage every database running on this server.">
+        <template #actions>
+          <div class="db-hero-actions">
+            <button type="button" class="db-button is-quiet" :disabled="loading" @click="load()">Refresh</button>
+            <button v-if="canWrite" type="button" class="db-button is-quiet" @click="showRestore = !showRestore">
+              {{ showRestore ? 'Hide restore' : 'Restore' }}
+            </button>
+            <button v-if="canWrite" type="button" class="db-button is-primary" @click="showForm = !showForm">
+              {{ showForm ? 'Close form' : '+ Create database' }}
+            </button>
           </div>
+        </template>
+        <div class="db-health-row" style="margin-top: 0.75rem">
+          <span><strong>{{ runningEngines }}/{{ engines.length }}</strong> engines online</span>
+          <span><strong>{{ live.length }}</strong> detected</span>
+          <span><strong>{{ totalObjects }}</strong> data objects</span>
         </div>
-        <div class="db-hero-actions">
-          <button
-            type="button"
-            class="db-button is-quiet"
-            :disabled="loading"
-            @click="load()"
-          >
-            Refresh
-          </button>
-          <button
-            v-if="canWrite"
-            type="button"
-            class="db-button is-quiet"
-            @click="showRestore = !showRestore"
-          >
-            {{ showRestore ? 'Hide restore' : 'Restore' }}
-          </button>
-          <button
-            v-if="canWrite"
-            type="button"
-            class="db-button is-primary"
-            @click="showForm = !showForm"
-          >
-            {{ showForm ? 'Close form' : '+ Create database' }}
-          </button>
-        </div>
-      </section>
+      </UiPageHeader>
 
       <p
         v-if="message"
@@ -687,7 +677,12 @@ onBeforeUnmount(() => {
                       class="text-xs text-brand-700 dark:text-brand-300"
                       @click="openManaged(db)"
                     >
-                      Open studio
+                      {{
+                        String(db.engine || '').toLowerCase() === 'mysql' ||
+                        String(db.engine || '').toLowerCase() === 'mariadb'
+                          ? 'Open phpMyAdmin'
+                          : 'Open studio'
+                      }}
                     </button>
                     <button
                       v-if="canWrite && db.password_set"

@@ -72,15 +72,13 @@ watch(flipped, async (on) => {
     class="flip"
     :class="{ featured, on: flipped }"
     :style="cardStyle"
-    @mouseenter="flipped = true"
-    @mouseleave="flipped = false"
     @click="flipped = !flipped"
   >
     <div class="inner">
       <div class="face front">
         <div class="name-row">
           <h2>{{ plan.name }}</h2>
-          <span v-if="plan.catalog_card?.product_status === 'beta'" class="badge beta">Beta</span>
+          <span v-if="plan.catalog_card?.product_status === 'coming_soon'" class="badge soon">Soon</span>
           <span v-else-if="featured" class="badge">Popular</span>
         </div>
         <p class="price">
@@ -95,7 +93,7 @@ watch(flipped, async (on) => {
           <li><span>Disk</span><strong>{{ plan.storage_gb }} GB</strong></li>
           <li><span>AI</span><strong>{{ plan.ai_credits }} credits</strong></li>
         </ul>
-        <p class="hint">Hover or tap to see what’s included</p>
+        <p class="hint">Tap to see what’s included</p>
       </div>
       <div class="face back">
         <p class="back-kicker">What’s included</p>
@@ -133,11 +131,6 @@ watch(flipped, async (on) => {
 }
 .flip.on .inner {
   transform: rotateY(180deg);
-}
-@media (hover: hover) and (pointer: fine) {
-  .flip:hover .inner {
-    transform: rotateY(180deg);
-  }
 }
 @media (prefers-reduced-motion: reduce) {
   .inner { transition: none; }

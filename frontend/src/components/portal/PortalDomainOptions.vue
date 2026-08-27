@@ -38,7 +38,7 @@ const studentSurnameModel = computed({
 })
 
 const studentPreview = ref('')
-const studentZone = ref('serverlabsttu.space')
+const studentZone = ref('ifnotus.space')
 const registrarEnabled = ref(true)
 let previewTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -57,12 +57,12 @@ const options = computed(() => {
     {
       value: 'own',
       title: 'I already have a domain',
-      blurb: 'Point nameservers when we ask. No domain fee.',
+      blurb: 'Use IFNOTUS nameservers or A records at your registrar. No domain fee.',
     },
     {
       value: 'student',
-      title: 'Student address',
-      blurb: `Free ${studentExample.value} hostname.`,
+      title: 'Free IFNOTUS project address',
+      blurb: `Included ${studentExample.value} hostname for student projects.`,
     },
   )
   return list
@@ -198,7 +198,7 @@ watch(
         After payment we register it and set ns1 / ns2.ifnotus.space.
       </p>
       <p v-else class="mt-3 text-sm leading-relaxed text-slate-600">
-        Point nameservers to ns1.ifnotus.space and ns2.ifnotus.space when we ask — no domain fee on this invoice.
+        Use IFNOTUS nameservers or add A records at your registrar when we ask — no domain fee on this invoice.
       </p>
       <button
         v-if="domainModeModel === 'register'"

@@ -3,6 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
+import UiAlert from '@/components/ui/UiAlert.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import ConfirmPasswordModal from '@/components/databases/ConfirmPasswordModal.vue'
 import { securityApi, terminalApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
@@ -233,48 +235,31 @@ onMounted(loadAll)
     </div>
 
     <div v-else class="animate-fade-in space-y-5">
-      <div class="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 class="text-lg font-semibold text-slate-900 dark:text-white">Security & Audit</h2>
-          <p class="text-sm text-surface-muted">
-            Login traces (web, CLI, SSH), network firewall, action audit, and kill-switches.
-          </p>
-        </div>
-        <div class="flex flex-wrap gap-2">
-          <button
-            type="button"
-            class="rounded-lg border border-surface-border px-3 py-1.5 text-sm hover:bg-slate-50 dark:hover:bg-slate-800"
-            :disabled="loading"
-            @click="downloadSecurityLogs"
-          >
-            Download logs
-          </button>
-          <button
-            type="button"
-            class="rounded-lg border border-red-300 bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
-            :disabled="loading || clearBusy"
-            @click="startClearLogs"
-          >
-            Clear logs…
-          </button>
-          <button
-            type="button"
-            class="rounded-lg border border-surface-border px-3 py-1.5 text-sm hover:bg-slate-50 dark:hover:bg-slate-800"
-            :disabled="loading"
-            @click="loadAll"
-          >
-            {{ loading ? 'Loading…' : 'Refresh' }}
-          </button>
-        </div>
-      </div>
-
-      <p
-        v-if="message"
-        class="rounded-lg px-3 py-2 text-sm"
-        :class="message.ok ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-red-500/10 text-red-700 dark:text-red-300'"
+      <UiPageHeader
+        title="Security & Audit"
+        lede="Panel access rules, IP blocks, kill-switches, and login/action audits. This is not the OS packet firewall."
       >
-        {{ message.text }}
-      </p>
+        <template #actions>
+          <div class="flex flex-wrap gap-2">
+            <button type="button" class="ds-btn-ghost text-sm" :disabled="loading" @click="downloadSecurityLogs">
+              Download logs
+            </button>
+            <button
+              type="button"
+              class="rounded-lg border border-red-300 bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
+              :disabled="loading || clearBusy"
+              @click="startClearLogs"
+            >
+              Clear logs…
+            </button>
+            <button type="button" class="ds-btn-ghost text-sm" :disabled="loading" @click="loadAll">
+              {{ loading ? 'Loading…' : 'Refresh' }}
+            </button>
+          </div>
+        </template>
+      </UiPageHeader>
+
+      <UiAlert v-if="message" :tone="message.ok ? 'ok' : 'err'">{{ message.text }}</UiAlert>
 
       <Card title="Block actions" subtitle="Kill-switch sensitive capabilities for everyone">
         <div class="mb-3 flex flex-wrap gap-2">
@@ -304,7 +289,7 @@ onMounted(loadAll)
       </Card>
 
       <div class="grid gap-5 xl:grid-cols-2">
-        <Card title="Firewall networks" subtitle="Allow trusted CIDRs · deny hostile ranges">
+        <Card title="Panel CIDR rules" subtitle="Allow trusted ranges · deny hostile ranges for panel access">
           <p class="mb-3 text-xs text-surface-muted">
             If any <strong>allow</strong> rule exists, only matching networks can reach the panel (health checks exempt).
             Deny rules always block.

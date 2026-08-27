@@ -33,17 +33,25 @@ class DomainNginxProvisioner:
         name = self.site_name(hostname)
         return self._available / name, self._enabled / name
 
-    def ensure_document_root(self, path: str) -> Path:
+    def ensure_document_root(
+        self,
+        path: str,
+        *,
+        hostname: str | None = None,
+        display_hostname: str | None = None,
+    ) -> Path:
+        from app.services.platform.hosting_ready_page import write_hosting_ready_page
+
         root = Path(path)
-        root.mkdir(parents=True, exist_ok=True)
-        index = root / "index.html"
-        if not index.exists():
-            index.write_text(
-                "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-                f"<title>{root.name}</title></head><body>"
-                "<h1>It works</h1><p>Provisioned by IFNOTUS.</p></body></html>\n",
-                encoding="utf-8",
-            )
+        host = (hostname or "").strip() or root.parent.name or root.name
+        portal = getattr(self._settings, "customer_portal_url", None) or "https://ifnotus.space"
+        write_hosting_ready_page(
+            root,
+            hostname=host,
+            portal_base=portal,
+            display_hostname=display_hostname,
+            force=False,
+        )
         return root
 
     def render_config(
@@ -59,22 +67,38 @@ class DomainNginxProvisioner:
         ssl_certificate_key: str | None = None,
         path_redirects: list[dict] | None = None,
     ) -> str:
-        names = [hostname] + [a for a in (aliases or []) if a and a != hostname]
-        from app.services.platform.panel_access import control_panel_hostname
+        """Render nginx config for a site.
+
+        Important: ``cpanel.<domain>`` and ``mail.<domain>`` are dedicated vhosts
+        (not on the site ``server_name``). ``cpanel.*`` serves the Hosting Panel SPA
+        on the customer's hostname; ``mail.*`` redirects to shared webmail.
+        ACME challenges stay on the HTTP vhost webroot (never bounce to ifnotus.space).
+        """
+        site_names = [hostname] + [a for a in (aliases or []) if a and a != hostname]
+        from app.services.platform.panel_access import control_panel_hostname, is_platform_hostname
 
         cpanel_host = control_panel_hostname(hostname)
-        if cpanel_host and cpanel_host not in names:
-            names.append(cpanel_host)
+        mail_host = None
+        if not is_platform_hostname(hostname) and "." in hostname and not hostname.startswith("www."):
+            mail_host = f"mail.{hostname}"
         # www for apex custom domains (not for platform / student zones)
-        from app.services.platform.panel_access import is_platform_hostname
-
         if (
             not is_platform_hostname(hostname)
             and not hostname.startswith("www.")
-            and f"www.{hostname}" not in names
+            and f"www.{hostname}" not in site_names
         ):
-            names.append(f"www.{hostname}")
-        names_line = " ".join(dict.fromkeys(names))
+            site_names.append(f"www.{hostname}")
+        # Never put panel/mail aliases on the site server_name (HTTP or HTTPS).
+        site_names = [
+            n
+            for n in dict.fromkeys(site_names)
+            if n
+            and n != cpanel_host
+            and n != mail_host
+            and not str(n).startswith("cpanel.")
+            and not str(n).startswith("mail.")
+        ]
+        names_line = " ".join(site_names)
         root = document_root or f"/var/www/{hostname}"
         cert = ssl_certificate
         key = ssl_certificate_key
@@ -83,7 +107,10 @@ class DomainNginxProvisioner:
             if (le / "fullchain.pem").exists() and (le / "privkey.pem").exists():
                 cert = str(le / "fullchain.pem")
                 key = str(le / "privkey.pem")
-        Path(ACME_WEBROOT).mkdir(parents=True, exist_ok=True)
+        try:
+            Path(ACME_WEBROOT).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
         acme = [
             "    location ^~ /.well-known/acme-challenge/ {",
             f"        root {ACME_WEBROOT};",
@@ -98,7 +125,10 @@ class DomainNginxProvisioner:
             "",
         ]
 
-        # HTTP server
+        # HTTP-only shortcut hosts (no TLS — avoids LE SAN + Bad Request 400 on HTTPS).
+        lines += self._http_alias_redirect_servers(cpanel_host=cpanel_host, mail_host=mail_host)
+
+        # HTTP server for the real site
         lines += [
             "server {",
             "    listen 80;",
@@ -124,7 +154,7 @@ class DomainNginxProvisioner:
             )
             lines += ["}", ""]
 
-        # HTTPS server when cert present
+        # HTTPS server when cert present (site hosts only)
         if cert and key:
             lines += [
                 "server {",
@@ -138,13 +168,6 @@ class DomainNginxProvisioner:
                 lines.append("    include /etc/letsencrypt/options-ssl-nginx.conf;")
             if Path("/etc/letsencrypt/ssl-dhparams.pem").exists():
                 lines.append("    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;")
-            # If request Host is cpanel.*, send straight to the IFNOTUS account dashboard.
-            if cpanel_host:
-                lines += [
-                    f"    if ($host = {cpanel_host}) {{",
-                    f"        return 302 {self._settings.customer_portal_url.rstrip('/')}/account;",
-                    "    }",
-                ]
             lines += self._location_block(
                 hostname=hostname,
                 root=root,
@@ -153,18 +176,149 @@ class DomainNginxProvisioner:
                 path_redirects=path_redirects or [],
             )
             lines += ["}", ""]
+            # HTTPS cpanel.* — Hosting Panel SPA on the customer's own hostname.
+            if cpanel_host:
+                lines += self._cpanel_spa_server(
+                    cpanel_host=cpanel_host,
+                    cert=cert,
+                    key=key,
+                    listen_https=True,
+                )
 
         return "\n".join(lines)
 
-    def _webmail_locations(self) -> list[str]:
+    def _panel_spa_root(self) -> str:
+        return str(getattr(self._settings, "frontend_dist_root", None) or "/var/www/ifnotus")
+
+    def _api_upstream(self) -> str:
+        return str(getattr(self._settings, "local_api_upstream", None) or "http://127.0.0.1:8010")
+
+    def _cpanel_spa_locations(self) -> list[str]:
+        """Serve the same SPA + API proxy as cpanel.ifnotus.space / ifnotus.space."""
+        root = self._panel_spa_root()
+        upstream = self._api_upstream()
+        return [
+            f"    root {root};",
+            "    index index.html;",
+            "    location /api/ {",
+            f"        proxy_pass {upstream};",
+            "        proxy_http_version 1.1;",
+            "        proxy_set_header Host $host;",
+            "        proxy_set_header X-Real-IP $remote_addr;",
+            "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
+            "        proxy_set_header X-Forwarded-Proto $scheme;",
+            "    }",
+            "    location / {",
+            "        try_files $uri $uri/ /index.html;",
+            "    }",
+        ]
+
+    def _cpanel_spa_server(
+        self,
+        *,
+        cpanel_host: str,
+        cert: str | None = None,
+        key: str | None = None,
+        listen_https: bool = False,
+    ) -> list[str]:
+        lines: list[str] = [
+            "# Customer control-panel host — Hosting Panel SPA (stays on cpanel.<domain>)",
+            "server {",
+        ]
+        if listen_https and cert and key:
+            lines += [
+                "    listen 443 ssl;",
+                "    listen [::]:443 ssl;",
+                f"    server_name {cpanel_host};",
+                f"    ssl_certificate {cert};",
+                f"    ssl_certificate_key {key};",
+            ]
+            if Path("/etc/letsencrypt/options-ssl-nginx.conf").exists():
+                lines.append("    include /etc/letsencrypt/options-ssl-nginx.conf;")
+            if Path("/etc/letsencrypt/ssl-dhparams.pem").exists():
+                lines.append("    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;")
+            lines += self._cpanel_spa_locations()
+        else:
+            lines += [
+                "    listen 80;",
+                "    listen [::]:80;",
+                f"    server_name {cpanel_host};",
+                "    location ^~ /.well-known/acme-challenge/ {",
+                f"        root {ACME_WEBROOT};",
+                "        default_type text/plain;",
+                "        allow all;",
+                "    }",
+            ]
+            # Prefer HTTPS when this cert lineage already covers cpanel.*.
+            if cert and key:
+                lines += [
+                    "    location / {",
+                    "        return 301 https://$host$request_uri;",
+                    "    }",
+                ]
+            else:
+                lines += self._cpanel_spa_locations()
+        lines += ["}", ""]
+        return lines
+
+    def _http_alias_redirect_servers(
+        self, *, cpanel_host: str | None, mail_host: str | None
+    ) -> list[str]:
+        """Dedicated port-80 servers for cpanel.* (SPA) / mail.* (webmail)."""
+        lines: list[str] = []
+        webmail = (self._settings.webmail_url or "https://mail.ifnotus.space").rstrip("/")
+        if cpanel_host:
+            # Detect site LE cert so HTTP can 301 → HTTPS when ready.
+            apex = cpanel_host[len("cpanel.") :] if cpanel_host.startswith("cpanel.") else ""
+            cert = key = None
+            if apex:
+                le = Path(f"/etc/letsencrypt/live/{apex}")
+                if (le / "fullchain.pem").exists() and (le / "privkey.pem").exists():
+                    cert = str(le / "fullchain.pem")
+                    key = str(le / "privkey.pem")
+            lines += self._cpanel_spa_server(
+                cpanel_host=cpanel_host, cert=cert, key=key, listen_https=False
+            )
+        if mail_host:
+            lines += [
+                "# HTTP-only webmail shortcut (shared Roundcube)",
+                "server {",
+                "    listen 80;",
+                "    listen [::]:80;",
+                f"    server_name {mail_host};",
+                "    location ^~ /.well-known/acme-challenge/ {",
+                f"        root {ACME_WEBROOT};",
+                "        default_type text/plain;",
+                "        allow all;",
+                "    }",
+                "    location / {",
+                f"        return 302 {webmail}/;",
+                "    }",
+                "}",
+                "",
+            ]
+        return lines
+
+    def _alias_host_ifs(self, *, cpanel_host: str | None, mail_host: str | None) -> list[str]:
+        """Deprecated: alias hosts use dedicated HTTP servers now."""
+        return []
+
+    def _panel_redirect_proxy(self) -> str:
+        port = int(getattr(self._settings, "port", None) or 8010)
+        prefix = (getattr(self._settings, "api_prefix", None) or "/api") + (
+            getattr(self._settings, "api_v1_prefix", None) or "/v1"
+        )
+        return f"http://127.0.0.1:{port}{prefix}/public/panel-redirect"
+
+    def _webmail_locations(self, *, hostname: str | None = None) -> list[str]:
         """Send /mail on customer sites to the shared Roundcube host (mail.ifnotus.space).
 
         Webmail is not served from ifnotus.space or from each site’s PHP pool — one host,
         mailbox login with the full email address (cPanel-style).
-        Also expose /cpanel → customer account dashboard (works for Student hostnames).
+        /cpanel → portal SSO handoff (direct 302; avoids API firewall / upstream 502).
         """
         webmail = (self._settings.webmail_url or "https://mail.ifnotus.space").rstrip("/")
-        account = f"{(self._settings.customer_portal_url or 'https://ifnotus.space').rstrip('/')}/account"
+        portal = (self._settings.customer_portal_url or "https://ifnotus.space").rstrip("/")
         return [
             "    # Roundcube lives on mail.ifnotus.space — not on the marketing site or docroot",
             "    location = /mail {",
@@ -173,12 +327,12 @@ class DomainNginxProvisioner:
             "    location /mail/ {",
             f"        return 302 {webmail}/;",
             "    }",
-            "    # Control panel shortcut (cPanel-style)",
+            "    # Tenant hosting panel — path-based /cpanel (not cpanel.<domain>)",
             "    location = /cpanel {",
-            f"        return 302 {account};",
+            f"        return 302 {portal}/go/hosting?host=$host&$args;",
             "    }",
             "    location = /cpanel/ {",
-            f"        return 302 {account};",
+            f"        return 302 {portal}/go/hosting?host=$host&$args;",
             "    }",
         ]
 
@@ -198,7 +352,11 @@ class DomainNginxProvisioner:
         else:
             lines.append("    index index.html index.htm index.php;")
         # Webmail must win over whole-site redirect and app proxy_pass.
-        lines += self._webmail_locations()
+        lines += self._webmail_locations(hostname=hostname)
+        # Per-app proxy locations written by application_runtime (/apps/<slug>/).
+        host_apps = Path(f"/etc/nginx/ifnotus-apps/hosts/{hostname}")
+        if host_apps.is_dir():
+            lines.append(f"    include /etc/nginx/ifnotus-apps/hosts/{hostname}/*.conf;")
         seen_sources: set[str] = set()
         for redir in path_redirects:
             if not redir.get("enabled", True):
@@ -301,7 +459,7 @@ class DomainNginxProvisioner:
         base = path
         if base.name == "public":
             base = base.parent
-        return f"{base}:/tmp"
+        return f"{base}:/tmp:/var/tmp"
 
     def _resolve_php_fpm_socket(self, hostname: str | None = None) -> str | None:
         from app.services.platform.php_fpm import PhpFpmPoolService
@@ -323,12 +481,22 @@ class DomainNginxProvisioner:
         return None
 
     def inject_webmail_into_config(self, conf: str) -> str:
-        """Ensure /mail → mail.ifnotus.space and /cpanel → account dashboard."""
+        """Ensure /mail and /cpanel exist in every server block before location /."""
         webmail = (self._settings.webmail_url or "https://mail.ifnotus.space").rstrip("/")
-        account = f"{(self._settings.customer_portal_url or 'https://ifnotus.space').rstrip('/')}/account"
+        portal = (self._settings.customer_portal_url or "https://ifnotus.space").rstrip("/")
         has_mail = f"return 302 {webmail}/" in conf and "location = /mail" in conf
-        has_cpanel = "location = /cpanel" in conf and account in conf
-        if has_mail and has_cpanel:
+        has_cpanel = "location = /cpanel" in conf and f"{portal}/go/hosting?host=$host" in conf
+        has_stale_cpanel_proxy = "location = /cpanel" in conf and "panel-redirect" in conf
+        # Count how many server blocks still miss /cpanel ahead of their location /
+        server_chunks = re.split(r"(?=^\s*server\s*\{)", conf, flags=re.MULTILINE)
+        needs_https_fix = False
+        for chunk in server_chunks:
+            if "listen 443" not in chunk and "listen [::]:443" not in chunk:
+                continue
+            if "location = /cpanel" not in chunk or f"{portal}/go/hosting?host=$host" not in chunk:
+                needs_https_fix = True
+                break
+        if has_mail and has_cpanel and not needs_https_fix and not has_stale_cpanel_proxy:
             return conf
         # Strip old embedded Roundcube /mail blocks and stale /cpanel blocks.
         cleaned = re.sub(
@@ -339,7 +507,17 @@ class DomainNginxProvisioner:
             r"(?:[ \t]*location /mail/ \{[\s\S]*?\n[ \t]*\}\n)?",
             "\n",
             conf,
-            count=1,
+        )
+        cleaned = re.sub(
+            r"[ \t]*# Roundcube lives on mail\.ifnotus\.space[^\n]*\n"
+            r"(?:[ \t]*# [^\n]*\n)*"
+            r"(?:[ \t]*location = /mail \{[\s\S]*?\n[ \t]*\}\n)?"
+            r"(?:[ \t]*location /mail/ \{[\s\S]*?\n[ \t]*\}\n)?"
+            r"(?:[ \t]*# (?:Control panel|Tenant hosting panel)[^\n]*\n)?"
+            r"(?:[ \t]*location = /cpanel \{[\s\S]*?\n[ \t]*\}\n)?"
+            r"(?:[ \t]*location = /cpanel/ \{[\s\S]*?\n[ \t]*\}\n)?",
+            "",
+            cleaned,
         )
         cleaned = re.sub(
             r"[ \t]*location = /mail \{[\s\S]*?\n[ \t]*\}\n"
@@ -350,9 +528,15 @@ class DomainNginxProvisioner:
             cleaned,
         )
         cleaned = re.sub(
-            r"[ \t]*# Control panel shortcut[^\n]*\n"
+            r"[ \t]*# (?:Control panel|Tenant hosting panel)[^\n]*\n"
             r"(?:[ \t]*location = /cpanel \{[\s\S]*?\n[ \t]*\}\n)?"
             r"(?:[ \t]*location = /cpanel/ \{[\s\S]*?\n[ \t]*\}\n)?",
+            "",
+            cleaned,
+        )
+        # Stale API proxy for /cpanel (HEAD → 405; prefer direct 302 to portal).
+        cleaned = re.sub(
+            r"[ \t]*location = /cpanel/? \{[\s\S]*?panel-redirect[\s\S]*?\n[ \t]*\}\n",
             "",
             cleaned,
         )
@@ -364,12 +548,18 @@ class DomainNginxProvisioner:
         )
         block_lines = self._webmail_locations()
         block = "\n".join(block_lines) + "\n"
-        updated = re.sub(r"(^[ \t]*location / \{)", block + r"\1", cleaned, count=1, flags=re.MULTILINE)
+        # Insert before every catch-all location / so HTTPS proxy vhosts get /cpanel too.
+        updated = re.sub(
+            r"(^[ \t]*location / \{)",
+            block + r"\1",
+            cleaned,
+            flags=re.MULTILINE,
+        )
         if updated != cleaned:
             return updated
         if "ssl_certificate_key" in cleaned:
             updated = re.sub(
-                r"(ssl_certificate_key\s+[^;]+;\s*(?:#[^\n]*)?\n)",
+                r"(ssl_certificate_key\s+[^;]+;\s*\n(?:[ \t]*include\s+[^;]+;\s*\n)*(?:[ \t]*ssl_dhparam\s+[^;]+;\s*\n)?)",
                 r"\1" + block,
                 cleaned,
                 count=1,
@@ -382,6 +572,12 @@ class DomainNginxProvisioner:
         """Add /mail webmail to every nginx site that does not already have it."""
         if not self._available.is_dir():
             return OperationResult(success=False, message="nginx sites-available missing")
+        skip_hosts = {
+            "cpanel.ifnotus.space",
+            "ifnotus.space",
+            "mail.ifnotus.space",
+            "default",
+        }
         changed: list[str] = []
         skipped: list[str] = []
         enabled_names = set()
@@ -397,6 +593,9 @@ class DomainNginxProvisioner:
             if ".bak" in name or name.endswith((".tmp", ".dpkg-old", ".dpkg-dist", ".swp")):
                 continue
             if name.endswith(".pre-webmail"):
+                continue
+            if name in skip_hosts or name.startswith("cpanel."):
+                skipped.append(name)
                 continue
             # Prefer enabled sites; also allow managed available sites not yet linked
             if enabled_names and name not in enabled_names:
@@ -464,17 +663,23 @@ class DomainNginxProvisioner:
         enabled: bool = True,
         create_docroot: bool = True,
         path_redirects: list[dict] | None = None,
+        force_takeover: bool = False,
+        ram_gb: float | None = None,
     ) -> OperationResult:
         root = document_root or f"/var/www/{hostname}"
         if create_docroot and not redirect_url:
             try:
-                self.ensure_document_root(root)
+                self.ensure_document_root(root, hostname=hostname)
             except OSError as exc:
                 raise AppException(f"Could not create document root: {exc}", code="docroot_failed") from exc
 
         from app.services.platform.php_fpm import PhpFpmPoolService
 
-        PhpFpmPoolService(self._settings).ensure_pool(hostname=hostname, document_root=root)
+        PhpFpmPoolService(self._settings).ensure_pool(
+            hostname=hostname,
+            document_root=root,
+            ram_gb=ram_gb,
+        )
 
         available, enabled_path = self.site_paths(hostname)
         self._available.mkdir(parents=True, exist_ok=True)
@@ -484,11 +689,20 @@ class DomainNginxProvisioner:
         if available.exists():
             try:
                 existing = available.read_text(encoding="utf-8", errors="replace")
-                if MANAGED_MARKER not in existing and "managed-by-ifnotus" not in existing:
+                unmanaged = MANAGED_MARKER not in existing and "managed-by-ifnotus" not in existing
+                if unmanaged and not force_takeover:
                     raise AppException(
                         f"Nginx site {hostname} exists and is not IFNOTUS-managed — refusing to overwrite.",
                         code="nginx_unmanaged",
                     )
+                if unmanaged and force_takeover:
+                    import shutil
+
+                    bak = available.with_suffix(".bak-ifnotus-pre-takeover")
+                    try:
+                        shutil.copy2(available, bak)
+                    except OSError:
+                        pass
             except AppException:
                 raise
             except OSError:
@@ -596,6 +810,20 @@ class DomainNginxProvisioner:
                 available.unlink()
         except OSError as exc:
             return OperationResult(success=False, message=str(exc))
+        try:
+            from app.services.platform.php_fpm import PhpFpmPoolService
+
+            PhpFpmPoolService(self._settings).remove_pool(hostname)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            import shutil
+
+            host_apps = Path(f"/etc/nginx/ifnotus-apps/hosts/{hostname}")
+            if host_apps.is_dir():
+                shutil.rmtree(host_apps, ignore_errors=True)
+        except Exception:  # noqa: BLE001
+            pass
         reload = await self._sites.reload()
         if not reload.success:
             return reload

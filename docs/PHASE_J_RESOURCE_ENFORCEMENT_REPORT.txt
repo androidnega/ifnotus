@@ -1,0 +1,146 @@
+================================================================================
+PHASE J — REAL RESOURCE ENFORCEMENT
+Date: 2026-08-27
+Server: 80.241.223.82 (vmi3379516.contaboserver.net)
+Verdict: PARTIAL PASS
+================================================================================
+
+Scope (master prompt):
+  - Disk: OS/provider quota; SFTP must not bypass
+  - CPU/RAM: cgroups v2 / systemd slices / CPUQuota / MemoryMax
+  - Processes: TasksMax / RLIMIT_NPROC
+  - UI/API: ALLOCATED | REPORTED | ENFORCED (+ Monitored for bandwidth)
+  - Do not advertise enforcement until tested
+
+--------------------------------------------------------------------------------
+1. CODE DELIVERED (REPO)
+--------------------------------------------------------------------------------
+
+NEW:
+  backend/app/services/platform/resource_status.py
+    - build_resource_statuses() per dimension: disk, cpu, memory, processes, bandwidth
+    - Labels: Allocated / Reported / Enforced / Monitored
+
+  backend/scripts/phase_j_resource_enforcement.py
+    - VPS battery: quotaon, systemd slices, MemoryMax stress, SFTP bypass probe
+
+  backend/tests/unit/test_resource_status.py (3 tests)
+
+UPDATED:
+  backend/app/schemas/platform.py
+    - EnvironmentUsageResponse.resource_statuses
+
+  backend/app/routers/v1/customers.py
+    - GET /customers/environments/{id}/usage exposes resource_statuses + honest summary
+
+  backend/app/services/platform/plan_matrix.py
+    - OS_QUOTAS_LIVE_VERIFIED = False (was incorrectly True)
+    - STORAGE_TRUTH_NOTE updated
+
+  frontend/src/lib/resourceUsage.ts
+    - ResourceStatusBundle types + resourceStatusLabel/Class helpers
+
+  frontend/src/components/portal/PortalOverviewPanel.vue
+  frontend/src/views/hosting/HostingPanelView.vue
+    - Status badges on CPU / RAM / Disk / Processes meters
+
+EXISTING ENFORCEMENT (unchanged, now surfaced honestly):
+  - environment_storage.apply_os_user_quota() — setquota when quotaon active
+  - systemd_env_slice.EnvironmentSliceService — CPUQuota/MemoryMax/TasksMax
+  - resource_enforcement.wrap_command() — prlimit for supervised apps
+  - usage.py — panel/API write block at 100% disk
+
+Unit tests: 9 passed (test_resource_status + test_systemd_env_slice)
+
+--------------------------------------------------------------------------------
+2. VPS VERIFICATION
+--------------------------------------------------------------------------------
+
+SSH from this workstation: Permission denied (publickey) — live battery NOT run on VPS.
+
+Prior production audit (IFNOTUS_PRODUCTION_READINESS_ARCHITECTURE_AUDIT.txt):
+  | Disk      | APPLICATION ENFORCED (file API); OS quota weak/optional |
+  | CPU/RAM   | BEST-EFFORT slices; no active ifnotus-env-*.slice at audit |
+  | Bandwidth | MOSTLY DISPLAY |
+
+Expected on VPS when script is run as root:
+  cd /srv/apps/ifnotus/backend
+  .venv/bin/python scripts/phase_j_resource_enforcement.py
+
+Checks performed by script:
+  [ ] quota tools (setquota/quotaon)
+  [ ] quotaon active on /srv/apps/ifnotus-customers mount
+  [ ] cgroup v2 + systemd
+  [ ] prlimit
+  [ ] ensure_slice for one legacy tenant + unit file present
+  [ ] MemoryMax stress in slice
+  [ ] SFTP bypass risk if quotaon off
+
+--------------------------------------------------------------------------------
+3. TRUTH MODEL (CUSTOMER UI)
+--------------------------------------------------------------------------------
+
+After deploy, usage API returns e.g.:
+
+  disk:       Reported (panel metering) unless setquota hard_enforced
+  cpu/memory: Enforced when systemd slice applied; else Allocated/Reported
+  processes:  Enforced via slice TasksMax and/or prlimit on app commands
+  bandwidth:  Monitored (usage tracked; no hard cap verified)
+
+resources_enforced=true only when OS disk quota OR slice enforcement is active.
+
+--------------------------------------------------------------------------------
+4. GAPS / REMEDIATION (OPS — BEFORE CLAIMING FULL PASS)
+--------------------------------------------------------------------------------
+
+A) OS disk quotas (legacy tenants + SFTP)
+   1. Confirm mount for /srv/apps/ifnotus-customers (likely ext4 on / or dedicated LV)
+   2. Enable user quotas on that filesystem (quotaon / tune2fs usrquota as needed)
+   3. Re-run provisioning quota apply OR visit usage endpoint (triggers apply_os_user_quota)
+   4. Verify: repquota -u <mount> shows tenant unix user limits
+   5. Test: SFTP upload past limit must fail with EDQUOT
+
+B) systemd slices (CPU/RAM/processes)
+   1. ensure_slice runs on usage read + provisioning — hit usage API for each env once
+   2. Verify: ls /etc/systemd/system/ifnotus-env-*.slice
+   3. Verify: systemctl show ifnotus-env-<id>.slice | grep -E 'CPUQuota|MemoryMax|TasksMax'
+   4. Run phase_j script MemoryMax stress → expect OOM/kill
+
+C) ISPConfig tenants (future default)
+   - Package hd_quota + traffic_quota via ISPConfig server.php sync
+   - Set provider_meta.quota_enforced when ISPConfig quota API confirms limits
+
+D) Flip catalog truth flag only after A+B pass on VPS:
+   plan_matrix.OS_QUOTAS_LIVE_VERIFIED = True
+
+--------------------------------------------------------------------------------
+5. CHECKLIST
+--------------------------------------------------------------------------------
+
+| Item                              | Status   | Notes                          |
+|-----------------------------------|----------|--------------------------------|
+| Resource status model in API      | PASS     | resource_statuses on /usage    |
+| Customer UI truthful labels       | PASS     | badges in portal + hosting panel |
+| Bandwidth = Monitored             | PASS     | never marked Enforced            |
+| OS_QUOTAS_LIVE_VERIFIED honest    | PASS     | set False until VPS proof        |
+| quotaon + setquota on customer FS | PARTIAL  | not verified live this session   |
+| systemd slices active per tenant  | PARTIAL  | code ready; VPS not probed       |
+| SFTP cannot bypass disk cap       | PARTIAL  | depends on quotaon               |
+| Phase J VPS script executed       | SKIP     | no SSH access from dev machine   |
+
+--------------------------------------------------------------------------------
+6. VERDICT
+--------------------------------------------------------------------------------
+
+PARTIAL PASS
+
+Platform now reports resource limits honestly (Allocated / Reported / Enforced /
+Monitored). Enforcement plumbing exists (setquota, slices, prlimit, panel blocks)
+but production host verification and quotaon activation were not completed in
+this session.
+
+STOP — next phase per master prompt: Phase K (domain architecture).
+
+================================================================================
+END
+================================================================================

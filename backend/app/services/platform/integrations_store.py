@@ -25,6 +25,7 @@ SECRET_FIELDS = frozenset(
         "smtp_password",
         "sms_api_key",
         "sms_api_secret",
+        "sms_fallback_api_key",
     }
 )
 
@@ -43,6 +44,7 @@ PLAIN_FIELDS = frozenset(
         "sms_provider",
         "sms_api_url",
         "sms_sender_id",
+        "sms_fallback_provider",
         "momo_network",
         "momo_number",
         "momo_account_name",
@@ -181,6 +183,10 @@ class IntegrationsSettingsStore:
                 "api_key_masked": mask_secret(str(sms_key) if sms_key else None),
                 "api_secret_set": bool(self.get("sms_api_secret")),
                 "sender_id": self.get("sms_sender_id") or "IFNOTUS",
+                "fallback_provider": self.get("sms_fallback_provider") or "moolre",
+                "fallback_api_key_set": bool(
+                    self.get("sms_fallback_api_key") or self.get("sms_api_secret")
+                ),
             },
             "momo": {
                 "network": self.get("momo_network") or "MTN",
@@ -285,6 +291,12 @@ class IntegrationsSettingsStore:
                 set_secret("sms_api_secret", None, clear=True)
             elif "api_secret" in sms and sms.get("api_secret") is not None:
                 set_secret("sms_api_secret", str(sms.get("api_secret")))
+            if "fallback_provider" in sms:
+                set_plain("sms_fallback_provider", sms.get("fallback_provider") or "moolre")
+            if sms.get("clear_fallback_api_key"):
+                set_secret("sms_fallback_api_key", None, clear=True)
+            elif "fallback_api_key" in sms and sms.get("fallback_api_key") is not None:
+                set_secret("sms_fallback_api_key", str(sms.get("fallback_api_key")))
 
         momo = payload.get("momo") or {}
         if isinstance(momo, dict):

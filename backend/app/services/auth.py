@@ -42,7 +42,7 @@ class AuthService:
         self._access = access_control
 
     async def login(self, credentials: LoginRequest, ctx: AccessContext | None = None) -> LoginResponse:
-        """Authenticate user; may require a one-time IP approval challenge."""
+        """Authenticate user with email/password (optional TOTP)."""
         identity = credentials.email.strip()
         fingerprint = credentials.device_fingerprint or (ctx.device_fingerprint if ctx else None)
         access_ctx = ctx or AccessContext(ip_address="unknown")
@@ -101,6 +101,13 @@ class AuthService:
                 )
             raise AuthenticationError("Invalid credentials.")
 
+        roles = {str(r).lower() for r in (user.roles or [])}
+        is_staff = bool(user.is_superuser) or bool(roles & STAFF_ROLE_VALUES)
+        if not is_staff:
+            raise AuthenticationError(
+                "This is the staff login. Customers sign in at ifnotus.space/login."
+            )
+
         from app.core.dev_mode import dev_auth_bypass_allowed
 
         if getattr(user, "totp_enabled", False) and not dev_auth_bypass_allowed(self._settings):
@@ -112,53 +119,8 @@ class AuthService:
                     message="Enter the 6-digit code from your authenticator app.",
                 )
 
-        # Universal login: customers and staff share /auth/login.
-        # IP device challenges apply only to staff (WHM) accounts.
-        roles = set(user.roles or [])
-        is_staff = user.is_superuser or bool(roles.intersection(STAFF_ROLE_VALUES))
-        is_customer_only = (not is_staff) and ("customer" in roles)
-
-        needs_challenge = False
-        from app.core.dev_mode import dev_auth_bypass_allowed
-
-        if (
-            not dev_auth_bypass_allowed(self._settings)
-            and is_staff
-            and not is_customer_only
-            and self._access
-            and self._settings.admin_lockdown_enabled
-        ):
-            trusted = await self._access._is_trusted_admin_ip(access_ctx.ip_address)
-            needs_challenge = not trusted
-
-        if needs_challenge:
-            challenge = await auth_challenges.create_challenge(
-                ip_address=access_ctx.ip_address,
-                user_id=str(user.id),
-                username_or_email=identity,
-                device_fingerprint=access_ctx.device_fingerprint,
-                user_agent=access_ctx.user_agent,
-            )
-            if self._access:
-                await self._access._record(
-                    access_ctx,
-                    event_type="login_challenge",
-                    success=False,
-                    failure_reason="challenge_required",
-                    username_or_email=identity,
-                    user_id=user.id,
-                )
-            return LoginResponse(
-                status="challenge_required",
-                challenge_id=challenge.challenge_id,
-                ip_address=access_ctx.ip_address,
-                message=(
-                    f"New IP {access_ctx.ip_address} needs approval. "
-                    f"On the server run: ifnotus-unlock pending — then enter the code here. "
-                    f"Challenge ID: {challenge.challenge_id}"
-                ),
-            )
-
+        # Staff IP “approve device” challenges retired — mobile ISP IPs change often.
+        # Email/password (+ optional TOTP) remain; IP blacklist still applies.
         return await self._issue_session(user, access_ctx, identity=identity)
 
     async def verify_device(
@@ -183,9 +145,9 @@ class AuthService:
             except IpBlockedError:
                 raise AuthenticationError("This IP is blacklisted.") from None
 
-        from app.core.dev_mode import dev_auth_bypass_allowed
+        from app.core.dev_mode import dev_device_approval_bypass_allowed
 
-        if dev_auth_bypass_allowed(self._settings):
+        if dev_device_approval_bypass_allowed(self._settings):
             challenge = await auth_challenges.approve_challenge(body.challenge_id)
             if challenge is None:
                 raise AuthenticationError("Invalid or expired approval code.")

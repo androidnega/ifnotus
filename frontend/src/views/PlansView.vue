@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { catalogApi } from '@/api'
 import SiteHeader from '@/components/site/SiteHeader.vue'
-import PlanFlipCard from '@/components/site/PlanFlipCard.vue'
+import PlanCatalogCard from '@/components/site/PlanCatalogCard.vue'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import { useSiteTheme } from '@/composables/useSiteTheme'
 import { isPureCustomer, isStaffUser } from '@/lib/roles'
@@ -12,7 +12,7 @@ import type { ComingSoonProduct, HostingPlan } from '@/types/platform'
 
 const router = useRouter()
 const auth = useAuthStore()
-const { theme, tone, load: loadTheme } = useSiteTheme()
+const { theme, tone, loaded: themeReady, load: loadTheme } = useSiteTheme()
 const plans = ref<HostingPlan[]>([])
 const comingSoon = ref<ComingSoonProduct[]>([])
 const loading = ref(true)
@@ -53,252 +53,281 @@ onMounted(async () => {
     loading.value = false
   }
 })
-
-function choose(plan: HostingPlan) {
-  localStorage.setItem('ifnotus_selected_plan', plan.id)
-  router.push({ name: 'portal-signup', query: { plan: plan.slug } })
-}
 </script>
 
 <template>
   <DashboardLayout v-if="asStaff">
-    <div class="page staff">
-      <header class="head">
-        <p class="eyebrow">Public catalog</p>
+    <div class="plans-page staff">
+      <header class="hero">
+        <p class="kicker">Public catalog</p>
         <h1>Plans customers see</h1>
-        <p class="sub">
-          This is the storefront. Manage prices and resources from
-          <router-link :to="{ name: 'platform-plans' }">Accounts → Plans</router-link>.
-          Public copy reflects production beta status (SFTP, DR, quotas).
+        <p class="lede">
+          Manage prices from
+          <router-link :to="{ name: 'platform-plans' }">Platform → Plans</router-link>.
         </p>
       </header>
-      <p v-if="loading" class="muted">Loading plans…</p>
-      <p v-else-if="error" class="err">{{ error }}</p>
-      <div v-else class="grid">
-        <PlanFlipCard
+      <p v-if="loading" class="state"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true" /> Loading…</p>
+      <p v-else-if="error" class="state err">{{ error }}</p>
+      <div v-else class="plan-grid">
+        <PlanCatalogCard
           v-for="plan in sortedPlans"
           :key="plan.id"
           :plan="plan"
           :featured="plan.id === featuredId"
-          @choose="choose(plan)"
         />
       </div>
-      <section v-if="!loading && !error && comingSoon.length" class="soon" aria-label="Coming soon">
-        <h2>Coming soon</h2>
-        <p class="soon-sub">Dedicated VMs need their own provisioning path — not sold on this shared node.</p>
-        <div class="soon-grid">
-          <article v-for="item in comingSoon" :key="item.slug" class="soon-card">
-            <p class="soon-badge">Coming soon</p>
-            <h3>{{ item.name }}</h3>
-            <p>{{ item.blurb }}</p>
-          </article>
-        </div>
-      </section>
     </div>
   </DashboardLayout>
 
-  <div v-else class="page" :class="theme">
-    <SiteHeader active="plans" :tone="tone" />
+  <div v-else class="plans-page" :class="[theme, { ready: themeReady }]">
+    <SiteHeader active="plans" :tone="tone" surface="solid" />
 
-    <main class="wrap">
-      <header class="head">
-        <p class="eyebrow">Hosting</p>
-        <h1>Simple plans. Clear limits.</h1>
-        <p class="sub">
-          Prices in GHS. Shared hosting is in limited beta — hover a card to see honest limits, FTP/SFTP status, and backups.
+    <header class="hero-band">
+      <div class="inset">
+        <p class="kicker"><i class="fa-solid fa-layer-group" aria-hidden="true" /> Hosting</p>
+        <h1>Pick a plan. Go live.</h1>
+        <p class="lede">
+          Prices in GHS. Every plan includes SSL, mail, backups, FTP/SFTP, and an AI engineer —
+          sign up with your phone and we provision in minutes.
         </p>
-        <p v-if="!loading && !error && sortedPlans.length" class="beta-banner">
-          Limited beta: SFTP, advanced stacks, and student-zone DNS are not fully production-certified yet. FTP and core PHP sites are the most proven path today.
-        </p>
-      </header>
-
-      <p v-if="loading" class="muted">Loading plans…</p>
-      <p v-else-if="error" class="err">{{ error }}</p>
-
-      <div v-else class="grid">
-        <PlanFlipCard
-          v-for="plan in sortedPlans"
-          :key="plan.id"
-          :plan="plan"
-          :featured="plan.id === featuredId"
-          @choose="choose(plan)"
-        />
+        <ul class="trust" aria-label="Included on every plan">
+          <li><i class="fa-solid fa-lock" aria-hidden="true" /> SSL</li>
+          <li><i class="fa-solid fa-envelope" aria-hidden="true" /> Mail</li>
+          <li><i class="fa-solid fa-shield-halved" aria-hidden="true" /> Backups</li>
+          <li><i class="fa-solid fa-robot" aria-hidden="true" /> AI credits</li>
+        </ul>
       </div>
+    </header>
 
-      <section v-if="!loading && !error && comingSoon.length" class="soon" aria-label="Coming soon">
-        <h2>Coming soon</h2>
-        <p class="soon-sub">Dedicated VMs need their own provisioning path — not sold on this shared node.</p>
-        <div class="soon-grid">
-          <article v-for="item in comingSoon" :key="item.slug" class="soon-card">
-            <p class="soon-badge">Coming soon</p>
-            <h3>{{ item.name }}</h3>
-            <p>{{ item.blurb }}</p>
-          </article>
+    <main class="body">
+      <div class="inset">
+        <p v-if="loading" class="state">
+          <i class="fa-solid fa-spinner fa-spin" aria-hidden="true" /> Loading plans…
+        </p>
+        <p v-else-if="error" class="state err">{{ error }}</p>
+
+        <div v-else class="plan-grid">
+          <PlanCatalogCard
+            v-for="plan in sortedPlans"
+            :key="plan.id"
+            :plan="plan"
+            :featured="plan.id === featuredId"
+          />
         </div>
-      </section>
+
+        <section v-if="!loading && !error && comingSoon.length" class="soon">
+          <h2><i class="fa-regular fa-clock" aria-hidden="true" /> Coming soon</h2>
+          <p class="soon-lede">Dedicated VPS products — separate provisioning, not on shared hosting yet.</p>
+          <div class="soon-grid">
+            <article v-for="item in comingSoon" :key="item.slug" class="soon-card">
+              <h3>{{ item.name }}</h3>
+              <p>{{ item.blurb }}</p>
+            </article>
+          </div>
+        </section>
+      </div>
     </main>
 
     <footer class="foot">
-      <p>© {{ new Date().getFullYear() }} IFNOTUS</p>
-      <p>
-        <router-link :to="{ name: 'home' }">Home</router-link>
-        ·
-        <router-link :to="{ name: 'portal-signup' }">Sign up</router-link>
-      </p>
+      <router-link :to="{ name: 'home' }">Home</router-link>
+      <span aria-hidden="true">·</span>
+      <router-link :to="{ name: 'contact' }">Contact</router-link>
+      <span aria-hidden="true">·</span>
+      <router-link :to="{ name: 'portal-signup' }">Sign up</router-link>
     </footer>
   </div>
 </template>
 
 <style scoped>
-.page.staff {
+.plans-page {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  font-family: 'Figtree', 'Segoe UI', sans-serif;
+  color: var(--if-ink, #161a1d);
+  background: var(--if-paper, #f4f1ec);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.plans-page.ready {
+  opacity: 1;
+}
+.plans-page.staff {
+  opacity: 1;
   min-height: auto;
   background: transparent;
   padding-bottom: 1.5rem;
 }
-.page.staff .head h1 {
-  font-size: 1.4rem;
+
+.hero-band {
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--if-primary, #ff6c2c) 6%, var(--if-surface, #fff));
+  border-bottom: 1px solid var(--if-border, #e7e2db);
+  padding: 1.35rem 0 1.5rem;
 }
-.page.staff .grid {
-  margin-top: 1.25rem;
-}
-.page {
-  min-height: 100vh;
-  font-family: 'Figtree', 'Segoe UI', sans-serif;
-  color: var(--if-ink, #12171c);
-  background:
-    radial-gradient(720px 360px at 12% -8%, var(--if-glow, rgba(255, 108, 44, 0.07)), transparent 60%),
-    linear-gradient(180deg, var(--if-surface, #fff) 0%, var(--if-paper, #f6f7f9) 100%);
-}
-.page.server-dark {
-  color: var(--if-ink, #f5f7fa);
-  background:
-    radial-gradient(720px 360px at 12% -8%, var(--if-glow, rgba(255, 108, 44, 0.14)), transparent 60%),
-    linear-gradient(180deg, #12151a 0%, var(--if-paper, #0b0e12) 100%);
-}
-.wrap {
-  max-width: 72rem;
+.inset {
+  max-width: 76rem;
   margin: 0 auto;
-  padding: 2.75rem 1.25rem 3.5rem;
+  padding-inline: clamp(1.15rem, 3vw, 2rem);
+  box-sizing: border-box;
+  width: 100%;
 }
-.head {
-  max-width: 34rem;
-}
-.eyebrow {
+.kicker {
   margin: 0;
-  font-size: 0.78rem;
-  font-weight: 600;
-  letter-spacing: 0.12em;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--if-primary, #ff6c2c);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
 }
-.head h1 {
-  margin: 0.55rem 0 0;
+.hero-band h1,
+.hero h1 {
+  margin: 0.45rem 0 0;
   font-family: 'Sora', sans-serif;
-  font-size: clamp(1.85rem, 4vw, 2.55rem);
-  font-weight: 700;
-  letter-spacing: -0.045em;
-  line-height: 1.12;
+  font-size: clamp(1.75rem, 4vw, 2.5rem);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 1.08;
 }
-.sub {
-  margin: 0.7rem 0 0;
-  font-size: 1.02rem;
+.lede {
+  margin: 0.65rem 0 0;
+  max-width: 40rem;
+  font-size: clamp(0.92rem, 1.8vw, 1.02rem);
   line-height: 1.55;
-  color: var(--if-muted, #5a6570);
+  color: var(--if-muted, #64748b);
 }
-.beta-banner {
+.lede a {
+  color: var(--if-primary, #ff6c2c);
+  font-weight: 650;
+  text-decoration: none;
+}
+.lede a:hover {
+  text-decoration: underline;
+}
+.trust {
   margin: 1rem 0 0;
-  padding: 0.85rem 1rem;
-  border-radius: 0.75rem;
-  background: #fff7ed;
-  border: 1px solid #fed7aa;
-  color: #9a3412;
-  font-size: 0.95rem;
-  line-height: 1.45;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.85rem;
 }
-.server-dark .beta-banner {
-  background: rgba(234, 88, 12, 0.12);
-  border-color: rgba(251, 146, 60, 0.35);
-  color: #fdba74;
+.trust li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  color: var(--if-ink, #161a1d);
+  padding: 0.35rem 0.65rem;
+  border-radius: 999px;
+  background: var(--if-surface, #fff);
+  border: 1px solid var(--if-border, #e7e2db);
 }
-.server-dark .sub {
-  color: rgba(245, 247, 250, 0.68);
+.trust i {
+  color: var(--if-primary, #ff6c2c);
 }
-.grid {
-  margin-top: 2.25rem;
+
+.body {
+  flex: 1 1 auto;
+  padding: 1.35rem 0 1.75rem;
+}
+.hero {
+  margin-bottom: 1.25rem;
+}
+
+.state {
+  margin: 0;
+  padding: 2rem 0;
+  text-align: center;
+  color: var(--if-muted, #64748b);
+  font-size: 0.9rem;
+}
+.state i {
+  margin-right: 0.35rem;
+}
+.state.err {
+  color: #b42318;
+}
+
+.plan-grid {
   display: grid;
-  gap: 1.15rem;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(16.5rem, 1fr));
+  align-items: stretch;
 }
+@media (min-width: 1100px) {
+  .plan-grid {
+    grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+    gap: 1.15rem;
+  }
+}
+
 .soon {
-  margin-top: 2.75rem;
-  padding-top: 1.75rem;
-  border-top: 1px solid color-mix(in srgb, var(--if-ink, #12171c) 10%, transparent);
+  margin-top: 2.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--if-border, #e7e2db);
 }
 .soon h2 {
   margin: 0;
   font-family: 'Sora', sans-serif;
-  font-size: 1.15rem;
-  letter-spacing: -0.02em;
-}
-.soon-sub {
-  margin: 0.45rem 0 0;
-  max-width: 36rem;
-  font-size: 0.92rem;
-  line-height: 1.5;
-  color: var(--if-muted, #5a6570);
-}
-.soon-grid {
-  margin-top: 1.1rem;
-  display: grid;
-  gap: 0.85rem;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-}
-.soon-card {
-  padding: 1.1rem 1.15rem;
-  border: 1px dashed color-mix(in srgb, var(--if-ink, #12171c) 18%, transparent);
-  background: color-mix(in srgb, var(--if-paper, #f6f7f9) 70%, transparent);
-}
-.soon-badge {
-  margin: 0;
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--if-muted, #5a6570);
-}
-.soon-card h3 {
-  margin: 0.55rem 0 0;
-  font-family: 'Sora', sans-serif;
   font-size: 1.05rem;
-}
-.soon-card p:last-child {
-  margin: 0.4rem 0 0;
-  font-size: 0.88rem;
-  line-height: 1.45;
-  color: var(--if-muted, #5a6570);
-}
-.muted {
-  color: #7a8490;
-}
-.err {
-  color: #b42318;
-}
-.foot {
-  border-top: 1px solid rgba(18, 23, 28, 0.08);
-  padding: 1.5rem 1.25rem 2rem;
-  text-align: center;
-  color: #7a8490;
-  font-size: 0.8rem;
-  display: grid;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
   gap: 0.4rem;
 }
-.server-dark .foot {
-  border-top-color: rgba(255, 255, 255, 0.08);
-  color: rgba(245, 247, 250, 0.55);
+.soon-lede {
+  margin: 0.4rem 0 0;
+  font-size: 0.88rem;
+  color: var(--if-muted, #64748b);
+  max-width: 36rem;
+}
+.soon-grid {
+  margin-top: 0.85rem;
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+}
+.soon-card {
+  padding: 0.85rem 1rem;
+  border: 1px dashed var(--if-border, #d5dbe3);
+  border-radius: 0.75rem;
+  background: var(--if-surface, #fff);
+}
+.soon-card h3 {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+.soon-card p {
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--if-muted, #64748b);
+}
+
+.foot {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem 0.65rem;
+  padding: 0.75rem clamp(1.15rem, 3vw, 2rem) 1rem;
+  font-size: 0.72rem;
+  color: var(--if-muted, #64748b);
+  border-top: 1px solid var(--if-border, #e7e2db);
+  background: var(--if-surface, #fff);
 }
 .foot a {
   color: inherit;
   text-decoration: none;
+  font-weight: 600;
 }
 .foot a:hover {
   color: var(--if-primary, #ff6c2c);

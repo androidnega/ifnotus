@@ -89,6 +89,7 @@ export type CustomerEnvironment = {
   ram_limit_gb: number
   storage_limit_gb: number
   domain?: string | null
+  hosting_name?: string | null
   document_root?: string | null
   health_status: string
   isolation_type?: string
@@ -128,6 +129,7 @@ export type CustomerSubscription = {
   storage_allocated: number
   expires_at?: string | null
   auto_renew: boolean
+  billing_term_months?: number
   grace_until?: string | null
 }
 
@@ -167,5 +169,17 @@ export type CustomerOrder = {
   momo_transaction_id?: string | null
   created_at: string
   paid_at?: string | null
+  expires_at?: string | null
   order_kind?: string | null
+  billing_term_months?: number
+  meta_json?: {
+    billing_term_months?: number
+    term_label?: string
+    monthly_price?: number
+    term_subtotal?: number
+    term_discount_pct?: number
+    term_discount_amount?: number
+    entitlement_ends_at?: string
+    [key: string]: unknown
+  }
 }

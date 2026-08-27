@@ -32,16 +32,20 @@ export function syncPanelFlag(user: Pick<User, 'roles' | 'is_superuser'> | null 
 
 export function isStaffPath(path: string): boolean {
   if (path === '/' || path === '') return false
+  // Strip query/hash so /go/hosting?host=… is classified correctly.
+  const bare = path.split('?')[0]?.split('#')[0] || path
   if (
-    path.startsWith('/portal') ||
-    path.startsWith('/billing') ||
-    path.startsWith('/account') ||
-    path.startsWith('/hosting') ||
-    path.startsWith('/login') ||
-    path.startsWith('/signup') ||
-    path.startsWith('/plans') ||
-    path.startsWith('/forgot-password') ||
-    path.startsWith('/reset-password')
+    bare.startsWith('/portal') ||
+    bare.startsWith('/billing') ||
+    bare.startsWith('/account') ||
+    bare.startsWith('/hosting') ||
+    bare.startsWith('/go/') ||
+    bare.startsWith('/login') ||
+    bare.startsWith('/signup') ||
+    bare.startsWith('/admin_1') ||
+    bare.startsWith('/plans') ||
+    bare.startsWith('/forgot-password') ||
+    bare.startsWith('/reset-password')
   ) {
     return false
   }
@@ -49,11 +53,14 @@ export function isStaffPath(path: string): boolean {
 }
 
 export function isPortalPath(path: string): boolean {
+  const bare = path.split('?')[0]?.split('#')[0] || path
   return (
-    path.startsWith('/portal') ||
-    path.startsWith('/billing') ||
-    path.startsWith('/account') ||
-    path.startsWith('/hosting') ||
-    path === '/signup'
+    bare.startsWith('/portal') ||
+    bare.startsWith('/billing') ||
+    bare.startsWith('/account') ||
+    bare.startsWith('/hosting') ||
+    bare.startsWith('/go/') ||
+    bare === '/signup' ||
+    bare === '/login'
   )
 }

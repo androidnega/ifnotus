@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -58,6 +59,19 @@ class EnvironmentLifecycleService:
         sub = await self._session.get(Subscription, env.subscription_id)
         if sub:
             sub.status = "suspended"
+
+        # ISPConfig path: ask engine first; legacy continues with local disable below.
+        if (env.provider or "legacy") == "ispconfig":
+            try:
+                from app.services.hosting_provider import get_hosting_provider
+
+                username = (env.provider_username or env.hosting_name or "").strip()
+                if username:
+                    await get_hosting_provider("ispconfig", settings=self._settings).suspend_account(
+                        username
+                    )
+            except Exception:  # noqa: BLE001
+                pass
 
         # Soft-disable this site only — never touch other vhosts or host nginx defaults.
         if env.domain:
@@ -129,6 +143,18 @@ class EnvironmentLifecycleService:
         sub = await self._session.get(Subscription, env.subscription_id)
         if sub:
             sub.status = "active"
+
+        if (env.provider or "legacy") == "ispconfig":
+            try:
+                from app.services.hosting_provider import get_hosting_provider
+
+                username = (env.provider_username or env.hosting_name or "").strip()
+                if username:
+                    await get_hosting_provider("ispconfig", settings=self._settings).unsuspend_account(
+                        username
+                    )
+            except Exception:  # noqa: BLE001
+                pass
 
         if env.domain:
             try:
@@ -203,6 +229,20 @@ class EnvironmentLifecycleService:
                 subprocess.run(["userdel", "-f", env.ftp_username], capture_output=True, check=False)
         except Exception:  # noqa: BLE001
             pass
+        # Drop PHP-FPM pool while the unix user still exists so reload stays valid.
+        if env.domain:
+            try:
+                from app.services.platform.php_fpm import PhpFpmPoolService
+
+                PhpFpmPoolService(self._settings).remove_pool(env.domain)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            from app.services.platform.systemd_env_slice import EnvironmentSliceService
+
+            EnvironmentSliceService().remove_slice(env)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             from app.services.platform.unix_identity import UnixIdentityService
 
@@ -213,20 +253,37 @@ class EnvironmentLifecycleService:
         if env.domain:
             try:
                 from app.services.platform.student_hostname import is_student_hostname
+                from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
+                from app.services.hosting.ssl import SslService
+                from app.models.hosting import Domain
 
-                if is_student_hostname(env.domain, settings=self._settings):
-                    from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
+                host = env.domain
+                await DomainNginxProvisioner(self._settings).remove(host, remove_files=True)
+                # Always drop LE cert for this hostname when the env is terminated
+                # (custom + student) so SSL page does not keep ghost certificates.
+                await asyncio.to_thread(SslService.delete_letsencrypt_cert, host)
+                result = await self._session.execute(select(Domain).where(Domain.name == host))
+                for row in result.scalars().all():
+                    await self._session.delete(row)
+                # Also clear customer_domains rows for this environment
+                from app.models.platform import CustomerDomain
 
-                    await DomainNginxProvisioner(self._settings).remove(env.domain, remove_files=True)
-                    from app.models.hosting import Domain
-
-                    result = await self._session.execute(
-                        select(Domain).where(Domain.name == env.domain)
-                    )
-                    for row in result.scalars().all():
-                        await self._session.delete(row)
-            except Exception:  # noqa: BLE001
-                pass
+                cd_rows = await self._session.execute(
+                    select(CustomerDomain).where(CustomerDomain.environment_id == env.id)
+                )
+                for cd in cd_rows.scalars().all():
+                    try:
+                        await DomainNginxProvisioner(self._settings).remove(
+                            cd.domain_name, remove_files=True
+                        )
+                        await asyncio.to_thread(
+                            SslService.delete_letsencrypt_cert, cd.domain_name
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    await self._session.delete(cd)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("terminate_domain_cleanup_failed", error=str(exc), env_id=str(env.id))
         try:
             from app.services.platform.environment_mail import EnvironmentMailService
 

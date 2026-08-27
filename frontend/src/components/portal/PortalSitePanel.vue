@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { customersApi } from '@/api'
 import type { CustomerEnvironment, HostingPlan } from '@/types/platform'
 import { formatCpu, formatRamGb } from '@/lib/planResources'
 import ServiceBrandMark from '@/components/dashboard/ServiceBrandMark.vue'
 import PortalMailPanel from '@/components/portal/PortalMailPanel.vue'
 import PortalDomainTools from '@/components/portal/PortalDomainTools.vue'
+import UiTabBar from '@/components/ui/UiTabBar.vue'
 import { envCan, visibleStacks } from '@/lib/planMatrix'
+import { SITE_WORKSPACE_TABS } from '@/lib/uiRegistry'
 
 const props = defineProps<{
   environments: CustomerEnvironment[]
@@ -194,16 +197,22 @@ const props = defineProps<{
     limit?: number
     canAssign?: boolean
     ip: string
+    records?: Array<{ record_type: string; host: string; value: string; ttl?: number }>
     message?: string
     namecheap?: boolean
     includedHostname?: boolean
     nsLive?: boolean | null
     resolves?: boolean | null
+    dnsLive?: boolean
+    dnsMode?: string | null
+    aRecordsLive?: boolean
+    cpanelLive?: boolean
     sslReady?: boolean
     statusSummary?: string
     checklist?: Array<{ id: string; label: string; done: boolean; detail?: string }>
     panelHostname?: string | null
     panelUrl?: string | null
+    mailHostname?: string | null
     error?: string
   } | null
   sslMsg: string
@@ -289,6 +298,7 @@ const siteTab = ref<'files' | 'stack' | 'applications' | 'cron' | 'database' | '
 const copiedKey = ref('')
 const customDomainInput = ref('')
 const assignPick = ref('')
+const dnsConnectMode = ref<'nameserver' | 'a_record'>('nameserver')
 
 function confirmClear(dropDatabase = false) {
   const msg = dropDatabase
@@ -301,9 +311,8 @@ function confirmClear(dropDatabase = false) {
 function openFileManager(path = '.') {
   const id = props.activeEnv?.id
   if (!id) return
-  const q = new URLSearchParams({ env: id })
-  if (path && path !== '.') q.set('path', path)
-  window.open(`/account/files?${q.toString()}`, `ifnotus-files-${id}`)
+  const q = path && path !== '.' ? `?path=${encodeURIComponent(path)}` : ''
+  window.open(`/hosting/${encodeURIComponent(id)}/files${q}`, `ifnotus-files-${id}`)
 }
 const showPassword = ref(false)
 const showFtpPassword = ref(false)
@@ -361,6 +370,26 @@ const canDb = computed(() => envCan(props.activeEnv, 'db_manage'))
 const canMail = computed(() => envCan(props.activeEnv, 'mail'))
 const canFtp = computed(() => envCan(props.activeEnv, 'sftp'))
 
+const siteTabItems = computed(() =>
+  SITE_WORKSPACE_TABS.map((t) => {
+    let disabled = false
+    if (t.id === 'files') disabled = !canFiles.value
+    else if (t.id === 'cron') disabled = !canCron.value
+    else if (t.id === 'database') disabled = !canDb.value
+    else if (t.id === 'ftp') disabled = !canFtp.value
+    else if (t.id === 'mail') disabled = !canMail.value
+    return { id: t.id, label: t.label, disabled }
+  }),
+)
+
+type SiteTabId = (typeof SITE_WORKSPACE_TABS)[number]['id']
+
+function onSiteTab(id: string) {
+  const hit = siteTabItems.value.find((t) => t.id === id)
+  if (hit?.disabled) return
+  siteTab.value = id as SiteTabId
+}
+
 const dbEngineLabel = computed(() => {
   const e = String(props.dbCreds?.engine || '').toLowerCase()
   if (e === 'mysql' || e === 'mariadb') return 'MySQL'
@@ -373,9 +402,25 @@ const dbEngineLabel = computed(() => {
 
 const isWordpressInstalled = computed(() => String(props.currentStack?.stack || '') === 'wordpress')
 
-function openSqlStudio() {
+const isMysqlEngine = computed(() => {
+  const e = String(props.dbCreds?.engine || '').toLowerCase()
+  return e === 'mysql' || e === 'mariadb'
+})
+
+async function openSqlStudio() {
   const id = props.activeEnv?.id
   if (!id) return
+  // MySQL → phpMyAdmin (shared-hosting style). PostgreSQL stays on SQL studio.
+  if (isMysqlEngine.value) {
+    try {
+      const dbId = props.selectedDbId || undefined
+      const { data } = await customersApi.openEnvPhpMyAdmin(id, dbId)
+      window.open(data.url, `ifnotus-pma-${id}`)
+      return
+    } catch {
+      /* fall through to built-in studio */
+    }
+  }
   const href = `/account/database/studio?env=${encodeURIComponent(id)}`
   window.open(href, `ifnotus-sql-${id}`)
 }
@@ -433,6 +478,26 @@ const nameservers = computed(() =>
   props.dnsData?.nameservers?.length
     ? props.dnsData.nameservers
     : ['ns1.ifnotus.space', 'ns2.ifnotus.space'],
+)
+const dnsRecords = computed(() => {
+  if (props.dnsData?.records?.length) return props.dnsData.records
+  const ip = props.dnsData?.ip
+  if (!ip) return []
+  return [
+    { record_type: 'A', host: '@', value: ip },
+    { record_type: 'A', host: 'www', value: ip },
+    { record_type: 'A', host: 'cpanel', value: ip },
+    { record_type: 'A', host: 'mail', value: ip },
+  ]
+})
+
+watch(
+  () => props.dnsData?.dnsMode,
+  (mode) => {
+    if (mode === 'a_record') dnsConnectMode.value = 'a_record'
+    else if (mode === 'nameserver') dnsConnectMode.value = 'nameserver'
+  },
+  { immediate: true },
 )
 const customLimit = computed(() => props.dnsData?.limit ?? 1)
 const customUsed = computed(() => props.dnsData?.used ?? 0)
@@ -499,17 +564,15 @@ function formatBytes(n?: number | null) {
       </div>
     </header>
 
-    <nav v-if="!hideSubnav" class="subtabs" aria-label="Site sections">
-      <button type="button" :class="{ on: siteTab === 'stack' }" @click="siteTab = 'stack'">Stack</button>
-      <button type="button" :class="{ on: siteTab === 'applications' }" @click="siteTab = 'applications'">Applications</button>
-      <button type="button" :class="{ on: siteTab === 'files', off: !canFiles }" @click="siteTab = 'files'">Files</button>
-      <button type="button" :class="{ on: siteTab === 'logs' }" @click="siteTab = 'logs'">Logs</button>
-      <button type="button" :class="{ on: siteTab === 'cron', off: !canCron }" @click="siteTab = 'cron'">Cron</button>
-      <button type="button" :class="{ on: siteTab === 'database', off: !canDb }" @click="siteTab = 'database'">Database</button>
-      <button type="button" :class="{ on: siteTab === 'ftp', off: !canFtp }" @click="siteTab = 'ftp'">Transfer</button>
-      <button type="button" :class="{ on: siteTab === 'mail', off: !canMail }" @click="siteTab = 'mail'">Email</button>
-      <button type="button" :class="{ on: siteTab === 'protect' }" @click="siteTab = 'protect'">Domain</button>
-    </nav>
+    <UiTabBar
+      v-if="!hideSubnav"
+      :items="siteTabItems"
+      :model-value="siteTab"
+      variant="flat"
+      aria-label="Site sections"
+      class="site-subtabs"
+      @update:model-value="onSiteTab"
+    />
 
     <div v-if="siteTab === 'files' && !canFiles" class="block">
       <p>{{ packLocked('File manager') }}</p>
@@ -580,12 +643,21 @@ function formatBytes(n?: number | null) {
           <span>Git URL (optional)</span>
           <input
             :value="newAppGitUrl"
-            type="url"
-            placeholder="https://github.com/you/repo.git"
+            type="text"
+            inputmode="url"
+            spellcheck="false"
+            autocapitalize="off"
+            placeholder="https://github.com/you/repo.git or git@github.com:you/repo.git"
             @input="emit('update:newAppGitUrl', ($event.target as HTMLInputElement).value)"
           />
         </label>
-        <button type="button" class="btn-primary" :disabled="appBusy || !newAppName" @click="emit('createApplication')">
+        <p class="muted tiny">Name is required. Git clones when you Deploy (Create with a Git URL starts Deploy automatically).</p>
+        <button
+          type="button"
+          class="btn-primary"
+          :disabled="appBusy || !(newAppName || '').trim()"
+          @click="emit('createApplication')"
+        >
           Create application
         </button>
       </div>
@@ -860,7 +932,7 @@ function formatBytes(n?: number | null) {
         <div>
           <h3>Databases</h3>
           <p class="muted">
-            MySQL and PostgreSQL on this site — create extra databases, reveal credentials, and open SQL studio for the primary stack database.
+            MySQL opens in phpMyAdmin. PostgreSQL uses SQL studio. Create databases, reveal credentials, and manage the primary stack database here.
           </p>
         </div>
         <button
@@ -869,7 +941,7 @@ function formatBytes(n?: number | null) {
           class="btn-primary"
           @click="openSqlStudio"
         >
-          Open SQL studio
+          {{ isMysqlEngine ? 'Open phpMyAdmin' : 'Open SQL studio' }}
         </button>
       </div>
 
@@ -1030,13 +1102,12 @@ function formatBytes(n?: number | null) {
       <p>{{ packLocked('SFTP / FTP') }}</p>
     </div>
     <div v-else-if="siteTab === 'ftp'" class="block">
-      <h3>SFTP (beta)</h3>
+      <h3>SFTP</h3>
       <p class="muted">
         Secure file transfer over SSH (port 22). Jailed to this site only — no interactive shell.
-        SFTP is in beta on shared hosting; prefer legacy FTP below until your site is certified.
+        Use FTP below if your app prefers port 21.
       </p>
-      <p v-if="sftpCreds?.beta_note" class="empty-note mt">{{ sftpCreds.beta_note }}</p>
-      <p v-else-if="ftpCreds?.sftp_coming_note" class="empty-note mt">{{ ftpCreds.sftp_coming_note }}</p>
+      <p v-if="ftpCreds?.sftp_coming_note" class="empty-note mt">{{ ftpCreds.sftp_coming_note }}</p>
       <p v-if="sftpInfo === 'Loading…'" class="muted mt">Loading…</p>
       <p v-else-if="sftpCreds?.error" class="empty-note mt err">{{ sftpCreds.error }}</p>
       <div v-else-if="sftpCreds?.username" class="cred-list mt">
@@ -1282,18 +1353,34 @@ function formatBytes(n?: number | null) {
       <div class="block">
         <h3>Connect your domain</h3>
         <p class="muted">
-          Point nameservers to IFNOTUS. Do not use an IP address — that keeps our server address private
-          and makes email, www, and HTTPS work the same for every site.
+          Either path works: delegate nameservers to IFNOTUS, or keep your registrar DNS and add A records
+          pointing here. Hosting, cpanel, mail, and HTTPS work the same either way.
         </p>
-        <ol class="steps-ns">
-          <li>Copy both nameservers below.</li>
-          <li>At your registrar, replace the current nameservers with these two. Do not add an A record to an IP.</li>
-          <li>Wait until DNS updates (often 15 minutes to a few hours).</li>
-          <li>Click Test again, then turn on HTTPS.</li>
-        </ol>
+
+        <div class="dns-mode-tabs mt">
+          <button
+            type="button"
+            class="dns-mode-tab"
+            :class="{ active: dnsConnectMode === 'nameserver' }"
+            @click="dnsConnectMode = 'nameserver'"
+          >
+            Option A — IFNOTUS nameservers
+          </button>
+          <button
+            type="button"
+            class="dns-mode-tab"
+            :class="{ active: dnsConnectMode === 'a_record' }"
+            @click="dnsConnectMode = 'a_record'"
+          >
+            Option B — A records at your DNS
+          </button>
+        </div>
 
         <div v-if="dnsData?.checklist?.length" class="dns-check mt">
-          <p class="status-summary" :class="{ ok: dnsData.nsLive && dnsData.resolves, wait: !dnsData.nsLive }">
+          <p
+            class="status-summary"
+            :class="{ ok: dnsData.dnsLive && dnsData.resolves, wait: !dnsData.dnsLive }"
+          >
             {{ dnsData.statusSummary || dnsData.message }}
           </p>
           <ul class="check-list">
@@ -1310,7 +1397,10 @@ function formatBytes(n?: number | null) {
         <p v-if="dnsData?.panelUrl" class="hint mt">
           Control panel:
           <a class="panel-a" :href="dnsData.panelUrl" target="_blank" rel="noopener">{{ dnsData.panelHostname || dnsData.panelUrl }}</a>
-          (opens your IFNOTUS account)
+          (opens your IFNOTUS hosting panel)
+        </p>
+        <p v-if="dnsData?.mailHostname" class="hint mt">
+          Mail hostname: <strong>{{ dnsData.mailHostname }}</strong>
         </p>
 
         <p v-if="dnsData?.addon" class="hint mt">
@@ -1326,12 +1416,16 @@ function formatBytes(n?: number | null) {
           {{ dnsData?.error || dnsInfo }}
         </p>
 
-        <div v-if="dnsData && !dnsData.error" class="cred-list mt">
+        <div v-if="dnsData && !dnsData.error && dnsConnectMode === 'nameserver'" class="cred-list mt">
+          <ol class="steps-ns">
+            <li>Copy both nameservers below.</li>
+            <li>At your registrar, replace the current nameservers with these two.</li>
+            <li>Wait for DNS to update, then click Test again.</li>
+          </ol>
           <div v-for="(ns, i) in nameservers" :key="ns" class="cred-row">
             <div>
               <p class="cred-label">Nameserver {{ i + 1 }}</p>
               <p class="cred-value mono">{{ ns }}</p>
-              <p class="hint">Paste both nameservers at the registrar. Host / name is not needed.</p>
             </div>
             <button type="button" class="btn-ghost" @click="copyValue(`dns-ns-${i}`, ns)">
               {{ copiedKey === `dns-ns-${i}` ? 'Copied' : 'Copy' }}
@@ -1342,9 +1436,28 @@ function formatBytes(n?: number | null) {
           </p>
         </div>
 
+        <div v-else-if="dnsData && !dnsData.error && dnsConnectMode === 'a_record'" class="cred-list mt">
+          <ol class="steps-ns">
+            <li>Keep your current nameservers (do not change them).</li>
+            <li>At your DNS provider, add these A records pointing to our server.</li>
+            <li>Include <strong>cpanel</strong> so the hosting panel URL works.</li>
+            <li>Wait for DNS to update, then click Test again.</li>
+          </ol>
+          <div v-for="(rec, i) in dnsRecords" :key="`${rec.host}-${rec.record_type}`" class="cred-row">
+            <div>
+              <p class="cred-label">{{ rec.record_type }} · {{ rec.host }}</p>
+              <p class="cred-value mono">{{ rec.value }}</p>
+            </div>
+            <button type="button" class="btn-ghost" @click="copyValue(`dns-rec-${i}`, rec.value)">
+              {{ copiedKey === `dns-rec-${i}` ? 'Copied' : 'Copy' }}
+            </button>
+          </div>
+          <p v-if="!dnsRecords.length" class="hint mt">Server IP not available — use Option A (nameservers) instead.</p>
+        </div>
+
         <div class="toolbar mt">
           <button type="button" class="btn-ghost" @click="emit('loadDns')">Test again</button>
-          <button type="button" class="btn-primary" @click="emit('ensureDns')">Apply nameservers</button>
+          <button type="button" class="btn-primary" @click="emit('ensureDns')">Apply DNS setup</button>
         </div>
       </div>
 
@@ -1395,13 +1508,13 @@ function formatBytes(n?: number | null) {
       <div class="block">
         <h3>Secure site (HTTPS)</h3>
         <p class="muted">
-          Hostnames under serverlabsttu.space (and legacy student hosts on ifnotus.space) get a
+          Hostnames under ifnotus.space (and legacy student hosts on serverlabsttu.space) get a
           certificate as soon as the site is created. For a professional domain, wait until
-          nameservers update, then turn on the padlock.
+          DNS is live (nameservers or A records), then turn on the padlock.
         </p>
         <p v-if="dnsData?.sslReady" class="ok-note mt">HTTPS is on for this site.</p>
-        <p v-else-if="dnsData && dnsData.nsLive === false" class="hint mt">
-          HTTPS will wait until nameservers are live. Use Test again above.
+        <p v-else-if="dnsData && !dnsData.dnsLive" class="hint mt">
+          HTTPS will wait until DNS is live. Use Test again above after nameservers or A records propagate.
         </p>
         <p v-if="sslMsg" class="hint mt">{{ sslMsg }}</p>
         <button type="button" class="btn-primary mt" @click="emit('issueSsl')">Turn on HTTPS</button>
@@ -1665,6 +1778,12 @@ function formatBytes(n?: number | null) {
   cursor: pointer;
 }
 .btn-primary:hover { filter: brightness(0.92); }
+.btn-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: none;
+}
+.tiny { font-size: 0.78rem; margin: 0.15rem 0 0.35rem; }
 .btn-ghost {
   border: 1px solid var(--if-border);
   border-radius: 0.5rem;
@@ -1940,6 +2059,25 @@ function formatBytes(n?: number | null) {
   color: #5c6670;
   font-size: 0.86rem;
   line-height: 1.5;
+}
+.dns-mode-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+.dns-mode-tab {
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: #fff;
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.78rem;
+  color: #334155;
+  cursor: pointer;
+}
+.dns-mode-tab.active {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #fff;
 }
 .db-head {
   display: flex;

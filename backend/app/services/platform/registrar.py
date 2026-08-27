@@ -419,6 +419,7 @@ class DomainRegistrar:
         *,
         ttl: int = 1800,
         also_www: bool = True,
+        also_panel_hosts: bool = True,
     ) -> dict:
         """
         Upsert apex A → ip (and optional www CNAME → domain) via getHosts → setHosts.
@@ -457,6 +458,8 @@ class DomainRegistrar:
         merged: list[dict[str, str]] = []
         replaced_a = False
         has_www = False
+        panel_hosts = {"cpanel", "mail"} if also_panel_hosts else set()
+        replaced_panel: set[str] = set()
         for host in existing:
             h = (host.get("host") or "").lower()
             t = (host.get("type") or "").upper()
@@ -470,6 +473,10 @@ class DomainRegistrar:
                     }
                 )
                 replaced_a = True
+                continue
+            if also_panel_hosts and t == "A" and h in panel_hosts:
+                merged.append({"host": h, "type": "A", "address": ip, "ttl": str(ttl)})
+                replaced_panel.add(h)
                 continue
             if also_www and t == "CNAME" and h == "www":
                 has_www = True
@@ -506,6 +513,9 @@ class DomainRegistrar:
                     "ttl": str(ttl),
                 }
             )
+        if also_panel_hosts:
+            for label in sorted(panel_hosts - replaced_panel):
+                merged.append({"host": label, "type": "A", "address": ip, "ttl": str(ttl)})
 
         email_type = "FWD"
         if any(h.get("type", "").upper() == "MX" for h in merged):

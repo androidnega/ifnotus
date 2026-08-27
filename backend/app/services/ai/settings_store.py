@@ -56,6 +56,11 @@ class AiSettingsStore:
         raw = self._read_raw()
         return str(raw.get("model") or self._settings.deepseek_model)
 
+    def get_agent_name(self) -> str:
+        raw = self._read_raw()
+        name = str(raw.get("agent_name") or "").strip()
+        return name or "SNR Dev"
+
     def get_base_url(self) -> str:
         return self._settings.deepseek_base_url.rstrip("/")
 
@@ -73,6 +78,7 @@ class AiSettingsStore:
             model=self.get_model(),
             base_url=self.get_base_url(),
             api_key_masked=masked,
+            agent_name=self.get_agent_name(),
             updated_at=raw.get("updated_at"),
         )
 
@@ -87,6 +93,13 @@ class AiSettingsStore:
             raw["api_key_encrypted"] = self._fernet().encrypt(key.encode("utf-8")).decode("utf-8")
         if body.model:
             raw["model"] = body.model.strip()
+        if body.agent_name is not None:
+            name = body.agent_name.strip()
+            if not name:
+                raise AppException("Agent name cannot be empty.", code="ai_name_empty")
+            if len(name) > 64:
+                raise AppException("Agent name is too long.", code="ai_name_too_long")
+            raw["agent_name"] = name
         raw["updated_at"] = datetime.now(UTC).isoformat()
         self._write_raw(raw)
         return self.status()

@@ -13,6 +13,7 @@ from app.repositories.applications import ApplicationRepository
 from app.schemas.applications import ApplicationType
 from app.schemas.inventory import AppReconciliationState, DiscoveredApplicationSchema
 from app.services.applications.discovery_runtime import RuntimeApplicationDiscovery
+from app.services.applications.path_scanner import is_actual_system_root
 from app.services.applications.type_normalization import normalize_application_type
 
 logger = get_logger(__name__)
@@ -47,7 +48,18 @@ class ApplicationRegistrar:
                 continue
             if self._is_excluded(item.root_path):
                 continue
-            root = str(Path(item.root_path).resolve())
+            if self._is_platform_only_host(item):
+                continue
+            root_path = Path(item.root_path)
+            if not is_actual_system_root(root_path, server_names=item.server_names):
+                continue
+            # Prefer live hosted sites; skip orphan trees with no nginx hostname.
+            if not item.server_names and "nginx-document-root" not in (item.signals or []):
+                # Still allow classic full stacks discovered on disk (WP/Laravel/etc.).
+                signals = set(item.signals or [])
+                if not signals & {"manage.py", "artisan", "index.php", "composer.json"}:
+                    continue
+            root = str(root_path.resolve())
             if root in existing_roots:
                 continue
             if any(root.startswith(r.rstrip("/") + "/") for r in existing_roots):
@@ -66,6 +78,27 @@ class ApplicationRegistrar:
         if created:
             self._apps.reload()
         return created
+
+    def _is_platform_only_host(self, item: DiscoveredApplicationSchema) -> bool:
+        """Skip auto-register for reserved panel hostnames (mail, cpanel, apex, …)."""
+        from app.services.platform.reserved_subdomains import is_reserved_platform_subdomain
+
+        names = [n.strip().lower().rstrip(".") for n in (item.server_names or []) if n]
+        if not names:
+            return False
+        apex = (getattr(self._settings, "student_zone", None) or "ifnotus.space").strip().lower()
+        for name in names:
+            if name == apex or name == f"www.{apex}":
+                continue
+            if name.endswith(f".{apex}"):
+                label = name[: -(len(apex) + 1)].split(".")[0]
+                if is_reserved_platform_subdomain(label, settings=self._settings):
+                    continue
+                return False
+            # Custom / customer domains are always eligible.
+            return False
+        # Every name was apex or a reserved platform label.
+        return True
 
     def _is_excluded(self, root_path: str) -> bool:
         resolved = str(Path(root_path).resolve())

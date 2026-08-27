@@ -3,6 +3,7 @@ export interface AiSettings {
   model: string
   base_url: string
   api_key_masked: string | null
+  agent_name?: string
   updated_at: string | null
 }
 

@@ -1,0 +1,95 @@
+PHASE H — ISPConfig First Test Tenant
+=====================================
+Date: 2026-08-27
+Server: 80.241.223.82 (vmi3379516.contaboserver.net)
+Verdict: PARTIAL PASS
+
+Scope
+-----
+Non-paying internal test tenant via ISPConfig provider adapter only.
+No legacy customer environments were modified (all 7 production tenants remain
+provider=legacy in IFNOTUS DB). Phase F orphan client ifn_pf_549381 left intact.
+
+Test target
+-----------
+  provider     = ispconfig (direct adapter; HOSTING_PROVIDER_DEFAULT stays legacy)
+  username     = ifn_isp_test_h
+  hostname     = isp-test.ifnotus.space
+  plan ref     = student-basic-test (template_id=0)
+
+Provider IDs recorded (final successful run, deleted on cleanup)
+----------------------------------------------------------------
+  client_id      = 18
+  domain_id      = 14
+  document_root  = /var/www/clients/client18/web14
+  web_root       = /var/www/clients/client18/web14/web
+  db_id          = 4
+  db_user_id     = 4
+  shell_user_id  = 2  (username web14)
+  ftp_user_id    = 1  (username ftp14h)
+
+Lifecycle results
+-----------------
+| Step                         | Result | Notes |
+|------------------------------|--------|-------|
+| Provider health              | PASS   | Remote JSON session OK |
+| Create account + website     | PASS   | Required PHP-FPM pool fields + subdomain=none in schema |
+| Document root + index.html   | PASS   | Written to .../web14/web/index.html |
+| Serve HTTP                   | PARTIAL| Intermittent 403/200; permissions/nginx timing |
+| Issue SSL (Let's Encrypt)    | PASS   | sites_web_domain_update ssl_letsencrypt=y |
+| Serve HTTPS                  | PARTIAL| 200 but often default ISPConfig placeholder, not test marker |
+| Create database              | PASS   | Remote API |
+| Connect database             | FAIL   | MySQL auth — ISPConfig prefix/user propagation delay |
+| Create SFTP/shell user       | PASS   | After puser/pgroup/dir/quota_size schema fix |
+| Create FTP user              | PASS   | After absolute docroot path + uid/gid from site |
+| Verify isolation             | PASS   | web14 cannot read legacy /srv/apps/ifnotus-customers/.../public |
+| Suspend                      | PASS   | web_domain.active=n after fix (requires DB parent_domain_id) |
+| Unsuspend                    | PASS   | web_domain.active=y restored |
+| Get usage                    | PARTIAL| API returns client shell; disk/traffic null |
+| Delete test environment      | PASS   | client_delete_everything=1, clients_remaining=0 |
+
+Fixes applied during Phase H (code)
+-----------------------------------
+1. backend/app/schemas/ispconfig_provider.py
+   - IspWebsiteCreateParams: pm_* pool ints, subdomain=none
+   - IspFtpUserCreateParams / IspShellUserCreateParams: absolute dir, uid/gid/puser/pgroup
+   - IspDatabaseCreateParams: parent_domain_id
+
+2. backend/app/services/hosting_provider/ispconfig_provider.py
+   - _site_paths_for_domain helper
+   - FTP/shell creation uses site system_user/group + .../web path
+   - create_database accepts parent_domain_id
+
+3. backend/app/integrations/ispconfig/client.py
+   - sites_web_domain_get_all_by_user resolves sys_userid via DB parent_domain_id
+
+4. backend/scripts/phase_h_ispconfig_lifecycle.py
+   - Server-side lifecycle verifier (not run in CI)
+
+5. Deployed missing hosting_provider/base.py require() to production tree
+
+6. Remote ACL: sites_web_domain_get_all_by_user appended (function alias already mapped
+   via client_get_sites_by_user in client wrapper)
+
+Known gaps before Phase I
+-------------------------
+- MySQL connect test needs prefixed credentials from web_database / web_database_user rows
+  after ISPConfig cron applies grants (create_database now accepts parent_domain_id).
+- HTTP/HTTPS docroot must consistently serve .../web (nginx vhost + permissions).
+- Pure-FTPd daemon remains stopped (Phase D); FTP user exists in ISPConfig but login
+  not verified end-to-end.
+- HOSTING_PROVIDER_DEFAULT=legacy unchanged — no paying tenant on ISPConfig yet.
+
+DNS
+---
+isp-test.ifnotus.space resolves via existing *.ifnotus.space wildcard to 80.241.223.82.
+No BIND change required.
+
+Security / isolation
+--------------------
+Test tenant deleted. No customer data touched. Legacy tenant paths remain unreadable
+from ISPConfig site system users (verified).
+
+STOP — Phase H complete (PARTIAL PASS). Do not migrate real customers until Phase I.
+
+Next = Phase I tenant isolation (two test tenants, cross-access attempts).

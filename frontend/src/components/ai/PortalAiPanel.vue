@@ -11,12 +11,33 @@ const props = withDefaults(
     environmentId: string
     domain?: string | null
     path?: string | null
+    /** Working directory when browsing the file manager (no file open). */
+    cwd?: string | null
+    /** Selected file/folder names for FM context. */
+    selectedNames?: string[]
+    /** Installed stack label if known (e.g. WordPress). */
+    stackHint?: string | null
+    /** Plan / storage summary for the agent. */
+    limitsHint?: string | null
     fileContent?: string | null
     originalContent?: string | null
     colorMode?: 'light' | 'dark'
     canUndo?: boolean
+    /** files = file manager chrome; portal = editor companion */
+    mode?: 'portal' | 'files'
   }>(),
-  { path: null, fileContent: null, originalContent: null, colorMode: 'light', canUndo: false },
+  {
+    path: null,
+    cwd: null,
+    selectedNames: () => [],
+    stackHint: null,
+    limitsHint: null,
+    fileContent: null,
+    originalContent: null,
+    colorMode: 'light',
+    canUndo: false,
+    mode: 'portal',
+  },
 )
 
 const emit = defineEmits<{
@@ -77,6 +98,38 @@ function formatTokens(n: number) {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
   return String(n)
 }
+
+function buildContextPrefix() {
+  const lines: string[] = []
+  if (props.domain) lines.push(`Site: ${props.domain}`)
+  if (props.cwd) lines.push(`Working directory: ${props.cwd}`)
+  if (props.path) lines.push(`Focused path: ${props.path}`)
+  if (props.selectedNames?.length) {
+    lines.push(`Selected: ${props.selectedNames.slice(0, 12).join(', ')}`)
+  }
+  if (props.stackHint) lines.push(`Installed stack: ${props.stackHint}`)
+  if (props.limitsHint) lines.push(`Limits: ${props.limitsHint}`)
+  if (!lines.length) return ''
+  return `[File Manager context — do not bypass tenant permissions; never expose secrets; confirm before destructive actions]\n${lines.join('\n')}\n\n`
+}
+
+const quickPrompts = computed(() => {
+  if (props.mode !== 'files') return [] as Array<{ label: string; text: string }>
+  const focus = props.path || props.selectedNames?.[0] || props.cwd || '.'
+  return [
+    { label: 'Explain structure', text: `Explain the project structure under ${props.cwd || '.'}. Identify the entry point.` },
+    { label: 'Explain selected', text: `Explain what ${focus} is for and how it fits the site.` },
+    {
+      label: 'Fix live error',
+      text:
+        'Open the live site, read the exact error, inspect config.php / .env / wp-config.php, ' +
+        'and propose a real fix (credentials, missing tables, wrong SITE_URL). Use tools — do not guess.',
+    },
+    { label: 'Find errors', text: `Review ${focus} for likely errors or misconfiguration. Read the files first.` },
+    { label: 'Suggest fix', text: `Suggest a safe fix for issues in ${focus}. Do not apply destructive changes without confirmation.` },
+    { label: 'Help deploy', text: `Help me deploy or go live with this site. Current stack: ${props.stackHint || 'unknown'}.` },
+  ]
+})
 
 function newId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -151,7 +204,8 @@ async function startNewChat() {
     const { data } = await customersApi.createEnvAiSession(props.environmentId, {
       surface: 'portal',
       title: 'New conversation',
-      path: props.path,
+      // Session is per environment — not per folder/file.
+      path: null,
     })
     sessionId.value = data.id
     localStorage.setItem(SESSION_KEY.value, data.id)
@@ -238,14 +292,15 @@ function onThreadClick(ev: MouseEvent) {
   if (path) emit('openPath', path)
 }
 
-async function send() {
-  const text = draft.value.trim()
-  if (!text || sending.value) return
+async function send(textOverride?: string) {
+  const raw = (textOverride ?? draft.value).trim()
+  if (!raw || sending.value) return
+  const text = `${buildContextPrefix()}${raw}`
   sending.value = true
   error.value = null
   liveStatus.value = 'Thinking…'
   lastCharge.value = null
-  messages.value.push({ id: newId(), role: 'user', content: text })
+  messages.value.push({ id: newId(), role: 'user', content: raw })
   draft.value = ''
   const assistant: AiPanelMessage = {
     id: newId(),
@@ -260,7 +315,7 @@ async function send() {
   const history = messages.value
     .slice(0, -1)
     .filter((m) => m.role === 'user' || m.role === 'assistant')
-    .slice(-12)
+    .slice(-24)
     .map((m) => ({ role: m.role, content: m.content.slice(0, 4000) }))
 
   try {
@@ -269,7 +324,7 @@ async function send() {
         message: text,
         history,
         surface: 'portal',
-        path: props.path || undefined,
+        path: props.path || props.cwd || undefined,
         session_id: sessionId.value || undefined,
         file_content: clippedBuffer(props.fileContent),
         original_content: clippedBuffer(props.originalContent),
@@ -505,7 +560,7 @@ function undoAiEdits() {
       <div class="brand">
         <span class="dot" aria-hidden="true" />
         <div class="min-w-0">
-          <p class="title">Dev Companion</p>
+          <p class="title">{{ mode === 'files' ? 'AI Engineer' : 'Dev Companion' }}</p>
           <p class="sub">{{ sessionTitle }}</p>
         </div>
       </div>
@@ -571,7 +626,10 @@ function undoAiEdits() {
     </div>
     <div v-else ref="scroller" class="body thread-scroll" @click="onThreadClick">
       <p v-if="!messages.length" class="empty">
-        Ask to explain or edit this file. Approve changes with Proceed.
+        <template v-if="mode === 'files'">
+          Ask about this folder, selected files, deploy help, or errors. Destructive actions need your confirmation.
+        </template>
+        <template v-else>Ask to explain or edit this file. Approve changes with Proceed.</template>
       </p>
       <div v-for="m in messages" :key="m.id" class="turn" :class="m.role">
         <div class="bubble">
@@ -613,7 +671,20 @@ function undoAiEdits() {
       <p v-if="error" class="err">{{ error }}</p>
     </div>
 
-    <form class="composer" @submit.prevent="send">
+    <div v-if="quickPrompts.length && configured && (credits === null || credits >= 1)" class="quick">
+      <button
+        v-for="q in quickPrompts"
+        :key="q.label"
+        type="button"
+        class="quick-chip"
+        :disabled="sending"
+        @click="send(q.text)"
+      >
+        {{ q.label }}
+      </button>
+    </div>
+
+    <form class="composer" @submit.prevent="send()">
       <textarea
         v-model="draft"
         rows="2"
@@ -788,16 +859,17 @@ function undoAiEdits() {
   flex-direction: column;
   gap: 0.35rem;
   margin-bottom: 0.7rem;
+  width: 100%;
   max-width: 100%;
   min-width: 0;
 }
 .turn.user { align-items: flex-end; }
 .turn.assistant { align-items: flex-start; }
 .bubble {
-  max-width: 100%;
+  box-sizing: border-box;
+  max-width: min(100%, 36rem);
   min-width: 0;
-  width: fit-content;
-  max-width: 100%;
+  width: auto;
   border-radius: 0.85rem;
   padding: 0.6rem 0.75rem;
   font-size: 0.82rem;
@@ -806,12 +878,24 @@ function undoAiEdits() {
   word-break: break-word;
   box-shadow: 0 1px 0 color-mix(in srgb, var(--a-ink) 6%, transparent);
 }
+.turn.user .bubble { max-width: min(100%, 30rem); }
 .turn.user .bubble { background: var(--a-user); color: #fff; }
 .turn.assistant .bubble { background: var(--a-assist); color: var(--a-ink); border: 1px solid var(--a-line); }
 .plain { white-space: pre-wrap; overflow-wrap: anywhere; }
-.md { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.md { min-width: 0; max-width: 100%; overflow: hidden; overflow-wrap: anywhere; }
 .md :deep(p),
-.md :deep(.ai-md-p) { margin: 0 0 0.45rem; overflow-wrap: anywhere; }
+.md :deep(.ai-md-p) { margin: 0 0 0.45rem; overflow-wrap: anywhere; word-break: break-word; }
+.md :deep(a) { overflow-wrap: anywhere; word-break: break-word; }
+.md :deep(table) {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+.md :deep(th),
+.md :deep(td) { overflow-wrap: anywhere; word-break: break-word; }
+.md :deep(ul),
+.md :deep(ol) { padding-left: 1.1rem; margin: 0.35rem 0 0.55rem; overflow-wrap: anywhere; }
 .md :deep(p:last-child),
 .md :deep(.ai-md-p:last-child) { margin-bottom: 0; }
 .md :deep(pre),
@@ -896,6 +980,24 @@ function undoAiEdits() {
 .is-dark .proceed { color: #0b1220; }
 .proceed:disabled { opacity: 0.5; cursor: not-allowed; }
 .err { margin: 0; font-size: 0.75rem; color: #ef4444; overflow-wrap: anywhere; }
+.quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.45rem 0.65rem 0;
+  flex-shrink: 0;
+}
+.quick-chip {
+  border: 1px solid var(--a-line);
+  background: var(--a-panel);
+  color: inherit;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 650;
+  padding: 0.25rem 0.55rem;
+  cursor: pointer;
+}
+.quick-chip:disabled { opacity: 0.45; cursor: not-allowed; }
 .composer {
   display: flex;
   gap: 0.4rem;

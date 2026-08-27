@@ -8,6 +8,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import time
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +35,120 @@ logger = get_logger(__name__)
 
 STACKS = ("static", "wordpress", "laravel", "nodejs")
 WP_ZIP_URL = "https://wordpress.org/latest.zip"
+
+STACK_DISPLAY_NAMES: dict[str, str] = {
+    "static": "Static / PHP",
+    "wordpress": "WordPress",
+    "laravel": "Laravel",
+    "nodejs": "Node.js",
+    "php": "PHP",
+}
+
+STACK_RUNTIMES: dict[str, str] = {
+    "static": "php",
+    "wordpress": "php",
+    "laravel": "php",
+    "nodejs": "nodejs",
+    "php": "php",
+}
+
+
+def detect_stack_from_filesystem(root: Path) -> dict[str, Any] | None:
+    """Infer installed stack from site files when ``stack.json`` is missing.
+
+    Priority: WordPress → Laravel → Node → PHP/static landing page.
+    """
+    if not root or not root.is_dir():
+        return None
+    try:
+        names = {p.name for p in root.iterdir()}
+    except OSError:
+        return None
+
+    # WordPress
+    if (
+        (root / "wp-config.php").is_file()
+        or (root / "wp-includes").is_dir()
+        or (root / "wp-content").is_dir()
+        or ((root / "wp-admin").is_dir() and (root / "index.php").is_file())
+    ):
+        return _detected_payload("wordpress")
+
+    # Laravel (project root — artisan lives next to /public)
+    if (root / "artisan").is_file() and (
+        (root / "composer.json").is_file()
+        or (root / "public" / "index.php").is_file()
+        or (root / "bootstrap" / "app.php").is_file()
+    ):
+        return _detected_payload("laravel", web_root=str((root / "public").resolve()))
+
+    # Node / Express
+    pkg = root / "package.json"
+    if pkg.is_file():
+        try:
+            text = pkg.read_text(encoding="utf-8", errors="replace").lower()
+        except OSError:
+            text = ""
+        if any(
+            marker in text
+            for marker in ('"express"', '"next"', '"nuxt"', '"react"', '"vue"', "node ")
+        ) or (root / "server.js").is_file() or (root / "app.js").is_file():
+            return _detected_payload("nodejs")
+
+    # Generic PHP app (not WP/Laravel)
+    if (root / "index.php").is_file() and "wp-content" not in names:
+        # Avoid treating the IFNOTUS parking page-only site as a stack unless
+        # there are other PHP signals.
+        siblings = names - {"index.php", "index.html", ".ifnotus", "public", "apps"}
+        if siblings or (root / "composer.json").is_file():
+            return _detected_payload("static", stack_name="PHP site")
+
+    # Static site with real content beyond parking boilerplate
+    index_html = root / "index.html"
+    if index_html.is_file():
+        try:
+            html = index_html.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            html = ""
+        from app.services.platform.hosting_ready_page import is_parking_page
+
+        parking = is_parking_page(html)
+        if not parking or len(names - {"index.html", ".ifnotus"}) > 0:
+            if not parking:
+                return _detected_payload("static")
+
+    return None
+
+
+def _detected_payload(stack: str, *, web_root: str | None = None, stack_name: str | None = None) -> dict[str, Any]:
+    return {
+        "stack": stack,
+        "stack_name": stack_name or STACK_DISPLAY_NAMES.get(stack, stack.title()),
+        "framework": stack,
+        "runtime": STACK_RUNTIMES.get(stack, "php"),
+        "status": "running",
+        "source": "filesystem",
+        "detected": True,
+        "web_root": web_root,
+        "message": f"{stack_name or STACK_DISPLAY_NAMES.get(stack, stack)} detected on disk.",
+    }
+
+
+def normalize_stack_payload(data: dict[str, Any], *, source: str | None = None) -> dict[str, Any]:
+    """Ensure UI-facing fields exist on stack meta payloads."""
+    out = dict(data)
+    stack = str(out.get("stack") or out.get("framework") or "").strip().lower()
+    if not stack:
+        return out
+    out["stack"] = stack
+    out.setdefault("stack_name", STACK_DISPLAY_NAMES.get(stack, stack.title()))
+    out.setdefault("framework", stack)
+    out.setdefault("runtime", STACK_RUNTIMES.get(stack, "php"))
+    out.setdefault("status", "running")
+    if source:
+        out.setdefault("source", source)
+    return out
+
 
 STACK_STEPS: dict[str, list[dict[str, Any]]] = {
     "static": [
@@ -160,7 +275,31 @@ class EnvironmentStackService:
             seen.add(key)
         return out
 
-    def current_stack(self, env: CustomerEnvironment) -> dict[str, Any] | None:
+    def current_stack(self, env: CustomerEnvironment, *, reconcile_meta: bool = True) -> dict[str, Any] | None:
+        """Return installed stack truth: meta → filesystem → optional write-back."""
+        meta = self._read_meta(env)
+        if meta and meta.get("stack"):
+            return normalize_stack_payload(meta, source=str(meta.get("source") or "meta"))
+
+        root = self._canonical_site_root(env)
+        detected = detect_stack_from_filesystem(root)
+        if not detected:
+            return None
+        payload = normalize_stack_payload(
+            {
+                **detected,
+                "installed_at": datetime.now(UTC).isoformat(),
+            },
+            source="filesystem",
+        )
+        if reconcile_meta:
+            try:
+                self._write_meta(env, payload)
+            except OSError as exc:
+                logger.warning("stack_meta_writeback_failed", error=str(exc), env=str(env.id))
+        return payload
+
+    def _read_meta(self, env: CustomerEnvironment) -> dict[str, Any] | None:
         meta = self._meta_path(env)
         if not meta.exists():
             return None
@@ -169,6 +308,23 @@ class EnvironmentStackService:
             return data if isinstance(data, dict) else None
         except (OSError, json.JSONDecodeError):
             return None
+
+    async def reconcile_stack(self, env: CustomerEnvironment) -> dict[str, Any] | None:
+        """Resolve stack from meta/FS and upsert a site-root ApplicationInstance."""
+        current = self.current_stack(env, reconcile_meta=True)
+        if not current:
+            return None
+        try:
+            from app.services.platform.application_runtime import ApplicationRuntimeService
+
+            await ApplicationRuntimeService(self._settings, self._session).upsert_site_stack(
+                env,
+                stack=str(current.get("stack") or ""),
+                result=current,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stack_application_reconcile_failed", error=str(exc), env=str(env.id))
+        return current
 
     def read_progress(self, env: CustomerEnvironment) -> dict[str, Any] | None:
         path = self._progress_path(env)
@@ -291,6 +447,13 @@ class EnvironmentStackService:
         )
         return job, task_id
 
+    def _canonical_site_root(self, env: CustomerEnvironment) -> Path:
+        """Site tree root — never Laravel's /public web root."""
+        root = Path(env.document_root or "")
+        if root.name == "public":
+            root = root.parent
+        return root
+
     async def install(
         self,
         env: CustomerEnvironment,
@@ -303,9 +466,17 @@ class EnvironmentStackService:
         if stack not in STACKS:
             raise ValidationError(f"Unknown stack '{stack}'.")
         await self._assert_stack_allowed(env, stack)
-        root = Path(env.document_root or "")
+        root = self._canonical_site_root(env)
         if not root:
             raise AppException("Environment has no document root.")
+        # Keep env.document_root pointed at the site root for clear/install cycles.
+        if str(env.document_root or "") != str(root):
+            env.document_root = str(root)
+            if env.hosting_domain_id:
+                domain = await self._session.get(Domain, env.hosting_domain_id)
+                if domain:
+                    domain.document_root = str(root)
+            await self._session.flush()
         root.mkdir(parents=True, exist_ok=True)
         job_id = str(job.id) if job else None
         current_step = "prepare"
@@ -348,7 +519,22 @@ class EnvironmentStackService:
                 result = await self._install_nodejs(env, root, job_id=job_id)
 
             await self._ensure_ftp(env)
+            if "installed_at" not in result:
+                result["installed_at"] = datetime.now(UTC).isoformat()
+            result.setdefault("source", "one_click")
+            result.setdefault("status", "running")
+            result.setdefault("framework", stack)
+            result.setdefault("runtime", STACK_RUNTIMES.get(stack, "php"))
+            result = normalize_stack_payload(result, source="one_click")
             self._write_meta(env, result)
+            try:
+                from app.services.platform.application_runtime import ApplicationRuntimeService
+
+                await ApplicationRuntimeService(self._settings, self._session).upsert_site_stack(
+                    env, stack=stack, result=result
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("stack_application_upsert_failed", error=str(exc), env=str(env.id))
             self.write_progress(
                 env,
                 stack=stack,
@@ -644,13 +830,36 @@ class EnvironmentStackService:
                 "DB_PASSWORD": db["password"],
             }
             for key, value in replacements.items():
+                rendered = str(value)
+                # Quote values that break unquoted .env parsing.
+                if any(ch in rendered for ch in [' ', '#', '"', "'", "\\", "$"]):
+                    rendered = '"' + rendered.replace("\\", "\\\\").replace('"', '\\"') + '"'
                 if re.search(rf"^{key}=.*$", text, flags=re.M):
-                    text = re.sub(rf"^{key}=.*$", f"{key}={value}", text, flags=re.M)
+                    text = re.sub(rf"^{key}=.*$", f"{key}={rendered}", text, flags=re.M)
                 else:
-                    text += f"\n{key}={value}\n"
+                    text += f"\n{key}={rendered}\n"
             env_file.write_text(text, encoding="utf-8")
 
         public = root / "public"
+        # www-data must write storage + bootstrap/cache or Laravel returns 500 (tempnam warnings).
+        for rel in (
+            "storage",
+            "storage/app",
+            "storage/framework",
+            "storage/framework/cache",
+            "storage/framework/sessions",
+            "storage/framework/views",
+            "storage/logs",
+            "bootstrap/cache",
+        ):
+            p = root / rel
+            p.mkdir(parents=True, exist_ok=True)
+        fix_web_ownership(
+            root,
+            user=self._settings.web_run_user,
+            uid=env.unix_uid,
+            gid=env.unix_gid,
+        )
         self.write_progress(
             env,
             stack="laravel",
@@ -661,10 +870,39 @@ class EnvironmentStackService:
             job_id=job_id,
         )
         await self._switch_to_filesystem_php(env, web_root=public if public.is_dir() else root)
-        # Artisan key generate (best-effort)
+        # Prefer running PHP as the tenant so 2750 storage is writable without relaxing modes.
+        if env.unix_username and env.domain:
+            from app.services.platform.php_fpm import PhpFpmPoolService
+
+            PhpFpmPoolService(self._settings).ensure_pool(
+                hostname=env.domain,
+                document_root=str(public if public.is_dir() else root),
+                ram_gb=float(env.ram_limit_gb or 0.5),
+                unix_user=env.unix_username,
+            )
+        # Artisan key generate + migrate (best-effort)
         php = shutil.which("php")
         if php and (root / "artisan").exists():
             await self._run([php, "artisan", "key:generate", "--force"], cwd=str(root), timeout=60)
+            migrate = await self._run(
+                [php, "artisan", "migrate", "--force"],
+                cwd=str(root),
+                timeout=120,
+            )
+            if migrate.returncode != 0:
+                logger.warning(
+                    "laravel_migrate_failed",
+                    domain=env.domain,
+                    error=(migrate.stderr or migrate.stdout or "")[-400:],
+                )
+            fix_web_ownership(
+                root,
+                user=self._settings.web_run_user,
+                uid=env.unix_uid,
+                gid=env.unix_gid,
+            )
+        # Always reopen storage for the PHP-FPM user (pool may still be www-data).
+        self._laravel_make_writable(root)
 
         return {
             "stack": "laravel",
@@ -673,6 +911,27 @@ class EnvironmentStackService:
             "database": {k: v for k, v in db.items() if k != "password"},
             "message": f"Laravel is ready at {env.domain} (document root /public).",
         }
+
+    @staticmethod
+    def _laravel_make_writable(root: Path) -> None:
+        """DIR_MODE_SAFE is 2750; Laravel needs group-write on storage + bootstrap/cache."""
+        for rel in ("storage", "bootstrap/cache"):
+            target = root / rel
+            if not target.exists():
+                continue
+            try:
+                subprocess.run(
+                    ["chmod", "-R", "g+rwX", str(target)],
+                    check=False,
+                    capture_output=True,
+                    timeout=60,
+                )
+                # setgid so new files stay group-writable for www-data
+                for dirpath, _dirnames, _filenames in os.walk(target):
+                    mode = os.stat(dirpath).st_mode
+                    os.chmod(dirpath, mode | 0o02070)
+            except OSError as exc:
+                logger.warning("laravel_writable_failed", path=str(target), error=str(exc))
 
     async def _install_nodejs(
         self, env: CustomerEnvironment, root: Path, *, job_id: str | None = None
@@ -735,6 +994,27 @@ main{{max-width:32rem;padding:2rem}} .a{{color:#ff6c2c;font-weight:700}}</style>
                 f"npm install failed: {(proc.stderr or proc.stdout or '')[-500:]}",
                 code="npm_install_failed",
             )
+        fix_web_ownership(
+            root,
+            user=self._settings.web_run_user,
+            uid=env.unix_uid,
+            gid=env.unix_gid,
+        )
+        if env.unix_username:
+            from app.services.platform.fs_ownership import grant_tenant_traverse
+            from app.services.platform.customer_storage import resolve_customer_prefix
+
+            folder = resolve_customer_prefix(
+                self._settings,
+                customer_id=env.customer_id,
+                document_root=env.document_root,
+            ).name
+            grant_tenant_traverse(
+                self._settings.customer_environments_root,
+                customer_id=env.customer_id,
+                unix_username=env.unix_username,
+                customer_folder=folder,
+            )
 
         self.write_progress(
             env, stack="nodejs", status="running", step="start", label="Starting Node process…", percent=78, job_id=job_id
@@ -785,6 +1065,10 @@ main{{max-width:32rem;padding:2rem}} .a{{color:#ff6c2c;font-weight:700}}</style>
         domain = None
         if env.hosting_domain_id:
             domain = await self._session.get(Domain, env.hosting_domain_id)
+        site_root = self._canonical_site_root(env)
+        # Keep env.document_root on the site tree (never /public) so clears/apps work.
+        if str(env.document_root or "") != str(site_root):
+            env.document_root = str(site_root)
         if domain:
             domain.document_root = str(web_root)
             domain.proxy_port = proxy_port
@@ -894,9 +1178,16 @@ main{{max-width:32rem;padding:2rem}} .a{{color:#ff6c2c;font-weight:700}}</style>
         this environment's document root. Nginx is re-provisioned only for
         this hostname's managed vhost.
         """
-        root = Path(env.document_root or "")
+        root = self._canonical_site_root(env)
         if not root:
             raise AppException("Environment has no document root.")
+        if str(env.document_root or "") != str(root):
+            env.document_root = str(root)
+            if env.hosting_domain_id:
+                domain = await self._session.get(Domain, env.hosting_domain_id)
+                if domain:
+                    domain.document_root = str(root)
+            await self._session.flush()
         customers = Path(self._settings.customer_environments_root).resolve()
         try:
             root.resolve().relative_to(customers)
@@ -906,12 +1197,25 @@ main{{max-width:32rem;padding:2rem}} .a{{color:#ff6c2c;font-weight:700}}</style>
                 code="clear_outside_tenant",
             ) from exc
 
-        previous = self.current_stack(env)
+        previous = self.current_stack(env, reconcile_meta=False)
         self._isolation.stop_container(env.container_id, env_id=str(env.id))
         self._stop_node(env)
         env.container_id = None
         env.container_port = None
         env.isolation_type = "filesystem"
+
+        try:
+            from app.services.platform.application_runtime import ApplicationRuntimeService
+
+            await ApplicationRuntimeService(self._settings, self._session).clear_site_stack_apps(env)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stack_clear_application_failed", error=str(exc), env=str(env.id))
+
+        # Also wipe a leftover /public tree if a prior Laravel install left one.
+        public = root / "public"
+        if public.is_dir() and public.resolve() != root.resolve():
+            self._clear_docroot(public)
+            shutil.rmtree(public, ignore_errors=True)
 
         self._clear_docroot(root)
         meta_dir = root / ".ifnotus"
@@ -940,30 +1244,18 @@ main{{max-width:32rem;padding:2rem}} .a{{color:#ff6c2c;font-weight:700}}</style>
             env.db_password_encrypted = None
 
         domain = env.domain or "your site"
-        (root / "index.html").write_text(
-            f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{domain}</title>
-  <style>
-    body {{ margin:0; min-height:100vh; display:grid; place-items:center;
-      font-family: Figtree, Segoe UI, sans-serif; background:#f6f7f9; color:#12171c; }}
-    main {{ max-width:28rem; padding:2rem; text-align:center; }}
-    .brand {{ color:#ff6c2c; font-weight:700; }}
-  </style>
-</head>
-<body>
-  <main>
-    <div class="brand">IFNOTUS</div>
-    <h1>Site cleared</h1>
-    <p>This environment is ready for a fresh install. Previous stack files were removed.</p>
-  </main>
-</body>
-</html>
-""",
-            encoding="utf-8",
+        from app.services.platform.hosting_ready_page import (
+            is_internal_addon_hostname,
+            write_hosting_ready_page,
+        )
+
+        display = None if is_internal_addon_hostname(domain) else domain
+        write_hosting_ready_page(
+            root,
+            hostname=domain,
+            display_hostname=display,
+            portal_base=getattr(self._settings, "customer_portal_url", None) or "https://ifnotus.space",
+            force=True,
         )
         fix_web_ownership(root, user=self._settings.web_run_user)
 
@@ -1026,9 +1318,30 @@ main{{max-width:32rem;padding:2rem}} .a{{color:#ff6c2c;font-weight:700}}</style>
         node = shutil.which("node") or "node"
         log = root / ".ifnotus" / "node.log"
         log.parent.mkdir(parents=True, exist_ok=True)
+        script = (root / "server.js").resolve()
+        if not script.is_file():
+            raise AppException(
+                f"Node entry missing at {script}. Install did not write server.js.",
+                code="node_entry_missing",
+            )
+        if env.unix_username:
+            from app.services.platform.fs_ownership import grant_tenant_traverse
+            from app.services.platform.customer_storage import resolve_customer_prefix
+
+            folder = resolve_customer_prefix(
+                self._settings,
+                customer_id=env.customer_id,
+                document_root=env.document_root,
+            ).name
+            grant_tenant_traverse(
+                self._settings.customer_environments_root,
+                customer_id=env.customer_id,
+                unix_username=env.unix_username,
+                customer_folder=folder,
+            )
         popen_kwargs: dict = {
             "cwd": str(root),
-            "env": {**os.environ, "PORT": str(port)},
+            "env": {**os.environ, "PORT": str(port), "HOME": str(root)},
             "stdout": log.open("a", encoding="utf-8"),
             "stderr": subprocess.STDOUT,
             "start_new_session": True,
@@ -1037,8 +1350,20 @@ main{{max-width:32rem;padding:2rem}} .a{{color:#ff6c2c;font-weight:700}}</style>
         if env.unix_uid is not None and env.unix_gid is not None and hasattr(os, "geteuid") and os.geteuid() == 0:
             popen_kwargs["user"] = env.unix_uid
             popen_kwargs["group"] = env.unix_gid
-        proc = subprocess.Popen([node, "server.js"], **popen_kwargs)
+        proc = subprocess.Popen([node, str(script)], **popen_kwargs)
         self._node_pid_file(env).write_text(str(proc.pid), encoding="utf-8")
+        # Brief wait so nginx probe does not race a cold start.
+        time.sleep(0.6)
+        if proc.poll() is not None:
+            hint = ""
+            try:
+                hint = log.read_text(encoding="utf-8", errors="replace")[-400:]
+            except OSError:
+                pass
+            raise AppException(
+                f"Node process exited immediately (code {proc.returncode}). Check .ifnotus/node.log. {hint}",
+                code="node_start_failed",
+            )
 
     async def _wp_core_install(self, env: CustomerEnvironment, root: Path) -> dict[str, Any]:
         """Create the first WordPress admin so the customer skips wp-admin/install.php."""

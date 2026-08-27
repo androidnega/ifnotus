@@ -53,7 +53,10 @@ class AuthoritativeDnsService:
             resolve_legacy_student_zone(self._settings),
             f"www.{resolve_legacy_student_zone(self._settings)}",
         }
-        if name in reserved or is_student_hostname(name, settings=self._settings):
+        from app.services.platform.host_routing import classify_host
+
+        kind = classify_host(name, settings=self._settings)
+        if name in reserved or is_student_hostname(name, settings=self._settings) or kind.kind == "platform":
             raise AppException("That domain is reserved.", code="domain_reserved")
         return name
 
@@ -82,8 +85,8 @@ class AuthoritativeDnsService:
             f"    IN NS  {ns2}.\n"
             f"    IN A   {ipv4}\n"
             f"{aaaa_apex}"
-            f"    IN MX  10 mail.ifnotus.space.\n"
-            f'    IN TXT "v=spf1 ip4:{ipv4} a:mail.ifnotus.space ~all"\n'
+            f"    IN MX  10 mail.{name}.\n"
+            f'    IN TXT "v=spf1 ip4:{ipv4} a:mail.{name} a:mail.ifnotus.space ~all"\n'
             f"\n"
             f"www IN A    {ipv4}\n"
             f"{aaaa_www}"

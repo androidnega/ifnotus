@@ -1,0 +1,114 @@
+================================================================================
+PHASE B REPORT — CLEAN THE PROVIDER ARCHITECTURE (CODE ONLY)
+Date: 2026-08-27
+Source: IFNOTUS Production Server Remediation & ISPConfig Migration.pdf
+Result: PASS
+STOPPING — do not start Phase C until explicitly instructed.
+================================================================================
+
+## RESULT: PASS
+
+ISPConfig was NOT installed (correct for Phase B).
+Live tenants remain provider=legacy.
+Default HOSTING_PROVIDER_DEFAULT remains legacy.
+
+### What changed (files)
+
+NEW:
+  backend/app/services/hosting_provider/capabilities.py
+  backend/app/services/hosting_provider/idempotency.py
+  backend/app/services/hosting_provider/reconciliation.py
+
+UPDATED:
+  backend/app/services/hosting_provider/base.py
+    - UnsupportedCapability
+    - capabilities() / supports() / require()
+    - extended optional methods (ftp/mail/dns/cron) with capability gates
+    - CreateAccountRequest.idempotency_key
+  backend/app/services/hosting_provider/__init__.py
+  backend/app/services/platform/provisioning.py
+    - new envs stamped with resolve_provider_kind() + provider_username
+    - provider_meta idempotency_key
+    - _maybe_create_external_provider_account() for ispconfig branch
+      (runs only when env.provider == ispconfig; refuses ACTIVE if unhealthy)
+  backend/app/services/platform/lifecycle.py
+    - suspend/restore calls ISPConfig provider when env.provider == ispconfig
+  backend/tests/unit/test_hosting_provider.py
+
+### Architecture now
+
+  ProvisioningEngine
+      ↓
+  resolve_provider_kind / env.provider
+      ↓
+  legacy  → existing nginx/unix steps (unchanged path for current default)
+  ispconfig → HostingProvider.create_account (idempotent) then remaining steps
+      ↓
+  HostingProvider factory
+      ↓
+  LegacyHostingProvider | ISPConfigHostingProvider | OLSPanelHostingProvider
+
+Existing environments with provider=legacy continue unchanged.
+
+### Capabilities model
+
+Legacy: websites, databases, ftp, sftp, mail, dns, ssl, cron, usage, quotas,
+        python_runtime, node_runtime, suspend, account
+ISPConfig (current client): account, websites, databases, ssl(partial), usage,
+        quotas, suspend  — mail/dns/ftp/cron NOT yet in IFNOTUS client
+OLSPanel: parked subset
+
+Frontend must check capabilities before assuming full ops.
+
+### Reconciliation
+
+ProviderReconciliationService (non-destructive):
+  - legacy: document_root exists / active-without-domain
+  - ispconfig: health + get_usage drift detection
+No automatic destructive fixes.
+
+### Idempotency
+
+Key: prov:{provider}:{subscription_id}:{domain}
+Markers on env.provider_meta:
+  idempotency_key
+  provider_account_created
+Retry skips duplicate ISPConfig account create when marker present.
+
+### Tests
+
+  .venv/bin/pytest tests/unit/test_hosting_provider.py
+  → 10 passed
+
+Covers:
+  - legacy / ispconfig selection
+  - existing legacy env stays legacy conceptually
+  - unsupported capability clean fail
+  - idempotency key stability + duplicate marker
+  - legacy create_account delegates to ProvisioningEngine
+
+### What remains unchanged
+
+- nginx live
+- 7 legacy tenants
+- product apps
+- ISPConfig not installed
+- no production .env ISPCONFIG_* credentials required yet
+- no services restarted for Phase B (code-only locally)
+
+### Services restarted
+
+None (Phase B is repository code). Deploy to VPS optional next.
+
+### Backups created
+
+None required for Phase B (code). Phase A backup still at:
+  /srv/backups/phase-a-security-20260827/
+
+================================================================================
+STOP.
+
+Next phase per PDF: PHASE C — BACKUP BEFORE ISPCONFIG INSTALLATION
+
+Say "Phase C" to continue.
+================================================================================

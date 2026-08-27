@@ -8,6 +8,7 @@ import {
   isStaffUser,
   syncPanelFlag,
 } from '@/lib/roles'
+import { isCustomerCpanelHost, isStaffPanelHost, hostnameNow } from '@/lib/platformHosts'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -23,6 +24,12 @@ declare module 'vue-router' {
 
 const routes: RouteRecordRaw[] = [
   {
+    path: '/maintenance',
+    name: 'maintenance',
+    component: () => import('@/views/MaintenanceView.vue'),
+    meta: { panel: 'public' },
+  },
+  {
     path: '/',
     name: 'home',
     component: () => import('@/views/HomeView.vue'),
@@ -35,6 +42,12 @@ const routes: RouteRecordRaw[] = [
     meta: { panel: 'public' },
   },
   {
+    path: '/plans/:slug',
+    name: 'plan-detail',
+    component: () => import('@/views/PlanDetailView.vue'),
+    meta: { panel: 'public' },
+  },
+  {
     path: '/panel',
     name: 'dashboard',
     component: () => import('@/views/DashboardView.vue'),
@@ -43,14 +56,31 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/login',
     name: 'login',
-    component: () => import('@/views/LoginView.vue'),
+    component: () => import('@/views/portal/PortalSignupView.vue'),
     meta: { guestOnly: true, panel: 'public' },
   },
   {
     path: '/signup',
     name: 'portal-signup',
     component: () => import('@/views/portal/PortalSignupView.vue'),
-    meta: { panel: 'public' },
+    meta: { guestOnly: true, panel: 'public' },
+  },
+  {
+    path: '/admin_1',
+    name: 'admin-login',
+    component: () => import('@/views/LoginView.vue'),
+    meta: { guestOnly: true, panel: 'public' },
+  },
+  // Legacy staff login URL → obscure admin path
+  {
+    path: '/staff-login',
+    redirect: { name: 'admin-login' },
+  },
+  {
+    path: '/go/hosting',
+    name: 'go-hosting',
+    component: () => import('@/views/portal/GoHostingView.vue'),
+    meta: { requiresAuth: true, panel: 'portal' },
   },
   {
     path: '/account',
@@ -85,8 +115,15 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/account/files',
     name: 'portal-files',
-    component: () => import('@/views/portal/PortalFilesView.vue'),
-    meta: { requiresAuth: true, panel: 'portal' },
+    redirect: (to) => {
+      const env = String(to.query.env || '')
+      if (env) {
+        const q = { ...to.query } as Record<string, string | string[]>
+        delete q.env
+        return { name: 'hosting-files', params: { environmentId: env }, query: q }
+      }
+      return { name: 'portal-dashboard' }
+    },
   },
   {
     path: '/account/files/upload',
@@ -115,7 +152,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/hosting/:environmentId/files',
     name: 'hosting-files',
-    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    component: () => import('@/views/portal/PortalFilesView.vue'),
     meta: { requiresAuth: true, panel: 'portal', hostingTab: 'files' },
   },
   {
@@ -132,33 +169,35 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/monitoring',
-    name: 'monitoring',
-    component: () => import('@/views/MonitoringView.vue'),
-    meta: { requiresAuth: true, panel: 'staff' },
+    redirect: { name: 'dashboard' },
+  },
+  {
+    path: '/platform/capacity',
+    redirect: { name: 'dashboard' },
   },
   {
     path: '/servers',
     name: 'servers',
     component: () => import('@/views/ServersView.vue'),
-    meta: { requiresAuth: true, panel: 'staff' },
+    meta: { requiresAuth: true, panel: 'staff', permission: 'servers:read' },
   },
   {
     path: '/applications',
     name: 'applications',
     component: () => import('@/views/ApplicationsView.vue'),
-    meta: { requiresAuth: true, panel: 'staff' },
+    meta: { requiresAuth: true, panel: 'staff', permission: 'apps:read' },
   },
   {
     path: '/applications/:id',
     name: 'application-detail',
     component: () => import('@/views/ApplicationDetailView.vue'),
-    meta: { requiresAuth: true, panel: 'staff' },
+    meta: { requiresAuth: true, panel: 'staff', permission: 'apps:read' },
   },
   {
     path: '/operations',
     name: 'operations',
     component: () => import('@/views/OperationsView.vue'),
-    meta: { requiresAuth: true, panel: 'staff' },
+    meta: { requiresAuth: true, panel: 'staff', permission: 'system:read' },
   },
   {
     path: '/platform/customers',
@@ -167,22 +206,28 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true, panel: 'staff', permission: 'platform:read' },
   },
   {
-    path: '/platform/plans',
-    name: 'platform-plans',
-    component: () => import('@/views/PlatformPlansView.vue'),
-    meta: { requiresAuth: true, panel: 'staff', permission: 'platform:read' },
-  },
-  {
     path: '/platform/orders',
     name: 'platform-orders',
     component: () => import('@/views/PlatformOrdersView.vue'),
-    meta: { requiresAuth: true, panel: 'staff', permission: 'platform:read' },
+    meta: { requiresAuth: true, panel: 'staff', permission: 'customers:manage' },
   },
   {
-    path: '/platform/capacity',
-    name: 'platform-capacity',
-    component: () => import('@/views/PlatformCapacityView.vue'),
-    meta: { requiresAuth: true, panel: 'staff', permission: 'platform:read' },
+    path: '/platform/orders/:id/receipt',
+    name: 'platform-order-receipt',
+    component: () => import('@/views/PlatformOrderReceiptView.vue'),
+    meta: { requiresAuth: true, panel: 'staff', permission: 'customers:manage' },
+  },
+  {
+    path: '/platform/accounting',
+    name: 'platform-accounting',
+    component: () => import('@/views/PlatformAccountingView.vue'),
+    meta: { requiresAuth: true, panel: 'staff', permission: 'customers:manage' },
+  },
+  {
+    path: '/platform/plans',
+    name: 'platform-plans',
+    component: () => import('@/views/PlatformPlansView.vue'),
+    meta: { requiresAuth: true, panel: 'staff', permission: 'platform:write' },
   },
   {
     path: '/support',
@@ -264,7 +309,7 @@ const routes: RouteRecordRaw[] = [
     path: '/settings',
     name: 'settings',
     component: () => import('@/views/SettingsView.vue'),
-    meta: { requiresAuth: true, panel: 'staff' },
+    meta: { requiresAuth: true, panel: 'staff', permission: 'system:read' },
   },
   // Legacy /portal URLs → main site (no /portal in the address bar)
   {
@@ -354,6 +399,8 @@ function safeRedirect(raw: unknown, fallback: string): string {
     candidate.startsWith('/') &&
     !candidate.startsWith('//') &&
     candidate !== '/login' &&
+    candidate !== '/signup' &&
+    candidate !== '/admin_1' &&
     candidate !== '/portal/login'
   ) {
     return candidate
@@ -361,11 +408,117 @@ function safeRedirect(raw: unknown, fallback: string): string {
   return fallback
 }
 
+function loginRouteForTarget(toPath: string, panel: unknown) {
+  // Tenant hosting SSO / panel → panel username+password login (not staff).
+  if (toPath.startsWith('/go/hosting') || toPath.startsWith('/hosting')) {
+    const hostMatch = /[?&]host=([^&]+)/.exec(toPath)
+    const host = hostMatch ? decodeURIComponent(hostMatch[1]) : ''
+    return {
+      name: 'login' as const,
+      query: {
+        mode: 'panel',
+        redirect: toPath,
+        ...(host ? { host } : {}),
+      },
+    }
+  }
+  if (panel === 'portal' || toPath.startsWith('/go/') || toPath.startsWith('/account')) {
+    return { name: 'login' as const, query: { redirect: toPath } }
+  }
+  if (panel === 'staff' || isStaffPath(toPath) || isStaffPanelHost()) {
+    return { name: 'admin-login' as const, query: { redirect: toPath } }
+  }
+  return { name: 'login' as const, query: { redirect: toPath } }
+}
+
 router.beforeEach(async (to) => {
   const token = localStorage.getItem('access_token')
 
+  // Custom-domain panel host (cpanel.customer.com): stay on this origin — never bounce to ifnotus.space.
+  if (isCustomerCpanelHost()) {
+    const panelHost = hostnameNow()
+    const goHosting = {
+      name: 'go-hosting' as const,
+      query: { host: panelHost, ...(typeof to.query.tab === 'string' ? { tab: to.query.tab } : {}) },
+    }
+    if (
+      to.path === '/' ||
+      to.name === 'home' ||
+      to.name === 'plans' ||
+      to.name === 'plan-detail' ||
+      to.name === 'portal-signup' ||
+      to.name === 'admin-login'
+    ) {
+      if (!token) {
+        if (to.name === 'login') return true
+        return {
+          name: 'login',
+          query: { redirect: `/go/hosting?host=${encodeURIComponent(panelHost)}` },
+        }
+      }
+      return goHosting
+    }
+    // Staff credentials are not allowed on customer cpanel hosts.
+    if (token && to.meta.requiresAuth) {
+      const { useAuthStore } = await import('@/stores/auth')
+      const { isPureCustomer, isStaffUser } = await import('@/lib/roles')
+      const auth = useAuthStore()
+      if (!auth.user) {
+        try {
+          await auth.fetchUser()
+        } catch {
+          auth.clearSession()
+          return {
+            name: 'login',
+            query: { redirect: `/go/hosting?host=${encodeURIComponent(panelHost)}` },
+          }
+        }
+      }
+      if (isStaffUser(auth.user) && !isPureCustomer(auth.user)) {
+        const roles = new Set(auth.user?.roles ?? [])
+        if (!roles.has('customer')) {
+          auth.clearSession()
+          return {
+            name: 'login',
+            query: {
+              redirect: `/go/hosting?host=${encodeURIComponent(panelHost)}`,
+              reason: 'customer_panel',
+            },
+          }
+        }
+      }
+    }
+  }
+
+  if (isStaffPanelHost()) {
+    if (to.path === '/' || to.name === 'home' || to.name === 'plans' || to.name === 'login' || to.name === 'portal-signup') {
+      if (!token) {
+        if (to.name === 'admin-login') return true
+        return { name: 'admin-login' }
+      }
+      return { name: 'dashboard' }
+    }
+  }
+
+  // Public maintenance gate (staff login and API stay available).
+  if (
+    to.name !== 'maintenance' &&
+    to.name !== 'admin-login' &&
+    to.meta.panel === 'public'
+  ) {
+    try {
+      const { catalogApi } = await import('@/api')
+      const { data } = await catalogApi.meta()
+      if (data.maintenance_mode) {
+        return { name: 'maintenance' }
+      }
+    } catch {
+      /* allow browse if meta fails */
+    }
+  }
+
   if (to.meta.requiresAuth && !token) {
-    return { name: 'login', query: { redirect: to.fullPath } }
+    return loginRouteForTarget(to.fullPath, to.meta.panel)
   }
 
   if (to.meta.guestOnly && token) {
@@ -408,7 +561,7 @@ router.beforeEach(async (to) => {
         await auth.fetchUser()
       } catch {
         auth.clearSession()
-        return { name: 'login', query: { redirect: to.fullPath } }
+        return loginRouteForTarget(to.fullPath, to.meta.panel)
       }
     }
     syncPanelFlag(auth.user)
@@ -418,12 +571,17 @@ router.beforeEach(async (to) => {
       return { name: 'portal-dashboard' }
     }
     if (panel === 'portal' && isStaffUser(auth.user) && !isPureCustomer(auth.user)) {
-      // Staff without customer role: keep them in WHM unless they also have customer
+      // Staff without a customer profile stay in WHM. Anyone with a linked
+      // customer account (incl. superadmin demo) may open portal invoices.
       const roles = new Set(auth.user?.roles ?? [])
-      if (!roles.has('customer') && !auth.user?.is_superuser) {
+      if (
+        !roles.has('customer') &&
+        !auth.user?.is_superuser &&
+        !roles.has('superadmin') &&
+        !roles.has('admin')
+      ) {
         return { name: 'dashboard' }
       }
-      // Superadmin / dual-role: allow portal
     }
 
     const requiredPermission = to.meta.permission
@@ -441,8 +599,8 @@ router.afterEach((to) => {
   const path = to.path || '/'
   const staff = isStaffPath(path)
   const authSurface =
-    path === '/login' ||
-    path.startsWith('/login/') ||
+    path === '/admin_1' ||
+    path.startsWith('/admin_1/') ||
     path.startsWith('/forgot-password') ||
     path.startsWith('/reset-password')
   document.documentElement.classList.toggle('control-ui', staff || authSurface)

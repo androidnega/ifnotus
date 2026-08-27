@@ -2,6 +2,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
+import UiTabBar from '@/components/ui/UiTabBar.vue'
+import UiAlert from '@/components/ui/UiAlert.vue'
 import { platformAdminApi } from '@/api'
 import { usePermissions } from '@/composables/usePermissions'
 import { Permission } from '@/lib/permissions'
@@ -21,15 +24,30 @@ const { can } = usePermissions()
 const canOps = computed(() => can(Permission.PLATFORM_OPS))
 const canProvision = computed(() => can(Permission.SYSTEM_ADMIN))
 const canTerminate = computed(() => can(Permission.SYSTEM_ADMIN))
+const canDelete = computed(
+  () => can(Permission.PLATFORM_OPS) || can(Permission.SYSTEM_ADMIN),
+)
 const canGrantCredits = computed(
+  () => can(Permission.PLATFORM_OPS) || can(Permission.SYSTEM_ADMIN),
+)
+const canEditProfile = computed(
   () => can(Permission.PLATFORM_OPS) || can(Permission.SYSTEM_ADMIN),
 )
 const grantCredits = ref(50)
 const grantNote = ref('')
 const grantBusy = ref(false)
+const editPhone = ref('')
+const editEmail = ref('')
+const editFirst = ref('')
+const editLast = ref('')
+const editCompany = ref('')
+const profileBusy = ref(false)
 const provisionPlanId = ref('')
 const provisionDomain = ref('')
 const allPlans = ref<import('@/types/platform').HostingPlan[]>([])
+const deleteConfirmEmail = ref('')
+const deleteBusy = ref(false)
+const statusFilter = ref<'all' | 'live' | 'awaiting_payment' | 'setting_up' | 'none'>('all')
 
 const customers = ref<StaffCustomerListItem[]>([])
 const selected = ref<StaffCustomerDetail | null>(null)
@@ -60,10 +78,49 @@ const activeEnv = computed(() =>
   selected.value?.environments.find((e) => e.id === activeEnvId.value) || null,
 )
 
+const filteredCustomers = computed(() => {
+  if (statusFilter.value === 'all') return customers.value
+  return customers.value.filter((c) => (c.hosting_status || 'none') === statusFilter.value)
+})
+
+const statusCounts = computed(() => {
+  const counts = { all: customers.value.length, live: 0, awaiting_payment: 0, setting_up: 0, none: 0 }
+  for (const c of customers.value) {
+    const s = c.hosting_status || 'none'
+    if (s === 'live') counts.live += 1
+    else if (s === 'awaiting_payment') counts.awaiting_payment += 1
+    else if (s === 'setting_up') counts.setting_up += 1
+    else if (s === 'none') counts.none += 1
+  }
+  return counts
+})
+
+function hostingStatusLabel(status?: string | null) {
+  switch (status) {
+    case 'live':
+      return 'Live'
+    case 'awaiting_payment':
+      return 'Payment to confirm'
+    case 'setting_up':
+      return 'Setting up'
+    case 'suspended':
+      return 'Suspended'
+    case 'inactive':
+      return 'Inactive'
+    default:
+      return 'No hosting'
+  }
+}
+
 function stackLabel(env: StaffEnvironmentItem) {
-  const s = env.stack as { stack?: string; name?: string; installed_at?: string } | null
+  const s = env.stack as {
+    stack?: string
+    stack_name?: string
+    name?: string
+    installed_at?: string
+  } | null
   if (!s) return 'No stack installed'
-  const name = s.stack || s.name || 'stack'
+  const name = s.stack_name || s.name || s.stack || 'stack'
   const when = s.installed_at ? ` · ${new Date(String(s.installed_at)).toLocaleDateString()}` : ''
   return `${name}${when}`
 }
@@ -76,6 +133,10 @@ function currentStackName() {
 function shortDomain(domain?: string | null, id?: string) {
   if (domain) return domain
   return id ? id.slice(0, 8) : '—'
+}
+
+function envHeadline(env: { hosting_name?: string | null; domain?: string | null; id: string }) {
+  return env.hosting_name || shortDomain(env.domain, env.id)
 }
 
 function checkValue(val: unknown) {
@@ -112,6 +173,7 @@ async function loadList() {
 
 async function openCustomer(id: string) {
   msg.value = ''
+  deleteConfirmEmail.value = ''
   health.value = null
   usage.value = null
   stacks.value = null
@@ -119,11 +181,78 @@ async function openCustomer(id: string) {
   try {
     const { data } = await platformAdminApi.getCustomer(id)
     selected.value = data
+    syncEditForm()
     activeEnvId.value = data.environments[0]?.id ?? null
     showList.value = false
     if (activeEnvId.value) await loadEnvPanel(activeEnvId.value)
   } catch (e: unknown) {
     msg.value = apiErr(e, 'Could not open customer.')
+  }
+}
+
+function syncEditForm() {
+  if (!selected.value) return
+  const c = selected.value.customer
+  editPhone.value = c.phone || ''
+  editEmail.value = c.email || ''
+  editFirst.value = c.first_name || ''
+  editLast.value = c.last_name || ''
+  editCompany.value = c.company || ''
+}
+
+async function saveCustomerProfile() {
+  if (!selected.value || !canEditProfile.value) return
+  profileBusy.value = true
+  msg.value = ''
+  try {
+    const { data } = await platformAdminApi.updateCustomer(selected.value.customer.id, {
+      email: editEmail.value.trim() || undefined,
+      phone: editPhone.value.trim() || undefined,
+      first_name: editFirst.value.trim() || undefined,
+      last_name: editLast.value.trim() || undefined,
+      company: editCompany.value.trim() || undefined,
+    })
+    selected.value = {
+      ...selected.value,
+      customer: { ...selected.value.customer, ...data },
+    }
+    syncEditForm()
+    msg.value = 'Contact details updated.'
+    await loadList()
+  } catch (e: unknown) {
+    msg.value = apiErr(e, 'Could not update contact details.')
+  } finally {
+    profileBusy.value = false
+  }
+}
+
+async function deleteCustomer() {
+  if (!selected.value || !canDelete.value) return
+  const email = selected.value.customer.email
+  const typed = deleteConfirmEmail.value.trim()
+  if (typed.toLowerCase() !== email.toLowerCase()) {
+    msg.value = `Type ${email} exactly to confirm deletion.`
+    return
+  }
+  if (
+    !confirm(
+      `Permanently delete ${selected.value.customer.full_name}?\n\nThis terminates all environments and removes their login. Cannot be undone.`,
+    )
+  ) {
+    return
+  }
+  deleteBusy.value = true
+  try {
+    const { data } = await platformAdminApi.deleteCustomer(selected.value.customer.id, typed)
+    msg.value = data.message
+    selected.value = null
+    showList.value = true
+    deleteConfirmEmail.value = ''
+    await loadList()
+  } catch (e: unknown) {
+    msg.value = apiErr(e, 'Could not delete customer.')
+  } finally {
+    deleteBusy.value = false
   }
 }
 
@@ -317,7 +446,13 @@ async function grantCreditsToCustomer() {
 
 async function provisionHosting() {
   if (!selected.value || !provisionPlanId.value) return
-  if (!confirm('Set up hosting for this customer now? They will get SMS and email when it is live.')) return
+  const alreadyLive = (selected.value.environments || []).some(
+    (e) => e.status === 'active' || e.health_status === 'healthy',
+  )
+  const warn = alreadyLive
+    ? 'This customer already has live hosting. Activate anyway and create another environment?'
+    : 'Set up hosting for this customer now? They will get SMS and email when it is live.'
+  if (!confirm(warn)) return
   busy.value = true
   try {
     const domain = provisionDomain.value.trim().toLowerCase()
@@ -328,13 +463,25 @@ async function provisionHosting() {
       name = domain
       ext = domain.slice(i)
     }
-    await platformAdminApi.provisionCustomerHosting(selected.value.customer.id, {
+    const { data } = await platformAdminApi.provisionCustomerHosting(selected.value.customer.id, {
       plan_id: provisionPlanId.value,
       domain_name: name,
       domain_extension: ext,
     })
     await openCustomer(selected.value.customer.id)
-    msg.value = 'Hosting is being set up. The customer will be notified when it is ready.'
+    const status = (data?.provisioning_status || '').toLowerCase()
+    const newest = selected.value?.environments?.[0]
+    const host = newest?.domain
+    if (status === 'active') {
+      msg.value = host
+        ? `Hosting is live: ${host}. Customer notified (SMS/email if delivery succeeds).`
+        : 'Hosting is live. Customer notified (SMS/email if delivery succeeds).'
+    } else if (status === 'failed') {
+      msg.value = 'Hosting setup failed. Check Activity / retry from Orders.'
+    } else {
+      msg.value = 'Hosting setup queued — refresh in a moment if the new environment is not listed yet.'
+    }
+    provisionDomain.value = ''
   } catch (e: unknown) {
     msg.value = apiErr(e, 'Could not set up hosting.')
   } finally {
@@ -372,44 +519,90 @@ watch(
 </script>
 
 <template>
-  <DashboardLayout>
+  <DashboardLayout flush>
     <div class="cust">
-      <header class="cust-head">
-        <div class="cust-head-copy">
-          <h1>Customers</h1>
-          <p>Monitor subscriptions, stacks, health, and fix tenant issues without SSH.</p>
-        </div>
+      <header class="cust-head-bar">
+        <UiPageHeader
+          title="Customers"
+          lede="Find accounts, confirm payments from Orders, and manage live hosting."
+        />
         <form class="cust-search" @submit.prevent="loadList">
-          <input v-model="q" type="search" placeholder="Search email or name" />
+          <input v-model="q" type="search" placeholder="Search name, email, phone" />
           <button type="submit">Search</button>
         </form>
       </header>
 
-      <p v-if="loading" class="cust-muted">Loading…</p>
-      <p v-else-if="error" class="cust-err">{{ error }}</p>
+      <p v-if="loading" class="cust-muted cust-status">Loading…</p>
+      <UiAlert v-else-if="error" class="cust-status" tone="err">{{ error }}</UiAlert>
 
-      <div v-else class="cust-layout" :class="{ 'has-detail': !!selected && !showList }">
+      <div v-else class="cust-layout">
         <aside class="cust-list" :class="{ 'is-hidden-mobile': selected && !showList }">
-          <ul>
-            <li v-for="c in customers" :key="c.id">
-              <button
-                type="button"
-                class="cust-list-item"
-                :class="{ on: selected?.customer.id === c.id }"
-                @click="openCustomer(c.id)"
-              >
-                <span class="name" :title="c.full_name">{{ c.full_name }}</span>
-                <span class="email" :title="c.email">{{ c.email }}</span>
-                <span class="meta">{{ c.subscription_count }} sub · {{ c.environment_count }} env · {{ c.credits_remaining }} AI</span>
-              </button>
-            </li>
-            <li v-if="!customers.length" class="cust-empty">No customers.</li>
-          </ul>
+          <div class="list-filters">
+            <button
+              v-for="f in [
+                { id: 'all' as const, label: `All (${statusCounts.all})` },
+                { id: 'live' as const, label: `Live (${statusCounts.live})` },
+                { id: 'awaiting_payment' as const, label: `Pay (${statusCounts.awaiting_payment})` },
+                { id: 'setting_up' as const, label: `Setup (${statusCounts.setting_up})` },
+                { id: 'none' as const, label: `None (${statusCounts.none})` },
+              ]"
+              :key="f.id"
+              type="button"
+              class="filter-chip"
+              :class="{ on: statusFilter === f.id }"
+              @click="statusFilter = f.id"
+            >
+              {{ f.label }}
+            </button>
+          </div>
+
+          <div class="cust-table-wrap">
+            <table class="cust-table">
+              <thead>
+                <tr>
+                  <th>Customer</th>
+                  <th>Status</th>
+                  <th class="hide-sm">Hosting</th>
+                  <th class="num">AI</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="c in filteredCustomers"
+                  :key="c.id"
+                  :class="{ on: selected?.customer.id === c.id }"
+                  @click="openCustomer(c.id)"
+                >
+                  <td>
+                    <p class="t-name">{{ c.full_name }}</p>
+                    <p class="t-email">{{ c.email }}</p>
+                    <p v-if="c.phone" class="t-meta">{{ c.phone }}</p>
+                  </td>
+                  <td>
+                    <span class="status-pill" :data-s="c.hosting_status || 'none'">
+                      {{ hostingStatusLabel(c.hosting_status) }}
+                    </span>
+                    <p v-if="c.awaiting_payment_count" class="t-meta warn">
+                      {{ c.awaiting_payment_count }} payment(s)
+                    </p>
+                  </td>
+                  <td class="hide-sm">
+                    <p class="t-domain">{{ c.primary_domain || '—' }}</p>
+                    <p class="t-meta">{{ c.environment_count }} env · {{ c.subscription_count }} sub</p>
+                  </td>
+                  <td class="num">{{ c.credits_remaining }}</td>
+                </tr>
+                <tr v-if="!filteredCustomers.length">
+                  <td colspan="4" class="cust-empty">No customers match.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </aside>
 
         <section class="cust-detail" :class="{ 'is-hidden-mobile': !selected || showList }">
-          <p v-if="msg" class="cust-toast">{{ msg }}</p>
-          <p v-if="!selected" class="cust-muted">Select a customer to inspect environments and activity.</p>
+          <UiAlert v-if="msg" :tone="msg.toLowerCase().includes('could not') || msg.toLowerCase().includes('type ') ? 'err' : 'ok'">{{ msg }}</UiAlert>
+          <p v-if="!selected" class="cust-muted pick-hint">Select a customer from the list.</p>
 
           <template v-else>
             <button type="button" class="cust-back" @click="showList = true">← Customers</button>
@@ -426,11 +619,71 @@ watch(
                   <span class="chip">{{ selected.credits_remaining }} AI credits</span>
                 </div>
               </div>
-              <p v-if="selected.customer.phone || selected.customer.company" class="submeta">
+              <p v-if="!canEditProfile && (selected.customer.phone || selected.customer.company)" class="submeta">
                 <span v-if="selected.customer.phone">{{ selected.customer.phone }}</span>
                 <span v-if="selected.customer.phone && selected.customer.company"> · </span>
                 <span v-if="selected.customer.company">{{ selected.customer.company }}</span>
               </p>
+
+              <div v-if="canEditProfile" class="provision profile-edit">
+                <h3>Contact details</h3>
+                <p class="cust-muted">
+                  Update login email or phone. Changing the phone marks it verified so SMS login works immediately.
+                </p>
+                <div class="profile-grid">
+                  <label class="profile-field">
+                    <span>Email</span>
+                    <input v-model="editEmail" type="email" autocomplete="off" />
+                  </label>
+                  <label class="profile-field">
+                    <span>Phone</span>
+                    <input v-model="editPhone" type="tel" autocomplete="off" placeholder="0248069639" />
+                  </label>
+                  <label class="profile-field">
+                    <span>First name</span>
+                    <input v-model="editFirst" type="text" autocomplete="off" />
+                  </label>
+                  <label class="profile-field">
+                    <span>Last name</span>
+                    <input v-model="editLast" type="text" autocomplete="off" />
+                  </label>
+                  <label class="profile-field profile-field-wide">
+                    <span>Company</span>
+                    <input v-model="editCompany" type="text" autocomplete="off" />
+                  </label>
+                </div>
+                <div class="provision-row">
+                  <button type="button" class="btn primary" :disabled="profileBusy" @click="saveCustomerProfile">
+                    {{ profileBusy ? 'Saving…' : 'Save contact details' }}
+                  </button>
+                  <span v-if="selected.customer.phone_verified" class="cust-muted">Phone verified</span>
+                  <span v-else class="cust-muted warn">Phone not verified</span>
+                </div>
+              </div>
+
+              <div v-if="canDelete" class="provision danger-zone danger-zone-top">
+                <h3>Remove account</h3>
+                <p class="cust-muted">
+                  Permanently deletes this tenant — login, hosting environments, orders, and on-disk files.
+                  Type their email to confirm.
+                </p>
+                <div class="provision-row">
+                  <input
+                    v-model="deleteConfirmEmail"
+                    type="email"
+                    :placeholder="selected.customer.email"
+                    autocomplete="off"
+                  />
+                  <button
+                    type="button"
+                    class="btn-danger"
+                    :disabled="deleteBusy || busy || !deleteConfirmEmail.trim()"
+                    @click="deleteCustomer"
+                  >
+                    {{ deleteBusy ? 'Removing…' : 'Remove account' }}
+                  </button>
+                </div>
+              </div>
 
               <div class="split">
                 <div class="min0">
@@ -495,7 +748,10 @@ watch(
 
               <div v-if="canProvision" class="provision">
                 <h3>Activate hosting</h3>
-                <p class="cust-muted">Super admin only — provisions a plan and notifies the customer.</p>
+                <p class="cust-muted">
+                  Super admin only — for goodwill / demo accounts without MoMo.
+                  Prefer <strong>Orders → Confirm &amp; activate</strong> for paid invoices.
+                </p>
                 <div class="provision-row">
                   <select v-model="provisionPlanId">
                     <option v-for="p in allPlans" :key="p.id" :value="p.id">
@@ -512,7 +768,7 @@ watch(
                     :disabled="busy || !provisionPlanId"
                     @click="provisionHosting"
                   >
-                    Activate
+                    {{ busy ? 'Activating…' : 'Activate' }}
                   </button>
                 </div>
               </div>
@@ -529,7 +785,7 @@ watch(
                       :class="{ on: activeEnvId === env.id }"
                       @click="selectEnv(env.id)"
                     >
-                      <span class="env-domain" :title="env.domain || env.id">{{ shortDomain(env.domain, env.id) }}</span>
+                      <span class="env-domain" :title="env.domain || env.id">{{ envHeadline(env) }}</span>
                       <span class="env-meta">{{ env.status }} · {{ env.health_status }}</span>
                       <span class="env-stack" :title="stackLabel(env)">{{ stackLabel(env) }}</span>
                     </button>
@@ -542,8 +798,12 @@ watch(
                 <div class="env-head">
                   <div class="min0">
                     <h3 class="env-title" :title="activeEnv.domain || activeEnv.id">
-                      {{ shortDomain(activeEnv.domain, activeEnv.id) }}
+                      {{ envHeadline(activeEnv) }}
                     </h3>
+                    <p v-if="activeEnv.hosting_name && activeEnv.domain" class="env-sub">
+                      {{ activeEnv.domain }}
+                    </p>
+                    <p class="env-tech muted">Environment ID {{ activeEnv.id }}</p>
                     <div class="chips tight">
                       <span class="chip">{{ activeEnv.status }}</span>
                       <span class="chip">health {{ activeEnv.health_status }}</span>
@@ -608,18 +868,13 @@ watch(
                   </button>
                 </div>
 
-                <div class="tabs" role="tablist">
-                  <button
-                    v-for="t in envTabs"
-                    :key="t.id"
-                    type="button"
-                    role="tab"
-                    :class="{ on: envTab === t.id }"
-                    @click="envTab = t.id"
-                  >
-                    {{ t.label }}
-                  </button>
-                </div>
+                <UiTabBar
+                  :items="envTabs"
+                  :model-value="envTab"
+                  variant="flat"
+                  aria-label="Environment detail"
+                  @update:model-value="envTab = $event as typeof envTab"
+                />
 
                 <div v-if="envTab === 'overview'" class="tab-body">
                   <p v-if="usage" class="wrap">
@@ -716,47 +971,45 @@ watch(
 
 <style scoped>
 .cust {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
   width: 100%;
-  max-width: 100%;
   min-width: 0;
-  padding: 1rem 1rem 2rem;
+  min-height: 0;
   box-sizing: border-box;
-}
-@media (min-width: 768px) {
-  .cust { padding: 1.25rem 1.5rem 2rem; }
+  padding: 1.15rem clamp(1.35rem, 3vw, 2.5rem) 1.75rem;
+  gap: 0.85rem;
 }
 
-.cust-head {
+.cust-head-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 0.85rem;
-  margin-bottom: 1rem;
+  gap: 0.85rem 1.25rem;
+  padding: 0 0 0.85rem;
+  border-bottom: 1px solid #e2e8f0;
+  background: transparent;
+  flex-shrink: 0;
 }
-.cust-head-copy {
-  min-width: 0;
-  flex: 1 1 14rem;
+.dark .cust-head-bar {
+  border-bottom-color: #334155;
 }
-.cust-head h1 {
+.cust-head-bar :deep(.ui-page-header) {
   margin: 0;
-  font-size: 1.25rem;
-  font-weight: 650;
-  color: var(--if-ink, #0f172a);
 }
-.cust-head p {
-  margin: 0.25rem 0 0;
-  font-size: 0.875rem;
-  color: #64748b;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
+.cust-head-bar :deep(h1) {
+  font-size: 1.15rem;
 }
+
 .cust-search {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
   width: 100%;
-  max-width: 22rem;
+  flex: 1 1 18rem;
+  max-width: 36rem;
 }
 .cust-search input,
 .cust-search button,
@@ -789,68 +1042,229 @@ watch(
 }
 
 .cust-layout {
+  flex: 1 1 auto;
   display: grid;
-  gap: 1rem;
+  gap: 0;
   grid-template-columns: minmax(0, 1fr);
-  align-items: start;
+  align-items: stretch;
   min-width: 0;
+  min-height: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 1rem;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.dark .cust-layout {
+  border-color: #334155;
+  background: #0f172a;
 }
 @media (min-width: 1100px) {
   .cust-layout {
-    grid-template-columns: minmax(15rem, 17.5rem) minmax(0, 1fr);
+    grid-template-columns: minmax(22rem, 30rem) minmax(0, 1fr);
   }
-  .cust-back,
-  .is-hidden-mobile { display: none !important; }
+  .cust-back { display: none !important; }
   .cust-list.is-hidden-mobile,
-  .cust-detail.is-hidden-mobile { display: block !important; }
+  .cust-detail.is-hidden-mobile { display: flex !important; }
 }
-
+@media (min-width: 1400px) {
+  .cust-layout {
+    grid-template-columns: minmax(24rem, 34rem) minmax(0, 1fr);
+  }
+}
 @media (max-width: 1099px) {
   .cust-list.is-hidden-mobile { display: none; }
   .cust-detail.is-hidden-mobile { display: none; }
 }
 
 .cust-list,
-.card,
 .cust-detail {
   min-width: 0;
-  max-width: 100%;
+  max-width: none;
 }
 .cust-list {
-  border: 1px solid #e2e8f0;
-  border-radius: 0.85rem;
-  background: #fff;
-  overflow: hidden;
-}
-.dark .cust-list { border-color: #334155; background: #0f172a; }
-.cust-list ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  max-height: min(70vh, 40rem);
-  overflow: auto;
-}
-.cust-list-item {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
-  width: 100%;
-  text-align: left;
-  padding: 0.8rem 0.95rem;
-  border: 0;
-  border-bottom: 1px solid #f1f5f9;
-  background: transparent;
-  cursor: pointer;
-  min-width: 0;
+  border: none;
+  border-radius: 0;
+  border-right: 1px solid #e2e8f0;
+  background: #fff;
+  overflow: hidden;
+  min-height: 0;
 }
-.dark .cust-list-item { border-bottom-color: #1e293b; }
-.cust-list-item:hover,
-.cust-list-item.on { background: #f8fafc; }
-.dark .cust-list-item:hover,
-.dark .cust-list-item.on { background: #1e293b; }
-.cust-list-item .name,
-.cust-list-item .email,
-.cust-list-item .meta,
+.dark .cust-list {
+  border-right-color: #334155;
+  background: #0f172a;
+}
+.cust-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-height: 0;
+  overflow: auto;
+  padding: 1.15rem 1.35rem 1.65rem;
+  background: var(--if-paper, #f4f1ec);
+}
+.dark .cust-detail {
+  background: #0b1120;
+}
+
+.list-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.75rem 0.85rem;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+.dark .list-filters {
+  background: #1e293b;
+  border-bottom-color: #334155;
+}
+.filter-chip {
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #fff;
+  color: #475569;
+  font-size: 0.7rem;
+  font-weight: 650;
+  padding: 0.28rem 0.65rem;
+  cursor: pointer;
+}
+.filter-chip.on {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+.dark .filter-chip {
+  background: #0f172a;
+  border-color: #475569;
+  color: #cbd5e1;
+}
+.dark .filter-chip.on {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+
+.cust-status {
+  padding: 0;
+}
+
+.cust-table-wrap {
+  flex: 1 1 auto;
+  overflow: auto;
+  min-height: 0;
+  max-height: none;
+}
+.cust-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.cust-table th {
+  text-align: left;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  font-weight: 700;
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid #e2e8f0;
+  position: sticky;
+  top: 0;
+  background: #fff;
+  z-index: 1;
+}
+.dark .cust-table th {
+  background: #0f172a;
+  border-bottom-color: #334155;
+}
+.cust-table td {
+  padding: 0.7rem 0.85rem;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: top;
+}
+.dark .cust-table td { border-bottom-color: #1e293b; }
+.cust-table tbody tr {
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.cust-table tbody tr:hover,
+.cust-table tbody tr.on { background: #f8fafc; }
+.dark .cust-table tbody tr:hover,
+.dark .cust-table tbody tr.on { background: #1e293b; }
+.cust-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #334155;
+}
+.t-name {
+  margin: 0;
+  font-weight: 650;
+  color: #0f172a;
+  font-size: 0.9rem;
+}
+.dark .t-name { color: #f8fafc; }
+.t-email,
+.t-meta,
+.t-domain {
+  margin: 0.15rem 0 0;
+  font-size: 0.75rem;
+  color: #64748b;
+  overflow-wrap: anywhere;
+}
+.t-domain { color: #334155; font-weight: 500; }
+.dark .t-domain { color: #cbd5e1; }
+.t-meta.warn { color: #b45309; font-weight: 600; }
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  background: #f1f5f9;
+  color: #334155;
+  white-space: nowrap;
+}
+.status-pill[data-s='live'] { background: #d1fae5; color: #065f46; }
+.status-pill[data-s='awaiting_payment'] { background: #fef3c7; color: #92400e; }
+.status-pill[data-s='setting_up'] { background: #ffedd5; color: #9a3412; }
+.status-pill[data-s='suspended'] { background: #fee2e2; color: #991b1b; }
+.status-pill[data-s='none'],
+.status-pill[data-s='inactive'] { background: #e2e8f0; color: #475569; }
+@media (max-width: 640px) {
+  .hide-sm { display: none; }
+}
+.pick-hint {
+  padding: 2rem 1rem;
+  text-align: center;
+  border: 1px dashed #cbd5e1;
+  border-radius: 0.85rem;
+}
+.danger-zone {
+  border-color: #fecaca !important;
+  background: #fff7f7;
+}
+.dark .danger-zone {
+  background: rgba(127, 29, 29, 0.15);
+  border-color: #7f1d1d !important;
+}
+.btn-danger {
+  border: 0;
+  border-radius: 0.5rem;
+  background: #dc2626;
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 650;
+  padding: 0.45rem 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }
+
 .title,
 .email-line,
 .env-domain,
@@ -865,7 +1279,6 @@ watch(
   overflow-wrap: anywhere;
   word-break: break-word;
 }
-.cust-list-item .name,
 .title,
 .env-domain,
 .env-title,
@@ -876,12 +1289,7 @@ watch(
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cust-list-item .name { font-size: 0.9rem; font-weight: 600; color: #0f172a; }
-.dark .cust-list-item .name { color: #f8fafc; }
-.cust-list-item .email,
-.cust-list-item .meta { font-size: 0.75rem; color: #64748b; }
 
-.cust-detail { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
 .cust-back {
   align-self: flex-start;
   border: 0;
@@ -904,7 +1312,7 @@ watch(
 .cust-muted { margin: 0; font-size: 0.84rem; color: #64748b; }
 .cust-err { margin: 0; font-size: 0.84rem; color: #b42318; }
 .cust-warn { margin: 0; font-size: 0.84rem; color: #b54708; }
-.cust-empty { padding: 1rem; font-size: 0.875rem; color: #64748b; }
+.cust-empty { padding: 1rem; font-size: 0.875rem; color: #64748b; text-align: center; }
 
 .card {
   border: 1px solid #e2e8f0;
@@ -1001,14 +1409,46 @@ h3 {
 .provision-row select,
 .provision-row input { flex: 1 1 10rem; max-width: 100%; }
 
+.profile-grid {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.55rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (min-width: 640px) {
+  .profile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.profile-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+.profile-field-wide { grid-column: 1 / -1; }
+.profile-field input {
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.5rem;
+  font-size: 0.88rem;
+  color: inherit;
+  background: #fff;
+}
+.dark .profile-field input {
+  background: #0f172a;
+  border-color: #334155;
+}
+
 .env-layout {
   display: grid;
   gap: 1rem;
   grid-template-columns: minmax(0, 1fr);
+  width: 100%;
 }
 @media (min-width: 900px) {
   .env-layout {
-    grid-template-columns: minmax(12rem, 15rem) minmax(0, 1fr);
+    grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr);
     align-items: start;
   }
 }
@@ -1051,6 +1491,8 @@ h3 {
 }
 
 .env-title { margin: 0; font-size: 1.05rem; font-weight: 650; }
+.env-sub { margin: 0.2rem 0 0; font-size: 0.86rem; color: #5c6670; }
+.env-tech { margin: 0.35rem 0 0; font-size: 0.72rem; font-family: ui-monospace, monospace; word-break: break-all; }
 .env-stack-line { margin: 0.45rem 0 0; font-size: 0.8rem; color: #64748b; }
 .path {
   margin: 0.35rem 0 0;

@@ -249,12 +249,12 @@ export function packStacksForDisplay(plan: HostingPlan | null | undefined) {
 export function sshHeadline(plan: HostingPlan | null | undefined) {
   const card = plan?.catalog_card
   const transfer = card?.transfer
-  if (transfer?.sftp === 'beta') {
+  if (transfer?.sftp === 'included' || transfer?.sftp === 'limited') {
     const mode = String(plan?.capabilities?.ssh_mode || card?.ssh_mode || planMatrix(plan).ssh)
-    if (mode === 'no') return 'FTP included · SFTP beta'
-    if (mode === 'jail') return 'SSH/SFTP beta'
-    if (mode === 'limited') return 'SSH/SFTP beta (limited)'
-    return 'SSH/SFTP beta'
+    if (mode === 'no') return 'FTP and SFTP included'
+    if (mode === 'jail') return 'SSH/SFTP included'
+    if (mode === 'limited') return 'SSH/SFTP included'
+    return 'SSH/SFTP included'
   }
   const mode = String(plan?.capabilities?.ssh_mode || card?.ssh_mode || planMatrix(plan).ssh)
   if (mode === 'root') return 'Full root SSH'

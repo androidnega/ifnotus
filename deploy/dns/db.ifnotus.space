@@ -1,6 +1,6 @@
 $TTL 1800
 @   IN SOA ns1.ifnotus.space. hostmaster.ifnotus.space. (
-        2026081903 ; serial
+        2026082501 ; serial
         3600       ; refresh
         900        ; retry
         604800     ; expire
@@ -19,6 +19,9 @@ ns2 IN AAAA 2a02:c207:2337:9516::1
 
 www IN A    80.241.223.82
 mail IN A   80.241.223.82
+cpanel IN A 80.241.223.82
+api IN A    80.241.223.82
+status IN A 80.241.223.82
 ftp IN A    80.241.223.82
 ssh IN A    80.241.223.82
 customers IN A 80.241.223.82

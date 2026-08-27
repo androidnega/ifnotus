@@ -14,16 +14,16 @@ const router = useRouter()
 
 const actions = [
   {
-    id: 'monitoring',
-    label: 'Monitoring',
+    id: 'host',
+    label: 'Host',
     icon: IconChart,
-    run: () => router.push({ name: 'monitoring' }),
+    run: () => router.push({ name: 'servers' }),
   },
   {
     id: 'ports',
     label: 'Ports',
     icon: IconServer,
-    run: () => router.push({ name: 'servers' }),
+    run: () => router.push({ name: 'servers', query: { tab: 'ports' } }),
   },
   {
     id: 'apps',

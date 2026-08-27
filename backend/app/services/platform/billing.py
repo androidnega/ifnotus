@@ -99,13 +99,23 @@ class SubscriptionBillingService:
         customer_id: UUID,
         subscription_id: UUID,
         *,
-        days: int = 30,
+        days: int | None = None,
+        months: int | None = None,
         auto: bool = False,
     ) -> Subscription:
+        from app.services.platform.billing_terms_store import add_calendar_months
+
         sub = await self.get_owned(customer_id, subscription_id)
         now = datetime.now(UTC)
         base = sub.expires_at if sub.expires_at and sub.expires_at > now else now
-        sub.expires_at = base + timedelta(days=days)
+        term_months = int(months if months is not None else (getattr(sub, "billing_term_months", None) or 1))
+        if months is not None or days is None:
+            sub.expires_at = add_calendar_months(base, max(1, term_months))
+            # Keep preferred renewal term in sync when a term was purchased/renewed.
+            if months is not None or not getattr(sub, "billing_term_months", None):
+                sub.billing_term_months = max(1, term_months)
+        else:
+            sub.expires_at = base + timedelta(days=max(1, int(days)))
         sub.renewed_at = now
         sub.grace_until = None
         sub.last_reminder_days = None
@@ -210,6 +220,12 @@ class SubscriptionBillingService:
                     env.container_id, cpu=plan.cpu_cores, ram_gb=plan.ram_gb
                 )
             try:
+                from app.services.platform.systemd_env_slice import EnvironmentSliceService
+
+                EnvironmentSliceService().resize_slice(env, plan)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
                 from app.services.platform.environment_storage import apply_os_user_quota
 
                 apply_os_user_quota(
@@ -220,6 +236,18 @@ class SubscriptionBillingService:
                 )
             except Exception:  # noqa: BLE001
                 pass
+            if env.domain:
+                try:
+                    from app.services.platform.php_fpm import PhpFpmPoolService
+
+                    PhpFpmPoolService(self._settings).ensure_pool(
+                        hostname=env.domain,
+                        document_root=str(env.document_root or ""),
+                        ram_gb=float(env.ram_limit_gb or plan.ram_gb or 0.5),
+                        unix_user=env.unix_username,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
 
         await self._notify.notify(
             customer_id,
@@ -514,13 +542,15 @@ class SubscriptionBillingService:
                     env_id=str(env.id),
                     error=str(exc),
                 )
+        customer = await self._session.get(Customer, sub.customer_id)
+        name = (customer.full_name if customer else None) or "there"
+        title, text, html, sms = email_templates.hosting_terminated(name=name)
         await self._notify.notify(
             sub.customer_id,
-            title="Hosting terminated",
-            body=(
-                "The subscription was not renewed. Resources have been released. "
-                "Open Plans if you want to start again."
-            ),
+            title=title,
+            body=text,
             kind="terminate",
-            sms_body="Hosting ended after non-renewal. Start again: ifnotus.space/account/plans",
+            html_body=html,
+            email_subject=title,
+            sms_body=sms,
         )

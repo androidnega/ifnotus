@@ -6,7 +6,7 @@ import SiteHeader from '@/components/site/SiteHeader.vue'
 import { useSiteTheme } from '@/composables/useSiteTheme'
 
 const router = useRouter()
-const { theme, isDark, tone, load: loadTheme } = useSiteTheme()
+const { theme, tone, loaded: themeReady, load: loadTheme } = useSiteTheme()
 
 const domainLocal = ref('')
 const domainExt = ref('.online')
@@ -21,7 +21,7 @@ let statusTimer: ReturnType<typeof setInterval> | null = null
 
 const tlds = ref<Array<{ extension: string; price_yearly: number }>>([
   { extension: '.online', price_yearly: 50 },
-  { extension: '.com', price_yearly: 250 },
+  { extension: '.com', price_yearly: 225 },
   { extension: '.org', price_yearly: 180 },
 ])
 
@@ -30,7 +30,7 @@ const listedTlds = computed(() => {
   return order.map((ext) => {
     const hit = tlds.value.find((t) => t.extension.toLowerCase() === ext)
     if (hit) return hit
-    const fallback = { '.online': 50, '.com': 250, '.org': 180 }[ext] ?? 0
+    const fallback = { '.online': 50, '.com': 225, '.org': 180 }[ext] ?? 0
     return { extension: ext, price_yearly: fallback }
   })
 })
@@ -41,6 +41,8 @@ const selectedTldPrice = computed(() => {
   const hit = tlds.value.find((t) => t.extension === domainExt.value)
   return hit?.price_yearly ?? null
 })
+
+const previewHost = computed(() => (cleanName.value ? fullDomain.value : 'yourbrand.online'))
 
 watch([domainLocal, domainExt], () => {
   if (!domainBusy.value) {
@@ -61,11 +63,7 @@ function stopStatusHints() {
 
 function startStatusHints(domain: string) {
   stopStatusHints()
-  const steps = [
-    `Looking up ${domain}…`,
-    'Checking if it’s free…',
-    'Almost there…',
-  ]
+  const steps = [`Looking up ${domain}…`, 'Checking availability…', 'Almost there…']
   let i = 0
   statusHint.value = steps[0]
   statusTimer = setInterval(() => {
@@ -82,7 +80,7 @@ onMounted(async () => {
     const { data } = await catalogApi.meta()
     if (data.domain_prices?.length) tlds.value = data.domain_prices
   } catch {
-    /* keep defaults */
+    /* defaults */
   }
 })
 
@@ -129,13 +127,11 @@ async function checkDomain() {
     checkedPrice.value = Number(data.price_yearly)
     domainMsg.value =
       data.message ||
-      (data.available
-        ? `Good news — ${data.domain} is free.`
-        : `${data.domain} is already taken. Try another name.`)
+      (data.available ? `${data.domain} is available.` : `${data.domain} is already taken.`)
   } catch {
     if (seq !== checkSeq.value) return
     domainAvailable.value = null
-    domainMsg.value = 'We couldn’t check that right now. Please try again.'
+    domainMsg.value = 'Could not check that domain. Try again.'
   } finally {
     if (seq === checkSeq.value) {
       stopStatusHints()
@@ -165,157 +161,141 @@ function clearAndRetry() {
 </script>
 
 <template>
-  <div class="home" :class="theme">
-    <!-- Server Dark stage -->
-    <div v-if="isDark" class="stage dark-stage" aria-hidden="true">
-      <img
-        class="stage-img"
-        src="/home-servers-hero.jpg"
-        alt=""
-        width="1920"
-        height="1080"
-        decoding="async"
-        fetchpriority="high"
-      />
-      <div class="stage-shade" />
-    </div>
+  <div class="home" :class="[theme, { ready: themeReady }]">
+    <SiteHeader active="home" :tone="tone" surface="solid" />
 
-    <!-- Studio Light stage -->
-    <div v-else class="stage light-stage" aria-hidden="true">
-      <div class="light-grid" />
-    </div>
+    <main class="stage">
+      <div class="atmosphere" aria-hidden="true">
+        <div class="mesh" />
+        <div class="wash" />
+        <div class="rail" />
+      </div>
 
-    <SiteHeader active="home" :tone="tone" />
-
-    <main class="hero" id="top">
-      <div class="hero-copy-block">
-        <p class="hero-brand">IFNOTUS</p>
-        <h1>Go live in minutes.</h1>
-        <p class="hero-copy">
-          Check a domain, choose a plan, and we set up your hosting — SSL, backups, and an AI engineer
-          included.
-        </p>
-
-        <form id="domain" class="domain" @submit.prevent="checkDomain">
-          <label class="sr-only" for="domain-name">Domain name</label>
-          <input
-            id="domain-name"
-            v-model="domainLocal"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="yourbrand"
-            maxlength="63"
-            :disabled="domainBusy"
-          />
-          <select v-model="domainExt" aria-label="Domain extension" :disabled="domainBusy">
-            <option v-for="t in tlds" :key="t.extension" :value="t.extension">
-              {{ t.extension }}
-            </option>
-          </select>
-          <button type="submit" class="cta solid" :disabled="domainBusy">
-            {{ domainBusy ? 'Checking' : 'Check' }}
-          </button>
-        </form>
-
-        <ul class="tld-prices" aria-label="Domain prices">
-          <li v-for="t in listedTlds" :key="t.extension">
-            <span>{{ t.extension }}</span>
-            <strong>₵{{ t.price_yearly }}</strong>
-            <em>/ year</em>
-          </li>
-        </ul>
-
-        <p v-if="selectedTldPrice != null && !domainBusy && domainAvailable === null && !domainMsg" class="domain-tip">
-          {{ domainExt }} is ₵{{ selectedTldPrice }}/year · hosting starts after you pick a plan
-        </p>
-
-        <div
-          v-if="domainBusy || domainMsg"
-          class="domain-result"
-          :class="{
-            loading: domainBusy,
-            ok: !domainBusy && domainAvailable === true,
-            bad: !domainBusy && domainAvailable === false,
-            soft: !domainBusy && domainAvailable === null,
-          }"
-          role="status"
-          aria-live="polite"
-        >
-          <div class="result-main">
-            <span class="result-pill">
-              <template v-if="domainBusy">Checking</template>
-              <template v-else-if="domainAvailable === true">Available</template>
-              <template v-else-if="domainAvailable === false">Taken</template>
-              <template v-else>Try again</template>
-            </span>
-            <p class="result-domain" v-if="checkedDomain || fullDomain">
-              {{ checkedDomain || fullDomain }}
-            </p>
-          </div>
-          <p class="result-copy">{{ domainBusy ? statusHint : domainMsg }}</p>
-          <p v-if="!domainBusy && domainAvailable && checkedPrice != null" class="result-price">
-            Register for <strong>₵{{ checkedPrice }}</strong> / year
+      <div class="stage-inset">
+        <section class="copy">
+          <p class="brand">IFNOTUS</p>
+          <h1>Hosting that starts with your name.</h1>
+          <p class="lede">
+            Check a domain, pick a plan, and go live with SSL, mail, and backups — provisioned in minutes.
           </p>
-          <div v-if="!domainBusy" class="result-actions">
-            <button v-if="domainAvailable" type="button" class="cta solid" @click="startWithDomain">
-              Continue with this domain
-            </button>
-            <button v-else-if="domainAvailable === false" type="button" class="cta ghost" @click="clearAndRetry">
-              Try another name
-            </button>
+
+          <form class="finder" @submit.prevent="checkDomain">
+            <label class="sr-only" for="domain-name">Domain name</label>
+            <div class="finder-row">
+              <input
+                id="domain-name"
+                v-model="domainLocal"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="yourbrand"
+                maxlength="63"
+                :disabled="domainBusy"
+              />
+              <select v-model="domainExt" aria-label="Domain extension" :disabled="domainBusy">
+                <option v-for="t in tlds" :key="t.extension" :value="t.extension">
+                  {{ t.extension }}
+                </option>
+              </select>
+              <button type="submit" class="go" :disabled="domainBusy">
+                <i
+                  class="fa-solid"
+                  :class="domainBusy ? 'fa-spinner fa-spin' : 'fa-magnifying-glass'"
+                  aria-hidden="true"
+                />
+                <span>{{ domainBusy ? 'Checking' : 'Check' }}</span>
+              </button>
+            </div>
+          </form>
+
+          <p class="prices" aria-label="Domain prices">
+            <template v-for="(t, i) in listedTlds" :key="t.extension">
+              <span v-if="i">·</span>
+              <span>{{ t.extension }} ₵{{ t.price_yearly }}/yr</span>
+            </template>
+          </p>
+
+          <div
+            v-if="domainBusy || domainMsg"
+            class="result"
+            :class="{
+              loading: domainBusy,
+              ok: !domainBusy && domainAvailable === true,
+              bad: !domainBusy && domainAvailable === false,
+            }"
+            role="status"
+            aria-live="polite"
+          >
+            <p class="result-line">
+              <template v-if="domainBusy">{{ statusHint }}</template>
+              <template v-else-if="domainAvailable === true">
+                {{ checkedDomain || fullDomain }} is available
+                <span v-if="checkedPrice != null"> — ₵{{ checkedPrice }}/yr</span>
+              </template>
+              <template v-else-if="domainAvailable === false">
+                {{ checkedDomain || fullDomain }} is taken
+              </template>
+              <template v-else>{{ domainMsg }}</template>
+            </p>
+            <div v-if="!domainBusy" class="result-actions">
+              <button v-if="domainAvailable" type="button" class="go" @click="startWithDomain">
+                Continue with this domain
+                <i class="fa-solid fa-arrow-right" aria-hidden="true" />
+              </button>
+              <button
+                v-else-if="domainAvailable === false"
+                type="button"
+                class="again"
+                @click="clearAndRetry"
+              >
+                Try another name
+              </button>
+              <router-link v-if="domainAvailable" class="plans" :to="{ name: 'plans' }">
+                Or browse plans
+              </router-link>
+            </div>
           </div>
-        </div>
 
-        <div class="hero-actions">
-          <router-link class="cta ghost" :to="{ name: 'plans' }">See plans</router-link>
-        </div>
-        <p class="student-note">
-          Students: pick Student at checkout, enter your surname, and we assign
-          <strong>surname.serverlabsttu.space</strong> (or surname1, surname2 if that name is taken). No domain fee.
-        </p>
+          <p v-else class="cta-alt">
+            Already know your plan?
+            <router-link :to="{ name: 'plans' }">Browse hosting packages</router-link>
+          </p>
+        </section>
+
+        <aside class="visual" aria-hidden="true">
+          <div class="panel">
+            <div class="panel-top">
+              <span class="dot" />
+              <span class="dot" />
+              <span class="dot" />
+              <span class="url">{{ previewHost }}</span>
+            </div>
+            <div class="panel-body">
+              <div class="panel-side">
+                <span /><span /><span /><span />
+              </div>
+              <div class="panel-main">
+                <div class="bar wide" />
+                <div class="bar mid" />
+                <div class="tiles">
+                  <span /><span /><span />
+                </div>
+                <div class="bar mid soft" />
+                <div class="bar short soft" />
+              </div>
+            </div>
+            <p class="panel-caption">Your site · live on IFNOTUS</p>
+          </div>
+        </aside>
       </div>
 
-      <div v-if="!isDark" class="hero-visual" aria-hidden="true">
-        <svg class="light-rack" viewBox="0 0 640 480" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect x="80" y="60" width="200" height="360" rx="10" stroke="#d7dde5" stroke-width="2" />
-          <rect x="360" y="60" width="200" height="360" rx="10" stroke="#d7dde5" stroke-width="2" />
-          <g stroke="#e4e8ec" stroke-width="2">
-            <rect x="100" y="90" width="160" height="28" rx="4" />
-            <rect x="100" y="140" width="160" height="28" rx="4" />
-            <rect x="100" y="190" width="160" height="28" rx="4" />
-            <rect x="100" y="240" width="160" height="28" rx="4" />
-            <rect x="100" y="290" width="160" height="28" rx="4" />
-            <rect x="100" y="340" width="160" height="28" rx="4" />
-            <rect x="380" y="90" width="160" height="28" rx="4" />
-            <rect x="380" y="140" width="160" height="28" rx="4" />
-            <rect x="380" y="190" width="160" height="28" rx="4" />
-            <rect x="380" y="240" width="160" height="28" rx="4" />
-            <rect x="380" y="290" width="160" height="28" rx="4" />
-            <rect x="380" y="340" width="160" height="28" rx="4" />
-          </g>
-          <g class="leds">
-            <circle class="led led-a" cx="118" cy="104" r="3.5" />
-            <circle class="led led-b" cx="132" cy="104" r="3.5" />
-            <circle class="led led-c" cx="118" cy="154" r="3.5" />
-            <circle class="led led-d" cx="132" cy="154" r="3.5" />
-            <circle class="led led-e" cx="118" cy="204" r="3.5" />
-            <circle class="led led-f" cx="118" cy="254" r="3.5" />
-            <circle class="led led-g" cx="132" cy="254" r="3.5" />
-            <circle class="led led-h" cx="118" cy="304" r="3.5" />
-            <circle class="led led-i" cx="118" cy="354" r="3.5" />
-            <circle class="led led-j" cx="398" cy="104" r="3.5" />
-            <circle class="led led-k" cx="412" cy="104" r="3.5" />
-            <circle class="led led-l" cx="398" cy="154" r="3.5" />
-            <circle class="led led-m" cx="398" cy="204" r="3.5" />
-            <circle class="led led-n" cx="412" cy="204" r="3.5" />
-            <circle class="led led-o" cx="398" cy="254" r="3.5" />
-            <circle class="led led-p" cx="398" cy="304" r="3.5" />
-            <circle class="led led-q" cx="412" cy="304" r="3.5" />
-            <circle class="led led-r" cx="398" cy="354" r="3.5" />
-          </g>
-        </svg>
-      </div>
+      <footer class="foot">
+        <router-link :to="{ name: 'contact' }">Contact</router-link>
+        <span aria-hidden="true">·</span>
+        <router-link :to="{ name: 'plans' }">Plans</router-link>
+        <span aria-hidden="true">·</span>
+        <span>© IFNOTUS</span>
+      </footer>
     </main>
   </div>
 </template>
@@ -323,520 +303,437 @@ function clearAndRetry() {
 <style>
 html.home-lock,
 body.home-lock {
-  height: 100%;
   overflow: hidden;
   overscroll-behavior: none;
+  height: 100%;
 }
 </style>
 
 <style scoped>
 .home {
-  position: relative;
   height: 100vh;
   height: 100dvh;
+  max-height: 100dvh;
   overflow: hidden;
-  font-family: 'Figtree', 'Segoe UI', sans-serif;
   display: flex;
   flex-direction: column;
-  color: var(--if-ink, #12171c);
-  background: var(--if-paper, #ffffff);
+  font-family: 'Figtree', 'Segoe UI', sans-serif;
+  color: #f4f1ec;
+  background: #12161a;
+  opacity: 0;
+  transition: opacity 0.25s ease;
 }
-
-.home.server-dark {
-  color: var(--if-ink, #f5f7fa);
-  background: var(--if-paper, #0b0e12);
+.home.ready {
+  opacity: 1;
 }
 
 .stage {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
-.stage-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: 62% center;
-  transform: scale(1.01);
-  animation: drift 18s ease-in-out infinite alternate;
-}
-
-.stage-shade {
+.atmosphere {
   position: absolute;
   inset: 0;
-  background:
-    linear-gradient(90deg, rgba(8, 10, 14, 0.88) 0%, rgba(8, 10, 14, 0.55) 48%, rgba(8, 10, 14, 0.28) 100%),
-    linear-gradient(180deg, rgba(8, 10, 14, 0.55) 0%, transparent 28%, rgba(8, 10, 14, 0.72) 100%);
+  pointer-events: none;
+  overflow: hidden;
 }
-
-.light-stage {
+.mesh {
+  position: absolute;
+  inset: -10%;
   background:
-    radial-gradient(900px 520px at 88% 18%, var(--if-glow, rgba(255, 108, 44, 0.08)), transparent 55%),
-    linear-gradient(180deg, var(--if-surface, #ffffff) 0%, var(--if-paper, #f7f9fb) 55%, var(--if-paper, #f3f5f7) 100%);
+    radial-gradient(ellipse 55% 45% at 18% 35%, rgba(255, 108, 44, 0.28), transparent 60%),
+    radial-gradient(ellipse 50% 40% at 88% 70%, rgba(255, 108, 44, 0.12), transparent 55%),
+    linear-gradient(160deg, #0e1216 0%, #1a2229 48%, #12161a 100%);
+  animation: mesh-drift 18s ease-in-out infinite alternate;
 }
-
-.light-grid {
+.wash {
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(18, 23, 28, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(18, 23, 28, 0.035) 1px, transparent 1px);
+    linear-gradient(rgba(244, 241, 236, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(244, 241, 236, 0.035) 1px, transparent 1px);
   background-size: 48px 48px;
-  mask-image: linear-gradient(90deg, transparent 0%, #000 42%, #000 100%);
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, #000 20%, transparent 75%);
+  opacity: 0.7;
+}
+.rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: clamp(1.15rem, 3vw, 2rem);
+  width: 1px;
+  background: linear-gradient(180deg, transparent, rgba(255, 108, 44, 0.45), transparent);
+  opacity: 0.5;
+}
+@media (min-width: 900px) {
+  .rail {
+    left: max(calc((100% - 76rem) / 2 + 0.35rem), clamp(1.15rem, 3vw, 2rem));
+  }
 }
 
-.led {
-  fill: #c5ccd4;
-}
-
-.led-a,
-.led-j,
-.led-p {
-  fill: #22c55e;
-  animation: blink-green 1.8s ease-in-out infinite;
-}
-.led-b,
-.led-k,
-.led-n {
-  fill: var(--if-primary, #ff6c2c);
-  animation: blink-orange 2.4s ease-in-out infinite;
-}
-.led-c,
-.led-l,
-.led-r {
-  fill: #22c55e;
-  animation: blink-green 2.1s ease-in-out 0.35s infinite;
-}
-.led-d,
-.led-m {
-  fill: #22c55e;
-  animation: blink-green 1.5s ease-in-out 0.7s infinite;
-}
-.led-e,
-.led-o {
-  fill: var(--if-primary, #ff6c2c);
-  animation: blink-orange 1.9s ease-in-out 0.2s infinite;
-}
-.led-f,
-.led-q {
-  fill: #22c55e;
-  animation: blink-green 2.6s ease-in-out 0.5s infinite;
-}
-.led-g {
-  fill: #22c55e;
-  animation: blink-green 1.4s ease-in-out 0.15s infinite;
-}
-.led-h {
-  fill: var(--if-primary, #ff6c2c);
-  animation: blink-orange 2.8s ease-in-out 0.9s infinite;
-}
-.led-i {
-  fill: #22c55e;
-  animation: blink-green 2s ease-in-out 1.1s infinite;
-}
-
-.hero {
-  --home-inline: clamp(1.25rem, 4.5vw, 2.5rem);
+.stage-inset {
   position: relative;
   z-index: 1;
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  max-width: 76rem;
+  margin: 0 auto;
+  padding: clamp(1rem, 3vh, 2rem) clamp(1.15rem, 3vw, 2rem);
+  box-sizing: border-box;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
+  gap: 1.25rem;
   align-items: center;
-  gap: clamp(1rem, 3vw, 2.5rem);
-  max-width: 72rem;
-  width: 100%;
-  margin: 0 auto;
-  padding: 1.25rem var(--home-inline) 2rem;
-  box-sizing: border-box;
 }
-
-.hero-copy-block {
-  max-width: 36rem;
-  width: 100%;
-  min-width: 0;
-}
-
-.hero-visual {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  min-width: 0;
-  max-width: 100%;
-}
-
-.light-rack {
-  display: block;
-  width: 100%;
-  max-width: 28rem;
-  height: auto;
-  max-height: min(58vh, 26rem);
-  opacity: 0.95;
-  animation: float 10s ease-in-out infinite alternate;
-}
-
-@media (min-width: 900px) {
-  .hero {
+@media (min-width: 960px) {
+  .stage-inset {
     grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
-  }
-
-  .hero-visual {
-    display: flex;
-  }
-
-  /* Dark theme uses full-bleed photo — keep copy column balanced with empty right gutter */
-  .server-dark .hero {
-    grid-template-columns: minmax(0, 1fr);
+    gap: clamp(1.5rem, 4vw, 3rem);
   }
 }
 
-.hero-brand {
+.copy {
+  min-width: 0;
+  animation: rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.brand {
   margin: 0;
   font-family: 'Sora', sans-serif;
-  font-size: clamp(2.6rem, 8vw, 4.4rem);
+  font-size: clamp(2.4rem, 7vw, 4.25rem);
   font-weight: 800;
   letter-spacing: -0.06em;
   line-height: 0.92;
-  color: var(--if-primary, #ff6c2c);
-  animation: rise 0.7s ease-out both;
+  color: #fff;
 }
-
-.hero h1 {
+.copy h1 {
   margin: 0.85rem 0 0;
+  max-width: 18ch;
   font-family: 'Sora', sans-serif;
-  font-size: clamp(1.45rem, 3.6vw, 2.15rem);
+  font-size: clamp(1.35rem, 3.2vw, 2rem);
   font-weight: 650;
   letter-spacing: -0.035em;
   line-height: 1.15;
-  animation: rise 0.7s ease-out 0.08s both;
+  color: #f4f1ec;
 }
-
-.server-dark .hero h1 {
-  color: #fff;
-}
-
-.home:not(.server-dark) .hero h1 {
-  color: #12171c;
-}
-
-.hero-copy {
-  margin: 0.85rem 0 0;
-  font-size: 1.02rem;
+.lede {
+  margin: 0.7rem 0 0;
+  max-width: 34rem;
+  font-size: clamp(0.92rem, 1.7vw, 1.05rem);
   line-height: 1.55;
-  animation: rise 0.7s ease-out 0.16s both;
+  color: rgba(244, 241, 236, 0.68);
 }
 
-.server-dark .hero-copy {
-  color: rgba(245, 247, 250, 0.78);
+.finder {
+  margin-top: 1.35rem;
+  max-width: 34rem;
+  animation: rise 0.75s cubic-bezier(0.22, 1, 0.36, 1) 0.08s both;
 }
-
-.home:not(.server-dark) .hero-copy {
-  color: #5a6570;
-}
-
-.domain {
-  margin-top: 1.5rem;
+.finder-row {
   display: grid;
   grid-template-columns: 1fr auto auto;
-  gap: 0.45rem;
-  animation: rise 0.7s ease-out 0.24s both;
-}
-
-.domain input,
-.domain select {
-  border-radius: 0.55rem;
-  padding: 0.8rem 0.9rem;
-  font: inherit;
-}
-
-.server-dark .domain input,
-.server-dark .domain select {
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
-  backdrop-filter: blur(8px);
-}
-
-.server-dark .domain select option {
-  color: #12171c;
-}
-
-.server-dark .domain input::placeholder {
-  color: rgba(255, 255, 255, 0.45);
-}
-
-.home:not(.server-dark) .domain input,
-.home:not(.server-dark) .domain select {
-  border: 1px solid #d9dee4;
-  background: #fff;
-  color: #12171c;
-}
-
-.home:not(.server-dark) .domain input::placeholder {
-  color: #9aa3ad;
-}
-
-.domain input:focus,
-.domain select:focus {
-  outline: none;
-  border-color: var(--if-primary, #ff6c2c);
-  box-shadow: 0 0 0 3px var(--if-primary-ring, rgba(255, 108, 44, 0.2));
-}
-
-.domain input:disabled,
-.domain select:disabled {
-  opacity: 0.7;
-}
-
-.tld-prices {
-  margin: 0.85rem 0 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.45rem;
-  max-width: 28rem;
-}
-.tld-prices li {
-  display: grid;
-  gap: 0.05rem;
-  padding: 0.55rem 0.65rem;
-  border-radius: 0.7rem;
-  border: 1px solid var(--if-border, #e4e8ec);
-  background: color-mix(in srgb, var(--if-surface, #fff) 88%, var(--if-primary, #ff6c2c));
-}
-.home.server-dark .tld-prices li {
-  border-color: rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.08);
-}
-.tld-prices span {
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: var(--if-primary, #ff6c2c);
-}
-.tld-prices strong {
-  font-family: Sora, sans-serif;
-  font-size: 1.05rem;
-  font-weight: 750;
-  letter-spacing: -0.03em;
-}
-.tld-prices em {
-  font-style: normal;
-  font-size: 0.68rem;
-  color: var(--if-muted, #7a8490);
-}
-
-.domain-tip {
-  margin: 0.55rem 0 0;
-  font-size: 0.82rem;
-  line-height: 1.4;
-}
-
-.server-dark .domain-tip {
-  color: rgba(245, 247, 250, 0.55);
-}
-
-.home:not(.server-dark) .domain-tip {
-  color: #7a8490;
-}
-
-.domain-result {
-  margin-top: 0.85rem;
-  max-width: 28rem;
-  border-radius: 0.85rem;
-  padding: 0.85rem 1rem;
-  animation: rise 0.35s ease-out both;
-}
-
-.home:not(.server-dark) .domain-result {
-  background: #fff;
-  border: 1px solid #e4e8ec;
-}
-
-.server-dark .domain-result {
-  background: rgba(8, 10, 14, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  gap: 0.4rem;
+  padding: 0.35rem;
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(244, 241, 236, 0.14);
   backdrop-filter: blur(10px);
 }
-
-.domain-result.ok {
-  border-color: rgba(15, 122, 69, 0.35);
+.finder-row input,
+.finder-row select {
+  border: none;
+  border-radius: 0.5rem;
+  padding: 0.8rem 0.85rem;
+  font: inherit;
+  font-size: 0.95rem;
+  background: transparent;
+  color: #fff;
+}
+.finder-row input::placeholder {
+  color: rgba(244, 241, 236, 0.4);
+}
+.finder-row select {
+  color: rgba(244, 241, 236, 0.9);
+  background: rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+}
+.finder-row select option {
+  color: #161a1d;
+  background: #fff;
+}
+.finder-row input:focus,
+.finder-row select:focus {
+  outline: none;
+  background: rgba(255, 255, 255, 0.06);
+}
+@media (max-width: 560px) {
+  .finder-row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .finder-row input {
+    grid-column: 1 / -1;
+  }
+  .finder-row .go {
+    grid-column: 1 / -1;
+  }
 }
 
-.home:not(.server-dark) .domain-result.ok {
-  background: #f3fbf6;
-}
-
-.server-dark .domain-result.ok {
-  background: rgba(15, 122, 69, 0.16);
-}
-
-.domain-result.bad {
-  border-color: rgba(180, 35, 24, 0.28);
-}
-
-.home:not(.server-dark) .domain-result.bad {
-  background: #fff6f4;
-}
-
-.server-dark .domain-result.bad {
-  background: rgba(180, 35, 24, 0.16);
-}
-
-.domain-result.loading {
-  border-color: var(--if-primary, #ff6c2c);
-}
-
-.result-main {
-  display: flex;
-  align-items: center;
-  gap: 0.65rem;
-  flex-wrap: wrap;
-}
-
-.result-pill {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  padding: 0.22rem 0.55rem;
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  background: rgba(18, 23, 28, 0.08);
-  color: #5a6570;
-}
-
-.server-dark .result-pill {
-  background: rgba(255, 255, 255, 0.1);
-  color: rgba(245, 247, 250, 0.8);
-}
-
-.domain-result.ok .result-pill {
-  background: rgba(15, 122, 69, 0.14);
-  color: #0f7a45;
-}
-
-.server-dark .domain-result.ok .result-pill {
-  background: rgba(125, 255, 168, 0.16);
-  color: #7dffa8;
-}
-
-.domain-result.bad .result-pill {
-  background: rgba(180, 35, 24, 0.12);
-  color: #b42318;
-}
-
-.server-dark .domain-result.bad .result-pill {
-  background: rgba(255, 180, 168, 0.14);
-  color: #ffb4a8;
-}
-
-.domain-result.loading .result-pill {
-  background: var(--if-primary-soft, rgba(255, 108, 44, 0.14));
-  color: var(--if-primary, #ff6c2c);
-}
-
-.result-domain {
-  margin: 0;
-  font-family: 'Sora', sans-serif;
-  font-size: 0.98rem;
-  font-weight: 650;
-  letter-spacing: -0.03em;
-  word-break: break-all;
-}
-
-.result-copy {
-  margin: 0.45rem 0 0;
-  font-size: 0.9rem;
-  line-height: 1.45;
-}
-
-.home:not(.server-dark) .result-copy {
-  color: #5a6570;
-}
-
-.server-dark .result-copy {
-  color: rgba(245, 247, 250, 0.78);
-}
-
-.result-price {
-  margin: 0.4rem 0 0;
-  font-size: 0.88rem;
-}
-
-.home:not(.server-dark) .result-price {
-  color: #3a4450;
-}
-
-.server-dark .result-price {
-  color: rgba(245, 247, 250, 0.88);
-}
-
-.result-actions {
-  margin-top: 0.75rem;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.hero-actions {
-  margin-top: 1.1rem;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.7rem;
-  align-items: center;
-  animation: rise 0.7s ease-out 0.3s both;
-}
-.student-note {
-  margin: 0.85rem 0 0;
-  max-width: 36rem;
-  font-size: 0.9rem;
-  line-height: 1.45;
-  color: #5c6670;
-}
-
-.cta {
+.go {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 0.5rem;
-  padding: 0.55rem 1rem;
-  font-weight: 600;
-  font-size: 0.9rem;
-  text-decoration: none;
+  gap: 0.4rem;
   border: none;
+  border-radius: 0.5rem;
+  padding: 0.75rem 1.05rem;
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 700;
   cursor: pointer;
   background: var(--if-primary, #ff6c2c);
   color: #fff;
+  transition: filter 0.15s ease, transform 0.15s ease;
 }
-
-.cta:hover {
+.go:hover:not(:disabled) {
   filter: brightness(1.06);
 }
-
-.cta.ghost {
-  background: transparent;
+.go:disabled {
+  opacity: 0.7;
+  cursor: wait;
 }
 
-.server-dark .cta.ghost {
-  background: rgba(255, 255, 255, 0.08);
+.prices {
+  margin: 0.7rem 0 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.01em;
+  color: rgba(244, 241, 236, 0.48);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.55rem;
+}
+
+.cta-alt {
+  margin: 1rem 0 0;
+  font-size: 0.82rem;
+  color: rgba(244, 241, 236, 0.55);
+}
+.cta-alt a,
+.plans {
+  color: #ff9a66;
+  font-weight: 650;
+  text-decoration: none;
+}
+.cta-alt a:hover,
+.plans:hover {
+  text-decoration: underline;
+}
+
+.result {
+  margin-top: 0.9rem;
+  max-width: 34rem;
+  padding: 0.85rem 0 0;
+  border-top: 1px solid rgba(244, 241, 236, 0.12);
+  animation: rise 0.35s ease both;
+}
+.result-line {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 650;
+  color: #f4f1ec;
+}
+.result.ok .result-line {
+  color: #6ee7b7;
+}
+.result.bad .result-line {
+  color: #fca5a5;
+}
+.result.loading .result-line {
+  color: rgba(244, 241, 236, 0.75);
+}
+.result-actions {
+  margin-top: 0.7rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem 1rem;
+}
+.again {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 650;
+  color: rgba(244, 241, 236, 0.7);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+.again:hover {
   color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.22);
 }
 
-.home:not(.server-dark) .cta.ghost {
-  color: #12171c;
-  border: 1px solid #d9dee4;
-  background: #fff;
+.visual {
+  display: none;
+  justify-content: center;
+  align-items: center;
+  min-height: 0;
+  animation: rise 0.85s cubic-bezier(0.22, 1, 0.36, 1) 0.12s both;
+}
+@media (min-width: 960px) {
+  .visual {
+    display: flex;
+  }
 }
 
-.cta.solid:disabled {
-  opacity: 0.65;
-  cursor: not-allowed;
+.panel {
+  width: min(100%, 26rem);
+  transform: perspective(1200px) rotateY(-8deg) rotateX(4deg);
+  transform-origin: center;
+  transition: transform 0.5s ease;
+}
+.panel:hover {
+  transform: perspective(1200px) rotateY(-4deg) rotateX(2deg);
+}
+.panel-top {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 0.85rem 0.85rem 0 0;
+  background: rgba(20, 24, 28, 0.92);
+  border: 1px solid rgba(244, 241, 236, 0.14);
+  border-bottom: none;
+}
+.dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: rgba(244, 241, 236, 0.28);
+}
+.dot:first-child {
+  background: #ff6c2c;
+}
+.url {
+  margin-left: 0.55rem;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.68rem;
+  color: rgba(244, 241, 236, 0.55);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.panel-body {
+  display: grid;
+  grid-template-columns: 3.25rem 1fr;
+  min-height: 16rem;
+  border-radius: 0 0 0.85rem 0.85rem;
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
+  border: 1px solid rgba(244, 241, 236, 0.14);
+  overflow: hidden;
+}
+.panel-side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.9rem 0.65rem;
+  background: rgba(0, 0, 0, 0.28);
+  border-right: 1px solid rgba(244, 241, 236, 0.08);
+}
+.panel-side span {
+  height: 0.35rem;
+  border-radius: 0.2rem;
+  background: rgba(244, 241, 236, 0.22);
+}
+.panel-side span:nth-child(1) {
+  width: 70%;
+  background: #ff6c2c;
+}
+.panel-side span:nth-child(2) {
+  width: 90%;
+}
+.panel-side span:nth-child(3) {
+  width: 55%;
+}
+.panel-side span:nth-child(4) {
+  width: 75%;
+}
+.panel-main {
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+.bar {
+  height: 0.55rem;
+  border-radius: 0.25rem;
+  background: rgba(244, 241, 236, 0.28);
+}
+.bar.wide {
+  width: 55%;
+  height: 0.75rem;
+  background: rgba(255, 108, 44, 0.85);
+}
+.bar.mid {
+  width: 78%;
+}
+.bar.short {
+  width: 42%;
+}
+.bar.soft {
+  background: rgba(244, 241, 236, 0.14);
+}
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.45rem;
+  margin: 0.25rem 0;
+}
+.tiles span {
+  aspect-ratio: 1.35;
+  border-radius: 0.4rem;
+  background: rgba(244, 241, 236, 0.1);
+  border: 1px solid rgba(244, 241, 236, 0.08);
+}
+.tiles span:first-child {
+  background: color-mix(in srgb, #ff6c2c 28%, transparent);
+  border-color: color-mix(in srgb, #ff6c2c 35%, transparent);
+}
+.panel-caption {
+  margin: 0.85rem 0 0;
+  text-align: center;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(244, 241, 236, 0.42);
+}
+
+.foot {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem 0.65rem;
+  padding: 0.55rem clamp(1.15rem, 3vw, 2rem) 0.9rem;
+  font-size: 0.72rem;
+  color: rgba(244, 241, 236, 0.42);
+  border-top: 1px solid rgba(244, 241, 236, 0.08);
+}
+.foot a {
+  color: inherit;
+  text-decoration: none;
+  font-weight: 600;
+}
+.foot a:hover {
+  color: #ff9a66;
 }
 
 .sr-only {
@@ -857,69 +754,29 @@ body.home-lock {
   }
   to {
     opacity: 1;
-    transform: none;
-  }
-}
-
-@keyframes drift {
-  from {
-    transform: scale(1.01) translate(0, 0);
-  }
-  to {
-    transform: scale(1.035) translate(-0.4%, 0.4%);
-  }
-}
-
-@keyframes float {
-  from {
     transform: translateY(0);
   }
+}
+@keyframes mesh-drift {
+  from {
+    transform: scale(1) translate(0, 0);
+  }
   to {
-    transform: translateY(-0.55rem);
+    transform: scale(1.05) translate(-1.5%, 1%);
   }
 }
 
-@keyframes blink-green {
-  0%,
-  100% {
-    fill: #86efac;
-    opacity: 0.45;
+@media (prefers-reduced-motion: reduce) {
+  .mesh,
+  .copy,
+  .finder,
+  .visual,
+  .result {
+    animation: none;
   }
-  40% {
-    fill: #16a34a;
-    opacity: 1;
-  }
-  70% {
-    fill: #22c55e;
-    opacity: 0.85;
-  }
-}
-
-@keyframes blink-orange {
-  0%,
-  100% {
-    fill: #fdba8c;
-    opacity: 0.4;
-  }
-  35% {
-    fill: var(--if-primary, #ff6c2c);
-    opacity: 1;
-  }
-  65% {
-    fill: #fb923c;
-    opacity: 0.75;
-  }
-}
-
-@media (max-width: 640px) {
-  .domain {
-    grid-template-columns: 1fr 1fr;
-  }
-  .domain input {
-    grid-column: 1 / -1;
-  }
-  .domain .cta {
-    grid-column: 1 / -1;
+  .panel,
+  .panel:hover {
+    transform: none;
   }
 }
 </style>

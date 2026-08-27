@@ -1,0 +1,95 @@
+================================================================================
+PHASE D REPORT — RESOLVE FTP/SFTP OVERLAP
+Master prompt: IFNOTUS Production Server Remediation & ISPConfig Migration Master Prompt.md
+Date: 2026-08-27
+Result: PASS
+STOPPING — next is Phase E (ISPConfig install PLAN) only when instructed.
+================================================================================
+
+## POSITION
+
+  A Security ............... DONE
+  B Provider architecture .. DONE
+  C Backups ................ DONE
+  D FTP/SFTP overlap ....... DONE (this report)
+  E ISPConfig install plan . NEXT
+
+## RESULT: PASS
+
+### Current state found
+
+| Component | State before | Role |
+|-----------|--------------|------|
+| OpenSSH SFTP | active :22 | IFNOTUS real tenant transfer (chroot, no shell) |
+| pure-ftpd-mysql | active :21 | OLS leftover; ISPConfig will need this package |
+| vsftpd | inactive, pkg status `rc` | IFNOTUS legacy code path in ftp.py; not running |
+
+sshd Match rules preserved:
+  /etc/ssh/sshd_config.d/ifnotus-sftp.conf   → Group ifnotus-sftp, ForceCommand internal-sftp, Chroot
+  /etc/ssh/sshd_config.d/ifnotus-customers.conf → Group ifnotus-ssh (gated shell)
+
+### Recommended FINAL transfer architecture
+
+```text
+CUSTOMER DEFAULT (IFNOTUS UI "Transfer"):
+  SFTP via OpenSSH
+  - chrooted
+  - no interactive shell (unless paid SSH entitlement)
+  - host: CUSTOMER_SFTP_HOST / ssh.ifnotus.space pattern
+
+AFTER ISPConfig migration (engine FTP accounts):
+  Pure-FTPd (+ MySQL virtual users) owned by ISPConfig
+  - IFNOTUS creates FTP users via HostingProvider → ISPConfig API
+  - Customers still see IFNOTUS UI credentials, not ISPConfig panel
+
+DEPRECATED / DO NOT RELY ON:
+  vsftpd as long-term daemon
+  - Keep code temporarily for legacy envs that already used it
+  - Do not reinstall for new tenants
+  - Retire after ISPConfig FTP path is live
+```
+
+### Why Pure-FTPd was NOT removed
+
+Master prompt + ISPConfig docs: ISPConfig 3 expects Pure-FTPd (not vsftpd).
+Packages KEPT:
+  pure-ftpd-common
+  pure-ftpd-mysql
+
+### What changed on server
+
+1. Backup notes: /srv/backups/phase-d-ftp-20260827/
+2. `systemctl stop pure-ftpd-mysql`
+3. `systemctl disable pure-ftpd-mysql`
+4. Ensured vsftpd remains stopped/disabled
+5. UFW 21 + 40000:40100 KEPT for future ISPConfig FTP
+6. Port 21 no longer listening (daemon stopped)
+7. OpenSSH :22 unchanged; sshd -t OK
+
+### What remains unchanged
+
+- Tenant SFTP Match configs
+- IFNOTUS ftp.py / sftp_access.py code (legacy still present)
+- Product sites / nginx / databases
+- Pure-FTPd packages installed (ready for Phase E+)
+
+### Services restarted / stopped
+
+- STOPPED+DISABLED: pure-ftpd-mysql
+- NOT restarted: ssh, nginx, ifnotus-api
+
+### Files modified
+
+- systemd enablement state for pure-ftpd-mysql (disabled)
+- No application code changes in this phase
+
+### Site smoke
+
+- ifnotus.space 200
+- quizsnap.online 200
+
+================================================================================
+STOP.
+
+Say "Phase E" to continue (ISPConfig installation PLAN — still no blind install).
+================================================================================

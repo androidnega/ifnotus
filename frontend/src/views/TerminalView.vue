@@ -5,6 +5,8 @@ import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Skeleton from '@/components/ui/Skeleton.vue'
+import UiAlert from '@/components/ui/UiAlert.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import AiAgentPanel from '@/components/ai/AiAgentPanel.vue'
 import { terminalApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
@@ -105,31 +107,29 @@ onMounted(loadAudit)
 <template>
   <DashboardLayout @refresh="loadAudit">
     <div class="animate-fade-in space-y-5">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 class="text-lg font-semibold text-slate-900 dark:text-white">Terminal</h1>
-          <p class="text-sm text-surface-muted">Controlled command execution with audit logging</p>
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <button
-            v-if="canExecute"
-            type="button"
-            class="rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700"
-            @click="openFullscreen"
-          >
-            Open fullscreen
-          </button>
-          <button
-            v-if="canExecute"
-            type="button"
-            class="rounded-lg border border-surface-border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50 dark:hover:bg-slate-800"
-            :disabled="clearing || (!audit.length && !result)"
-            @click="clearLogs"
-          >
-            {{ clearing ? 'Clearing…' : 'Clear logs' }}
-          </button>
-        </div>
-      </div>
+      <UiPageHeader title="Terminal" lede="Controlled host command execution with audit logging (not an SSH session)">
+        <template #actions>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              v-if="canExecute"
+              type="button"
+              class="ds-btn-primary text-sm"
+              @click="openFullscreen"
+            >
+              Open fullscreen
+            </button>
+            <button
+              v-if="canExecute"
+              type="button"
+              class="ds-btn-ghost text-sm"
+              :disabled="clearing || (!audit.length && !result)"
+              @click="clearLogs"
+            >
+              {{ clearing ? 'Clearing…' : 'Clear logs' }}
+            </button>
+          </div>
+        </template>
+      </UiPageHeader>
 
       <Card v-if="!canExecute" padding="md">
         <p class="text-sm text-surface-muted">You do not have permission to execute terminal commands.</p>
@@ -160,14 +160,8 @@ onMounted(loadAudit)
             >
               {{ running ? 'Running…' : 'Execute' }}
             </button>
-            <p
-              v-if="message"
-              class="mt-2 text-sm"
-              :class="message.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-600'"
-            >
-              {{ message.text }}
-            </p>
-          </Card>
+              <UiAlert v-if="message" :tone="message.ok ? 'ok' : 'err'" class="mt-2">{{ message.text }}</UiAlert>
+            </Card>
 
           <Card v-if="running && !result" padding="md">
             <div class="space-y-2">

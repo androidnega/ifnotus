@@ -1,20 +1,30 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import UiBrandMark from '@/components/ui/UiBrandMark.vue'
+import { useAuthStore } from '@/stores/auth'
 import { useSiteTheme } from '@/composables/useSiteTheme'
 import '@/assets/portal.css'
 
-const props = defineProps<{
-  subtitle?: string
-  email?: string
-  displayName?: string
-  /** Marketing landing vs signed-in panel */
-  mode?: 'marketing' | 'app'
-  /** Active package accent */
-  planAccent?: string
-  /** Built-in profile menu + support FAB (app mode) */
-  profileMenu?: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    subtitle?: string
+    email?: string
+    displayName?: string
+    /** Marketing landing vs signed-in panel */
+    mode?: 'marketing' | 'app'
+    /** Active package accent */
+    planAccent?: string
+    /** Profile avatar menu in the header (app mode). Default on. */
+    profileMenu?: boolean
+    /** Unread support replies badge shown on the Support FAB (app mode only). */
+    supportCount?: number
+  }>(),
+  {
+    profileMenu: true,
+    supportCount: 0,
+  },
+)
 
 const emit = defineEmits<{
   account: []
@@ -23,14 +33,28 @@ const emit = defineEmits<{
 }>()
 
 const router = useRouter()
+const auth = useAuthStore()
 const { load, isDark } = useSiteTheme()
 let previousDark = false
 
 const menuOpen = ref(false)
-const showProfile = computed(() => props.mode === 'app' && props.profileMenu !== false)
+const showProfile = computed(() => props.mode === 'app' && props.profileMenu)
+const supportCountLabel = computed(() => {
+  const n = Number(props.supportCount || 0)
+  if (!Number.isFinite(n) || n <= 0) return ''
+  if (n > 99) return '99+'
+  return String(n)
+})
+
+const resolvedEmail = computed(
+  () => props.email || auth.user?.email || '',
+)
+const resolvedDisplayName = computed(
+  () => props.displayName || auth.user?.full_name || auth.user?.username || '',
+)
 
 const initials = computed(() => {
-  const src = (props.displayName || props.email || 'U').trim()
+  const src = (resolvedDisplayName.value || resolvedEmail.value || 'U').trim()
   const parts = src.split(/[\s@]+/).filter(Boolean)
   if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase()
   return src.slice(0, 2).toUpperCase()
@@ -85,6 +109,13 @@ onMounted(async () => {
   document.documentElement.classList.toggle('dark', isDark.value)
   document.documentElement.style.colorScheme = isDark.value ? 'dark' : 'light'
   document.addEventListener('click', onDocClick)
+  if (props.mode === 'app' && auth.isAuthenticated && !auth.user) {
+    try {
+      await auth.fetchUser()
+    } catch {
+      /* stay guest-looking; avatar still shows fallback initials */
+    }
+  }
 })
 
 onUnmounted(() => {
@@ -104,10 +135,9 @@ onUnmounted(() => {
   >
     <header class="portal-header">
       <div class="portal-header-inner">
-        <router-link :to="{ name: mode === 'app' ? 'portal-dashboard' : 'home' }" class="flex items-center gap-3">
-          <span class="portal-mark" aria-hidden="true">IF</span>
-          <span class="portal-wordmark">IFNOTUS</span>
-        </router-link>
+        <UiBrandMark
+          :to="{ name: mode === 'app' ? 'portal-dashboard' : 'home' }"
+        />
         <nav class="flex items-center gap-1 text-sm sm:gap-3">
           <slot name="actions" />
           <div v-if="showProfile" class="profile-wrap">
@@ -122,7 +152,7 @@ onUnmounted(() => {
               <span class="profile-avatar">{{ initials }}</span>
             </button>
             <div v-if="menuOpen" class="profile-menu" role="menu">
-              <p v-if="email" class="profile-email">{{ email }}</p>
+              <p v-if="resolvedEmail" class="profile-email">{{ resolvedEmail }}</p>
               <button type="button" role="menuitem" @click="goAccount">Account</button>
               <button type="button" role="menuitem" @click="goSupport">Support</button>
               <button type="button" role="menuitem" class="danger" @click="doLogout">Log out</button>
@@ -144,7 +174,7 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
-    <main v-else class="mx-auto w-full max-w-6xl px-5 pb-20">
+    <main v-else class="portal-marketing-main">
       <slot />
     </main>
 
@@ -159,7 +189,9 @@ onUnmounted(() => {
       aria-label="Open support"
       @click="goSupport"
     >
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" aria-hidden="true">
+      <span class="support-fab-ring" aria-hidden="true" />
+      <span v-if="supportCountLabel" class="support-fab-badge" aria-hidden="true">{{ supportCountLabel }}</span>
+      <svg class="support-fab-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" aria-hidden="true">
         <path
           d="M4 12a8 8 0 0 1 8-8h0a8 8 0 0 1 8 8v5.2A1.8 1.8 0 0 1 18.2 19H13l-3.4 2.4c-.5.35-1.2-.02-1.2-.62V19H5.8A1.8 1.8 0 0 1 4 17.2V12Z"
           stroke="currentColor"
@@ -167,6 +199,7 @@ onUnmounted(() => {
           stroke-linejoin="round"
         />
       </svg>
+      <span class="support-fab-label">Support</span>
     </button>
   </div>
 </template>
@@ -180,9 +213,23 @@ onUnmounted(() => {
 }
 
 .portal-marketing {
-  background:
-    radial-gradient(900px 420px at 88% -8%, color-mix(in srgb, var(--if-primary) 18%, transparent), transparent 55%),
-    linear-gradient(165deg, color-mix(in srgb, var(--if-paper) 70%, white) 0%, var(--if-paper) 45%, color-mix(in srgb, var(--if-border) 35%, var(--if-paper)) 100%);
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--if-paper, #f4f1ec);
+}
+
+.portal-marketing-main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  margin: 0 auto;
+  padding: 1.25rem 1.25rem 2rem;
+  box-sizing: border-box;
 }
 
 .portal-app {
@@ -191,13 +238,11 @@ onUnmounted(() => {
   --if-plan: #1e3a5f;
   --p-accent: #1e3a5f;
   --if-ink: #0f172a;
-  --if-paper: #eef2f6;
+  --if-paper: #f4f1ec;
   --if-surface: #ffffff;
   --if-muted: #5b6b7c;
   --if-border: #d7dee8;
-  background:
-    radial-gradient(720px 280px at 0% 0%, color-mix(in srgb, #1e3a5f 10%, transparent), transparent 60%),
-    var(--if-paper);
+  background: var(--if-paper, #f4f1ec);
 }
 
 .portal-header-inner {
@@ -374,28 +419,159 @@ onUnmounted(() => {
 
 .support-fab {
   position: fixed;
-  right: 1.15rem;
-  bottom: 1.15rem;
-  z-index: 50;
-  width: 3.25rem;
+  right: max(1rem, env(safe-area-inset-right, 0px));
+  bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  min-width: 3.25rem;
   height: 3.25rem;
+  justify-content: center;
+  padding: 0 0.95rem;
   border: none;
   border-radius: 999px;
   background: var(--if-primary, #1e3a5f);
   color: #fff;
+  box-shadow:
+    0 10px 22px rgb(15 23 42 / 0.18),
+    0 2px 6px rgb(15 23 42 / 0.08);
+  cursor: pointer;
+  overflow: visible;
+  animation: support-fab-enter 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    background 0.2s ease,
+    padding 0.2s ease;
+}
+.support-fab-ring {
+  position: absolute;
+  inset: -4px;
+  border-radius: inherit;
+  border: 2px solid color-mix(in srgb, var(--if-primary, #1e3a5f) 35%, transparent);
+  opacity: 0;
+  animation: support-fab-pulse 2.8s ease-in-out 0.6s infinite;
+  pointer-events: none;
+}
+.support-fab-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.support-fab-label {
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  transition: max-width 0.25s ease, opacity 0.2s ease;
+}
+.support-fab:hover,
+.support-fab:focus-visible {
+  transform: translateY(-2px);
+  background: var(--if-primary-hover, #16304d);
+  box-shadow:
+    0 14px 28px rgb(15 23 42 / 0.22),
+    0 4px 10px rgb(15 23 42 / 0.1);
+}
+.support-fab:hover .support-fab-label,
+.support-fab:focus-visible .support-fab-label {
+  max-width: 4.5rem;
+  opacity: 1;
+}
+.support-fab:hover .support-fab-ring,
+.support-fab:focus-visible .support-fab-ring {
+  animation: none;
+  opacity: 0;
+}
+.support-fab:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--if-primary, #1e3a5f) 55%, white);
+  outline-offset: 3px;
+}
+.support-fab:active {
+  transform: translateY(0) scale(0.98);
+}
+
+@keyframes support-fab-enter {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes support-fab-pulse {
+  0%,
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .support-fab {
+    animation: none;
+  }
+  .support-fab-ring {
+    animation: none;
+    opacity: 0;
+  }
+  .support-fab:hover,
+  .support-fab:focus-visible {
+    transform: none;
+  }
+}
+
+@media (max-width: 639px) {
+  .support-fab {
+    width: 3.25rem;
+    padding: 0;
+    justify-content: center;
+  }
+  .support-fab-label {
+    display: none;
+  }
+  .support-fab-badge {
+    top: -0.2rem;
+    right: -0.1rem;
+  }
+}
+
+.support-fab-badge {
+  position: absolute;
+  top: -0.25rem;
+  right: -0.15rem;
+  min-width: 1.4rem;
+  height: 1.4rem;
+  padding: 0 0.25rem;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 900;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 10px 24px rgb(15 23 42 / 0.22);
-  cursor: pointer;
-}
-.support-fab:hover {
-  background: var(--if-primary-hover, #16304d);
+  box-shadow: 0 10px 22px rgb(15 23 42 / 0.18);
+  pointer-events: none;
 }
 
 .portal-footer {
+  flex-shrink: 0;
+  margin-top: auto;
   border-top: 1px solid var(--if-border);
-  padding: 2rem 1rem;
+  padding: 1.25rem 1rem;
   text-align: center;
   font-size: 0.75rem;
   color: var(--if-muted);

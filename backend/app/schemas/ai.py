@@ -14,12 +14,14 @@ class AiSettingsResponse(SchemaBase):
     model: str
     base_url: str
     api_key_masked: str | None = None
+    agent_name: str = "SNR Dev"
     updated_at: str | None = None
 
 
 class AiSettingsUpdateRequest(SchemaBase):
     api_key: str | None = None
     model: str | None = None
+    agent_name: str | None = None
     clear: bool = False
 
 

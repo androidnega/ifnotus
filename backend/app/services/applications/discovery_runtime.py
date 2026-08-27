@@ -10,7 +10,12 @@ from app.repositories.applications import ApplicationRepository
 from app.schemas.inventory import AppReconciliationState, DiscoveredApplicationSchema
 from app.services.applications.path_scanner import (
     ApplicationPathScanner,
+    WEBROOT_NAMES,
     collect_signals,
+    is_actual_system_root,
+    lift_to_system_root,
+    meaningful_server_names,
+    prune_nested_paths,
     resolve_application_root,
     slugify_path_name,
 )
@@ -33,13 +38,9 @@ class RuntimeApplicationDiscovery:
         discovered: dict[str, DiscoveredApplicationSchema] = {}
         nginx_sites = {s.server_name: s for s in self._nginx.scan_sites()}
 
+        candidate_paths: list[Path] = []
         for path in self._scanner.walk_all_app_paths():
-            key = str(path.resolve())
-            if key in discovered:
-                continue
-            item = self._inspect_path(path, nginx_sites)
-            if item:
-                discovered[key] = item
+            candidate_paths.append(lift_to_system_root(path))
 
         # Nginx document roots are authoritative live sites — include even when
         # the filesystem walk skipped common webroot folder names like "public".
@@ -49,15 +50,38 @@ class RuntimeApplicationDiscovery:
             path = Path(site.document_root).resolve()
             if not path.is_dir():
                 continue
-            key = str(path)
+            candidate_paths.append(lift_to_system_root(path))
+
+        for path in prune_nested_paths(candidate_paths):
+            key = str(path.resolve())
             if key in discovered:
                 continue
-            item = self._inspect_path(path, nginx_sites, require_signals=False)
-            if item:
-                discovered[key] = item
+            # Nginx-backed roots may lack classic markers (empty parking page).
+            require_signals = not self._path_is_nginx_root(path, nginx_sites)
+            item = self._inspect_path(path, nginx_sites, require_signals=require_signals)
+            if not item:
+                continue
+            if not is_actual_system_root(path, server_names=item.server_names):
+                continue
+            discovered[key] = item
 
         registered = {a.id: a for a in self._apps.list_all()}
         return self._reconcile(list(discovered.values()), registered)
+
+    @staticmethod
+    def _path_is_nginx_root(path: Path, nginx_sites: dict) -> bool:
+        resolved = path.resolve()
+        for site in nginx_sites.values():
+            if not site.document_root:
+                continue
+            doc = Path(site.document_root).resolve()
+            if doc == resolved:
+                return True
+            if doc.name.lower() in WEBROOT_NAMES and doc.parent.resolve() == resolved:
+                return True
+            if str(doc).startswith(str(resolved) + "/"):
+                return True
+        return False
 
     def _inspect_path(
         self,
@@ -66,45 +90,58 @@ class RuntimeApplicationDiscovery:
         *,
         require_signals: bool = True,
     ) -> DiscoveredApplicationSchema | None:
-        signals = collect_signals(path)
+        path_resolved = lift_to_system_root(path)
+        signals = collect_signals(path_resolved)
+        # Also accept signals from a webroot child (Laravel public/, SPA dist/).
+        if not signals:
+            for child_name in WEBROOT_NAMES:
+                child = path_resolved / child_name
+                if child.is_dir():
+                    signals = collect_signals(child)
+                    if signals:
+                        break
         if require_signals and not signals:
             return None
         if not signals:
             signals = ["nginx-document-root"]
 
-        slug = slugify_path_name(path.name)
-        # Prefer the hosting directory name over "public"/"dist" for display.
-        display_name = path.name
-        if path.name in {"public", "dist", "html", "www"} and path.parent.name:
-            slug = slugify_path_name(path.parent.name)
-            display_name = path.parent.name
+        slug = slugify_path_name(path_resolved.name)
+        display_name = path_resolved.name
 
         server_names: list[str] = []
         nginx_site_path = None
-        path_resolved = path.resolve()
         for name, site in nginx_sites.items():
             if site.document_root:
                 doc = Path(site.document_root).resolve()
-                if doc == path_resolved or str(doc).startswith(str(path_resolved) + "/"):
+                if (
+                    doc == path_resolved
+                    or str(doc).startswith(str(path_resolved) + "/")
+                    or (
+                        doc.name.lower() in WEBROOT_NAMES
+                        and doc.parent.resolve() == path_resolved
+                    )
+                ):
                     server_names.append(name)
                     nginx_site_path = site.site_path
-            elif site.proxy_pass and str(path) in site.proxy_pass:
+            elif site.proxy_pass and str(path_resolved) in site.proxy_pass:
                 server_names.append(name)
                 nginx_site_path = site.site_path
+
+        server_names = meaningful_server_names(server_names)
 
         registered_id = None
         for app in self._apps.list_all():
             app_root = resolve_application_root(app)
-            if app_root.resolve() == path.resolve():
+            if app_root.resolve() == path_resolved:
                 registered_id = app.id
                 break
 
         return DiscoveredApplicationSchema(
             id=slug,
             name=display_name,
-            probable_type=self._infer_type(path, signals),
+            probable_type=self._infer_type(path_resolved, signals),
             root_path=str(path_resolved),
-            git_path=str(path / ".git") if (path / ".git").exists() else None,
+            git_path=str(path_resolved / ".git") if (path_resolved / ".git").exists() else None,
             environment=None,
             server_names=server_names,
             nginx_site_path=nginx_site_path,

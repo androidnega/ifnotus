@@ -49,6 +49,7 @@ class Customer(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     two_factor_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     onboarding_stage: Mapped[str] = mapped_column(String(32), nullable=False, default="phone_verified")
     onboarding_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    storage_slug: Mapped[str | None] = mapped_column(String(16), nullable=True, unique=True, index=True)
 
     subscriptions: Mapped[list["Subscription"]] = relationship(back_populates="customer")
     orders: Mapped[list["Order"]] = relationship(back_populates="customer")
@@ -105,6 +106,7 @@ class Order(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     order_kind: Mapped[str] = mapped_column(String(24), nullable=False, default="hosting")
+    billing_term_months: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     meta_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     customer: Mapped[Customer] = relationship(back_populates="orders")
@@ -134,6 +136,7 @@ class Subscription(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     renewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     auto_renew: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    billing_term_months: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     grace_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_reminder_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
@@ -183,6 +186,8 @@ class CustomerEnvironment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     storage_limit_gb: Mapped[int] = mapped_column(Integer, nullable=False)
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
     domain: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    hosting_name: Mapped[str | None] = mapped_column(String(16), nullable=True, unique=True, index=True)
+    panel_password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     document_root: Mapped[str | None] = mapped_column(String(512), nullable=True)
     ssl_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     health_status: Mapped[str] = mapped_column(String(24), nullable=False, default="unknown")
@@ -207,6 +212,13 @@ class CustomerEnvironment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     sftp_password_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     sftp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     sftp_authorized_keys: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # Hosting engine: legacy (nginx/unix on control plane) | olspanel (OLSPanel node)
+    provider: Mapped[str] = mapped_column(String(24), nullable=False, default="legacy", index=True)
+    provider_username: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    provider_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_pkg_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_server_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_meta: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     subscription: Mapped[Subscription] = relationship(back_populates="environments")
 
@@ -456,3 +468,47 @@ class SupportTicketMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     author_role: Mapped[str] = mapped_column(String(16), nullable=False, default="customer")
     body: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class HostingCoupon(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Promo codes for hosting purchases (percentage or fixed amount)."""
+
+    __tablename__ = "hosting_coupons"
+
+    code: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    discount_type: Mapped[str] = mapped_column(String(24), nullable=False, default="percentage")
+    discount_value: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="GHS")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    usage_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    usage_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    usage_limit_per_customer: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    minimum_order_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    maximum_discount_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    plan_slugs: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    billing_term_months: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    new_customers_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
+class HostingCouponRedemption(Base, UUIDPrimaryKeyMixin):
+    """One use of a coupon against a customer order."""
+
+    __tablename__ = "hosting_coupon_redemptions"
+
+    coupon_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("hosting_coupons.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("customers.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    order_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orders.id", ondelete="SET NULL"), nullable=True
+    )
+    discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

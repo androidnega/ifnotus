@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 
-import json
-
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import JSONResponse
 
 from app.core.logging import bind_request_context, get_logger
 from app.models.access import SystemActionLog
@@ -27,13 +26,13 @@ from app.services.security_actions import (
     resolve_action_key,
     should_audit,
 )
-from app.utils.customer_safe import scrub_obj
 
 logger = get_logger(__name__)
 
 _FIREWALL_EXEMPT_PREFIXES = (
     "/api/v1/health",
     "/api/v1/catalog",
+    "/api/v1/public",
     # Customer product APIs are not behind staff IP lockdown.
     "/api/v1/customers",
     "/api/v1/auth/login",
@@ -121,51 +120,91 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             duration_ms=round(duration_ms, 2),
         )
 
+        # Never open a second DB session here before returning the response.
+        # With nested BaseHTTPMiddleware the request session stays checked out
+        # until the body is fully streamed; auditing here can deadlock the pool
+        # (client hangs forever while we already logged HTTP 200).
         if should_audit(method, path):
-            try:
-                session_factory = request.app.state.container.db_session_factory()
-                async with session_factory() as session:
-                    access = AccessControlService(session)
+            actor_id = None
+            actor_name = None
+            auth = request.headers.get("authorization") or ""
+            if auth.lower().startswith("bearer "):
+                try:
+                    from app.core.security import decode_token
+
+                    settings = request.app.state.container.config()
+                    payload = decode_token(settings, auth.split(" ", 1)[1].strip())
+                    actor_id = payload.sub
+                    actor_name = getattr(payload, "username", None) or getattr(payload, "email", None)
+                except Exception:
                     actor_id = None
-                    actor_name = None
-                    # Best-effort decode of bearer subject without failing the request.
-                    auth = request.headers.get("authorization") or ""
-                    if auth.lower().startswith("bearer "):
-                        try:
-                            from app.core.security import decode_token
-                            from app.repositories.user import UserRepository
-
-                            settings = request.app.state.container.config()
-                            payload = decode_token(settings, auth.split(" ", 1)[1].strip())
-                            actor_id = payload.sub
-                            user = await UserRepository(session).get_by_id(actor_id)
-                            if user is not None:
-                                actor_name = user.username or user.email
-                        except Exception:
-                            actor_id = None
-
-                    await access.record_action_log(
-                        SystemActionLog(
-                            actor_user_id=actor_id,
-                            actor_username=actor_name,
-                            source=source,
-                            method=method,
-                            path=path[:512],
-                            action_key=action_key,
-                            status_code=response.status_code,
-                            ip_address=ip,
-                            user_agent=(ua or "")[:512] or None,
-                            request_id=request_id,
-                            summary=f"{method} {path} → {response.status_code}",
-                            success=200 <= response.status_code < 400,
-                        )
-                    )
-            except Exception:
-                logger.exception("action_audit_failed", path=path)
+            asyncio.create_task(
+                self._audit_success(
+                    request,
+                    method=method,
+                    path=path,
+                    action_key=action_key,
+                    ip=ip,
+                    ua=ua,
+                    source=source,
+                    request_id=request_id,
+                    status_code=response.status_code,
+                    actor_id=actor_id,
+                    actor_name=actor_name,
+                )
+            )
 
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
         return response
+
+    async def _audit_success(
+        self,
+        request: Request,
+        *,
+        method: str,
+        path: str,
+        action_key: str | None,
+        ip: str,
+        ua: str | None,
+        source: str,
+        request_id: str,
+        status_code: int,
+        actor_id: str | None,
+        actor_name: str | None,
+    ) -> None:
+        """Background audit so response delivery is never blocked on DB I/O."""
+        try:
+            session_factory = request.app.state.container.db_session_factory()
+            async with session_factory() as session:
+                access = AccessControlService(session)
+                if actor_id and not actor_name:
+                    try:
+                        from app.repositories.user import UserRepository
+
+                        user = await UserRepository(session).get_by_id(actor_id)
+                        if user is not None:
+                            actor_name = user.username or user.email
+                    except Exception:
+                        pass
+                await access.record_action_log(
+                    SystemActionLog(
+                        actor_user_id=actor_id,
+                        actor_username=actor_name,
+                        source=source,
+                        method=method,
+                        path=path[:512],
+                        action_key=action_key,
+                        status_code=status_code,
+                        ip_address=ip,
+                        user_agent=(ua or "")[:512] or None,
+                        request_id=request_id,
+                        summary=f"{method} {path} → {status_code}",
+                        success=200 <= status_code < 400,
+                    )
+                )
+        except Exception:
+            logger.exception("action_audit_failed", path=path)
 
     async def _audit_denial(
         self,
@@ -218,34 +257,9 @@ class CustomerSafeResponseMiddleware(BaseHTTPMiddleware):
         if "cache-control" not in {k.lower() for k in response.headers.keys()}:
             response.headers["Cache-Control"] = "no-store"
 
-        ctype = (response.headers.get("content-type") or "").lower()
-        if "text/event-stream" in ctype or isinstance(response, StreamingResponse):
-            return response
-        if "application/json" not in ctype:
-            return response
-
-        body = bytearray()
-        async for chunk in response.body_iterator:
-            if isinstance(chunk, str):
-                body.extend(chunk.encode("utf-8"))
-            else:
-                body.extend(chunk)
-
-        try:
-            payload = json.loads(bytes(body))
-            scrubbed = scrub_obj(payload)
-            new_body = json.dumps(scrubbed, default=str, separators=(",", ":")).encode("utf-8")
-        except Exception:
-            new_body = bytes(body)
-
-        headers = {
-            key: value
-            for key, value in response.headers.items()
-            if key.lower() not in {"content-length", "content-encoding"}
-        }
-        return Response(
-            content=new_body,
-            status_code=response.status_code,
-            headers=headers,
-            media_type="application/json",
-        )
+        # Do not re-read response.body_iterator here. Nested BaseHTTPMiddleware
+        # can deadlock when an outer middleware consumes the body while an inner
+        # middleware still holds the request (DB session commit deferred until
+        # the body finishes streaming). Path scrubbing still runs in exception
+        # handlers via scrub_obj / scrub_host_paths.
+        return response

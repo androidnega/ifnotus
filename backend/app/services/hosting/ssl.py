@@ -427,7 +427,6 @@ class SslService:
 
     @staticmethod
     def _issue_domain_names(entity: Domain, parent: Domain | None) -> list[str]:
-        from app.services.platform.panel_access import control_panel_hostname
         from app.services.platform.student_hostname import (
             resolve_legacy_student_zone,
             resolve_student_zone,
@@ -448,20 +447,61 @@ class SslService:
             apex = entity.name[4:]
             if apex not in names:
                 names.insert(0, apex)
-        # cPanel-style panel host on custom domains (covered by the same cert).
+        # Certificate covers the public website (apex + www) and optional cpanel.*
+        # shortcut. mail.* stays off the cert (HTTP redirect to shared Roundcube only).
+        # ACME for cpanel works because nginx serves a dedicated HTTP vhost with
+        # /.well-known/acme-challenge/ (no portal redirect on that path).
         for base in list(names):
-            cpanel = control_panel_hostname(base)
-            if cpanel and cpanel not in names:
-                names.append(cpanel)
-            if not base.startswith("www.") and f"www.{base}" not in names and not base.startswith("cpanel."):
-                names.append(f"www.{base}")
+            from app.services.platform.panel_access import (
+                control_panel_hostname,
+                is_platform_hostname,
+            )
+
+            if (
+                not is_platform_hostname(base)
+                and not base.startswith("www.")
+                and not base.startswith("cpanel.")
+                and not base.startswith("mail.")
+            ):
+                if f"www.{base}" not in names:
+                    names.append(f"www.{base}")
+                cpanel = control_panel_hostname(base)
+                if cpanel and cpanel not in names:
+                    names.append(cpanel)
         seen: set[str] = set()
         out: list[str] = []
         for name in names:
+            if name.startswith("mail."):
+                continue
             if name not in seen:
                 seen.add(name)
                 out.append(name)
         return out
+
+    @staticmethod
+    def delete_letsencrypt_cert(domain: str) -> dict[str, str | bool]:
+        """Remove a Let's Encrypt lineage if present (best-effort, non-interactive)."""
+        import subprocess
+
+        name = (domain or "").strip().lower().rstrip(".")
+        if not name:
+            return {"ok": False, "message": "empty domain"}
+        live = Path(f"/etc/letsencrypt/live/{name}")
+        if not live.exists():
+            return {"ok": True, "message": "no cert lineage", "domain": name}
+        certbot = resolve_binary("certbot", None)
+        if not certbot:
+            return {"ok": False, "domain": name, "message": "certbot unavailable"}
+        proc = subprocess.run(
+            [certbot, "delete", "--cert-name", name, "--non-interactive"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        combined = f"{proc.stdout or ''}{proc.stderr or ''}"
+        ok = proc.returncode == 0 or "No such" in combined or "No certificate" in combined
+        return {"ok": ok, "domain": name, "message": combined[:400]}
 
     @staticmethod
     def _build_summary(certs: list[SslCertificateSchema]) -> SslSummarySchema:

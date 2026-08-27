@@ -61,9 +61,14 @@ class EnvironmentFtpService:
 
     def _assert_tenant_home(self, env: CustomerEnvironment, home: Path) -> Path:
         """Refuse FTP homes outside this customer's tree under customer_environments_root."""
-        root = self._customers_root()
         resolved = home.resolve()
-        customer_prefix = (root / str(env.customer_id)).resolve()
+        from app.services.platform.customer_storage import resolve_customer_prefix
+
+        customer_prefix = resolve_customer_prefix(
+            self._settings,
+            customer_id=env.customer_id,
+            document_root=env.document_root or str(resolved),
+        )
         try:
             resolved.relative_to(customer_prefix)
         except ValueError as exc:
@@ -177,20 +182,20 @@ class EnvironmentFtpService:
         primary_group: str | None = None,
     ) -> None:
         home.mkdir(parents=True, exist_ok=True)
-        # PHASE 20 — prefer tenant primary group; keep www-data supplementary for PHP/nginx.
+        # Prefer tenant primary group. Do NOT add FTP users to www-data — that
+        # grants cross-tenant read of every tree owned *:www-data. nginx/php-fpm
+        # still read via file group ownership (tenant:www-data + 640/2750).
         web_group = self._settings.web_run_user
         group = primary_group or web_group
         if not self._system_user_exists(username):
             cmd = [
-                "useradd",
+                "/usr/sbin/useradd",
                 "-d",
                 str(home),
                 "-s",
                 "/usr/sbin/nologin",
                 "-g",
                 group,
-                "-G",
-                web_group,
                 "-M",
                 username,
             ]
@@ -202,7 +207,13 @@ class EnvironmentFtpService:
                 )
         else:
             subprocess.run(
-                ["usermod", "-d", str(home), "-g", group, "-G", web_group, "-U", username],
+                ["/usr/sbin/usermod", "-d", str(home), "-g", group, "-U", username],
+                capture_output=True,
+                check=False,
+            )
+        if web_group and web_group != group:
+            subprocess.run(
+                ["/usr/bin/gpasswd", "-d", username, web_group],
                 capture_output=True,
                 check=False,
             )
@@ -372,7 +383,7 @@ class EnvironmentFtpService:
 
     async def disable(self, env: CustomerEnvironment) -> None:
         if env.ftp_username and self._system_user_exists(env.ftp_username):
-            subprocess.run(["usermod", "-L", env.ftp_username], capture_output=True, check=False)
+            subprocess.run(["/usr/sbin/usermod", "-L", env.ftp_username], capture_output=True, check=False)
             self._remove_from_userlist(env.ftp_username)
         env.ftp_enabled = False
         await self._session.flush()
@@ -383,7 +394,7 @@ class EnvironmentFtpService:
             return
         if self._system_user_exists(env.ftp_username):
             home = self._assert_tenant_home(env, Path(env.document_root))
-            subprocess.run(["usermod", "-U", "-d", str(home), env.ftp_username], capture_output=True, check=False)
+            subprocess.run(["/usr/sbin/usermod", "-U", "-d", str(home), env.ftp_username], capture_output=True, check=False)
             self._add_to_userlist(env.ftp_username)
             self._write_user_conf(env.ftp_username, home)
         env.ftp_enabled = True

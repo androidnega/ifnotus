@@ -151,7 +151,6 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
     ),
     Role.CUSTOMER_CARE: frozenset(
         {
-            Permission.SYSTEM_READ,
             Permission.PLATFORM_READ,
             Permission.CUSTOMERS_MANAGE,
             Permission.SUPPORT_READ,

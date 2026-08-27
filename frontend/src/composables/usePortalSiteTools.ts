@@ -3,6 +3,7 @@ import { customersApi } from '@/api'
 import type { CustomerDashboard } from '@/types/platform'
 import type { DbQueryResult, DbSchema } from '@/types/databases'
 import { formatCpu, formatRamGb } from '@/lib/planResources'
+import type { EnvUsageSnapshot } from '@/lib/resourceUsage'
 
 export type PortalSiteTab = 'files' | 'stack' | 'applications' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail' | ''
 
@@ -117,6 +118,7 @@ export function usePortalSiteTools(
   const logBusy = ref(false)
   const usageStatus = ref<'ok' | 'warning' | 'over' | ''>('')
   const usagePct = ref(0)
+  const usageSnapshot = ref<EnvUsageSnapshot | null>(null)
   const monitoringSnapshot = ref<{
     level?: string
     disk?: { used_gb?: number; limit_gb?: number; pct?: number; file_count?: number; status?: string }
@@ -146,16 +148,22 @@ export function usePortalSiteTools(
     limit?: number
     canAssign?: boolean
     ip: string
+    records?: Array<{ record_type: string; host: string; value: string; ttl?: number }>
     message?: string
     namecheap?: boolean
     includedHostname?: boolean
     nsLive?: boolean | null
     resolves?: boolean | null
+    dnsLive?: boolean
+    dnsMode?: string | null
+    aRecordsLive?: boolean
+    cpanelLive?: boolean
     sslReady?: boolean
     statusSummary?: string
     checklist?: Array<{ id: string; label: string; done: boolean; detail?: string }>
     panelHostname?: string | null
     panelUrl?: string | null
+    mailHostname?: string | null
     error?: string
   } | null>(null)
   const sslMsg = ref('')
@@ -175,6 +183,7 @@ export function usePortalSiteTools(
   const stackJobId = ref('')
   const stackOutcome = ref<'idle' | 'running' | 'success' | 'error'>('idle')
   let stackPollTimer: ReturnType<typeof setInterval> | null = null
+  let usagePollTimer: ReturnType<typeof setInterval> | null = null
 
   const selectedStack = ref('static')
   const stacks = ref<
@@ -332,7 +341,22 @@ export function usePortalSiteTools(
 
   onUnmounted(() => {
     stopStackPoll()
+    stopUsagePoll()
   })
+
+  function stopUsagePoll() {
+    if (usagePollTimer) {
+      clearInterval(usagePollTimer)
+      usagePollTimer = null
+    }
+  }
+
+  function startUsagePoll() {
+    stopUsagePoll()
+    usagePollTimer = setInterval(() => {
+      void loadUsage({ quiet: true })
+    }, 30_000)
+  }
 
   async function loadFiles() {
     if (!activeEnv.value) return
@@ -793,16 +817,22 @@ export function usePortalSiteTools(
       custom_domains_limit?: number
       can_assign?: boolean
       recommended_ip?: string
+      records?: Array<{ record_type: string; host: string; value: string; ttl?: number }>
       message?: string
       namecheap_pushed?: boolean
       included_hostname?: boolean
       ns_live?: boolean | null
       resolves?: boolean | null
+      dns_live?: boolean
+      dns_mode?: string | null
+      a_records_live?: boolean
+      cpanel_live?: boolean
       ssl_ready?: boolean
       status_summary?: string
       checklist?: Array<{ id: string; label: string; done: boolean; detail?: string }>
       panel_hostname?: string | null
       panel_url?: string | null
+      mail_hostname?: string | null
     },
     fallbackDomain?: string | null,
   ) {
@@ -816,17 +846,23 @@ export function usePortalSiteTools(
       used: data.custom_domains_used ?? 0,
       limit: data.custom_domains_limit ?? 1,
       canAssign: Boolean(data.can_assign),
-      ip: '',
+      ip: data.recommended_ip || '',
+      records: data.records || [],
       message: data.message,
       namecheap: Boolean(data.namecheap_pushed),
       includedHostname: Boolean(data.included_hostname),
       nsLive: data.ns_live ?? null,
       resolves: data.resolves ?? null,
+      dnsLive: Boolean(data.dns_live),
+      dnsMode: data.dns_mode ?? null,
+      aRecordsLive: Boolean(data.a_records_live),
+      cpanelLive: Boolean(data.cpanel_live),
       sslReady: Boolean(data.ssl_ready),
       statusSummary: data.status_summary || data.message || '',
       checklist: data.checklist || [],
       panelHostname: data.panel_hostname || null,
       panelUrl: data.panel_url || null,
+      mailHostname: data.mail_hostname || null,
     }
   }
 
@@ -916,15 +952,30 @@ export function usePortalSiteTools(
     }
   }
 
-  async function loadUsage() {
+  async function loadUsage(opts?: { quiet?: boolean }) {
     if (!activeEnv.value) return
-    usageInfo.value = 'Loading…'
-    usageStatus.value = ''
-    usagePct.value = 0
+    if (!opts?.quiet) {
+      usageInfo.value = 'Loading…'
+      usageStatus.value = ''
+      usagePct.value = 0
+    }
     try {
       const { data } = await customersApi.getEnvUsage(activeEnv.value.id)
+      usageSnapshot.value = data
       usagePct.value = Number(data.storage_pct) || 0
-      usageInfo.value = `${formatCpu(data.cpu_limit)} vCPU · ${formatRamGb(data.ram_limit_gb)} RAM · disk ${data.storage_used_gb} / ${data.storage_limit_gb} GB · ${data.file_count} files`
+      const cpuBit =
+        data.cpu_usage_vcpu != null
+          ? `${Number(data.cpu_usage_vcpu).toFixed(2)} / ${formatCpu(data.cpu_limit)} vCPU`
+          : `${formatCpu(data.cpu_limit)} vCPU`
+      const memBit =
+        data.memory_usage_mb != null && data.memory_limit_mb != null
+          ? `${Math.round(data.memory_usage_mb)} / ${Math.round(data.memory_limit_mb)} MB RAM`
+          : `${formatRamGb(data.ram_limit_gb)} RAM`
+      const procBit =
+        data.process_count != null
+          ? ` · ${data.process_count}${data.process_limit != null ? ` / ${data.process_limit}` : ''} processes`
+          : ''
+      usageInfo.value = `${cpuBit} · ${memBit} · disk ${data.storage_used_gb} / ${data.storage_limit_gb} GB · ${data.file_count} files${procBit}`
       if (data.message) usageInfo.value += ` — ${data.message}`
       usageStatus.value =
         data.storage_status === 'over' || data.hard_exceeded
@@ -932,10 +983,14 @@ export function usePortalSiteTools(
           : data.storage_status === 'warning' || data.soft_warning
             ? 'warning'
             : 'ok'
+      if (!usagePollTimer) startUsagePoll()
     } catch (e: unknown) {
       const err = e as { response?: { data?: { error?: { message?: string } } } }
-      usageInfo.value = err.response?.data?.error?.message ?? 'Could not load usage.'
-      usageStatus.value = ''
+      if (!opts?.quiet) {
+        usageInfo.value = err.response?.data?.error?.message ?? 'Could not load usage.'
+        usageStatus.value = ''
+        usageSnapshot.value = null
+      }
     }
   }
 
@@ -1096,19 +1151,42 @@ export function usePortalSiteTools(
   }
 
   async function createApplication() {
-    if (!activeEnv.value || !newAppName.value.trim()) return
+    if (!activeEnv.value) {
+      appMsg.value = 'No hosting site selected.'
+      return
+    }
+    if (!newAppName.value.trim()) {
+      appMsg.value = 'Enter an application name first.'
+      return
+    }
     appBusy.value = true
     appMsg.value = ''
+    const gitUrl = newAppGitUrl.value.trim() || undefined
     try {
       const { data } = await customersApi.createEnvApplication(activeEnv.value.id, {
         name: newAppName.value.trim(),
         framework: newAppFramework.value,
-        git_url: newAppGitUrl.value.trim() || undefined,
+        git_url: gitUrl,
       })
-      appMsg.value = data.message || 'Application created.'
       newAppName.value = ''
       newAppGitUrl.value = ''
       await loadApplications()
+      if (gitUrl && data.id) {
+        appMsg.value = data.message || 'Application created. Deploying from Git…'
+        try {
+          const deployed = await customersApi.deployEnvApplication(activeEnv.value.id, data.id)
+          appMsg.value = deployed.data.message || 'Application created and deployed from Git.'
+          await loadApplications()
+        } catch (deployErr: unknown) {
+          const err = deployErr as { response?: { data?: { error?: { message?: string }; message?: string } } }
+          appMsg.value =
+            err.response?.data?.error?.message ||
+            err.response?.data?.message ||
+            'Application created, but Deploy failed. Use Deploy on the app to retry the Git clone.'
+        }
+      } else {
+        appMsg.value = data.message || 'Application created. Use Deploy to start it.'
+      }
     } catch (e: unknown) {
       const err = e as { response?: { data?: { error?: { message?: string } } } }
       appMsg.value = err.response?.data?.error?.message ?? 'Could not create application.'
@@ -1344,6 +1422,7 @@ export function usePortalSiteTools(
     sftpKeyName.value = ''
     sshCreds.value = null
     usageInfo.value = ''
+    usageSnapshot.value = null
     dnsInfo.value = ''
     dnsData.value = null
     sslMsg.value = ''
@@ -1415,6 +1494,7 @@ export function usePortalSiteTools(
     logBusy,
     usageStatus,
     usagePct,
+    usageSnapshot,
     monitoringSnapshot,
     monitoringMsg,
     healthInfo,

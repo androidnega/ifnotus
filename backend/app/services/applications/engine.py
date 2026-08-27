@@ -141,6 +141,8 @@ class ApplicationEngine:
 
         # Heaviest RAM first so the usage panel is useful immediately.
         summaries.sort(key=lambda s: s.memory_bytes or 0, reverse=True)
+        # Hide frontend/backend halves and nested packages — Apps lists full systems only.
+        summaries = [s for s in summaries if self._is_complete_system_summary(s)]
 
         return ApplicationListResponse(
             timestamp=datetime.now(UTC),
@@ -149,8 +151,43 @@ class ApplicationEngine:
             **self._discovery_payload(),
         )
 
+    @staticmethod
+    def _is_complete_system_summary(summary: ApplicationSummarySchema) -> bool:
+        from pathlib import Path
+
+        from app.services.applications.path_scanner import (
+            WEBROOT_NAMES,
+            has_stack_siblings,
+            is_actual_system_root,
+            is_stack_fragment,
+            meaningful_server_names,
+            parent_looks_like_system,
+        )
+
+        root = Path(summary.root_path or "")
+        names = meaningful_server_names([summary.domain] if summary.domain else [])
+        domain = names[0] if names else ""
+        # Nested webroots (public/dist) are not separate systems.
+        if root.name.lower() in WEBROOT_NAMES:
+            return False
+        # FE/BE halves only show when they have their own public hostname.
+        if is_stack_fragment(root):
+            return bool(domain)
+        if has_stack_siblings(root) or parent_looks_like_system(root.parent):
+            # Prefer parent monorepo as the system unless this path is nginx-bound.
+            return bool(domain)
+        return is_actual_system_root(root, server_names=[domain] if domain else None)
+
     def _discovery_payload(self) -> dict:
-        inventory = self._runtime_discovery.discover()
+        from pathlib import Path
+
+        from app.services.applications.path_scanner import is_actual_system_root
+
+        inventory = [
+            a
+            for a in self._runtime_discovery.discover()
+            if is_actual_system_root(Path(a.root_path), server_names=list(a.server_names or []))
+        ]
         discovered = [a for a in inventory if not a.registered]
         on_disk = [
             a

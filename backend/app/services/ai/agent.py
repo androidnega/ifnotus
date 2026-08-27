@@ -77,6 +77,7 @@ CUSTOMER_TOOL_NAMES = frozenset(
         "remember",
         "recall_memory",
         "list_undo",
+        "probe_site_http",
     }
 )
 CUSTOMER_APPLY_TYPES = frozenset({"write_file", "mkdir", "write_files", "run_sql"})
@@ -437,6 +438,38 @@ TOOLS = [
                 "Call this when you need context about how the server is organized."
             ),
             "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "probe_site_http",
+            "description": (
+                "Fetch a live HTTP response for a site on this host (curl via Host header). "
+                "Use this FIRST when the operator reports a blank page, SQLSTATE, Access denied, "
+                "500, or 'site is broken'. Returns status code and a safe body snippet "
+                "(secrets redacted). For customer mode, only their own domain is allowed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "host": {
+                        "type": "string",
+                        "description": (
+                            "Hostname e.g. adastrachambers.com "
+                            "(or leave empty for the customer environment domain)"
+                        ),
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "URL path, default /",
+                    },
+                    "https": {
+                        "type": "boolean",
+                        "description": "Probe https://127.0.0.1 with Host header (default false = http)",
+                    },
+                },
+            },
         },
     },
     {
@@ -1322,14 +1355,15 @@ class DeepSeekAgentService:
         if self.is_customer:
             return self._customer_system_prompt(user, body)
         allowed = ", ".join(self._settings.ai_allowed_paths) or "(none)"
+        agent = self._store.get_agent_name()
         bits = [
             "IDENTITY (required — never break character):",
-            "You are SNR Dev (also styled Snr Dev). That name was given to you by the God of Architecture.",
+            f"You are {agent}. That name was given to you by the God of Architecture.",
             "You love disclosing who you are. When anyone asks who you are / what you are / your name:",
-            "  say clearly that you are SNR Dev, named by the God of Architecture,",
+            f"  say clearly that you are {agent}, named by the God of Architecture,",
             "  that you are still a student and always learning, and that you are here to help on this server.",
             "Never mention DeepSeek, OpenAI, Anthropic, LLMs, language models, AI providers, or being an AI model.",
-            "You are SNR Dev — a learning operator companion for IFNOTUS. Period.",
+            f"You are {agent} — a learning operator companion for IFNOTUS. Period.",
             "",
             "MISSION:",
             "Help operators inspect, repair, and build apps/projects on this host.",
@@ -1343,6 +1377,19 @@ class DeepSeekAgentService:
             "- Use list_databases / inspect_database_schema when the task touches data.",
             "- Use recall_memory / remember so later chats keep project and server knowledge.",
             "- Prefer evidence from this host over generic assumptions.",
+            "- When a site is broken / SQLSTATE / Access denied: call probe_site_http FIRST,",
+            "  then read config.php / .env / wp-config.php, then fix credentials (never use MySQL root).",
+            "",
+            "MYSQL / PHP DB PLAYBOOK (required when you see SQLSTATE or Access denied):",
+            "- Error 1698 root@localhost = MariaDB root uses auth_socket; PHP cannot log in as root.",
+            "- Error 1045 = wrong user/password in the app config.",
+            "- NEVER propose DB_USER=root with empty password on this host.",
+            "- Fix: propose_create_database (mysql) with a dedicated app user + strong password,",
+            "  import schema/sql if tables are empty (propose_terminal mysql < file.sql),",
+            "  then propose_patch_file on config.php/.env/wp-config.php with the new credentials,",
+            "  set SITE_URL / APP_URL to the public https domain, then probe_site_http again.",
+            "- validate_password policy requires upper+lower+digit+special — let create_database",
+            "  generate the password (omit password field) instead of inventing a weak one.",
             "",
             "CLARIFY BEFORE YOU BUILD (broad greenfield only):",
             "- When a request is broad (e.g. 'create a website', 'build an app', 'do A or B'),",
@@ -1350,7 +1397,7 @@ class DeepSeekAgentService:
             "- First ask 2–5 focused clarifying questions and offer concrete options the operator can pick.",
             "- Suggest sensible defaults (stack, style, pages, hosting path under /srv/apps).",
             "- Only after they confirm direction (or say 'you choose' / 'proceed with defaults'),",
-            "  propose mkdir/write_files and end with **Snr Dev — should I proceed?**",
+            f"  propose mkdir/write_files and end with **{agent} — should I proceed?**",
             "- EXCEPTION — editor / focused file: if surface is editor and a path is focused,",
             "  and the edit request is clear, do NOT stall on clarifying questions.",
             "  Prefer propose_patch_file for local changes (preserve the rest of the file).",
@@ -1432,12 +1479,23 @@ class DeepSeekAgentService:
             "No other customers, host panel, nginx system configs, shell, or server monitoring.",
             "",
             "TOOLS:",
+            "Use probe_site_http FIRST when the live site shows an error (SQLSTATE, blank page, 500).",
             "Use list_directory, read_file, search_files to inspect.",
             "Use propose_patch_file for local/partial edits (preferred — preserves the rest).",
             "Use propose_write_file only for new files or an explicit full rewrite.",
             "Use propose_mkdir / propose_write_files for scaffolding (need Proceed).",
             "Use get_open_editor_buffer when the editor already has the file open.",
             "Database tools only for this environment database.",
+            "",
+            "LIVE ENGINEERING (required for site errors):",
+            "- Do not guess. Call probe_site_http, then read config.php / .env / wp-config.php.",
+            "- SQLSTATE[HY000] [1698] Access denied for user 'root'@'localhost' means the app is",
+            "  trying to use MySQL root; that cannot work on this host (auth_socket).",
+            "- Tell the customer clearly: Dev Companion can patch config files; creating a MySQL",
+            "  user may require IFNOTUS support/staff if no database is linked yet.",
+            "- If an environment database IS linked, use list_databases / propose_sql and patch",
+            "  config to match those credentials (never invent root/empty passwords).",
+            "- After a config patch is approved and saved, probe_site_http again to verify.",
             "",
             "EDITING (required — surgical changes, not wholesale overwrite):",
             "- When only part of a file must change, ALWAYS use propose_patch_file with exact",
@@ -1971,6 +2029,85 @@ class DeepSeekAgentService:
             text = text[:MAX_READ_CHARS] + "\n… [truncated]"
         return text
 
+    def _tool_probe_site_http(self, args: dict[str, Any]) -> str:
+        import re
+        import subprocess
+        from urllib.parse import urljoin
+
+        host = str(args.get("host") or "").strip().lower()
+        path = str(args.get("path") or "/").strip() or "/"
+        if not path.startswith("/"):
+            path = "/" + path
+        use_https = bool(args.get("https"))
+
+        env_domain = str((self._env_context or {}).get("domain") or "").strip().lower()
+        if self.is_customer:
+            if not host:
+                host = env_domain
+            if not host:
+                return "No domain is linked to this environment, so the live site cannot be probed."
+            if host in {"localhost", "127.0.0.1", "ifnotus.space", "mail.ifnotus.space"}:
+                return "That host is not allowed for this site."
+
+        if not host:
+            return "host is required (e.g. example.com)."
+        if not re.fullmatch(r"[a-z0-9.-]{1,253}", host):
+            return "Invalid host name."
+
+        scheme = "https" if use_https else "http"
+        url = urljoin(f"{scheme}://127.0.0.1", path)
+        out_file = "/tmp/ifnotus-ai-probe.out"
+        cmd = [
+            "curl",
+            "-sS",
+            "-o",
+            out_file,
+            "-w",
+            "%{http_code}",
+            "-H",
+            f"Host: {host}",
+            "--max-time",
+            "12",
+            url,
+        ]
+        if use_https:
+            cmd.insert(2, "-k")
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return f"probe failed: {exc}"
+        code = (proc.stdout or "").strip() or "000"
+        body = ""
+        try:
+            from pathlib import Path
+
+            raw = Path(out_file).read_text(encoding="utf-8", errors="replace")
+            body = raw[:2500]
+        except OSError:
+            body = ""
+        body = self._safe_text(body)
+        hint = ""
+        low = body.lower()
+        if "1698" in body or "access denied for user 'root'@'localhost'" in low:
+            hint = (
+                "\nHINT: MySQL root uses auth_socket on this host. Apps must use a dedicated "
+                "DB user + password — never root with an empty password. Create/grant a user, "
+                "update config.php/.env/wp-config.php, import SQL if tables are missing, then probe again."
+            )
+        elif "1045" in body and "access denied" in low:
+            hint = (
+                "\nHINT: Wrong DB username/password in the app config. "
+                "Compare with the managed database credentials."
+            )
+        elif "unknown database" in low:
+            hint = "\nHINT: Database name in config does not exist — create it or fix DB_NAME."
+        return (
+            f"PROBE {scheme} host={host} path={path}\n"
+            f"HTTP {code}\n"
+            f"BODY_SNIPPET:\n{body or '(empty)'}"
+            f"{hint}"
+        )
+
     async def _run_tool(
         self,
         name: str,
@@ -2424,6 +2561,9 @@ class DeepSeekAgentService:
 
             if name == "inspect_server_layout":
                 return (self._tool_inspect_server_layout(), None)
+
+            if name == "probe_site_http":
+                return (self._tool_probe_site_http(args), None)
 
             if name == "get_open_editor_buffer":
                 if body.file_content is None and body.original_content is None:

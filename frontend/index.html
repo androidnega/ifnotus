@@ -118,6 +118,11 @@
         try {
           var cached = JSON.parse(localStorage.getItem('ifnotus_theme_colors') || 'null')
           if (cached && cached.primary) applyColors(cached)
+          var themeId = localStorage.getItem('ifnotus_theme_id')
+          if (themeId) {
+            root.dataset.siteTheme = themeId.replace(/[^a-z0-9-]/gi, '')
+            root.classList.add('theme-' + themeId.replace(/[^a-z0-9-]/gi, ''))
+          }
         } catch (e) {}
 
         var stored = localStorage.getItem('theme')

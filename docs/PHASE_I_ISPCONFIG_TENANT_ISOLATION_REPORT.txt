@@ -1,0 +1,87 @@
+PHASE I — ISPConfig Tenant Isolation
+====================================
+Date: 2026-08-27
+Server: 80.241.223.82 (vmi3379516.contaboserver.net)
+Verdict: PARTIAL FAIL (initial) → PASS after remediation (see PHASE_I_REMEDIATION_PROVISIONING_REPORT.txt)
+
+Scope
+-----
+Create two non-paying ISPConfig test tenants (A and B), attempt cross-tenant
+attacks, verify all are blocked. No legacy paying customers modified.
+
+Test tenants (created and deleted during run)
+---------------------------------------------
+  Tenant A: ifn_iso_a / isp-iso-a.ifnotus.space (client_id=28, domain_id=24)
+  Tenant B: ifn_iso_b / isp-iso-b.ifnotus.space (client_id=29, domain_id=25)
+
+Final run provider IDs before cleanup — both deleted (iso_clients_remaining=0).
+
+Attack battery results
+----------------------
+| Attack                              | Blocked | Verdict | Evidence |
+|-------------------------------------|---------|---------|----------|
+| A read B files (system_user)        | n/a     | INCONCLUSIVE | web{N} UNIX users not created on OS |
+| A modify B files                    | n/a     | INCONCLUSIVE | same |
+| A access B database                 | YES     | PASS    | ERROR 1045 Access denied iso28u → iso29 DB |
+| A use B credentials (uid switch)    | n/a     | INCONCLUSIVE | no web users |
+| A traverse /etc/shadow              | YES     | PASS    | Permission denied |
+| A follow symlink to B secret        | n/a     | INCONCLUSIVE | no web users |
+| A read legacy customer files        | YES     | PASS    | exit=1 (no access) |
+| A consume excessive storage (512MB) | YES     | PASS    | 0 bytes written |
+| A consume excessive processes       | n/a     | INCONCLUSIVE | no web users |
+| www-data read B secret (CRITICAL)   | NO      | FAIL    | www-data read secret-b (mode 644 root:root) |
+| IFNOTUS file manager zip-slip       | YES     | PASS    | zip_member_is_safe + unzip blocked |
+| IFNOTUS unit tests (path/zip)       | YES     | PASS    | 12/12 passed locally |
+
+Application-layer isolation (IFNOTUS code)
+------------------------------------------
+  backend/app/services/hosting/files.py — zip-slip, path traversal guards
+  tests/unit/test_file_manager_zip.py — 12 tests PASS
+  tests/unit/test_path_escape.py — included in run
+
+Database isolation
+------------------
+MySQL correctly denies Tenant A credentials accessing Tenant B database.
+This is real enforcement via ISPConfig separate DB users.
+
+Filesystem isolation — FAIL (infrastructure gap)
+--------------------------------------------------
+ISPConfig records sites in dbispconfig but OS provisioning is incomplete:
+
+  1. connect_userid_to_webid was n (now set y during Phase I probe)
+  2. set_folder_permissions_on_update was n (now set y during Phase I probe)
+  3. server.sh uses `which php` — fails in non-interactive PATH (php not found)
+  4. Manual /usr/bin/php8.3 server.php runs but:
+     - No web{N}/client{N} entries in /etc/passwd after site create
+     - Document roots remain root:root mode 644
+     - nginx vhosts for isp-iso-*.ifnotus.space not present in sites-enabled
+  5. www-data (nginx/php-fpm) CAN read any tenant's files today → cross-tenant
+     file isolation is NOT enforced at OS level
+
+This is a blocker for production ISPConfig migration until server jobs apply
+ownership (0710), per-site users, and vhosts reliably.
+
+Remediation required (before Phase J or customer migration)
+-----------------------------------------------------------
+  1. Fix ISPConfig server cron: ensure `php` resolves (symlink /usr/bin/php8.3
+     or PATH in /usr/local/ispconfig/server/server.sh)
+  2. Verify server.php completes without nginx_plugin warnings
+  3. Confirm web_domain create triggers:
+     - UNIX user/group (webN / clientN)
+     - folder mode 0710 under /var/www/clients/
+     - nginx vhost in /etc/nginx/sites-enabled/
+  4. Re-run Phase I script after fix; www-data read B must FAIL
+  5. Optionally enable jailkit chroot for shell/SFTP users
+
+Script added
+------------
+  backend/scripts/phase_i_ispconfig_isolation.py
+  (run on VPS: .venv/bin/python scripts/phase_i_ispconfig_isolation.py)
+
+Security note
+-------------
+Test tenants cleaned up. Phase F orphan client ifn_pf_549381 untouched.
+Legacy customers untouched. HOSTING_PROVIDER_DEFAULT=legacy unchanged.
+
+STOP — Phase I complete (PARTIAL FAIL). Fix ISPConfig OS provisioning, re-test,
+then proceed to Phase J resource enforcement.

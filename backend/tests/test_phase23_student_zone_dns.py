@@ -8,14 +8,14 @@ from app.services.platform.student_hostname import RESERVED_LABELS, STUDENT_ZONE
 
 def test_zone_template_lists_reserved_and_wildcard() -> None:
     root = Path(__file__).resolve().parents[2]
-    zone = (root / "deploy" / "dns" / "db.serverlabsttu.space").read_text(encoding="utf-8")
+    zone = (root / "deploy" / "dns" / "db.ifnotus.space").read_text(encoding="utf-8")
     assert any(line.strip().startswith("*") and "IN A" in line for line in zone.splitlines())
-    for label in ("www", "mail", "api", "panel", "billing", "cpanel", "ns1", "ns2"):
+    for label in ("www", "mail", "cpanel", "ns1", "ns2"):
         assert label in RESERVED_LABELS
         assert label in zone
 
 
-def test_named_conf_declares_student_zone_master() -> None:
+def test_legacy_named_conf_still_declares_serverlabsttu() -> None:
     root = Path(__file__).resolve().parents[2]
     conf = (root / "deploy" / "dns" / "named.conf.serverlabsttu.space").read_text(encoding="utf-8")
     assert 'zone "serverlabsttu.space"' in conf

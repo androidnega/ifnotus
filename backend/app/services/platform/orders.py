@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -17,6 +17,7 @@ from app.models.platform import (
     AiCreditAccount,
     Customer,
     CustomerDomain,
+    CustomerEnvironment,
     HostingPlan,
     Order,
     PlatformAuditLog,
@@ -35,7 +36,7 @@ logger = get_logger(__name__)
 
 DOMAIN_PRICES = {
     ".online": Decimal("50"),
-    ".com": Decimal("250"),
+    ".com": Decimal("225"),
     ".org": Decimal("180"),
     ".net": Decimal("200"),
 }
@@ -51,7 +52,14 @@ class OrderService:
     async def create_order(self, customer: Customer, body: CreateOrderRequest, *, notify: bool = True) -> dict:
         plan = await self._get_plan(body.plan_id)
         # Capacity check before accepting payment
-        await self._resources.pick_node_for_plan(plan)
+        try:
+            await self._resources.pick_node_for_plan(plan)
+        except RuntimeError as exc:
+            raise ValidationError(str(exc), code="capacity_unavailable") from exc
+
+        # One unpaid hosting invoice at a time — cancel older drafts so checkout
+        # does not silently stack pending invoices.
+        await self._cancel_unpaid_hosting_orders(customer.id)
 
         domain_name = (body.domain_name or "").lower().strip() or None
         extension = (body.domain_extension or "").lower().strip() or None
@@ -116,8 +124,54 @@ class OrderService:
         if include_domain and extension:
             domain_price = DOMAIN_PRICES.get(extension, Decimal("0"))
 
-        plan_price = plan.price_monthly
+        from app.services.platform.billing_terms_store import BillingTermsStore, add_calendar_months
+
+        term_quote = BillingTermsStore(self._settings).resolve_term(
+            body.billing_term_months,
+            monthly_price=plan.price_monthly,
+        )
+        plan_price = term_quote["plan_total"]
         total = plan_price + domain_price
+        coupon_meta: dict = {}
+        raw_coupon = getattr(body, "coupon_code", None)
+        if raw_coupon:
+            from app.services.platform.coupons import CouponService
+
+            prior_orders = (
+                await self._session.execute(
+                    select(func.count()).select_from(Order).where(Order.customer_id == customer.id)
+                )
+            ).scalar_one()
+            applied = await CouponService(self._session).validate_for_order(
+                code=str(raw_coupon),
+                customer=customer,
+                plan=plan,
+                plan_total=plan_price,
+                billing_term_months=int(term_quote["months"]),
+                is_new_customer=int(prior_orders or 0) == 0,
+            )
+            coupon_discount = applied["discount_amount"]
+            plan_price = applied["plan_total_after"]
+            total = plan_price + domain_price
+            coupon_meta = {
+                "coupon_code": applied["code"],
+                "coupon_discount_type": applied["discount_type"],
+                "coupon_discount_value": float(applied["discount_value"]),
+                "coupon_discount_amount": float(coupon_discount),
+            }
+        entitlement_ends = add_calendar_months(datetime.now(UTC), int(term_quote["months"]))
+        meta.update(
+            {
+                "billing_term_months": int(term_quote["months"]),
+                "term_label": term_quote.get("label"),
+                "monthly_price": float(term_quote["monthly_price"]),
+                "term_subtotal": float(term_quote["subtotal"]),
+                "term_discount_pct": float(term_quote["discount_pct"]),
+                "term_discount_amount": float(term_quote["discount_amount"]),
+                "entitlement_ends_at": entitlement_ends.isoformat(),
+                **coupon_meta,
+            }
+        )
         order = Order(
             customer_id=customer.id,
             plan_id=plan.id,
@@ -132,15 +186,35 @@ class OrderService:
             payment_method="momo",
             invoice_number=await self._new_invoice(),
             expires_at=datetime.now(UTC) + timedelta(days=30),
+            billing_term_months=int(term_quote["months"]),
             meta_json=meta,
         )
         self._session.add(order)
         await self._session.flush()
 
+        if coupon_meta.get("coupon_code"):
+            from app.services.platform.coupons import CouponService
+
+            coupon = await CouponService(self._session).get_by_code(str(coupon_meta["coupon_code"]))
+            if coupon:
+                await CouponService(self._session).record_redemption(
+                    coupon=coupon,
+                    customer_id=customer.id,
+                    order_id=order.id,
+                    discount_amount=Decimal(str(coupon_meta["coupon_discount_amount"])),
+                )
+
         reference = self._paystack.new_reference()
         order.paystack_reference = reference
         if notify:
-            await self._notify_invoice(customer, order, plan.name)
+            try:
+                await self._notify_invoice(customer, order, plan.name)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "invoice_notify_failed",
+                    order_id=str(order.id),
+                    error=str(exc),
+                )
         self._session.add(
             PlatformAuditLog(
                 customer_id=customer.id,
@@ -198,6 +272,21 @@ class OrderService:
         order.momo_transaction_id = txn[:80]
         order.payment_status = "submitted"
         order.payment_method = "momo"
+        self._session.add(
+            PlatformAuditLog(
+                customer_id=order.customer_id,
+                action="order.payment_submitted",
+                target_type="order",
+                target_id=str(order.id),
+                result="success",
+                metadata_json={
+                    "momo_transaction_id": txn[:80],
+                    "invoice": order.invoice_number,
+                    "amount": str(order.total_price),
+                    "currency": order.currency,
+                },
+            )
+        )
         customer = await self._session.get(Customer, order.customer_id)
         if customer:
             title, text, html = email_templates.payment_received(
@@ -211,8 +300,8 @@ class OrderService:
                 html_body=html,
                 email_subject=f"IFNOTUS — {title}",
                 sms_body=(
-                    f"We have your MoMo ID for invoice {order.invoice_number or txn}. "
-                    "We'll confirm and activate hosting."
+                    f"We received MoMo ID for invoice {order.invoice_number or txn}. "
+                    f"We'll confirm payment, then activate hosting."
                 ),
             )
         await self._session.flush()
@@ -247,12 +336,14 @@ class OrderService:
                 order.order_kind or "hosting"
             ) == "hosting":
                 if order.provisioning_status == "failed":
-                    return await self.retry_provision(order_id)
+                    return await self.retry_provision(order_id, activate_inline=True)
                 order.provisioning_status = "queued"
-                await self._activate_hosting(order)
+                await self._activate_hosting(order, prefer_inline=True)
                 await self._session.flush()
+                await self._session.refresh(order)
             return OrderResponse.model_validate(order)
-        return await self._fulfill_paid_order(order)
+        # Confirm MoMo → activate hosting in one clear step (inline until live).
+        return await self._fulfill_paid_order(order, activate_inline=True)
 
     async def reject_payment(
         self,
@@ -282,10 +373,27 @@ class OrderService:
                 metadata_json={"notes": notes or ""},
             )
         )
+        customer = await self._session.get(Customer, order.customer_id)
+        if customer:
+            inv = order.invoice_number or str(order.id)[:8]
+            title, text, html, sms = email_templates.payment_rejected(
+                name=customer.full_name, invoice=inv, notes=notes
+            )
+            await NotificationService(self._session, self._settings).notify(
+                customer.id,
+                title=title,
+                body=text,
+                kind="payment",
+                html_body=html,
+                email_subject=f"IFNOTUS — {title}",
+                sms_body=sms,
+            )
         await self._session.flush()
         return OrderResponse.model_validate(order)
 
-    async def retry_provision(self, order_id: UUID) -> OrderResponse:
+    async def retry_provision(
+        self, order_id: UUID, *, activate_inline: bool = True
+    ) -> OrderResponse:
         order = await self._session.get(Order, order_id)
         if order is None:
             raise NotFoundError("Order not found.")
@@ -298,8 +406,9 @@ class OrderService:
         )
         sub = existing.scalar_one_or_none()
         if sub is None:
-            await self._activate_hosting(order)
+            await self._activate_hosting(order, prefer_inline=activate_inline)
             await self._session.flush()
+            await self._session.refresh(order)
             return OrderResponse.model_validate(order)
 
         # PHASE 22 — reuse an in-flight provision job instead of stacking duplicates.
@@ -314,8 +423,9 @@ class OrderService:
             payload = candidate.payload or {}
             if str(payload.get("order_id")) == str(order.id):
                 order.provisioning_status = "queued"
-                await self._enqueue_or_run(candidate)
+                await self._enqueue_or_run(candidate, prefer_inline=activate_inline)
                 await self._session.flush()
+                await self._session.refresh(order)
                 return OrderResponse.model_validate(order)
 
         job = PlatformJob(
@@ -333,8 +443,9 @@ class OrderService:
         self._session.add(job)
         await self._session.flush()
         order.provisioning_status = "queued"
-        await self._enqueue_or_run(job)
+        await self._enqueue_or_run(job, prefer_inline=activate_inline)
         await self._session.flush()
+        await self._session.refresh(order)
         return OrderResponse.model_validate(order)
 
     async def provision_for_customer(
@@ -359,47 +470,136 @@ class OrderService:
         order.paid_at = datetime.now(UTC)
         return await self._fulfill_paid_order(order)
 
-    async def _fulfill_paid_order(self, order: Order) -> OrderResponse:
+    async def _fulfill_paid_order(
+        self, order: Order, *, activate_inline: bool = False
+    ) -> OrderResponse:
         order.payment_status = "paid"
         order.paid_at = order.paid_at or datetime.now(UTC)
         kind = (order.order_kind or "hosting").lower()
         if kind == "renewal":
             await self._activate_renewal(order)
+            await self._notify_payment_confirmed(order, activating="renewal")
         elif kind == "upgrade":
             await self._activate_upgrade(order)
+            await self._notify_payment_confirmed(order, activating="upgrade")
         elif kind == "credits":
             await self._activate_credits(order)
+            await self._notify_payment_confirmed(order, activating="credits")
+        elif kind == "panel_theme":
+            await self._activate_panel_theme(order)
+            await self._notify_payment_confirmed(order, activating="panel_theme")
         else:
+            # MoMo confirm SMS first, then activate so the customer gets two clear messages.
+            await self._notify_payment_confirmed(order, activating="hosting")
             order.provisioning_status = "queued"
-            await self._activate_hosting(order)
-            if (order.payment_method or "momo") != "staff":
-                customer = await self._session.get(Customer, order.customer_id)
-                if customer:
-                    title, text, html = email_templates.payment_confirmed(
-                        name=customer.full_name, invoice=order.invoice_number or str(order.id)[:8]
-                    )
-                    await NotificationService(self._session, self._settings).notify(
-                        customer.id,
-                        title=title,
-                        body=text,
-                        kind="payment",
-                        html_body=html,
-                        email_subject=f"IFNOTUS — {title}",
-                        sms_body=(
-                            f"Payment confirmed for invoice {order.invoice_number or str(order.id)[:8]}. "
-                            "We're activating your hosting."
-                        ),
-                    )
+            prefer_inline = activate_inline or (order.payment_method or "").lower() == "staff"
+            await self._activate_hosting(order, prefer_inline=prefer_inline)
+        collected = order.payment_amount_received or order.total_price
+        self._session.add(
+            PlatformAuditLog(
+                customer_id=order.customer_id,
+                actor_id=order.payment_confirmed_by,
+                action="order.payment_confirmed",
+                target_type="order",
+                target_id=str(order.id),
+                result="success",
+                metadata_json={
+                    "amount": str(collected),
+                    "currency": order.currency,
+                    "invoice": order.invoice_number,
+                    "momo_transaction_id": order.momo_transaction_id,
+                    "order_kind": order.order_kind or "hosting",
+                    "payment_method": order.payment_method or "momo",
+                },
+            )
+        )
         await self._session.flush()
+        await self._session.refresh(order)
         return OrderResponse.model_validate(order)
 
-    async def create_renewal_payment(self, customer: Customer, subscription_id: UUID) -> dict:
+    async def _notify_payment_confirmed(
+        self, order: Order, *, activating: str = "hosting"
+    ) -> None:
+        """SMS + email when staff accepts MoMo (skip complimentary staff activates)."""
+        if (order.payment_method or "momo").lower() == "staff":
+            return
+        customer = await self._session.get(Customer, order.customer_id)
+        if customer is None:
+            return
+        inv = order.invoice_number or str(order.id)[:8]
+        if activating == "credits":
+            sms = f"Payment confirmed for invoice {inv}. AI credits are on your account."
+            title, text, html = email_templates.payment_confirmed(
+                name=customer.full_name,
+                invoice=inv,
+                detail="AI credits are now on your account.",
+            )
+            title = "Payment confirmed — credits added"
+        elif activating == "panel_theme":
+            sms = f"Payment confirmed for invoice {inv}. Your hosting theme is unlocked."
+            title, text, html = email_templates.payment_confirmed(
+                name=customer.full_name,
+                invoice=inv,
+                detail="Your hosting panel theme is unlocked.",
+            )
+            title = "Payment confirmed — theme unlocked"
+        elif activating == "renewal":
+            sms = f"Payment confirmed for invoice {inv}. Your hosting renewal is applied."
+            title, text, html = email_templates.payment_confirmed(
+                name=customer.full_name,
+                invoice=inv,
+                detail="Your hosting renewal is applied.",
+            )
+            title = "Payment confirmed — hosting renewed"
+        elif activating == "upgrade":
+            sms = f"Payment confirmed for invoice {inv}. Your plan upgrade is applied."
+            title, text, html = email_templates.payment_confirmed(
+                name=customer.full_name,
+                invoice=inv,
+                detail="Your plan upgrade is applied.",
+            )
+            title = "Payment confirmed — plan upgraded"
+        else:
+            sms = (
+                f"Payment confirmed for invoice {inv}. "
+                f"We're activating your hosting now."
+            )
+            title, text, html = email_templates.payment_confirmed(
+                name=customer.full_name, invoice=inv
+            )
+        await NotificationService(self._session, self._settings).notify(
+            customer.id,
+            title=title,
+            body=text,
+            kind="payment",
+            html_body=html,
+            email_subject=f"IFNOTUS — {title}",
+            sms_body=sms,
+        )
+
+    async def create_renewal_payment(
+        self,
+        customer: Customer,
+        subscription_id: UUID,
+        *,
+        billing_term_months: int | None = None,
+    ) -> dict:
         from app.services.platform.billing import SubscriptionBillingService
+        from app.services.platform.billing_terms_store import BillingTermsStore, add_calendar_months, term_duration_days
 
         billing = SubscriptionBillingService(self._settings, self._session)
         sub = await billing.get_owned(customer.id, subscription_id)
         plan = await self._get_plan(sub.plan_id)
-        amount = plan.price_monthly
+        months = int(billing_term_months or getattr(sub, "billing_term_months", None) or 1)
+        term_quote = BillingTermsStore(self._settings).resolve_term(
+            months,
+            monthly_price=plan.price_monthly,
+        )
+        amount = term_quote["plan_total"]
+        days = term_duration_days(int(term_quote["months"]))
+        now = datetime.now(UTC)
+        base = sub.expires_at if sub.expires_at and sub.expires_at > now else now
+        preview_end = add_calendar_months(base, int(term_quote["months"]))
         order = Order(
             customer_id=customer.id,
             plan_id=plan.id,
@@ -412,7 +612,18 @@ class OrderService:
             payment_status="pending",
             provisioning_status="n/a",
             order_kind="renewal",
-            meta_json={"subscription_id": str(sub.id), "days": 30},
+            billing_term_months=int(term_quote["months"]),
+            meta_json={
+                "subscription_id": str(sub.id),
+                "days": days,
+                "billing_term_months": int(term_quote["months"]),
+                "term_label": term_quote.get("label"),
+                "monthly_price": float(term_quote["monthly_price"]),
+                "term_subtotal": float(term_quote["subtotal"]),
+                "term_discount_pct": float(term_quote["discount_pct"]),
+                "term_discount_amount": float(term_quote["discount_amount"]),
+                "entitlement_ends_at": preview_end.isoformat(),
+            },
             expires_at=datetime.now(UTC) + timedelta(days=7),
         )
         self._session.add(order)
@@ -487,6 +698,75 @@ class OrderService:
         await self._session.flush()
         return await self._init_payment(customer, order, amount, purpose="credits")
 
+    async def create_panel_theme_order(
+        self,
+        customer: Customer,
+        *,
+        environment_id: UUID,
+        theme_id: str,
+    ) -> dict:
+        from decimal import Decimal as _D
+        from app.services.platform.hosting_panel_theme_store import (
+            PANEL_THEME_PRICE_GHS,
+            HostingPanelThemeStore,
+        )
+
+        store = HostingPanelThemeStore(self._settings)
+        theme = store.require_purchasable(theme_id)
+        status = store.status_for(environment_id)
+        if theme["id"] in status.get("owned", []):
+            raise AppException("You already own that theme.", code="panel_theme_owned")
+
+        env = await self._session.get(CustomerEnvironment, environment_id)
+        if env is None or env.customer_id != customer.id:
+            raise AppException("Hosting environment not found.", code="env_not_found")
+
+        amount = _D(PANEL_THEME_PRICE_GHS)
+        result = await self._session.execute(
+            select(HostingPlan).where(HostingPlan.is_active.is_(True)).order_by(HostingPlan.sort_order).limit(1)
+        )
+        plan = result.scalar_one_or_none()
+        if plan is None:
+            raise AppException("No hosting plans configured.")
+        order = Order(
+            customer_id=customer.id,
+            plan_id=plan.id,
+            plan_price=amount,
+            domain_price=Decimal("0"),
+            total_price=amount,
+            currency="GHS",
+            payment_status="pending",
+            provisioning_status="n/a",
+            order_kind="panel_theme",
+            meta_json={
+                "theme_id": theme["id"],
+                "environment_id": str(environment_id),
+                "theme_name": theme.get("name"),
+            },
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        self._session.add(order)
+        await self._session.flush()
+        return await self._init_payment(customer, order, amount, purpose="theme")
+
+    async def _activate_panel_theme(self, order: Order) -> None:
+        from uuid import UUID as _UUID
+
+        from app.services.platform.hosting_panel_theme_store import HostingPanelThemeStore
+
+        meta = order.meta_json or {}
+        theme_id = str(meta.get("theme_id") or "")
+        env_id = _UUID(str(meta["environment_id"]))
+        HostingPanelThemeStore(self._settings).unlock(env_id, theme_id, activate=True)
+        order.provisioning_status = "active"
+        await NotificationService(self._session, self._settings).notify(
+            order.customer_id,
+            title="Hosting theme unlocked",
+            body=f"{meta.get('theme_name') or theme_id} is ready on your hosting panel.",
+            kind="theme",
+            deliver=False,
+        )
+
     async def _init_payment(self, customer: Customer, order: Order, amount: Decimal, *, purpose: str) -> dict:
         reference = self._paystack.new_reference(prefix=f"IFN{purpose[:3].upper()}")
         order.paystack_reference = reference
@@ -511,13 +791,19 @@ class OrderService:
 
     async def _activate_renewal(self, order: Order) -> None:
         from app.services.platform.billing import SubscriptionBillingService
+        from app.services.platform.billing_terms_store import term_duration_days
         from uuid import UUID as _UUID
 
         meta = order.meta_json or {}
         sub_id = _UUID(str(meta["subscription_id"]))
-        days = int(meta.get("days") or 30)
-        await SubscriptionBillingService(self._settings, self._session).renew(
-            order.customer_id, sub_id, days=days
+        months = int(getattr(order, "billing_term_months", None) or meta.get("billing_term_months") or 1)
+        days = int(meta.get("days") or term_duration_days(months))
+        billing = SubscriptionBillingService(self._settings, self._session)
+        await billing.renew(
+            order.customer_id,
+            sub_id,
+            days=days,
+            months=months,
         )
         order.provisioning_status = "active"
 
@@ -531,12 +817,6 @@ class OrderService:
             order.customer_id, sub_id, order.plan_id
         )
         order.provisioning_status = "active"
-        await NotificationService(self._session, self._settings).notify(
-            order.customer_id,
-            title="Upgrade payment confirmed",
-            body="Your plan was upgraded after payment.",
-            kind="payment",
-        )
 
     async def _activate_credits(self, order: Order) -> None:
         meta = order.meta_json or {}
@@ -560,8 +840,12 @@ class OrderService:
             deliver=False,
         )
 
-    async def _activate_hosting(self, order: Order) -> None:
+    async def _activate_hosting(self, order: Order, *, prefer_inline: bool = False) -> None:
+        from app.services.platform.billing_terms_store import add_calendar_months
+
         plan = await self._get_plan(order.plan_id)
+        months = int(getattr(order, "billing_term_months", None) or (order.meta_json or {}).get("billing_term_months") or 1)
+        now = datetime.now(UTC)
         sub = Subscription(
             customer_id=order.customer_id,
             order_id=order.id,
@@ -570,9 +854,10 @@ class OrderService:
             cpu_allocated=plan.cpu_cores,
             ram_allocated=plan.ram_gb,
             storage_allocated=plan.storage_gb,
-            started_at=datetime.now(UTC),
-            expires_at=datetime.now(UTC) + timedelta(days=30),
+            started_at=now,
+            expires_at=add_calendar_months(now, months),
             auto_renew=True,
+            billing_term_months=months,
         )
         self._session.add(sub)
         await self._session.flush()
@@ -657,7 +942,7 @@ class OrderService:
             )
         )
         await self._session.flush()
-        await self._enqueue_or_run(job)
+        await self._enqueue_or_run(job, prefer_inline=prefer_inline)
 
     async def _queue_domain_register(
         self,
@@ -746,14 +1031,41 @@ class OrderService:
         rows = list(result.scalars().all())
         visible: list[Order] = []
         for order in rows:
+            pay = (order.payment_status or "").lower()
             status = (order.provisioning_status or "").lower()
-            if status in {"cancelled", "canceled"}:
+            if pay in {"cancelled", "canceled"} or status in {"cancelled", "canceled"}:
                 continue
             meta = order.meta_json if isinstance(order.meta_json, dict) else {}
             if meta.get("hidden_from_customer") or meta.get("cancelled_reason"):
                 continue
             visible.append(order)
         return visible
+
+    async def _cancel_unpaid_hosting_orders(self, customer_id: UUID) -> int:
+        """Cancel draft hosting invoices so a new checkout does not stack silently."""
+        result = await self._session.execute(
+            select(Order).where(
+                Order.customer_id == customer_id,
+                Order.payment_status.in_(["pending", "submitted"]),
+            )
+        )
+        cancelled = 0
+        for order in result.scalars().all():
+            kind = (order.order_kind or "hosting").lower()
+            if kind not in {"hosting", ""}:
+                continue
+            if (order.payment_status or "").lower() == "paid":
+                continue
+            meta = dict(order.meta_json) if isinstance(order.meta_json, dict) else {}
+            meta["cancelled_reason"] = "replaced_by_new_checkout"
+            meta["hidden_from_customer"] = True
+            order.meta_json = meta
+            order.payment_status = "cancelled"
+            order.provisioning_status = "cancelled"
+            cancelled += 1
+        if cancelled:
+            await self._session.flush()
+        return cancelled
 
     async def get_order(self, customer_id: UUID, order_id: UUID) -> Order:
         result = await self._session.execute(
@@ -764,18 +1076,30 @@ class OrderService:
             raise NotFoundError("Order not found.")
         return order
 
-    async def _enqueue_or_run(self, job: PlatformJob) -> None:
+    async def _enqueue_or_run(self, job: PlatformJob, *, prefer_inline: bool = False) -> None:
         from app.services.platform.enqueue import enqueue_task
         from app.services.platform.provisioning import ProvisioningEngine
 
-        task_id = await enqueue_task(
-            self._settings,
-            "provision_environment",
-            {"job_id": str(job.id), **(job.payload or {})},
-        )
-        if task_id is not None:
-            return
-        # Fallback: run inline when Redis/worker is unavailable
+        if not prefer_inline:
+            task_id = await enqueue_task(
+                self._settings,
+                "provision_environment",
+                {"job_id": str(job.id), **(job.payload or {})},
+            )
+            if task_id is not None:
+                # Worker may finish before this request commits. Expire so we do not
+                # overwrite job/order status back to pending/queued on commit.
+                order_id = (job.payload or {}).get("order_id")
+                self._session.expire(job)
+                if order_id:
+                    try:
+                        order = await self._session.get(Order, UUID(str(order_id)))
+                        if order is not None:
+                            self._session.expire(order)
+                    except Exception:  # noqa: BLE001
+                        pass
+                return
+        # Staff Activate, or Redis/worker unavailable: run inline
         engine = ProvisioningEngine(self._settings, self._session)
         try:
             await engine.run_job(job)
@@ -809,8 +1133,20 @@ class OrderService:
 
     async def invoice_view(self, customer_id: UUID, order_id: UUID) -> InvoiceViewResponse:
         order = await self.get_order(customer_id, order_id)
+        return await self._invoice_payload(order)
+
+    async def staff_invoice_view(self, order_id: UUID) -> InvoiceViewResponse:
+        order = await self._session.get(Order, order_id)
+        if order is None:
+            raise NotFoundError("Order not found.")
+        return await self._invoice_payload(order)
+
+    async def _invoice_payload(self, order: Order) -> InvoiceViewResponse:
         plan = await self._session.get(HostingPlan, order.plan_id)
+        customer = await self._session.get(Customer, order.customer_id)
         momo = self._momo_details()
+        status = (order.payment_status or "").lower()
+        kind = "receipt" if status == "paid" else "invoice"
         return InvoiceViewResponse(
             order=OrderResponse.model_validate(order),
             plan_name=plan.name if plan else None,
@@ -825,6 +1161,10 @@ class OrderService:
             support_hours=self._settings.support_hours,
             support_whatsapp=self._settings.support_whatsapp,
             support_email=self._settings.support_email,
+            customer_name=customer.full_name if customer else None,
+            customer_email=customer.email if customer else None,
+            customer_phone=customer.phone if customer else None,
+            document_kind=kind,
         )
 
     def _momo_details(self) -> dict:

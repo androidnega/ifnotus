@@ -1,22 +1,41 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import UiBrandMark from '@/components/ui/UiBrandMark.vue'
 import { isPureCustomer, isStaffUser } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth'
 
 defineProps<{
   active?: 'home' | 'plans'
   tone?: 'light' | 'dark'
+  surface?: 'glass' | 'solid'
 }>()
 
+const route = useRoute()
 const auth = useAuthStore()
 const open = ref(false)
 
+const navItems = [
+  { id: 'home', label: 'Home', to: { name: 'home' } },
+  { id: 'plans', label: 'Plans', to: { name: 'plans' } },
+  { id: 'contact', label: 'Contact', to: { name: 'contact' } },
+] as const
+
 const panelLink = computed(() => {
   if (!auth.user) return null
-  if (isPureCustomer(auth.user)) return { name: 'portal-dashboard' as const, label: 'My panel' }
-  if (isStaffUser(auth.user)) return { name: 'dashboard' as const, label: 'Staff panel' }
-  return { name: 'portal-dashboard' as const, label: 'My panel' }
+  if (isPureCustomer(auth.user)) return { name: 'portal-dashboard' as const, label: 'My panel', href: '' }
+  if (isStaffUser(auth.user)) {
+    return { name: 'dashboard' as const, label: 'Staff panel', href: 'https://cpanel.ifnotus.space/' }
+  }
+  return { name: 'portal-dashboard' as const, label: 'My panel', href: '' }
 })
+
+function isActive(id: string) {
+  if (id === 'home') return route.name === 'home'
+  if (id === 'plans') return route.name === 'plans'
+  if (id === 'contact') return route.name === 'contact'
+  return false
+}
 
 function closeMenu() {
   open.value = false
@@ -41,262 +60,281 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 </script>
 
 <template>
-  <header class="shell" :class="{ dark: tone === 'dark', open }">
-    <div class="bar">
-      <router-link :to="{ name: 'home' }" class="brand" aria-label="IFNOTUS home" @click="closeMenu">
-        <span class="mark" aria-hidden="true">IF</span>
-        <span class="word">IFNOTUS</span>
-      </router-link>
+  <header class="nav" :class="{ open }">
+    <div class="nav-inset">
+      <UiBrandMark inverted :to="{ name: 'home' }" @click="closeMenu" />
 
-      <nav class="desk" aria-label="Primary">
-        <router-link class="link" :to="{ name: 'home' }" :class="{ on: active === 'home' }">
-          Home
+      <nav class="nav-links" aria-label="Primary">
+        <router-link
+          v-for="item in navItems"
+          :key="item.id"
+          :to="item.to"
+          class="nav-link"
+          :class="{ on: isActive(item.id) || active === item.id }"
+        >
+          {{ item.label }}
         </router-link>
-        <router-link class="link" :to="{ name: 'plans' }" :class="{ on: active === 'plans' }">
-          Plans
-        </router-link>
-        <router-link class="link" :to="{ name: 'contact' }">Contact</router-link>
-        <router-link class="link" :to="{ name: 'portal-signup' }">Sign up</router-link>
-        <span class="rail" aria-hidden="true" />
-        <router-link v-if="panelLink" class="link soft" :to="{ name: panelLink.name }">
-          {{ panelLink.label }}
-        </router-link>
-        <router-link v-else class="link soft" :to="{ name: 'login' }">Log in</router-link>
-        <router-link class="cta" :to="{ name: 'plans' }">View plans</router-link>
       </nav>
 
-      <button
-        type="button"
-        class="burger"
-        :aria-expanded="open"
-        aria-controls="site-nav-mobile"
-        aria-label="Menu"
-        @click="open = !open"
-      >
-        <span />
-        <span />
-      </button>
+      <div class="nav-actions">
+        <template v-if="panelLink">
+          <a v-if="panelLink.href" class="btn btn-solid" :href="panelLink.href">
+            {{ panelLink.label }}
+          </a>
+          <router-link v-else class="btn btn-solid" :to="{ name: panelLink.name }">
+            {{ panelLink.label }}
+          </router-link>
+        </template>
+        <template v-else>
+          <router-link class="btn btn-ghost" :to="{ name: 'login' }">Log in</router-link>
+          <router-link class="btn btn-solid" :to="{ name: 'portal-signup' }">Get started</router-link>
+        </template>
+
+        <button
+          type="button"
+          class="nav-toggle"
+          :aria-expanded="open"
+          aria-controls="site-nav-drawer"
+          aria-label="Menu"
+          @click="open = !open"
+        >
+          <i class="fa-solid" :class="open ? 'fa-xmark' : 'fa-bars'" aria-hidden="true" />
+        </button>
+      </div>
     </div>
 
-    <div id="site-nav-mobile" class="mobile" :hidden="!open">
-      <nav aria-label="Mobile">
-        <router-link :to="{ name: 'home' }" :class="{ on: active === 'home' }" @click="closeMenu">
-          Home
+    <div
+      id="site-nav-drawer"
+      class="nav-drawer"
+      :class="{ open }"
+      :hidden="!open"
+      @click.self="closeMenu"
+    >
+      <nav class="drawer-nav" aria-label="Mobile">
+        <router-link
+          v-for="item in navItems"
+          :key="`m-${item.id}`"
+          :to="item.to"
+          class="drawer-link"
+          :class="{ on: isActive(item.id) || active === item.id }"
+          @click="closeMenu"
+        >
+          {{ item.label }}
         </router-link>
-        <router-link :to="{ name: 'plans' }" :class="{ on: active === 'plans' }" @click="closeMenu">
-          Plans
-        </router-link>
-        <router-link :to="{ name: 'contact' }" @click="closeMenu">Contact</router-link>
-        <router-link :to="{ name: 'portal-signup' }" @click="closeMenu">Sign up</router-link>
-        <router-link v-if="panelLink" :to="{ name: panelLink.name }" @click="closeMenu">
-          {{ panelLink.label }}
-        </router-link>
-        <router-link v-else :to="{ name: 'login' }" @click="closeMenu">Log in</router-link>
-        <router-link class="cta" :to="{ name: 'plans' }" @click="closeMenu">View plans</router-link>
+
+        <div class="drawer-divider" aria-hidden="true" />
+
+        <template v-if="panelLink">
+          <a v-if="panelLink.href" class="drawer-cta" :href="panelLink.href" @click="closeMenu">
+            {{ panelLink.label }}
+          </a>
+          <router-link v-else class="drawer-cta" :to="{ name: panelLink.name }" @click="closeMenu">
+            {{ panelLink.label }}
+          </router-link>
+        </template>
+        <template v-else>
+          <router-link class="drawer-link" :to="{ name: 'login' }" @click="closeMenu">
+            <i class="fa-solid fa-right-to-bracket" aria-hidden="true" /> Log in
+          </router-link>
+          <router-link class="drawer-cta" :to="{ name: 'portal-signup' }" @click="closeMenu">
+            Get started
+          </router-link>
+        </template>
       </nav>
     </div>
   </header>
 </template>
 
 <style scoped>
-.shell {
-  position: sticky;
-  top: 0;
-  z-index: 40;
-  isolation: isolate;
+.nav {
+  position: relative;
+  z-index: 50;
+  flex-shrink: 0;
+  background: var(--if-ink, #161a1d);
+  border-bottom: 1px solid color-mix(in srgb, #fff 8%, transparent);
+  box-shadow: 0 4px 24px rgb(0 0 0 / 0.12);
 }
-.shell::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: rgba(255, 255, 255, 0.78);
-  backdrop-filter: blur(18px) saturate(1.2);
-  border-bottom: 1px solid rgba(18, 23, 28, 0.06);
-  z-index: -1;
-}
-.shell.dark::before {
-  background: rgba(8, 10, 14, 0.55);
-  border-bottom-color: rgba(255, 255, 255, 0.08);
-}
-.bar {
-  max-width: 72rem;
+
+.nav-inset {
+  max-width: 76rem;
   margin: 0 auto;
-  padding: 0.75rem clamp(1.25rem, 4.5vw, 2.5rem);
-  display: flex;
+  padding: 0.65rem clamp(1rem, 3vw, 2rem);
+  display: grid;
+  grid-template-columns: auto 1fr auto;
   align-items: center;
-  justify-content: space-between;
   gap: 1rem;
   box-sizing: border-box;
 }
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.65rem;
-  text-decoration: none;
-  color: inherit;
-  flex-shrink: 0;
-}
-.mark {
-  width: 2rem;
-  height: 2rem;
-  border-radius: 0.55rem;
-  background: var(--if-primary, #ff6c2c);
-  color: #fff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-family: 'Sora', sans-serif;
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-.word {
-  font-family: 'Sora', sans-serif;
-  font-weight: 700;
-  letter-spacing: -0.05em;
-  font-size: 1.05rem;
-  color: #12171c;
-}
-.shell.dark .word {
-  color: #fff;
-}
-.desk {
+
+.nav-links {
   display: none;
   align-items: center;
-  gap: 0.15rem;
-}
-.link {
-  text-decoration: none;
-  font-size: 0.875rem;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  color: #5a6570;
-  padding: 0.5rem 0.85rem;
-  border-radius: 999px;
-  transition: color 0.15s ease, background 0.15s ease;
-}
-.shell.dark .link {
-  color: rgba(245, 247, 250, 0.72);
-}
-.link:hover,
-.link.on {
-  color: #12171c;
-  background: rgba(18, 23, 28, 0.05);
-}
-.shell.dark .link:hover,
-.shell.dark .link.on {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.08);
-}
-.link.soft {
-  color: #7a8490;
-}
-.rail {
-  width: 1px;
-  height: 1rem;
-  margin: 0 0.45rem;
-  background: rgba(18, 23, 28, 0.12);
-}
-.shell.dark .rail {
-  background: rgba(255, 255, 255, 0.16);
-}
-.cta {
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
-  margin-left: 0.35rem;
-  text-decoration: none;
-  border-radius: 999px;
-  padding: 0.55rem 1.1rem;
-  font-size: 0.85rem;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  background: #12171c;
-  color: #fff !important;
-  transition: transform 0.15s ease, background 0.15s ease;
-}
-.shell.dark .cta {
-  background: var(--if-primary, #ff6c2c);
-}
-.cta:hover {
-  transform: translateY(-1px);
-  background: var(--if-primary, #ff6c2c);
-}
-.burger {
-  width: 2.5rem;
-  height: 2.5rem;
-  border: none;
-  border-radius: 0.65rem;
-  background: rgba(18, 23, 28, 0.04);
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.35rem;
-  cursor: pointer;
-}
-.shell.dark .burger {
-  background: rgba(255, 255, 255, 0.08);
-}
-.burger span {
-  display: block;
-  width: 1.05rem;
-  height: 1.5px;
-  border-radius: 2px;
-  background: #12171c;
-  transition: transform 0.2s ease, opacity 0.2s ease;
-}
-.shell.dark .burger span {
-  background: #fff;
-}
-.shell.open .burger span:first-child {
-  transform: translateY(3.5px) rotate(45deg);
-}
-.shell.open .burger span:last-child {
-  transform: translateY(-3.5px) rotate(-45deg);
-}
-.mobile {
-  border-top: 1px solid rgba(18, 23, 28, 0.06);
-  padding: 0.75rem clamp(1.25rem, 4.5vw, 2.5rem) 1.15rem;
-}
-.shell.dark .mobile {
-  border-top-color: rgba(255, 255, 255, 0.08);
-}
-.mobile nav {
-  display: grid;
   gap: 0.25rem;
 }
-.mobile a {
+
+.nav-link {
+  position: relative;
   text-decoration: none;
-  color: #3a4450;
-  font-weight: 500;
-  font-size: 0.95rem;
-  padding: 0.75rem 0.85rem;
-  border-radius: 0.65rem;
+  font-size: 0.84rem;
+  font-weight: 550;
+  letter-spacing: 0.01em;
+  color: rgb(255 255 255 / 0.62);
+  padding: 0.45rem 0.85rem;
+  border-radius: 0.45rem;
+  transition: color 0.15s ease, background 0.15s ease;
 }
-.shell.dark .mobile a {
-  color: rgba(245, 247, 250, 0.85);
-}
-.mobile a.on,
-.mobile a:hover {
-  background: rgba(18, 23, 28, 0.04);
-  color: #12171c;
-}
-.shell.dark .mobile a.on,
-.shell.dark .mobile a:hover {
-  background: rgba(255, 255, 255, 0.06);
+.nav-link:hover {
   color: #fff;
+  background: rgb(255 255 255 / 0.06);
 }
-.mobile .cta {
-  margin: 0.5rem 0 0;
-  text-align: center;
+.nav-link.on {
+  color: #fff;
+  font-weight: 650;
 }
+.nav-link.on::after {
+  content: '';
+  position: absolute;
+  left: 0.85rem;
+  right: 0.85rem;
+  bottom: 0.2rem;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--if-primary, #ff6c2c);
+}
+
+.nav-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  border-radius: 0.5rem;
+  padding: 0.48rem 0.9rem;
+  font-size: 0.82rem;
+  font-weight: 650;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.btn-ghost {
+  color: rgb(255 255 255 / 0.82);
+  border: 1px solid rgb(255 255 255 / 0.18);
+  background: transparent;
+}
+.btn-ghost:hover {
+  color: #fff;
+  border-color: rgb(255 255 255 / 0.35);
+  background: rgb(255 255 255 / 0.06);
+}
+.btn-solid {
+  color: #fff;
+  border: 1px solid transparent;
+  background: var(--if-primary, #ff6c2c);
+}
+.btn-solid:hover {
+  background: var(--if-primary-hover, #e85a1c);
+}
+
+.nav-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  border: 1px solid rgb(255 255 255 / 0.14);
+  border-radius: 0.55rem;
+  background: rgb(255 255 255 / 0.06);
+  color: #fff;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.nav-toggle:hover {
+  background: rgb(255 255 255 / 0.1);
+  border-color: rgb(255 255 255 / 0.25);
+}
+
+.nav-drawer {
+  position: fixed;
+  inset: 0;
+  top: 3.35rem;
+  background: rgb(0 0 0 / 0.45);
+  backdrop-filter: blur(4px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+.nav-drawer.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.drawer-nav {
+  margin: 0.65rem clamp(1rem, 3vw, 2rem);
+  padding: 0.65rem;
+  border-radius: 0.85rem;
+  background: var(--if-surface, #fff);
+  border: 1px solid var(--if-border, #e7e2db);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 0.18);
+  display: grid;
+  gap: 0.2rem;
+}
+.drawer-link {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  text-decoration: none;
+  color: var(--if-ink, #161a1d);
+  font-size: 0.92rem;
+  font-weight: 550;
+  padding: 0.75rem 0.85rem;
+  border-radius: 0.55rem;
+}
+.drawer-link.on,
+.drawer-link:hover {
+  background: color-mix(in srgb, var(--if-primary, #ff6c2c) 10%, var(--if-paper, #f4f1ec));
+  color: var(--if-ink, #161a1d);
+}
+.drawer-link.on {
+  font-weight: 700;
+}
+.drawer-divider {
+  height: 1px;
+  margin: 0.25rem 0.35rem;
+  background: var(--if-border, #e7e2db);
+}
+.drawer-cta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 0.15rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: 0.55rem;
+  text-decoration: none;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #fff;
+  background: var(--if-primary, #ff6c2c);
+}
+.drawer-cta:hover {
+  background: var(--if-primary-hover, #e85a1c);
+}
+
 @media (min-width: 860px) {
-  .desk {
+  .nav-links {
     display: flex;
   }
-  .burger,
-  .mobile {
+  .btn {
+    display: inline-flex;
+  }
+  .nav-toggle,
+  .nav-drawer {
     display: none;
   }
 }

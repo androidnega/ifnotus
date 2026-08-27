@@ -4,17 +4,19 @@ import { useRouter } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
-import { healthApi, monitoringApi, serverApi, aiApi, mailApi, platformAdminApi } from '@/api'
+import { healthApi, aiApi, mailApi, platformAdminApi } from '@/api'
 import { REALTIME_POLL_MS } from '@/config/polling'
 import { useAuthStore } from '@/stores/auth'
 import { usePolling } from '@/composables/usePolling'
 import { Permission } from '@/lib/permissions'
 import { usePermissions } from '@/composables/usePermissions'
 import Skeleton from '@/components/ui/Skeleton.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
+import UiTabBar from '@/components/ui/UiTabBar.vue'
 import { getApiErrorMessage } from '@/lib/apiError'
 import { useSiteTheme } from '@/composables/useSiteTheme'
 import { useThemeStore } from '@/stores/theme'
-import type { IntegrationsResponse, PortsResponse, ReadinessResponse } from '@/types/dashboard'
+import type { ReadinessResponse } from '@/types/dashboard'
 import type { AiSettings } from '@/types/ai'
 import type { IntegrationsStatus } from '@/types/integrations'
 
@@ -36,24 +38,14 @@ const { data: readiness, refresh: refreshReadiness } = usePolling<ReadinessRespo
   REALTIME_POLL_MS,
 )
 
-const { data: ports, refresh: refreshPorts } = usePolling<PortsResponse>(
-  async () => (await serverApi.ports()).data,
-  REALTIME_POLL_MS,
-  { requiresAuth: true },
-)
-
-const { data: integrations, refresh: refreshIntegrations } = usePolling<IntegrationsResponse>(
-  async () => (await monitoringApi.integrations()).data,
-  REALTIME_POLL_MS,
-  { requiresAuth: true },
-)
-
 const aiSettings = ref<AiSettings | null>(null)
 const aiLoading = ref(false)
 const aiSaving = ref(false)
 const aiKey = ref('')
 const aiModel = ref('deepseek-chat')
+const aiAgentName = ref('SNR Dev')
 const aiMessage = ref<{ ok: boolean; text: string } | null>(null)
+const settingsTab = ref('account')
 const canManageAi = computed(() => can(Permission.SYSTEM_ADMIN))
 
 const webmailSettings = ref<WebmailSettings | null>(null)
@@ -70,6 +62,10 @@ const canManageIntegrations = computed(
 
 const siteTheme = ref('studio-light')
 const siteThemes = ref<Array<{ id: string; name: string; description: string; colors?: Record<string, string> }>>([])
+const homeLayout = ref('split-right')
+const homeLayouts = ref<Array<{ id: string; name: string; description: string }>>([])
+const maintenanceMode = ref(false)
+const maintenanceMessage = ref('')
 const siteThemeLoading = ref(false)
 const siteThemeSaving = ref(false)
 const siteThemeMessage = ref<{ ok: boolean; text: string } | null>(null)
@@ -101,9 +97,9 @@ const smtpPass = ref('')
 const smtpFrom = ref('')
 const smtpTls = ref(true)
 const smsProvider = ref('none')
-const smsUrl = ref('')
 const smsKey = ref('')
 const smsSecret = ref('')
+const smsFallbackKey = ref('')
 const smsSender = ref('IFNOTUS')
 const momoNetwork = ref('MTN')
 const momoNumber = ref('0257940791')
@@ -138,13 +134,18 @@ const roleLabels: Record<string, string> = {
   superadmin: 'Super admin — staff accounts, terminal, terminate',
 }
 
-const integrationEntries = computed(() => {
-  if (!integrations.value) return []
-  return Object.entries(integrations.value).map(([name, info]) => ({
-    name,
-    configured: info.configured,
-    status: String(info.status ?? 'unknown'),
-  }))
+
+const settingsTabs = computed(() => {
+  const tabs = [
+    { id: 'account', label: 'Account' },
+    { id: 'theme', label: 'Theme' },
+    { id: 'integrations', label: 'Integrations' },
+    { id: 'ai', label: 'AI agent' },
+    { id: 'webmail', label: 'Webmail' },
+  ]
+  if (canManageStaff.value) tabs.push({ id: 'staff', label: 'Staff' })
+  tabs.push({ id: 'health', label: 'Health' })
+  return tabs
 })
 
 const displayName = computed(
@@ -180,6 +181,7 @@ async function loadAiSettings() {
     const { data } = await aiApi.getSettings()
     aiSettings.value = data
     aiModel.value = data.model || 'deepseek-chat'
+    aiAgentName.value = data.agent_name || 'SNR Dev'
   } catch (e) {
     aiMessage.value = { ok: false, text: getApiErrorMessage(e, 'Failed to load AI settings') }
   } finally {
@@ -191,14 +193,16 @@ async function saveAiSettings() {
   aiSaving.value = true
   aiMessage.value = null
   try {
-    const body: { api_key?: string; model?: string; clear?: boolean } = {
+    const body: { api_key?: string; model?: string; agent_name?: string; clear?: boolean } = {
       model: aiModel.value.trim() || 'deepseek-chat',
+      agent_name: aiAgentName.value.trim() || 'SNR Dev',
     }
     if (aiKey.value.trim()) body.api_key = aiKey.value.trim()
     const { data } = await aiApi.updateSettings(body)
     aiSettings.value = data
+    aiAgentName.value = data.agent_name || aiAgentName.value
     aiKey.value = ''
-    aiMessage.value = { ok: true, text: 'SNR Dev settings saved.' }
+    aiMessage.value = { ok: true, text: 'AI agent settings saved.' }
   } catch (e) {
     aiMessage.value = { ok: false, text: getApiErrorMessage(e, 'Failed to save AI settings') }
   } finally {
@@ -207,7 +211,7 @@ async function saveAiSettings() {
 }
 
 async function clearAiKey() {
-  if (!confirm('Remove the stored SNR Dev API key?')) return
+  if (!confirm('Remove the stored AI agent API key?')) return
   aiSaving.value = true
   try {
     const { data } = await aiApi.updateSettings({ clear: true })
@@ -283,6 +287,10 @@ async function loadSiteTheme() {
     const { data } = await platformAdminApi.getSiteTheme()
     siteTheme.value = data.theme || 'studio-light'
     siteThemes.value = data.themes || []
+    homeLayout.value = data.home_layout || 'split-right'
+    homeLayouts.value = data.home_layouts || []
+    maintenanceMode.value = Boolean(data.maintenance_mode)
+    maintenanceMessage.value = data.maintenance_message || ''
     if (data.colors) siteColors.value = { ...siteColors.value, ...data.colors }
     planColorEdits.value = data.plan_colors || []
   } catch (e) {
@@ -305,18 +313,25 @@ async function saveSiteTheme() {
       theme: siteTheme.value,
       colors: siteColors.value,
       plan_colors: planMap,
+      home_layout: homeLayout.value,
+      maintenance_mode: maintenanceMode.value,
+      maintenance_message: maintenanceMessage.value,
     })
     siteTheme.value = data.theme
     siteThemes.value = data.themes || []
+    homeLayout.value = data.home_layout || homeLayout.value
+    homeLayouts.value = data.home_layouts || homeLayouts.value
+    maintenanceMode.value = Boolean(data.maintenance_mode)
+    maintenanceMessage.value = data.maintenance_message || maintenanceMessage.value
     if (data.colors) siteColors.value = { ...siteColors.value, ...data.colors }
     planColorEdits.value = data.plan_colors || []
     // Live-apply for this browser
     const { applyThemeColors } = await import('@/lib/theme')
-    applyThemeColors(siteColors.value)
+    applyThemeColors(siteColors.value, document.documentElement, data.theme)
     const site = useSiteTheme()
     site.theme.value = data.theme
     site.applyLocal(siteColors.value)
-    if (data.theme === 'server-dark') useThemeStore().setMode('dark')
+    useThemeStore().setMode('light')
     siteThemeMessage.value = {
       ok: true,
       text: 'Theme and colors saved. Portal and panels will use the new palette.',
@@ -334,11 +349,13 @@ async function saveSiteTheme() {
 function applyPresetColors(opt: { id: string; colors?: Record<string, string> }) {
   siteTheme.value = opt.id
   if (opt.colors) siteColors.value = { ...siteColors.value, ...opt.colors }
-  void import('@/lib/theme').then(({ applyThemeColors }) => applyThemeColors(siteColors.value))
+  void import('@/lib/theme').then(({ applyThemeColors }) =>
+    applyThemeColors(siteColors.value, document.documentElement, opt.id),
+  )
   const site = useSiteTheme()
   site.theme.value = opt.id
   if (opt.colors) site.applyLocal(opt.colors)
-  if (opt.id === 'server-dark') useThemeStore().setMode('dark')
+  useThemeStore().setMode('light')
 }
 
 watch(
@@ -368,9 +385,9 @@ async function loadApiIntegrations() {
     smtpFrom.value = data.smtp.from_address || ''
     smtpTls.value = data.smtp.use_tls !== false
     smsProvider.value = data.sms.provider || 'none'
-    smsUrl.value = data.sms.api_url || ''
     smsKey.value = ''
     smsSecret.value = ''
+    smsFallbackKey.value = ''
     smsSender.value = data.sms.sender_id || 'IFNOTUS'
     momoNetwork.value = data.momo?.network || 'MTN'
     momoNumber.value = data.momo?.number || '0257940791'
@@ -406,8 +423,8 @@ async function saveApiIntegrations() {
       },
       sms: {
         provider: smsProvider.value.trim() || 'none',
-        api_url: smsUrl.value.trim() || null,
         sender_id: smsSender.value.trim() || 'IFNOTUS',
+        fallback_provider: 'moolre',
       },
       momo: {
         network: momoNetwork.value.trim() || 'MTN',
@@ -420,6 +437,7 @@ async function saveApiIntegrations() {
     if (smtpPass.value.trim()) body.smtp!.password = smtpPass.value.trim()
     if (smsKey.value.trim()) body.sms!.api_key = smsKey.value.trim()
     if (smsSecret.value.trim()) body.sms!.api_secret = smsSecret.value.trim()
+    if (smsFallbackKey.value.trim()) body.sms!.fallback_api_key = smsFallbackKey.value.trim()
 
     const { data } = await platformAdminApi.updateIntegrations(body)
     apiIntegrations.value = data
@@ -428,6 +446,7 @@ async function saveApiIntegrations() {
     smtpPass.value = ''
     smsKey.value = ''
     smsSecret.value = ''
+    smsFallbackKey.value = ''
     apiIntMessage.value = {
       ok: true,
       text: 'API integrations saved. Keys are stored encrypted on the server — no code edit needed.',
@@ -494,7 +513,7 @@ async function createStaffUser() {
           ? 'Business admin created. They can manage plans, orders, customers, and env remediation.'
           : staffRole.value === 'customer_care'
             ? 'Customer care created. They can confirm MoMo and handle support tickets.'
-            : 'Staff account created and activated. They can sign in at /login.'
+            : 'Staff account created and activated. They can sign in at https://cpanel.ifnotus.space.'
     staffPassword.value = ''
     staffEmail.value = ''
     staffName.value = ''
@@ -528,13 +547,11 @@ async function setStaffRole(id: string, role: string) {
 
 async function handleLogout() {
   await auth.logout()
-  await router.replace({ name: 'login' })
+  await router.replace({ name: 'admin-login' })
 }
 
 function refreshAll() {
   refreshReadiness()
-  refreshPorts()
-  refreshIntegrations()
   loadProfile()
   loadAiSettings()
   loadWebmailSettings()
@@ -549,6 +566,11 @@ onMounted(refreshAll)
 <template>
   <DashboardLayout @refresh="refreshAll">
     <div class="animate-fade-in space-y-5">
+      <UiPageHeader title="Settings" lede="Account, theme, integrations, and staff administration" />
+
+      <UiTabBar v-model="settingsTab" :items="settingsTabs" variant="flat" aria-label="Settings sections" />
+
+      <div v-show="settingsTab === 'account'" class="space-y-5">
       <Card padding="none">
         <div class="divide-y divide-surface-border">
           <div v-if="auth.user" class="flex items-center gap-4 p-4 md:p-5">
@@ -611,48 +633,9 @@ onMounted(refreshAll)
           </div>
         </div>
       </Card>
+      </div>
 
-      <Card title="Platform Health">
-        <div class="mb-4 flex flex-wrap gap-4">
-          <div>
-            <p class="text-xs text-surface-muted">Readiness</p>
-            <Badge
-              :variant="readiness?.status === 'healthy' ? 'success' : 'warning'"
-              dot
-              class="mt-1"
-            >
-              {{ readiness?.status ?? '—' }}
-            </Badge>
-          </div>
-          <div>
-            <p class="text-xs text-surface-muted">Environment</p>
-            <p class="font-medium">{{ readiness?.environment ?? '—' }}</p>
-          </div>
-          <div>
-            <p class="text-xs text-surface-muted">Version</p>
-            <p class="font-medium">{{ readiness?.version ?? '—' }}</p>
-          </div>
-        </div>
-
-        <div class="space-y-2">
-          <div
-            v-for="component in readiness?.components ?? []"
-            :key="component.name"
-            class="flex items-center justify-between rounded-lg bg-slate-100 px-3 py-2 text-sm dark:bg-slate-900"
-          >
-            <span class="font-medium capitalize">{{ component.name }}</span>
-            <div class="flex items-center gap-3">
-              <span v-if="component.latency_ms" class="text-xs text-surface-muted">
-                {{ component.latency_ms.toFixed(1) }} ms
-              </span>
-              <Badge :variant="component.status === 'healthy' ? 'success' : 'danger'" dot>
-                {{ component.status }}
-              </Badge>
-            </div>
-          </div>
-        </div>
-      </Card>
-
+      <div v-show="settingsTab === 'theme'" class="space-y-5">
       <Card title="Website & panel theme" subtitle="Brand colors for public site, customer portal, and staff dashboards">
         <div v-if="!canManageIntegrations" class="text-sm text-surface-muted">
           You need platform write permission to change the website theme.
@@ -668,23 +651,23 @@ onMounted(refreshAll)
                 : [
                     {
                       id: 'studio-light',
-                      name: 'Studio Light',
-                      description: 'Warm paper + orange.',
+                      name: 'Ember Studio',
+                      description: 'Warm linen + IFNOTUS orange.',
                     },
                     {
                       id: 'ocean-clean',
-                      name: 'Ocean Clean',
-                      description: 'Teal accents on soft gray.',
+                      name: 'Atlantic Mist',
+                      description: 'Cool mist with deep cyan.',
                     },
                     {
                       id: 'graphite',
-                      name: 'Graphite Ember',
-                      description: 'Charcoal with ember accent.',
+                      name: 'Baobab Indigo',
+                      description: 'Chalk panels with indigo signal.',
                     },
                     {
-                      id: 'server-dark',
-                      name: 'Server Dark',
-                      description: 'Dark cinematic surfaces.',
+                      id: 'palm-grove',
+                      name: 'Palm Grove',
+                      description: 'Celadon paper with deep green.',
                     },
                   ]"
               :key="opt.id"
@@ -725,6 +708,57 @@ onMounted(refreshAll)
           </div>
 
           <div>
+            <p class="mb-2 text-sm font-semibold">Homepage layout</p>
+            <p class="mb-3 text-xs text-surface-muted">
+              Three public homepage looks. Change anytime — no redeploy needed.
+            </p>
+            <div class="grid gap-3 sm:grid-cols-3">
+              <button
+                v-for="opt in (homeLayouts.length
+                  ? homeLayouts
+                  : [
+                      { id: 'split-right', name: 'Split with image', description: 'Copy left, hero image right.' },
+                      { id: 'centered', name: 'Centered domain check', description: 'Classic centered hero.' },
+                      { id: 'bold-band', name: 'Bold accent band', description: 'Full-bleed brand band.' },
+                    ])"
+                :key="opt.id"
+                type="button"
+                class="rounded-lg border p-3 text-left transition"
+                :class="
+                  homeLayout === opt.id
+                    ? 'border-brand-500 bg-brand-500/5'
+                    : 'border-surface-border hover:border-brand-500/40'
+                "
+                @click="homeLayout = opt.id"
+              >
+                <p class="text-sm font-semibold">{{ opt.name }}</p>
+                <p class="mt-0.5 text-xs text-surface-muted">{{ opt.description }}</p>
+              </button>
+            </div>
+          </div>
+
+          <div class="rounded-lg border border-surface-border p-4">
+            <label class="flex items-start gap-3 text-sm">
+              <input v-model="maintenanceMode" type="checkbox" class="mt-1" />
+              <span>
+                <span class="font-semibold">Maintenance page</span>
+                <span class="mt-0.5 block text-xs text-surface-muted">
+                  Public pages show a maintenance screen. Staff login at cpanel.ifnotus.space stays available.
+                </span>
+              </span>
+            </label>
+            <label class="mt-3 block text-xs text-surface-muted">
+              Message
+              <textarea
+                v-model="maintenanceMessage"
+                rows="2"
+                class="mt-1 w-full rounded border border-surface-border bg-surface-raised px-2 py-1.5 text-sm text-slate-800"
+                placeholder="IFNOTUS is under scheduled maintenance…"
+              />
+            </label>
+          </div>
+
+          <div>
             <p class="mb-2 text-sm font-semibold">Package accent colors</p>
             <p class="mb-3 text-xs text-surface-muted">
               Customers inherit an accent from their plan price tier (or a plan-specific accent).
@@ -761,6 +795,9 @@ onMounted(refreshAll)
         </div>
       </Card>
 
+      </div>
+
+      <div v-show="settingsTab === 'integrations'" class="space-y-5">
       <Card
         title="API integrations"
         subtitle="Namecheap, Paystack, SMTP, SMS — managed here, not by editing code"
@@ -872,26 +909,39 @@ onMounted(refreshAll)
 
             <div class="space-y-3 rounded-lg border border-surface-border p-3">
               <p class="text-sm font-semibold">SMS</p>
+              <p v-if="apiIntegrations?.sms.api_key_masked" class="font-mono text-xs text-surface-muted">
+                Key {{ apiIntegrations.sms.api_key_masked }}
+              </p>
               <label class="block text-sm">
                 <span class="text-surface-muted">Provider</span>
                 <select v-model="smsProvider" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm">
                   <option value="none">none</option>
                   <option value="log">log (dev)</option>
-                  <option value="http">http</option>
-                  <option value="hubtel">hubtel</option>
+                  <option value="arkasel">Arkasel</option>
+                  <option value="moolre">Moolre</option>
+                  <option value="hubtel">Hubtel</option>
                 </select>
-              </label>
-              <label class="block text-sm">
-                <span class="text-surface-muted">API URL</span>
-                <input v-model="smsUrl" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm" />
               </label>
               <label class="block text-sm">
                 <span class="text-surface-muted">API key (leave blank to keep)</span>
                 <input v-model="smsKey" type="password" autocomplete="off" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm" />
               </label>
-              <label class="block text-sm">
-                <span class="text-surface-muted">API secret (leave blank to keep)</span>
+              <label v-if="smsProvider === 'hubtel'" class="block text-sm">
+                <span class="text-surface-muted">API secret (Hubtel only; leave blank to keep)</span>
                 <input v-model="smsSecret" type="password" autocomplete="off" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm" />
+              </label>
+              <label v-if="smsProvider === 'arkasel' || smsProvider === 'hubtel'" class="block text-sm">
+                <span class="text-surface-muted">
+                  Moolre fallback API key
+                  <span v-if="apiIntegrations?.sms.fallback_api_key_set" class="text-emerald-600"> (saved)</span>
+                </span>
+                <input
+                  v-model="smsFallbackKey"
+                  type="password"
+                  autocomplete="off"
+                  class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm"
+                  placeholder="Used automatically if Arkasel fails"
+                />
               </label>
               <label class="block text-sm">
                 <span class="text-surface-muted">Sender ID</span>
@@ -937,9 +987,12 @@ onMounted(refreshAll)
         </div>
       </Card>
 
-      <Card title="SNR Dev" subtitle="Server companion for Files, Terminal & Editor">
+      </div>
+
+      <div v-show="settingsTab === 'ai'" class="space-y-5">
+      <Card title="AI agent" subtitle="Server companion for Files, Terminal & Editor">
         <div v-if="!canManageAi" class="text-sm text-surface-muted">
-          Only superadmins can manage the SNR Dev API key.
+          Only superadmins can manage the AI agent API key.
         </div>
         <div v-else-if="aiLoading" class="space-y-3">
           <Skeleton height="2.5rem" />
@@ -955,6 +1008,16 @@ onMounted(refreshAll)
               {{ aiSettings.api_key_masked }}
             </span>
           </div>
+
+          <label class="block text-sm">
+            <span class="text-surface-muted">Agent name</span>
+            <input
+              v-model="aiAgentName"
+              class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm"
+              placeholder="SNR Dev"
+              maxlength="64"
+            />
+          </label>
 
           <label class="block text-sm">
             <span class="text-surface-muted">API key</span>
@@ -1006,6 +1069,9 @@ onMounted(refreshAll)
         </div>
       </Card>
 
+      </div>
+
+      <div v-show="settingsTab === 'webmail'" class="space-y-5">
       <Card
         title="Webmail"
         subtitle="Support WhatsApp + auto-detect domains for /mail on every site"
@@ -1089,6 +1155,9 @@ onMounted(refreshAll)
         </div>
       </Card>
 
+      </div>
+
+      <div v-show="settingsTab === 'staff' && canManageStaff" class="space-y-5">
       <Card
         v-if="canManageStaff"
         title="Staff users"
@@ -1171,30 +1240,44 @@ onMounted(refreshAll)
         </div>
       </Card>
 
-      <Card title="Integrations" subtitle="Live collector status">
+      </div>
+
+      <div v-show="settingsTab === 'health'" class="space-y-5">
+      <Card title="Platform Health">
+        <div class="mb-4 flex flex-wrap gap-4">
+          <div>
+            <p class="text-xs text-surface-muted">Readiness</p>
+            <Badge
+              :variant="readiness?.status === 'healthy' ? 'success' : 'warning'"
+              dot
+              class="mt-1"
+            >
+              {{ readiness?.status ?? '—' }}
+            </Badge>
+          </div>
+          <div>
+            <p class="text-xs text-surface-muted">Environment</p>
+            <p class="font-medium">{{ readiness?.environment ?? '—' }}</p>
+          </div>
+          <div>
+            <p class="text-xs text-surface-muted">Version</p>
+            <p class="font-medium">{{ readiness?.version ?? '—' }}</p>
+          </div>
+        </div>
+
         <div class="space-y-2">
           <div
-            v-for="item in integrationEntries"
-            :key="item.name"
+            v-for="component in readiness?.components ?? []"
+            :key="component.name"
             class="flex items-center justify-between rounded-lg bg-slate-100 px-3 py-2 text-sm dark:bg-slate-900"
           >
-            <span class="font-medium capitalize">{{ item.name }}</span>
-            <div class="flex items-center gap-2">
-              <span class="text-xs text-surface-muted">
-                {{ item.configured ? 'configured' : 'not configured' }}
+            <span class="font-medium capitalize">{{ component.name }}</span>
+            <div class="flex items-center gap-3">
+              <span v-if="component.latency_ms" class="text-xs text-surface-muted">
+                {{ component.latency_ms.toFixed(1) }} ms
               </span>
-              <Badge
-                :variant="
-                  item.status === 'healthy'
-                    ? 'success'
-                    : item.status === 'degraded'
-                      ? 'warning'
-                      : 'neutral'
-                "
-                dot
-                size="sm"
-              >
-                {{ item.status }}
+              <Badge :variant="component.status === 'healthy' ? 'success' : 'danger'" dot>
+                {{ component.status }}
               </Badge>
             </div>
           </div>
@@ -1204,10 +1287,10 @@ onMounted(refreshAll)
       <Card
         v-if="canManageSecurity"
         title="Access security"
-        subtitle="Firewall, login logs, and action audit"
+        subtitle="Panel CIDR rules, login logs, and action audit"
       >
         <p class="mb-3 text-sm text-surface-muted">
-          Manage IP allow/deny networks, login traces (web / CLI / SSH), action audit, and action kill-switches.
+          Manage IP allow/deny for the panel, login traces, action audit, and kill-switches.
         </p>
         <button
           type="button"
@@ -1218,21 +1301,7 @@ onMounted(refreshAll)
         </button>
       </Card>
 
-      <Card title="Monitored Ports" subtitle="Services IFNOTUS tracks for outages">
-        <p class="mb-3 text-sm text-surface-muted">
-          Expected:
-          <span class="font-mono">{{ ports?.expected_ports?.join(', ') ?? '—' }}</span>
-        </p>
-        <div
-          v-if="ports?.missing_ports?.length"
-          class="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300"
-        >
-          Not listening: {{ ports.missing_ports.join(', ') }}
-        </div>
-        <p v-else class="text-sm text-emerald-600 dark:text-emerald-400">
-          All expected ports are listening.
-        </p>
-      </Card>
+      </div>
     </div>
   </DashboardLayout>
 </template>

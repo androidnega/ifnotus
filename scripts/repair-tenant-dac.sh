@@ -3,16 +3,99 @@
 # Usage:
 #   repair-tenant-dac.sh              # dry-run
 #   repair-tenant-dac.sh --apply      # apply
+#   repair-tenant-dac.sh --prove      # re-prove cross-tenant isolation (exit 1 on FAIL)
 set -euo pipefail
 APPLY=0
+PROVE=0
 [[ "${1:-}" == "--apply" ]] && APPLY=1
+[[ "${1:-}" == "--prove" ]] && PROVE=1
 ROOT="${CUSTOMER_ENVIRONMENTS_ROOT:-/srv/apps/ifnotus-customers}"
 WEB="${WEB_RUN_USER:-www-data}"
 
-echo "root=$ROOT apply=$APPLY web=$WEB"
+echo "root=$ROOT apply=$APPLY prove=$PROVE web=$WEB"
 if [[ ! -d "$ROOT" ]]; then
   echo "missing $ROOT" >&2
   exit 1
+fi
+
+if [[ "$PROVE" -eq 1 ]]; then
+  cd /srv/apps/ifnotus/backend
+  ./.venv/bin/python - <<'PY'
+import grp
+import os
+import pwd
+import subprocess
+import sys
+from pathlib import Path
+
+web = os.environ.get("WEB_RUN_USER", "www-data")
+users = []
+try:
+    members = set(grp.getgrnam(web).gr_mem)
+except KeyError:
+    members = set()
+
+# Collect ifn_* accounts
+for ent in pwd.getpwall():
+    if ent.pw_name.startswith("ifn_"):
+        users.append(ent)
+
+fail = 0
+print(f"ifn_users={len(users)} www-data_members_overlap="
+      f"{sorted(n for n in members if n.startswith('ifn_'))}")
+
+for u in users:
+    # Supplementary membership check
+    groups = {g.gr_name for g in grp.getgrall() if u.pw_name in g.gr_mem}
+    # Also check primary group name
+    try:
+        primary = grp.getgrgid(u.pw_gid).gr_name
+    except KeyError:
+        primary = "?"
+    if web in groups or primary == web:
+        print(f"FAIL {u.pw_name} still in group {web} (primary={primary} supp={sorted(groups)})")
+        fail += 1
+    else:
+        print(f"OK {u.pw_name} not in {web} (primary={primary})")
+
+# Cross-tenant ls: each ifn_* must fail listing a peer home
+homes = [(u.pw_name, u.pw_dir) for u in users if u.pw_dir and Path(u.pw_dir).exists()]
+for i, (name_a, home_a) in enumerate(homes):
+    for name_b, home_b in homes:
+        if name_a == name_b:
+            continue
+        # Prefer peer document root if public/ child exists
+        target = home_b
+        pub = Path(home_b) / "public"
+        if pub.is_dir():
+            target = str(pub)
+        proc = subprocess.run(
+            ["sudo", "-u", name_a, "-n", "ls", target],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode == 0:
+            print(f"FAIL cross-tenant: {name_a} can list {target}")
+            fail += 1
+        else:
+            print(f"OK deny: {name_a} cannot list {target} (rc={proc.returncode})")
+
+# Prefix modes
+root = Path(os.environ.get("CUSTOMER_ENVIRONMENTS_ROOT", "/srv/apps/ifnotus-customers"))
+if root.is_dir():
+    mode = root.stat().st_mode & 0o777
+    if mode & 0o007:
+        print(f"FAIL customers root world bits: {oct(mode)}")
+        fail += 1
+    else:
+        print(f"OK customers root mode {oct(mode)}")
+
+if fail:
+    print(f"DAC_PROVE_FAIL count={fail}")
+    sys.exit(1)
+print("DAC_PROVE_PASS")
+PY
+  exit 0
 fi
 
 if [[ "$APPLY" -eq 1 ]]; then
@@ -37,6 +120,19 @@ for prefix in "$ROOT"/*/; do
     echo "DRY customer_prefix $prefix ($mode) -> 750 root:${WEB}"
   fi
 done
+
+# Strip any ifn_* still lingering in www-data (belt + suspenders before Python repair)
+if [[ "$APPLY" -eq 1 ]]; then
+  if getent group "$WEB" >/dev/null 2>&1; then
+    while IFS=: read -r user _; do
+      case "$user" in
+        ifn_*)
+          gpasswd -d "$user" "$WEB" 2>/dev/null && echo "stripped $user from $WEB" || true
+          ;;
+      esac
+    done < <(getent passwd)
+  fi
+fi
 
 if [[ "$APPLY" -eq 1 ]]; then
   cd /srv/apps/ifnotus/backend

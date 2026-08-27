@@ -119,13 +119,14 @@ class ResourceEnforcementService:
         fam = runtime_family(framework)
         counts = await self.count_apps(env.id)
 
-        cap = {
+        caps = {
             "python": limits.python_apps,
             "node": limits.node_apps,
             "php": limits.php_apps,
-        }.get(fam, 0)
+        }
+        cap = caps.get(fam, 0)
 
-        if fam in cap and counts.get(fam, 0) >= cap:
+        if fam in caps and counts.get(fam, 0) >= cap:
             raise AppException(
                 f"Your plan allows {cap} {fam} application(s). Remove one or upgrade.",
                 code="app_quota_exceeded",
@@ -150,10 +151,15 @@ class ResourceEnforcementService:
         prlimit = shutil.which("prlimit")
         if not prlimit or not command.strip():
             return command
-        mem_bytes = limits.app_memory_mb * 1024 * 1024
-        # --cpu is time quota per second in seconds; use soft nproc for fork bombs
+        mem_bytes = int(limits.app_memory_mb) * 1024 * 1024
+        # V8/Node map far more virtual address space than RSS; RLIMIT_AS at the
+        # advertised RAM ceiling kills `node` immediately. Keep a floor of 1GiB
+        # VAS and 8× the plan memory. On Linux, threads also count toward
+        # RLIMIT_NPROC — raise the floor so Node can start.
+        as_limit = max(mem_bytes * 8, 1024 * 1024 * 1024)
+        nproc = max(int(limits.max_processes or 10), 64)
         return (
-            f"{prlimit} --as={mem_bytes} --nproc={limits.max_processes} "
+            f"{prlimit} --as={as_limit} --nproc={nproc} "
             f"--nofile=4096 -- {command}"
         )
 

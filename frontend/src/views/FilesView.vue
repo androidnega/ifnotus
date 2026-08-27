@@ -6,6 +6,7 @@ import FileTransferQueue from '@/components/files/FileTransferQueue.vue'
 import AiAgentPanel from '@/components/ai/AiAgentPanel.vue'
 import IconFolder from '@/components/icons/IconFolder.vue'
 import Skeleton from '@/components/ui/Skeleton.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import { filesApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
 import { useFileTransferStore } from '@/stores/fileTransfers'
@@ -401,8 +402,17 @@ async function chmodEntry(entry: FileEntry) {
   if (selected.value?.path === entry.path) await selectEntry(entry)
 }
 
-async function unzip(entry: FileEntry) {
-  const { data } = await filesApi.unzip(entry.path, scope.value)
+async function unzip(entry: FileEntry, extractHere = false) {
+  const { data } = await filesApi.unzip(entry.path, scope.value, { extractHere })
+  message.value = { type: data.success ? 'ok' : 'err', text: data.message }
+  menuPath.value = null
+  await load(currentPath.value)
+}
+
+async function compressEntry(entry: FileEntry) {
+  const { data } = await filesApi.compress([entry.path], scope.value, {
+    destinationDir: currentPath.value || '.',
+  })
   message.value = { type: data.success ? 'ok' : 'err', text: data.message }
   menuPath.value = null
   await load(currentPath.value)
@@ -478,17 +488,15 @@ onUnmounted(() => {
 <template>
   <DashboardLayout @refresh="() => { loadRoots(); load(currentPath) }">
     <div class="files-shell animate-fade-in flex min-h-0 flex-col gap-4">
-      <header class="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 class="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">Files</h1>
-          <p class="text-sm text-surface-muted">Browse and manage approved server paths</p>
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <button type="button" class="files-btn" :disabled="parentPath === undefined" title="Go up" @click="goUp">↑ Up</button>
-          <RouterLink v-if="canWrite" :to="uploadLink" class="files-btn-primary">Upload</RouterLink>
-          <button v-if="canWrite" type="button" class="files-btn" @click="showNewFolder = !showNewFolder">New folder</button>
-        </div>
-      </header>
+      <UiPageHeader title="File Manager" lede="Browse and manage approved server paths">
+        <template #actions>
+          <div class="flex flex-wrap items-center gap-2">
+            <button type="button" class="files-btn" :disabled="parentPath === undefined" title="Go up" @click="goUp">↑ Up</button>
+            <RouterLink v-if="canWrite" :to="uploadLink" class="files-btn-primary">Upload</RouterLink>
+            <button v-if="canWrite" type="button" class="files-btn" @click="showNewFolder = !showNewFolder">New folder</button>
+          </div>
+        </template>
+      </UiPageHeader>
 
       <div class="files-toolbar">
         <label class="min-w-[12rem] flex-1 text-sm sm:max-w-xs">
@@ -636,7 +644,9 @@ onUnmounted(() => {
                         <button type="button" @click="startRename(entry)">Rename</button>
                         <button type="button" @click="startMove(entry)">Move</button>
                         <button type="button" @click="chmodEntry(entry)">Permissions</button>
-                        <button v-if="entry.name.toLowerCase().endsWith('.zip')" type="button" @click="unzip(entry)">Unzip</button>
+                        <button v-if="entry.name.toLowerCase().endsWith('.zip')" type="button" @click="unzip(entry, false)">Extract</button>
+                        <button v-if="entry.name.toLowerCase().endsWith('.zip')" type="button" @click="unzip(entry, true)">Extract here</button>
+                        <button type="button" @click="compressEntry(entry)">Zip</button>
                         <button type="button" class="is-danger" @click="remove(entry)">Delete</button>
                       </template>
                     </div>
@@ -676,7 +686,9 @@ onUnmounted(() => {
                     <button type="button" @click="startRename(entry)">Rename</button>
                     <button type="button" @click="startMove(entry)">Move</button>
                     <button type="button" @click="chmodEntry(entry)">Permissions</button>
-                    <button v-if="entry.name.toLowerCase().endsWith('.zip')" type="button" @click="unzip(entry)">Unzip</button>
+                    <button v-if="entry.name.toLowerCase().endsWith('.zip')" type="button" @click="unzip(entry, false)">Extract</button>
+                        <button v-if="entry.name.toLowerCase().endsWith('.zip')" type="button" @click="unzip(entry, true)">Extract here</button>
+                        <button type="button" @click="compressEntry(entry)">Zip</button>
                     <button type="button" class="is-danger" @click="remove(entry)">Delete</button>
                   </template>
                 </div>
@@ -732,7 +744,9 @@ onUnmounted(() => {
               <button type="button" class="files-btn text-xs" @click="startRename(selected)">Rename</button>
               <button type="button" class="files-btn text-xs" @click="startMove(selected)">Move</button>
               <button type="button" class="files-btn text-xs" @click="chmodEntry(selected)">chmod</button>
-              <button v-if="selected.name.toLowerCase().endsWith('.zip')" type="button" class="files-btn text-xs" @click="unzip(selected)">Unzip</button>
+              <button v-if="selected.name.toLowerCase().endsWith('.zip')" type="button" class="files-btn text-xs" @click="unzip(selected, false)">Extract</button>
+              <button v-if="selected.name.toLowerCase().endsWith('.zip')" type="button" class="files-btn text-xs" @click="unzip(selected, true)">Extract here</button>
+              <button type="button" class="files-btn text-xs" @click="compressEntry(selected)">Zip</button>
               <button type="button" class="files-btn text-xs text-red-600" @click="remove(selected)">Delete</button>
             </div>
           </div>

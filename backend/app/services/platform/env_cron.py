@@ -417,14 +417,38 @@ class EnvironmentCronService:
         inner = ["bash", "-lc", command]
         runuser = shutil.which("runuser")
         if runuser:
-            return [runuser, "-u", username, "--", *inner]
-        sudo = shutil.which("sudo")
-        if sudo:
-            return [sudo, "-n", "-u", username, "--", *inner]
-        raise AppException(
-            "Cannot run cron as tenant: neither runuser nor sudo is available on this host.",
-            code="cron_run_helper_unavailable",
-        )
+            tenant_argv = [runuser, "-u", username, "--", *inner]
+        else:
+            sudo = shutil.which("sudo")
+            if sudo:
+                tenant_argv = [sudo, "-n", "-u", username, "--", *inner]
+            else:
+                raise AppException(
+                    "Cannot run cron as tenant: neither runuser nor sudo is available on this host.",
+                    code="cron_run_helper_unavailable",
+                )
+        # Prefer running the tenant command inside the environment resource slice.
+        systemd_run = shutil.which("systemd-run")
+        if systemd_run:
+            try:
+                from app.services.platform.systemd_env_slice import (
+                    EnvironmentSliceService,
+                    slice_name_for,
+                )
+
+                EnvironmentSliceService().ensure_slice(env)
+                return [
+                    systemd_run,
+                    "--quiet",
+                    "--collect",
+                    "--scope",
+                    f"--slice={slice_name_for(env.id)}",
+                    "--",
+                    *tenant_argv,
+                ]
+            except Exception:  # noqa: BLE001
+                pass
+        return tenant_argv
 
     def _execute(
         self,

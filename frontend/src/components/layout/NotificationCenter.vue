@@ -1,13 +1,20 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useNotificationStore } from '@/stores/notifications'
 import Badge from '@/components/ui/Badge.vue'
 import { IconClose } from '@/components/icons'
 
+const router = useRouter()
 const notifications = useNotificationStore()
 
 function formatTime(ts: string) {
-  return new Date(ts).toLocaleString([], { hour: '2-digit', minute: '2-digit' })
+  return new Date(ts).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 function typeVariant(type: string) {
@@ -15,6 +22,12 @@ function typeVariant(type: string) {
   if (type === 'warning') return 'warning'
   if (type === 'success') return 'success'
   return 'info'
+}
+
+function openItem(item: { id: string; href?: string }) {
+  notifications.markRead(item.id)
+  notifications.closePanel()
+  if (item.href) void router.push(item.href)
 }
 
 function handleClickOutside(event: MouseEvent) {
@@ -66,6 +79,20 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
         </div>
       </div>
 
+      <p
+        v-if="notifications.awaitingPaymentConfirm"
+        class="border-b border-amber-200/70 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200"
+      >
+        {{ notifications.awaitingPaymentConfirm }} payment(s) awaiting confirmation —
+        <button
+          type="button"
+          class="underline"
+          @click="openItem({ id: 'goto-orders', href: '/platform/orders' })"
+        >
+          Open Orders
+        </button>
+      </p>
+
       <ul v-if="notifications.items.length" class="max-h-80 overflow-y-auto">
         <li
           v-for="item in notifications.items"
@@ -73,7 +100,11 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
           class="border-b border-surface-border px-4 py-3 transition hover:bg-slate-50 dark:hover:bg-slate-800/50"
           :class="!item.read ? 'bg-brand-500/5' : ''"
         >
-          <div class="flex items-start justify-between gap-2">
+          <button
+            type="button"
+            class="flex w-full items-start justify-between gap-2 text-left"
+            @click="openItem(item)"
+          >
             <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-2">
                 <p class="text-sm font-medium text-slate-900 dark:text-white">{{ item.title }}</p>
@@ -82,19 +113,17 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
               <p class="mt-0.5 text-xs text-surface-muted">{{ item.message }}</p>
               <p class="mt-1 text-[10px] text-surface-muted">{{ formatTime(item.timestamp) }}</p>
             </div>
-            <button
+            <span
               v-if="!item.read"
-              type="button"
-              class="shrink-0 text-[10px] text-brand-600 hover:underline dark:text-brand-400"
-              @click="notifications.markRead(item.id)"
+              class="shrink-0 text-[10px] font-semibold text-brand-600 dark:text-brand-400"
             >
-              Read
-            </button>
-          </div>
+              New
+            </span>
+          </button>
         </li>
       </ul>
       <p v-else class="px-4 py-6 text-center text-sm text-surface-muted">
-        No active alerts — all systems normal.
+        No new payments or system alerts.
       </p>
     </div>
   </Transition>

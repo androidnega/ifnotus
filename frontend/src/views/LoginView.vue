@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import UiBrandMark from '@/components/ui/UiBrandMark.vue'
+import UiAlert from '@/components/ui/UiAlert.vue'
 import { useAuthStore } from '@/stores/auth'
 import { authApi } from '@/api'
 import { ensureDeviceFingerprint } from '@/api/client'
@@ -41,6 +43,8 @@ async function finishRedirect(home: 'dashboard' | 'portal-dashboard') {
     candidate.startsWith('/') &&
     !candidate.startsWith('//') &&
     candidate !== '/login' &&
+    candidate !== '/signup' &&
+    candidate !== '/admin_1' &&
     candidate !== '/portal/login'
   ) {
     const customer = isPureCustomer(auth.user)
@@ -117,24 +121,16 @@ function backToCredentials() {
 </script>
 
 <template>
-  <div class="login-page">
+  <div class="login-page ds-auth-shell">
     <form
       v-if="step === 'credentials'"
-      class="card"
+      class="card ds-auth-card"
       @submit.prevent="handleLogin"
     >
-      <div class="brand">
-        <span class="mark" aria-hidden="true">i</span>
-        <strong>IFNOTUS</strong>
-      </div>
-      <h1>Log in</h1>
-      <p class="hint">Customers: use your phone. Staff: email and password.</p>
+      <UiBrandMark class="auth-brand" />
+      <h1 class="ds-page-title">Staff log in</h1>
 
-      <p class="customer-entry">
-        <router-link class="phone-cta" :to="{ name: 'portal-signup' }">Continue with phone</router-link>
-      </p>
-
-      <p v-if="route.query.verified === '1'" class="note ok">Email verified. You can log in.</p>
+      <UiAlert v-if="route.query.verified === '1'" tone="ok">Email verified. You can log in.</UiAlert>
 
       <label>
         <span>Email</span>
@@ -163,7 +159,7 @@ function backToCredentials() {
         <router-link class="link" :to="{ name: 'forgot-password' }">Forgot password?</router-link>
       </div>
 
-      <p v-if="auth.error" class="note err">{{ auth.error }}</p>
+      <UiAlert v-if="auth.error" tone="err">{{ auth.error }}</UiAlert>
 
       <button type="submit" :disabled="auth.loading">
         {{ auth.loading ? 'Signing in…' : 'Log in' }}
@@ -172,14 +168,11 @@ function backToCredentials() {
 
     <form
       v-else-if="step === 'challenge'"
-      class="card"
+      class="card ds-auth-card"
       @submit.prevent="handleVerify"
     >
-      <div class="brand">
-        <span class="mark" aria-hidden="true">i</span>
-        <strong>IFNOTUS</strong>
-      </div>
-      <h1>Approve device</h1>
+      <UiBrandMark class="auth-brand" />
+      <h1 class="ds-page-title">Approve device</h1>
       <p class="hint">New IP{{ challengeIp ? ` · ${challengeIp}` : '' }}. Enter the server code.</p>
 
       <label>
@@ -197,7 +190,7 @@ function backToCredentials() {
         />
       </label>
 
-      <p v-if="auth.error" class="note err">{{ auth.error }}</p>
+      <UiAlert v-if="auth.error" tone="err">{{ auth.error }}</UiAlert>
 
       <button type="submit" :disabled="auth.loading || approvalCode.trim().length < 4">
         {{ auth.loading ? 'Verifying…' : 'Continue' }}
@@ -205,12 +198,9 @@ function backToCredentials() {
       <button type="button" class="ghost" @click="backToCredentials">Back</button>
     </form>
 
-    <form v-else class="card" @submit.prevent="handleTotp">
-      <div class="brand">
-        <span class="mark" aria-hidden="true">i</span>
-        <strong>IFNOTUS</strong>
-      </div>
-      <h1>Authenticator</h1>
+    <form v-else class="card ds-auth-card" @submit.prevent="handleTotp">
+      <UiBrandMark class="auth-brand" />
+      <h1 class="ds-page-title">Authenticator</h1>
 
       <label>
         <span>Code</span>
@@ -225,7 +215,7 @@ function backToCredentials() {
         />
       </label>
 
-      <p v-if="auth.error" class="note err">{{ auth.error }}</p>
+      <UiAlert v-if="auth.error" tone="err">{{ auth.error }}</UiAlert>
 
       <button type="submit" :disabled="auth.loading">
         {{ auth.loading ? 'Signing in…' : 'Continue' }}
@@ -237,196 +227,11 @@ function backToCredentials() {
 
 <style scoped>
 .login-page {
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1rem;
-  background: #eef2f6;
-  color: #0f172a;
-  font-family: Inter, Figtree, ui-sans-serif, system-ui, sans-serif;
   color-scheme: light;
 }
-
-.card {
-  width: 100%;
-  max-width: 22rem;
-  display: grid;
-  gap: 0.55rem;
-  padding: 1rem 1.05rem 0.95rem;
-  border: 1px solid #d7dee8;
-  border-radius: 0.65rem;
-  background: #fff;
-  box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  margin-bottom: 0.1rem;
-}
-
-.mark {
-  display: inline-flex;
-  width: 1.55rem;
-  height: 1.55rem;
-  align-items: center;
-  justify-content: center;
-  border-radius: 0.35rem;
-  background: #1e3a5f;
-  color: #fff;
-  font-size: 0.72rem;
-  font-weight: 800;
-}
-
-.brand strong {
-  font-size: 0.78rem;
-  font-weight: 750;
-  letter-spacing: 0.04em;
-}
-
-h1 {
-  margin: 0;
-  font-size: 0.98rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.hint {
-  margin: 0;
-  font-size: 0.75rem;
-  color: #64748b;
-  line-height: 1.35;
-}
-
-label {
-  display: grid;
-  gap: 0.22rem;
-}
-
-label span {
-  font-size: 0.72rem;
-  font-weight: 650;
-  color: #475569;
-}
-
-input {
-  width: 100%;
-  border: 1px solid #c9d3df;
-  border-radius: 0.4rem;
-  background: #fff;
-  padding: 0.42rem 0.55rem;
-  font-size: 0.84rem;
-  color: #0f172a;
-}
-
-input::placeholder {
-  color: #94a3b8;
-}
-
-input:focus {
-  outline: none;
-  border-color: #1e3a5f;
-  box-shadow: 0 0 0 3px rgb(30 58 95 / 0.14);
-}
-
 input.code {
   text-align: center;
-  font-family: ui-monospace, monospace;
+  font-family: var(--ds-font-mono, ui-monospace, monospace);
   letter-spacing: 0.28em;
-}
-
-.row {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: -0.15rem;
-}
-
-.link {
-  font-size: 0.72rem;
-  font-weight: 650;
-  color: #1e3a5f;
-  text-decoration: none;
-}
-
-.link:hover {
-  text-decoration: underline;
-}
-
-.note {
-  margin: 0;
-  padding: 0.4rem 0.5rem;
-  border-radius: 0.4rem;
-  font-size: 0.75rem;
-  line-height: 1.35;
-}
-
-.note.ok {
-  border: 1px solid #a7f3d0;
-  background: #ecfdf5;
-  color: #047857;
-}
-
-.note.err {
-  border: 1px solid #fecaca;
-  background: #fef2f2;
-  color: #b91c1c;
-}
-
-button[type='submit'] {
-  margin-top: 0.15rem;
-  width: 100%;
-  border: none;
-  border-radius: 0.4rem;
-  background: #1e3a5f;
-  color: #fff;
-  font-size: 0.84rem;
-  font-weight: 650;
-  padding: 0.48rem 0.75rem;
-  cursor: pointer;
-}
-
-button[type='submit']:hover:not(:disabled) {
-  background: #16304d;
-}
-
-button[type='submit']:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.ghost {
-  border: none;
-  background: none;
-  color: #64748b;
-  font-size: 0.75rem;
-  font-weight: 600;
-  cursor: pointer;
-  padding: 0.15rem;
-}
-
-.ghost:hover {
-  color: #334155;
-}
-
-.customer-entry {
-  margin: 0.15rem 0 0.35rem;
-}
-
-.phone-cta {
-  display: block;
-  text-align: center;
-  text-decoration: none;
-  border-radius: 0.45rem;
-  background: #ff6c2c;
-  color: #fff;
-  font-size: 0.82rem;
-  font-weight: 650;
-  padding: 0.55rem 0.75rem;
-}
-
-.phone-cta:hover {
-  filter: brightness(0.96);
 }
 </style>

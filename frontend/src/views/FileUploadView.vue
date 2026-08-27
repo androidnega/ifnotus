@@ -3,6 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
+import UiAlert from '@/components/ui/UiAlert.vue'
 import FileTransferQueue from '@/components/files/FileTransferQueue.vue'
 import { filesApi } from '@/api'
 import { useFileTransferStore } from '@/stores/fileTransfers'
@@ -90,18 +92,15 @@ const backQuery = computed(() => ({
 <template>
   <DashboardLayout>
     <div class="animate-fade-in mx-auto max-w-3xl space-y-5">
-      <div class="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 class="text-lg font-semibold text-slate-900 dark:text-white">Upload files</h1>
-          <p class="text-sm text-surface-muted">Queued, chunked uploads — safe for large files</p>
-        </div>
-        <RouterLink
-          :to="{ name: 'files', query: backQuery }"
-          class="rounded-lg border border-surface-border px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-800"
-        >
-          ← Back to files
-        </RouterLink>
-      </div>
+      <UiPageHeader eyebrow="Files" title="Upload files" lede="Queued, chunked uploads — safe for large files">
+        <template #actions>
+          <RouterLink :to="{ name: 'files', query: backQuery }" class="ds-btn ds-btn-ghost">
+            ← Back to files
+          </RouterLink>
+        </template>
+      </UiPageHeader>
+
+      <UiAlert v-if="!canWrite" tone="warn">You can browse this queue, but uploads need files:write.</UiAlert>
 
       <Card padding="md">
         <label class="block text-sm">

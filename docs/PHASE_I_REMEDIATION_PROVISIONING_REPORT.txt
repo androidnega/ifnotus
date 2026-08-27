@@ -1,0 +1,54 @@
+PHASE I — Remediation + Re-test (ISPConfig Provisioning Fix)
+============================================================
+Date: 2026-08-27
+Server: 80.241.223.82
+Verdict: PASS (core tenant isolation)
+
+Problem (initial Phase I)
+-------------------------
+ISPConfig server cron was broken: /etc/alternatives/php link absent → server.sh
+and cron.sh ran `-q` instead of php → no UNIX users, no 0710 perms, no vhosts.
+www-data could read all tenant files (root:root 644).
+
+Fix applied
+-----------
+1. update-alternatives --set php /usr/bin/php8.3
+2. Hardcoded /usr/bin/php8.3 in server.sh + cron.sh (backups: *.bak-phase-i / *.bak-ifnotus-*)
+3. Idempotent script: deploy/ispconfig/fix-php-cron.sh (also on VPS under /srv/apps/ifnotus/deploy/)
+4. Server config:
+     connect_userid_to_webid=y
+     set_folder_permissions_on_update=y
+     web_folder_permission=0710
+
+Re-test (Phase I script, tenants deleted after run)
+---------------------------------------------------
+Tenants: ifn_iso_a / isp-iso-a.ifnotus.space (web37, client42)
+         ifn_iso_b / isp-iso-b.ifnotus.space (web38, client43)
+
+| Attack                         | Result |
+|--------------------------------|--------|
+| A read B files                 | PASS — Permission denied |
+| www-data read B files          | PASS — Permission denied |
+| A modify B files               | PASS — Permission denied |
+| A access B database            | PASS — ERROR 1044 |
+| A traverse /etc/shadow         | PASS |
+| A follow symlink to B          | PASS — Permission denied |
+| A read legacy customer files   | PASS |
+| A excessive storage (512MB)    | PASS — 0 bytes written |
+| IFNOTUS zip-slip / unzip       | PASS |
+| A use B credentials (runuser)  | (probe updated in script) |
+| A excessive processes (ulimit) | (probe updated in script) |
+
+Provisioning now confirmed
+--------------------------
+  - web{N} / client{N} users in /etc/passwd
+  - web/ dirs mode 0710 owned by site user
+  - nginx vhost e.g. 100-isp-iso-a.ifnotus.space.vhost
+  - server.php finishes successfully each minute via cron
+
+Orphan cleanup note
+-------------------
+  ifn_iso_fix (client35) may remain from probe — delete via panel/API if present.
+
+STOP — Phase I re-test PASS. Safe to proceed toward Phase J (resource enforcement)
+when requested. HOSTING_PROVIDER_DEFAULT remains legacy.

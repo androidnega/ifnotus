@@ -1,4 +1,4 @@
-"""Customer environment DNS — IFNOTUS nameservers (never expose the VPS IP)."""
+"""Customer environment DNS — IFNOTUS nameservers or A records at the registrar."""
 
 from __future__ import annotations
 
@@ -147,6 +147,14 @@ class EnvironmentDnsService:
 
         panel_host = control_panel_hostname(env.domain)
         panel_url = control_panel_url(env.domain, self._settings.customer_portal_url)
+        mail_host = None
+        if panel_host and env.domain:
+            apex = env.domain.lower().rstrip(".")
+            if apex.startswith("www."):
+                apex = apex[4:]
+            mail_host = f"mail.{apex}"
+        ip = (self.recommended_ip(env) or "").strip()
+        required_records = self.required_external_records(env.domain, ip) if ip and check_name else []
         return {
             "environment_id": env.id,
             "domain": env.domain,
@@ -158,14 +166,120 @@ class EnvironmentDnsService:
             "custom_domains_used": len(custom),
             "custom_domains_limit": limit,
             "can_assign": limit > 0 and len(custom) < limit,
-            "recommended_ip": "",
-            "records": [],
+            "recommended_ip": ip,
+            "records": required_records,
             "namecheap_pushed": False,
             "panel_hostname": panel_host,
             "panel_url": panel_url,
+            "mail_hostname": mail_host,
             "message": readiness["message"],
             **{k: v for k, v in readiness.items() if k != "message"},
         }
+
+    def required_external_records(self, domain: str | None, ip: str) -> list[dict]:
+        """A/CNAME rows for customers who keep DNS at their registrar."""
+        from app.services.platform.panel_access import control_panel_hostname
+
+        name = (domain or "").strip().lower().rstrip(".")
+        if not name or not ip or self.is_included_hostname(name):
+            return []
+        cpanel = control_panel_hostname(name)
+        rows: list[dict] = [
+            {"record_type": "A", "host": "@", "value": ip, "ttl": 3600},
+            {"record_type": "A", "host": "www", "value": ip, "ttl": 3600},
+        ]
+        if cpanel and cpanel.startswith("cpanel."):
+            rows.append({"record_type": "A", "host": "cpanel", "value": ip, "ttl": 3600})
+        rows.append({"record_type": "A", "host": "mail", "value": ip, "ttl": 3600})
+        return rows
+
+    def _server_ips(self) -> set[str]:
+        raw = (self._settings.server_public_ip or "").strip()
+        return {raw} if raw else {}
+
+    def _dig(self, qname: str, qtype: str) -> list[str]:
+        import subprocess
+
+        name = (qname or "").strip().lower().rstrip(".")
+        if not name:
+            return []
+        try:
+            proc = subprocess.run(
+                ["dig", "+short", "+time=2", "+tries=1", qtype.upper(), name],
+                capture_output=True,
+                text=True,
+                timeout=6,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        out: list[str] = []
+        for line in (proc.stdout or "").splitlines():
+            token = line.strip().lower().rstrip(".")
+            if not token or token.startswith(";"):
+                continue
+            if qtype.upper() == "NS" and token.replace(".", "").isdigit():
+                continue
+            out.append(token)
+        return out
+
+    def _a_points_here(self, hostname: str) -> bool:
+        want = self._server_ips()
+        if not want:
+            return False
+        for line in self._dig(hostname, "A"):
+            if line in want:
+                return True
+        return False
+
+    def _lookup_dns_live(self, domain: str, expected: list[str]) -> dict:
+        """Public DNS check — nameserver delegation or registrar A records."""
+        name = (domain or "").strip().lower().rstrip(".")
+        if not name or "." not in name:
+            return {
+                "ns_live": False,
+                "resolves": False,
+                "ns_found": [],
+                "apex_points_here": False,
+                "www_points_here": False,
+                "cpanel_points_here": False,
+                "dns_live": False,
+                "dns_mode": None,
+            }
+
+        from app.services.platform.panel_access import control_panel_hostname
+
+        want_ns = {n.strip().lower().rstrip(".") for n in expected if n.strip()}
+        found_ns = self._dig(name, "NS")
+        ns_live = bool(want_ns) and want_ns.issubset(set(found_ns)) if found_ns else False
+
+        apex_points = self._a_points_here(name)
+        www_points = self._a_points_here(f"www.{name}")
+        cpanel_host = control_panel_hostname(name) or f"cpanel.{name}"
+        cpanel_points = self._a_points_here(cpanel_host)
+
+        a_mode_live = apex_points and cpanel_points
+        dns_live = ns_live or a_mode_live
+        if ns_live:
+            dns_mode = "nameserver"
+        elif a_mode_live:
+            dns_mode = "a_record"
+        else:
+            dns_mode = None
+
+        return {
+            "ns_live": ns_live,
+            "resolves": apex_points or bool(self._dig(name, "A")),
+            "ns_found": found_ns[:6],
+            "apex_points_here": apex_points,
+            "www_points_here": www_points,
+            "cpanel_points_here": cpanel_points,
+            "dns_live": dns_live,
+            "dns_mode": dns_mode,
+        }
+
+    def _dns_ready(self, domain: str) -> bool:
+        return bool(self._lookup_dns_live(domain, self.nameservers()).get("dns_live"))
 
     def _domain_readiness(
         self,
@@ -220,6 +334,10 @@ class EnvironmentDnsService:
                 "included_hostname": True,
                 "ns_live": True,
                 "resolves": True,
+                "dns_live": True,
+                "dns_mode": "nameserver",
+                "a_records_live": False,
+                "cpanel_live": True,
                 "ssl_status": ssl_status,
                 "ssl_ready": ssl_ready,
                 "checklist": checklist,
@@ -236,16 +354,22 @@ class EnvironmentDnsService:
         if not check_name:
             checklist = [
                 {
-                    "id": "copy_ns",
-                    "label": "Copy both nameservers",
+                    "id": "choose_mode",
+                    "label": "Choose how to connect DNS",
                     "done": False,
-                    "detail": "Add a professional domain first, or use Student.",
+                    "detail": "Use IFNOTUS nameservers or A records at your registrar — either works.",
                 },
                 {
-                    "id": "at_registrar",
-                    "label": "Set nameservers at your registrar",
+                    "id": "copy_ns",
+                    "label": "Option A: copy both nameservers",
                     "done": False,
-                    "detail": "Replace the old nameservers with ns1 and ns2.ifnotus.space.",
+                    "detail": "ns1.ifnotus.space and ns2.ifnotus.space at your registrar.",
+                },
+                {
+                    "id": "a_records",
+                    "label": "Option B: add A records at your DNS",
+                    "done": False,
+                    "detail": "Point @, www, cpanel, and mail to the server IP shown below.",
                 },
                 {
                     "id": "wait_dns",
@@ -257,55 +381,81 @@ class EnvironmentDnsService:
                     "id": "https",
                     "label": "Turn on HTTPS",
                     "done": False,
-                    "detail": "Do this after nameservers are live.",
+                    "detail": "Do this after DNS is live.",
                 },
             ]
             return {
                 "included_hostname": False,
                 "ns_live": None,
                 "resolves": None,
+                "dns_live": False,
+                "dns_mode": None,
+                "a_records_live": False,
+                "cpanel_live": False,
                 "ssl_status": ssl_status,
                 "ssl_ready": False,
                 "checklist": checklist,
                 "status_summary": "No professional domain on this site yet.",
                 "message": (
-                    "Change this domain’s nameservers to the two hosts below. "
-                    "Do not use an IP address. After DNS updates, turn on HTTPS."
+                    "Connect a domain with IFNOTUS nameservers or A records at your registrar. "
+                    "Either path works — pick one."
                 ),
             }
 
-        live = self._lookup_ns_live(check_name, nameservers)
+        live = self._lookup_dns_live(check_name, nameservers)
         ns_live = bool(live.get("ns_live"))
         resolves = bool(live.get("resolves"))
+        dns_live = bool(live.get("dns_live"))
+        dns_mode = live.get("dns_mode")
+        a_records_live = bool(live.get("apex_points_here")) and bool(live.get("cpanel_points_here"))
+        cpanel_live = bool(live.get("cpanel_points_here"))
         found = list(live.get("ns_found") or [])
         checklist = [
             {
-                "id": "copy_ns",
-                "label": "Copy both nameservers",
-                "done": True,
-                "detail": "ns1.ifnotus.space and ns2.ifnotus.space",
-            },
-            {
-                "id": "at_registrar",
-                "label": "Set nameservers at your registrar",
-                "done": ns_live,
+                "id": "choose_mode",
+                "label": "DNS connection method",
+                "done": dns_live,
                 "detail": (
-                    "Public DNS already points at IFNOTUS."
-                    if ns_live
+                    "Using IFNOTUS nameservers."
+                    if dns_mode == "nameserver"
                     else (
-                        f"Still seeing: {', '.join(found)}"
-                        if found
-                        else "Not pointing at IFNOTUS yet. Replace nameservers at the registrar."
+                        "Using A records at your registrar."
+                        if dns_mode == "a_record"
+                        else "Set nameservers to IFNOTUS or add A records — either works."
                     )
                 ),
             },
             {
+                "id": "copy_ns",
+                "label": "Option A: IFNOTUS nameservers",
+                "done": ns_live,
+                "detail": (
+                    "Public DNS delegates to IFNOTUS."
+                    if ns_live
+                    else (
+                        f"Still seeing: {', '.join(found)}"
+                        if found
+                        else "Replace registrar nameservers with ns1 and ns2.ifnotus.space."
+                    )
+                ),
+            },
+            {
+                "id": "a_records",
+                "label": "Option B: A records at your DNS",
+                "done": a_records_live,
+                "detail": (
+                    "Apex and cpanel point to this server."
+                    if a_records_live
+                    else "Add A records for @, www, cpanel, and mail to the server IP below."
+                ),
+            },
+            {
                 "id": "wait_dns",
-                "label": "Wait until the name resolves",
-                "done": resolves,
+                "label": "Site name resolves",
+                "done": resolves and dns_live,
                 "detail": (
                     "The domain answers on the internet."
-                    if resolves
+                    if resolves and dns_live
                     else "DNS not live yet — wait, then click Test again."
                 ),
             },
@@ -318,27 +468,32 @@ class EnvironmentDnsService:
                     if ssl_ready
                     else (
                         "Ready — click Turn on HTTPS below."
-                        if ns_live and resolves
-                        else "Wait until nameservers are live, then turn on HTTPS."
+                        if dns_live and resolves
+                        else "Wait until DNS is live (nameservers or A records), then turn on HTTPS."
                     )
                 ),
             },
         ]
-        if ns_live and resolves and ssl_ready:
+        if dns_live and resolves and ssl_ready:
             summary = f"{check_name} is live with HTTPS."
-        elif ns_live and resolves:
+        elif dns_live and resolves:
             summary = f"{check_name} points to IFNOTUS. Turn on HTTPS next."
-        elif ns_live:
-            summary = f"Nameservers look correct for {check_name}, but the name is not resolving yet. Wait and test again."
+        elif dns_live:
+            summary = f"DNS looks correct for {check_name}, but the name is not resolving yet. Wait and test again."
         else:
             summary = (
-                f"DNS not live yet for {check_name}. At your registrar, set both nameservers "
-                "to ns1.ifnotus.space and ns2.ifnotus.space — do not use an IP address."
+                f"DNS not live yet for {check_name}. Either set nameservers to "
+                f"{nameservers[0]} and {nameservers[1]}, or add A records for @, www, cpanel, and mail "
+                "to the server IP shown below."
             )
         return {
             "included_hostname": False,
             "ns_live": ns_live,
             "resolves": resolves,
+            "dns_live": dns_live,
+            "dns_mode": dns_mode,
+            "a_records_live": a_records_live,
+            "cpanel_live": cpanel_live,
             "ssl_status": ssl_status,
             "ssl_ready": ssl_ready,
             "checklist": checklist,
@@ -347,44 +502,15 @@ class EnvironmentDnsService:
         }
 
     def _lookup_ns_live(self, domain: str, expected: list[str]) -> dict:
-        """Query public NS / A for a domain. Returns names only — never the host IP."""
-        import subprocess
-
-        name = (domain or "").strip().lower().rstrip(".")
-        if not name or "." not in name:
-            return {"ns_live": False, "resolves": False, "ns_found": []}
-        want = {n.strip().lower().rstrip(".") for n in expected if n.strip()}
-
-        def _dig(qtype: str) -> list[str]:
-            try:
-                proc = subprocess.run(
-                    ["dig", "+short", "+time=2", "+tries=1", qtype, name],
-                    capture_output=True,
-                    text=True,
-                    timeout=6,
-                    check=False,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                return []
-            out: list[str] = []
-            for line in (proc.stdout or "").splitlines():
-                token = line.strip().lower().rstrip(".")
-                if not token:
-                    continue
-                # Skip glue / A lines when asking for NS
-                if qtype.upper() == "NS" and token.replace(".", "").isdigit():
-                    continue
-                out.append(token)
-            return out
-
-        found = _dig("NS")
-        # Some registrars only show NS at the parent; empty NS with a working A still means
-        # the name is delegated somehow — treat matching expected NS as live.
-        ns_live = bool(want) and want.issubset(set(found)) if found else False
-        a_lines = _dig("A")
-        resolves = any(line and not line.startswith(";") for line in a_lines)
-        # Never include A values in the payload — customers must not see the VPS IP.
-        return {"ns_live": ns_live, "resolves": resolves, "ns_found": found[:6]}
+        """Backward-compatible wrapper — prefer _lookup_dns_live for new code."""
+        live = self._lookup_dns_live(domain, expected)
+        return {
+            "ns_live": live.get("ns_live"),
+            "resolves": live.get("resolves"),
+            "ns_found": live.get("ns_found") or [],
+            "dns_live": live.get("dns_live"),
+            "dns_mode": live.get("dns_mode"),
+        }
 
     async def ensure_hosting_domain_for_mail(self, env: CustomerEnvironment) -> Domain:
         """Ensure the environment has a Domain row so mailboxes can be created (cPanel-style)."""
@@ -443,6 +569,111 @@ class EnvironmentDnsService:
                 ns_set = {"ok": False, "message": str(exc)}
         return {"zone": zone, "nameservers": self.nameservers(), "registrar_ns": ns_set}
 
+    async def ensure_custom_domain_panel(
+        self,
+        env: CustomerEnvironment,
+        domain_name: str | None = None,
+    ) -> dict:
+        """Publish cpanel/mail DNS, nginx SPA vhost, and SSL when NS are live.
+
+        Called when a real custom domain is assigned or hosting becomes active so
+        ``https://cpanel.<domain>/`` is ready as soon as nameservers point here.
+        """
+        from pathlib import Path
+
+        from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
+        from app.services.platform.panel_access import control_panel_hostname, is_platform_hostname
+
+        raw = (domain_name or env.domain or "").strip().lower()
+        if not raw or self.is_included_hostname(raw) or is_platform_hostname(raw):
+            return {"ok": True, "skipped": True, "domain": raw or None}
+
+        name = self._auth.validate_domain(raw)
+        cpanel = control_panel_hostname(name)
+        out: dict = {"ok": True, "domain": name, "cpanel": cpanel}
+
+        try:
+            out["zone"] = self._auth.ensure_zone(name)
+        except Exception as exc:  # noqa: BLE001
+            out["zone_error"] = str(exc)[:400]
+            logger.warning("panel_zone_failed", domain=name, error=str(exc))
+
+        try:
+            from app.services.platform.registrar import DomainRegistrar
+
+            registrar = DomainRegistrar(self._settings)
+            if registrar.enabled:
+                out["registrar_ns"] = await registrar.set_custom_nameservers(name, self.nameservers())
+        except Exception as exc:  # noqa: BLE001
+            out["registrar_ns"] = {"ok": False, "message": str(exc)[:200]}
+
+        live_lookup = self._lookup_dns_live(name, self.nameservers())
+        dns_live = bool(live_lookup.get("dns_live"))
+        out["ns_live"] = bool(live_lookup.get("ns_live"))
+        out["dns_live"] = dns_live
+        out["dns_mode"] = live_lookup.get("dns_mode")
+
+        cert_path = Path(f"/etc/letsencrypt/live/{name}/fullchain.pem")
+        force_https = cert_path.exists()
+        prov = DomainNginxProvisioner(self._settings)
+        try:
+            nginx = await prov.provision(
+                hostname=name,
+                document_root=env.document_root,
+                proxy_port=env.container_port,
+                force_https=force_https,
+                enabled=True,
+                create_docroot=False,
+                force_takeover=True,
+                ssl_certificate=str(cert_path) if force_https else None,
+                ram_gb=float(env.ram_limit_gb or 0.5),
+            )
+            out["nginx"] = nginx.message
+            out["nginx_ok"] = nginx.success
+        except Exception as exc:  # noqa: BLE001
+            out["nginx_ok"] = False
+            out["nginx_error"] = str(exc)[:400]
+            logger.warning("panel_nginx_failed", domain=name, error=str(exc))
+
+        if dns_live and not cert_path.exists():
+            try:
+                task_id = await EnvironmentSslJobService(self._settings, self._session).queue_issue_ssl(env)
+                out["ssl"] = "queued" if task_id else "pending"
+            except Exception as exc:  # noqa: BLE001
+                out["ssl"] = "deferred"
+                out["ssl_error"] = str(exc)[:200]
+        elif dns_live and cert_path.exists():
+            try:
+                await prov.provision(
+                    hostname=name,
+                    document_root=env.document_root,
+                    proxy_port=env.container_port,
+                    force_https=True,
+                    enabled=True,
+                    create_docroot=False,
+                    force_takeover=True,
+                    ssl_certificate=str(cert_path),
+                    ram_gb=float(env.ram_limit_gb or 0.5),
+                )
+                out["ssl"] = "active"
+            except Exception as exc:  # noqa: BLE001
+                out["ssl_error"] = str(exc)[:200]
+
+        if not dns_live:
+            ip = (self.recommended_ip(env) or "").strip()
+            out["message"] = (
+                f"Panel vhost is ready on this server. Either set {name} nameservers to "
+                f"{self.nameservers()[0]} and {self.nameservers()[1]}, "
+                f"or add A records (@, www, cpanel, mail → {ip or 'this server'}) at your registrar "
+                f"so {cpanel or 'cpanel.' + name} resolves publicly."
+            )
+        else:
+            mode = live_lookup.get("dns_mode") or "nameserver"
+            out["message"] = (
+                f"{cpanel or name} is live via {'IFNOTUS nameservers' if mode == 'nameserver' else 'A records'}."
+            )
+        return out
+
     async def ensure_a(
         self,
         env: CustomerEnvironment,
@@ -453,31 +684,77 @@ class EnvironmentDnsService:
         if not env.domain:
             return {"ok": False, "local": False, "message": "This site has no domain yet."}
         if self.is_included_hostname(env.domain):
+            # Student / addon hostnames rely on apex wildcards — verify resolution so
+            # NXDOMAIN surfaces in the provision job instead of a false green.
+            resolved = self.verify_hostname_resolves(env.domain)
+            ok = bool(resolved.get("ok"))
             return {
-                "ok": True,
+                "ok": ok,
                 "local": True,
-                "ip": "",
+                "ip": (resolved.get("addresses") or [""])[0] if ok else "",
+                "resolved": resolved,
                 "namecheap": {"ok": True, "pushed": False, "provider": "ifnotus-included"},
                 "message": (
-                    f"{env.domain} already uses IFNOTUS nameservers."
+                    f"{env.domain} resolves via IFNOTUS nameservers"
+                    f" ({', '.join(resolved.get('addresses') or [])})."
+                    if ok
+                    else (
+                        f"{env.domain} does not resolve yet. Check the live ifnotus.space "
+                        "wildcard A/AAAA on ns1/ns2 (DNS is separate from stack install)."
+                    )
                 ),
             }
         published = await self.publish_on_ifnotus_ns(env.domain)
         ns_ok = bool((published.get("registrar_ns") or {}).get("ok"))
+        ip = (self.recommended_ip(env) or "").strip()
+        a_push: dict = {"ok": False, "skipped": True}
+        registrar = DomainRegistrar(self._settings)
+        if registrar.enabled and ip and not self.is_included_hostname(env.domain):
+            try:
+                a_push = await registrar.ensure_a_record(env.domain, ip, also_panel_hosts=True)
+            except Exception as exc:  # noqa: BLE001
+                a_push = {"ok": False, "message": str(exc)[:200]}
+        live = self._lookup_dns_live(env.domain, self.nameservers())
+        dns_live = bool(live.get("dns_live"))
         return {
-            "ok": True,
+            "ok": dns_live or True,
             "local": True,
-            "ip": "",
+            "ip": ip,
             "namecheap": published.get("registrar_ns"),
+            "a_records": a_push,
+            "dns_live": dns_live,
+            "dns_mode": live.get("dns_mode"),
             "message": (
                 f"Hosted on {self.nameservers()[0]} and {self.nameservers()[1]}."
                 if ns_ok
                 else (
-                    f"Zone is live here. At your registrar, set nameservers to "
-                    f"{self.nameservers()[0]} and {self.nameservers()[1]}."
+                    f"DNS is live via A records at your registrar."
+                    if live.get("dns_mode") == "a_record"
+                    else (
+                        f"Zone is ready here. Either set nameservers to "
+                        f"{self.nameservers()[0]} and {self.nameservers()[1]}, "
+                        f"or add A records (@, www, cpanel, mail → {ip}) at your DNS provider."
+                    )
                 )
             ),
         }
+
+    @staticmethod
+    def verify_hostname_resolves(hostname: str) -> dict:
+        """Best-effort public resolution check (wildcard / zone health)."""
+        import socket
+
+        name = (hostname or "").strip().lower().rstrip(".")
+        if not name:
+            return {"ok": False, "addresses": [], "error": "empty_hostname"}
+        try:
+            infos = socket.getaddrinfo(name, None)
+            addrs = sorted({str(item[4][0]) for item in infos if item and item[4]})
+            return {"ok": bool(addrs), "addresses": addrs}
+        except socket.gaierror as exc:
+            return {"ok": False, "addresses": [], "error": str(exc)}
+        except OSError as exc:
+            return {"ok": False, "addresses": [], "error": str(exc)}
 
     async def attach_custom_domain(self, env: CustomerEnvironment, domain_name: str) -> dict:
         """Add (traditional addon domain) or assign an owned domain to this site."""
@@ -520,6 +797,7 @@ class EnvironmentDnsService:
 
         await self._ensure_addon_vhost(env, name)
         published = await self.publish_on_ifnotus_ns(name)
+        panel = await self.ensure_custom_domain_panel(env, name)
 
         if other is None:
             # Attach flow: new custom domains start as pending_verification until
@@ -560,9 +838,10 @@ class EnvironmentDnsService:
             "addon_kept": True,
             "nameservers": ns,
             "registrar_ns": published.get("registrar_ns"),
+            "panel": panel,
             "message": (
-                f"{name} is assigned to this site as an addon domain. At the registrar, set nameservers to "
-                f"{ns[0]} and {ns[1]}. Do not enter a server IP."
+                f"{name} is assigned to this site. Connect DNS either way: set nameservers to "
+                f"{ns[0]} and {ns[1]}, or add A records for @, www, cpanel, and mail at your registrar."
             ),
         }
 
@@ -683,6 +962,65 @@ class EnvironmentDnsService:
         await self._session.flush()
         await svc.provision_domain(hosting.id)
 
+    async def _refresh_parking_ready_page(self, env: CustomerEnvironment, domain: str) -> None:
+        """Upgrade IFNOTUS parking pages to relative /cpanel links (idempotent)."""
+        from pathlib import Path
+
+        root = (env.document_root or "").strip()
+        if not root:
+            return
+        from app.services.platform.hosting_ready_page import is_parking_page, write_hosting_ready_page
+
+        index = Path(root) / "index.html"
+        if index.exists():
+            try:
+                if not is_parking_page(index.read_text(encoding="utf-8", errors="replace")):
+                    return
+            except OSError:
+                return
+        write_hosting_ready_page(
+            Path(root),
+            hostname=domain,
+            portal_base=self._settings.customer_portal_url or "https://ifnotus.space",
+            force=True,
+        )
+
+    async def sweep_active_custom_domains(self) -> dict:
+        """Keep panel routing, nginx, and SSL in sync as public DNS changes — no manual scripts."""
+        result = await self._session.execute(
+            select(CustomerEnvironment).where(CustomerEnvironment.status == "active")
+        )
+        summary: dict = {"checked": 0, "synced": 0, "ssl_queued": 0, "domains_activated": 0}
+        for env in result.scalars().all():
+            domain = (env.domain or "").strip().lower().rstrip(".")
+            if not domain or self.is_included_hostname(domain):
+                continue
+            summary["checked"] += 1
+            live = self._lookup_dns_live(domain, self.nameservers())
+            try:
+                panel = await self.ensure_custom_domain_panel(env, domain)
+                if panel.get("nginx_ok"):
+                    summary["synced"] += 1
+                if panel.get("ssl") == "queued":
+                    summary["ssl_queued"] += 1
+                await self._refresh_parking_ready_page(env, domain)
+                if live.get("dns_live"):
+                    row = (
+                        await self._session.execute(
+                            select(CustomerDomain).where(
+                                CustomerDomain.customer_id == env.customer_id,
+                                CustomerDomain.domain_name == domain,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if row is not None and domain_lifecycle_status(row) == DOMAIN_STATUS_PENDING:
+                        set_domain_lifecycle_status(row, DOMAIN_STATUS_ACTIVE)
+                        summary["domains_activated"] += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("dns_sweep_env_failed", domain=domain, error=str(exc)[:200])
+        await self._session.flush()
+        return summary
+
     async def queue_configure_dns(self, env: CustomerEnvironment) -> UUID | None:
         job = PlatformJob(
             job_type="configure_dns",
@@ -709,6 +1047,21 @@ class EnvironmentSslJobService:
         self._session = session
 
     async def queue_issue_ssl(self, env: CustomerEnvironment) -> tuple[PlatformJob, UUID | None]:
+        from app.services.hosting.ssl import SslService
+
+        domain = (env.domain or "").strip().lower()
+        if domain and not SslService.is_ifnotus_hostname(domain):
+            dns = EnvironmentDnsService(self._settings, self._session)
+            if not dns._dns_ready(domain):
+                from app.core.exceptions import AppException
+
+                raise AppException(
+                    f"DNS for {domain} is not live yet. "
+                    "Point nameservers to IFNOTUS or add A records (@, www, cpanel, mail) at your registrar, "
+                    "then issue SSL.",
+                    code="dns_not_live",
+                )
+
         job = PlatformJob(
             job_type="issue_ssl",
             customer_id=env.customer_id,

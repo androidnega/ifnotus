@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import ErrorState from '@/components/ui/ErrorState.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import DashboardAiFab from '@/components/ai/DashboardAiFab.vue'
 import ControlGauge from '@/components/dashboard/ControlGauge.vue'
 import Sparkline from '@/components/dashboard/Sparkline.vue'
@@ -58,7 +59,6 @@ function textStat(id: string): string {
 const cpu = computed(() => server.value?.cpu ?? numStat('cpu'))
 const ram = computed(() => server.value?.memory ?? numStat('memory'))
 const disk = computed(() => server.value?.disk ?? numStat('disk'))
-const networkPct = computed(() => Math.min(100, Math.round((cpu.value + ram.value) / 8) + 12))
 
 const cpuSeries = computed(() => data.value?.charts.cpu.series[0]?.data.slice(-12) ?? [0, 8, 12, 10, 18])
 const ramSeries = computed(() => data.value?.charts.memory.series[0]?.data.slice(-12) ?? [20, 28, 32, 40, 42])
@@ -106,12 +106,12 @@ const servicesOk = computed(
 )
 
 const actions = [
-  { label: 'Restart Server', to: '/operations', icon: IconRefresh, color: '#2563eb' },
+  { label: 'Host operations', to: '/operations', icon: IconRefresh, color: '#2563eb' },
   { label: 'Open Terminal', to: '/terminal', icon: IconTerminal, color: '#0f172a' },
-  { label: 'Manage Backups', to: '/operations', icon: IconFolder, color: '#16a34a' },
+  { label: 'File Manager', to: '/files', icon: IconFolder, color: '#16a34a' },
   { label: 'Add Domain', to: '/domains', icon: IconGlobe, color: '#7c3aed' },
   { label: 'Create Database', to: '/databases', icon: IconDatabase, color: '#ea580c' },
-  { label: 'Security Scan', to: '/security', icon: IconShield, color: '#dc2626' },
+  { label: 'Security', to: '/security', icon: IconShield, color: '#dc2626' },
 ]
 
 const lastLoginIp = computed(() => auth.user?.last_login_ip?.trim() || '')
@@ -141,11 +141,23 @@ export default { name: 'DashboardView' }
     <ErrorState v-if="error && !data" :message="error" @retry="refresh" />
 
     <div v-else class="ctrl animate-fade-in">
+      <UiPageHeader
+        eyebrow="Control"
+        title="Dashboard"
+        :lede="`${hostname} · ${online ? 'Online' : 'Attention'} · v${version}`"
+      >
+        <template #actions>
+          <button type="button" class="ds-btn-ghost" :disabled="refreshing" @click="refresh">
+            {{ refreshing ? 'Refreshing…' : 'Refresh' }}
+          </button>
+        </template>
+      </UiPageHeader>
+
       <section class="metrics">
         <article class="metric">
           <p class="k">VPS status</p>
           <p class="v" :class="online ? 'ok' : 'bad'">{{ online ? 'Online' : 'Attention' }}</p>
-          <p class="s">{{ online ? 'All systems operational' : 'Check monitoring' }}</p>
+          <p class="s">{{ online ? 'All systems operational' : 'Check Host status' }}</p>
         </article>
         <article class="metric">
           <p class="k">CPU usage</p>
@@ -195,8 +207,7 @@ export default { name: 'DashboardView' }
           <div class="gauges">
             <ControlGauge label="CPU" :value="cpu" color="#2563eb" />
             <ControlGauge label="Memory" :value="ram" color="#7c3aed" />
-            <ControlGauge label="Network" :value="networkPct" color="#0284c7" />
-            <ControlGauge label="Uptime" :value="online ? 99 : 80" suffix="" color="#16a34a" />
+            <ControlGauge label="Disk" :value="disk" color="#16a34a" />
           </div>
           <dl class="facts">
             <div><dt>OS</dt><dd>Linux host</dd></div>
@@ -229,9 +240,9 @@ export default { name: 'DashboardView' }
             <h2>Operator access</h2>
             <span class="pill ok">Enabled</span>
           </header>
-          <p class="muted">Key-based terminal in this panel. Hostnames only — never paste a public IP into customer tools.</p>
+          <p class="muted">Audited command runner in this panel. Prefer hostnames — never paste a public IP into customer tools.</p>
           <code class="cmd">terminal · ifnotus.space</code>
-          <p class="warn-note">Password SSH is off. Use the in-panel terminal.</p>
+          <p class="warn-note">This is not an interactive SSH session. Use Terminal for controlled host commands.</p>
           <button type="button" class="cta" @click="go('/terminal')">Launch Terminal</button>
         </article>
       </section>
@@ -295,8 +306,8 @@ export default { name: 'DashboardView' }
 
         <article class="card wide">
           <header>
-            <h2>Hosted websites</h2>
-            <RouterLink class="link" to="/domains">Manage</RouterLink>
+            <h2>Hosted apps</h2>
+            <RouterLink class="link" to="/applications">Manage</RouterLink>
           </header>
           <div class="table-wrap">
             <table>
@@ -312,7 +323,7 @@ export default { name: 'DashboardView' }
               <tbody>
                 <tr v-for="d in domains" :key="d.id">
                   <td>
-                    <RouterLink class="dom" :to="'/domains'">{{ d.name }}</RouterLink>
+                    <RouterLink class="dom" :to="'/applications'">{{ d.name }}</RouterLink>
                   </td>
                   <td><span class="pill ok">{{ d.enabled ? 'Active' : 'Off' }}</span></td>
                   <td class="muted">{{ d.domain_type }}</td>
@@ -322,7 +333,7 @@ export default { name: 'DashboardView' }
                     </span>
                   </td>
                   <td>
-                    <RouterLink class="more" :to="'/domains'">···</RouterLink>
+                    <RouterLink class="more" :to="'/applications'">···</RouterLink>
                   </td>
                 </tr>
                 <tr v-if="!domains.length">

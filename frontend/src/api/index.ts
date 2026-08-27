@@ -386,6 +386,10 @@ export const databasesApi = {
     apiClient.post<{ id: string; password: string; connection_uri?: string | null }>(
       `/databases/${id}/password`,
     ),
+  openPhpMyAdmin: (id: string) =>
+    apiClient.post<{ url: string; engine: string; database?: string | null; expires_in: number }>(
+      `/databases/${id}/phpmyadmin`,
+    ),
   ensure: (engine: import('@/types/databases').DatabaseEngine) =>
     apiClient.post<OperationResult>(`/databases/engines/${engine}/ensure`),
 
@@ -645,9 +649,39 @@ export const filesApi = {
     })
   },
 
-  unzip: (path: string, scope?: { appId?: string; rootId?: string }) =>
+  unzip: (
+    path: string,
+    scope?: { appId?: string; rootId?: string },
+    opts?: { extractHere?: boolean; destination?: string },
+  ) =>
     apiClient.post<OperationResult>('/files/unzip', null, {
-      params: { path, app_id: scope?.appId, root_id: scope?.rootId },
+      params: {
+        path,
+        app_id: scope?.appId,
+        root_id: scope?.rootId,
+        extract_here: opts?.extractHere || false,
+        destination: opts?.destination,
+      },
+    }),
+
+  compress: (
+    paths: string[],
+    scope?: { appId?: string; rootId?: string },
+    opts?: { archiveName?: string; destinationDir?: string },
+  ) =>
+    apiClient.post<OperationResult>(
+      '/files/compress',
+      {
+        paths,
+        archive_name: opts?.archiveName,
+        destination_dir: opts?.destinationDir,
+      },
+      { params: { app_id: scope?.appId, root_id: scope?.rootId } },
+    ),
+
+  copy: (source: string, destination: string, scope?: { appId?: string; rootId?: string }) =>
+    apiClient.post<OperationResult>('/files/copy', { source, destination }, {
+      params: { app_id: scope?.appId, root_id: scope?.rootId },
     }),
 
   stat: (path: string, scope?: { appId?: string; rootId?: string }) =>
@@ -659,7 +693,8 @@ export const filesApi = {
     file: File,
     targetPath: string,
     scope?: { appId?: string; rootId?: string },
-    onProgress?: (percent: number) => void,
+    onProgress?: (info: number | { percent: number; loaded: number; total: number; speedBps?: number }) => void,
+    signal?: AbortSignal,
   ) => {
     const { data: init } = await transferClient.post<FileUploadInitResponse>(
       '/files/upload/init',
@@ -668,13 +703,15 @@ export const filesApi = {
         path: targetPath,
         size_bytes: file.size,
       },
-      { params: { app_id: scope?.appId, root_id: scope?.rootId } },
+      { params: { app_id: scope?.appId, root_id: scope?.rootId }, signal },
     )
     const chunkSize = init.chunk_size
     const totalChunks = init.total_chunks
     let uploaded = 0
+    const started = performance.now()
 
     for (let index = 0; index < totalChunks; index += 1) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       const start = index * chunkSize
       const end = Math.min(start + chunkSize, file.size)
       const chunk = file.slice(start, end)
@@ -683,27 +720,46 @@ export const filesApi = {
       await transferClient.post('/files/upload/chunk', form, {
         params: { upload_id: init.upload_id, chunk_index: index },
         headers: { 'Content-Type': 'multipart/form-data' },
+        signal,
       })
       uploaded = end
-      onProgress?.(Math.round((uploaded / file.size) * 100))
+      const elapsed = (performance.now() - started) / 1000
+      const percent = Math.round((uploaded / Math.max(file.size, 1)) * 100)
+      onProgress?.({
+        percent,
+        loaded: uploaded,
+        total: file.size,
+        speedBps: elapsed > 0 ? uploaded / elapsed : 0,
+      })
     }
 
-    return transferClient.post<OperationResult>('/files/upload/complete', {
-      upload_id: init.upload_id,
-    })
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+    return transferClient.post<OperationResult>(
+      '/files/upload/complete',
+      { upload_id: init.upload_id },
+      { signal },
+    )
   },
 
   downloadQueued: async (
     path: string,
     filename: string,
     scope?: { appId?: string; rootId?: string },
-    onProgress?: (percent: number) => void,
+    onProgress?: (info: number | { percent: number; loaded: number; total: number; speedBps?: number }) => void,
+    signal?: AbortSignal,
   ) => {
     const response = await transferClient.get<Blob>('/files/download', {
       params: { path, app_id: scope?.appId, root_id: scope?.rootId },
       responseType: 'blob',
+      signal,
       onDownloadProgress: (ev) => {
-        if (ev.total) onProgress?.(Math.round((ev.loaded / ev.total) * 100))
+        if (ev.total) {
+          onProgress?.({
+            percent: Math.round((ev.loaded / ev.total) * 100),
+            loaded: ev.loaded,
+            total: ev.total,
+          })
+        }
       },
     })
     const url = URL.createObjectURL(response.data)
@@ -741,8 +797,12 @@ export const terminalApi = {
 export const aiApi = {
   status: () => apiClient.get<import('@/types/ai').AiSettings>('/ai/status'),
   getSettings: () => apiClient.get<import('@/types/ai').AiSettings>('/ai/settings'),
-  updateSettings: (body: { api_key?: string | null; model?: string | null; clear?: boolean }) =>
-    apiClient.put<import('@/types/ai').AiSettings>('/ai/settings', body),
+  updateSettings: (body: {
+    api_key?: string | null
+    model?: string | null
+    agent_name?: string | null
+    clear?: boolean
+  }) => apiClient.put<import('@/types/ai').AiSettings>('/ai/settings', body),
   chat: (body: {
     message: string
     history?: import('@/types/ai').AiChatMessage[]
@@ -806,6 +866,8 @@ export const catalogApi = {
       brand: string
       currency: string
     }>('/catalog/plans'),
+  plan: (slug: string) =>
+    apiClient.get<import('@/types/platform').HostingPlan>(`/catalog/plans/${encodeURIComponent(slug)}`),
   meta: () =>
     apiClient.get<{
       brand: string
@@ -822,6 +884,10 @@ export const catalogApi = {
       }>
       colors?: Record<string, string>
       plan_colors?: Array<{ id: string; label: string; max_price: string | number; accent: string }>
+      home_layout?: string
+      home_layouts?: Array<{ id: string; name: string; description: string }>
+      maintenance_mode?: boolean
+      maintenance_message?: string
       registrar_enabled?: boolean
       nameservers?: string[]
       student_zone?: string
@@ -834,9 +900,29 @@ export const catalogApi = {
     apiClient.get<{
       ok: boolean
       message: string
+      maintenance_mode?: boolean
       nameservers: string[]
       support_hours: string
     }>('/catalog/status'),
+  billingTerms: (monthlyPrice?: number) =>
+    apiClient.get<{
+      terms: Array<{
+        months: number
+        enabled: boolean
+        label: string
+        recommended?: boolean
+        discount_pct?: number
+        fixed_price?: number | null
+        monthly_price?: number | null
+        subtotal?: number | null
+        discount_amount?: number | null
+        plan_total?: number | null
+        savings_pct?: number | null
+      }>
+      allowed_months: number[]
+    }>('/catalog/billing-terms', {
+      params: monthlyPrice != null ? { monthly_price: monthlyPrice } : undefined,
+    }),
 }
 
 export type StackInstallProgress = {
@@ -894,6 +980,25 @@ export const customersApi = {
   login: (credentials: LoginRequest) =>
     apiClient.post<import('@/types/auth').LoginResponse>('/customers/login', credentials),
 
+  panelStatus: (params: { username?: string; host?: string }) =>
+    apiClient.get<{
+      username: string
+      domain?: string | null
+      password_set: boolean
+      environment_id?: string | null
+    }>('/customers/panel/status', { params }),
+
+  panelCreatePassword: (body: { username: string; password: string }) =>
+    apiClient.post<{
+      username: string
+      domain?: string | null
+      password_set: boolean
+      environment_id?: string | null
+    }>('/customers/panel/create-password', body),
+
+  panelLogin: (body: { username: string; password: string; device_fingerprint?: string }) =>
+    apiClient.post<import('@/types/auth').LoginResponse>('/customers/panel/login', body),
+
   me: () => apiClient.get<import('@/types/platform').CustomerProfile>('/customers/me'),
 
   updateMe: (body: {
@@ -926,6 +1031,8 @@ export const customersApi = {
     include_domain?: boolean
     domain_kind?: 'register' | 'own' | 'student'
     student_surname?: string
+    billing_term_months?: number
+    coupon_code?: string
   }) =>
     apiClient.post<{
       order: {
@@ -945,6 +1052,16 @@ export const customersApi = {
       momo?: { network: string; number: string; account_name: string }
     }>('/customers/orders', body),
 
+  previewCoupon: (body: { code: string; plan_id: string; billing_term_months?: number }) =>
+    apiClient.post<{
+      code: string
+      discount_type: string
+      discount_value: number
+      discount_amount: number
+      plan_total_before: number
+      plan_total_after: number
+    }>('/customers/orders/preview-coupon', body),
+
   getInvoice: (orderId: string) =>
     apiClient.get<{
       order: import('@/types/platform').CustomerOrder
@@ -954,6 +1071,10 @@ export const customersApi = {
       support_hours?: string | null
       support_whatsapp?: string | null
       support_email?: string | null
+      customer_name?: string | null
+      customer_email?: string | null
+      customer_phone?: string | null
+      document_kind?: 'invoice' | 'receipt' | string
     }>('/customers/orders/' + orderId),
 
   submitMomo: (orderId: string, transactionId: string) =>
@@ -977,9 +1098,19 @@ export const customersApi = {
       hostname: string
       available: boolean
       message: string
+      zone?: string
     }>('/customers/domains/student-preview', { surname }),
 
-  renewSubscription: (subscriptionId: string) =>
+  resolvePanelAlias: (host: string) =>
+    apiClient.get<{
+      host: string
+      kind: string
+      environment_id: string
+      domain: string
+      status: string
+    }>('/customers/panel-alias', { params: { host } }),
+
+  renewSubscription: (subscriptionId: string, body?: { billing_term_months?: number }) =>
     apiClient.post<{
       reference: string
       authorization_url?: string
@@ -990,7 +1121,7 @@ export const customersApi = {
       order_id?: string
       message?: string
       subscription?: import('@/types/platform').CustomerSubscription
-    }>(`/customers/subscriptions/${subscriptionId}/renew`),
+    }>(`/customers/subscriptions/${subscriptionId}/renew`, body || {}),
 
   changePlan: (subscriptionId: string, planId: string) =>
     apiClient.post<{
@@ -1022,6 +1153,65 @@ export const customersApi = {
       order_id?: string
     }>('/customers/credits/topup', { credits }),
 
+  getPanelTheme: (environmentId: string) =>
+    apiClient.get<{
+      environment_id: string
+      active: string
+      owned: string[]
+      price_ghs: string
+      theme: {
+        id: string
+        name: string
+        description: string
+        free?: boolean
+        compact?: boolean
+        colors: Record<string, string>
+      }
+      catalog: Array<{
+        id: string
+        name: string
+        description: string
+        price_ghs: string
+        free?: boolean
+        compact?: boolean
+        colors: Record<string, string>
+      }>
+    }>(`/customers/environments/${environmentId}/panel-theme`),
+
+  setPanelTheme: (environmentId: string, themeId: string) =>
+    apiClient.put<{
+      environment_id: string
+      active: string
+      owned: string[]
+      price_ghs: string
+      theme: {
+        id: string
+        name: string
+        description: string
+        free?: boolean
+        compact?: boolean
+        colors: Record<string, string>
+      }
+      catalog: Array<{
+        id: string
+        name: string
+        description: string
+        price_ghs: string
+        free?: boolean
+        compact?: boolean
+        colors: Record<string, string>
+      }>
+    }>(`/customers/environments/${environmentId}/panel-theme`, { theme_id: themeId }),
+
+  purchasePanelTheme: (environmentId: string, themeId: string) =>
+    apiClient.post<{
+      reference: string
+      amount: number
+      invoice_number?: string
+      order_id?: string
+      message?: string
+    }>(`/customers/environments/${environmentId}/panel-theme/purchase`, { theme_id: themeId }),
+
   environments: () =>
     apiClient.get<import('@/types/platform').CustomerEnvironment[]>('/customers/environments'),
 
@@ -1031,6 +1221,9 @@ export const customersApi = {
       path: string
       is_dir: boolean
       size_bytes?: number | null
+      modified?: string | null
+      mode?: string | null
+      owner?: string | null
     }> }>(`/customers/environments/${environmentId}/files`, { params: { path } }),
 
   readEnvFile: (environmentId: string, path: string) =>
@@ -1047,6 +1240,68 @@ export const customersApi = {
 
   deleteEnvFile: (environmentId: string, path: string) =>
     apiClient.delete(`/customers/environments/${environmentId}/files`, { params: { path } }),
+
+  moveEnvFile: (environmentId: string, source: string, destination: string) =>
+    apiClient.post(`/customers/environments/${environmentId}/files/move`, { source, destination }),
+
+  copyEnvFile: (environmentId: string, source: string, destination: string) =>
+    apiClient.post(`/customers/environments/${environmentId}/files/copy`, { source, destination }),
+
+  unzipEnvFile: (
+    environmentId: string,
+    path: string,
+    opts?: { extractHere?: boolean; destination?: string },
+  ) =>
+    apiClient.post(`/customers/environments/${environmentId}/files/unzip`, null, {
+      params: {
+        path,
+        extract_here: opts?.extractHere || false,
+        destination: opts?.destination,
+      },
+    }),
+
+  compressEnvFiles: (
+    environmentId: string,
+    paths: string[],
+    opts?: { archiveName?: string; destinationDir?: string },
+  ) =>
+    apiClient.post(`/customers/environments/${environmentId}/files/compress`, {
+      paths,
+      archive_name: opts?.archiveName,
+      destination_dir: opts?.destinationDir,
+    }),
+
+  downloadEnvQueued: async (
+    environmentId: string,
+    path: string,
+    filename: string,
+    onProgress?: (info: number | { percent: number; loaded: number; total: number; speedBps?: number }) => void,
+    signal?: AbortSignal,
+  ) => {
+    const response = await transferClient.get<Blob>(
+      `/customers/environments/${environmentId}/files/download`,
+      {
+        params: { path },
+        responseType: 'blob',
+        signal,
+        onDownloadProgress: (ev) => {
+          if (ev.total) {
+            onProgress?.({
+              percent: Math.round((ev.loaded / ev.total) * 100),
+              loaded: ev.loaded,
+              total: ev.total,
+            })
+          }
+        },
+      },
+    )
+    const url = URL.createObjectURL(response.data)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    anchor.click()
+    URL.revokeObjectURL(url)
+  },
 
   uploadEnvFile: (environmentId: string, path: string, file: File) => {
     const form = new FormData()
@@ -1066,7 +1321,8 @@ export const customersApi = {
     environmentId: string,
     file: File,
     targetPath: string,
-    onProgress?: (percent: number) => void,
+    onProgress?: (info: number | { percent: number; loaded: number; total: number; speedBps?: number }) => void,
+    signal?: AbortSignal,
   ) => {
     const { data: init } = await transferClient.post<FileUploadInitResponse>(
       `/customers/environments/${environmentId}/files/upload/init`,
@@ -1075,11 +1331,14 @@ export const customersApi = {
         path: targetPath,
         size_bytes: file.size,
       },
+      { signal },
     )
     const chunkSize = init.chunk_size
     const totalChunks = init.total_chunks
     let uploaded = 0
+    const started = performance.now()
     for (let index = 0; index < totalChunks; index += 1) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       const start = index * chunkSize
       const end = Math.min(start + chunkSize, file.size)
       const chunk = file.slice(start, end)
@@ -1088,13 +1347,22 @@ export const customersApi = {
       await transferClient.post(`/customers/environments/${environmentId}/files/upload/chunk`, form, {
         params: { upload_id: init.upload_id, chunk_index: index },
         headers: { 'Content-Type': 'multipart/form-data' },
+        signal,
       })
       uploaded = end
-      onProgress?.(Math.round((uploaded / Math.max(file.size, 1)) * 100))
+      const elapsed = (performance.now() - started) / 1000
+      onProgress?.({
+        percent: Math.round((uploaded / Math.max(file.size, 1)) * 100),
+        loaded: uploaded,
+        total: file.size,
+        speedBps: elapsed > 0 ? uploaded / elapsed : 0,
+      })
     }
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     return transferClient.post<{ success: boolean; message: string }>(
       `/customers/environments/${environmentId}/files/upload/complete`,
       { upload_id: init.upload_id },
+      { signal },
     )
   },
 
@@ -1417,6 +1685,15 @@ export const customersApi = {
       connection_uri?: string | null
     }>(`/customers/environments/${environmentId}/databases/${encodeURIComponent(databaseId)}/reveal`),
 
+  openEnvPhpMyAdmin: (environmentId: string, databaseId?: string | null) =>
+    databaseId
+      ? apiClient.post<{ url: string; engine: string; database?: string | null; expires_in: number }>(
+          `/customers/environments/${environmentId}/databases/${encodeURIComponent(databaseId)}/phpmyadmin`,
+        )
+      : apiClient.post<{ url: string; engine: string; database?: string | null; expires_in: number }>(
+          `/customers/environments/${environmentId}/database/phpmyadmin`,
+        ),
+
   resetEnvDatabasePassword: (environmentId: string, databaseId: string) =>
     apiClient.post(`/customers/environments/${environmentId}/databases/${encodeURIComponent(databaseId)}/reset-password`),
 
@@ -1588,6 +1865,18 @@ export const customersApi = {
       soft_warning?: boolean
       hard_exceeded?: boolean
       storage_status?: string
+      cpu_usage_percent?: number | null
+      cpu_usage_vcpu?: number | null
+      memory_usage_mb?: number | null
+      memory_limit_mb?: number | null
+      memory_pct?: number | null
+      process_count?: number | null
+      process_limit?: number | null
+      resources_enforced?: boolean
+      resource_slice?: string | null
+      metrics_source?: string | null
+      metrics_updated_at?: string | null
+      resource_statuses?: import('@/lib/resourceUsage').ResourceStatusBundle | null
       message?: string | null
       note: string
     }>(`/customers/environments/${environmentId}/usage`),
@@ -1932,6 +2221,29 @@ export const platformAdminApi = {
       `/platform/customers/${customerId}`,
     ),
 
+  updateCustomer: (
+    customerId: string,
+    body: {
+      email?: string
+      phone?: string
+      first_name?: string
+      last_name?: string
+      full_name?: string
+      company?: string
+      phone_verified?: boolean
+      email_verified?: boolean
+    },
+  ) =>
+    apiClient.patch<import('@/types/platform').CustomerProfile>(
+      `/platform/customers/${customerId}`,
+      body,
+    ),
+
+  deleteCustomer: (customerId: string, confirmEmail: string) =>
+    apiClient.post<{ message: string }>(`/platform/customers/${customerId}/delete`, {
+      confirm_email: confirmEmail,
+    }),
+
   grantCustomerCredits: (customerId: string, body: { credits: number; note?: string }) =>
     apiClient.post<{
       customer_id: string
@@ -1944,6 +2256,57 @@ export const platformAdminApi = {
 
   listOrders: (params?: { payment_status?: string; limit?: number }) =>
     apiClient.get<import('@/types/staffPlatform').StaffOrderItem[]>('/platform/orders', { params }),
+
+  getOrderInvoice: (orderId: string) =>
+    apiClient.get<{
+      order: import('@/types/platform').CustomerOrder
+      plan_name?: string | null
+      momo: { network: string; number: string; account_name: string; merchant?: boolean }
+      payment_methods: { id: string; title: string; description?: string }[]
+      support_hours?: string | null
+      support_whatsapp?: string | null
+      support_email?: string | null
+      customer_name?: string | null
+      customer_email?: string | null
+      customer_phone?: string | null
+      document_kind?: 'invoice' | 'receipt' | string
+    }>(`/platform/orders/${orderId}/invoice`),
+
+  opsInbox: () =>
+    apiClient.get<{
+      awaiting_payment_confirm: number
+      recently_paid: number
+      open_support_tickets?: number
+      items: Array<{
+        id: string
+        kind: string
+        title: string
+        message: string
+        severity: string
+        timestamp: string
+        href?: string
+        order_id?: string
+        invoice_number?: string | null
+      }>
+    }>('/platform/ops-inbox'),
+
+  accountingSummary: (params?: { date_from?: string; date_to?: string }) =>
+    apiClient.get<import('@/types/staffPlatform').StaffAccountingSummary>(
+      '/platform/accounting/summary',
+      { params },
+    ),
+
+  accountingLedger: (params?: {
+    date_from?: string
+    date_to?: string
+    payment_status?: string
+    cash_only?: boolean
+    limit?: number
+  }) =>
+    apiClient.get<import('@/types/staffPlatform').StaffAccountingLedgerItem[]>(
+      '/platform/accounting/ledger',
+      { params },
+    ),
 
   listCapacity: () =>
     apiClient.get<{
@@ -1973,7 +2336,7 @@ export const platformAdminApi = {
       }>
       selling_paused?: boolean
       note?: string
-    }>('/customers/capacity'),
+    }>('/platform/capacity'),
 
   confirmOrderPayment: (orderId: string, body?: { amount_received?: number; notes?: string }) =>
     apiClient.post(`/platform/orders/${orderId}/confirm-payment`, body || {}),
@@ -2097,6 +2460,29 @@ export const platformAdminApi = {
       '/platform/integrations/import-env',
     ),
 
+  getBillingTerms: () =>
+    apiClient.get<{
+      terms: Record<
+        string,
+        {
+          months: number
+          enabled: boolean
+          discount_pct: number
+          fixed_price: number | null
+          label: string
+          recommended: boolean
+          min_monthly_price: number | null
+        }
+      >
+      updated_at?: string | null
+    }>('/platform/billing-terms'),
+
+  updateBillingTerms: (body: { terms: Record<string, unknown> }) =>
+    apiClient.put<{
+      terms: Record<string, unknown>
+      updated_at?: string | null
+    }>('/platform/billing-terms', body),
+
   getSiteTheme: () =>
     apiClient.get<{
       theme: string
@@ -2109,6 +2495,10 @@ export const platformAdminApi = {
       }>
       colors?: Record<string, string>
       plan_colors?: Array<{ id: string; label: string; max_price: string | number; accent: string }>
+      home_layout?: string
+      home_layouts?: Array<{ id: string; name: string; description: string }>
+      maintenance_mode?: boolean
+      maintenance_message?: string
       updated_at?: string | null
     }>('/platform/site-theme'),
 
@@ -2116,6 +2506,9 @@ export const platformAdminApi = {
     theme: string
     colors?: Record<string, string>
     plan_colors?: Record<string, string>
+    home_layout?: string
+    maintenance_mode?: boolean
+    maintenance_message?: string
   }) =>
     apiClient.put<{
       theme: string
@@ -2128,6 +2521,10 @@ export const platformAdminApi = {
       }>
       colors?: Record<string, string>
       plan_colors?: Array<{ id: string; label: string; max_price: string | number; accent: string }>
+      home_layout?: string
+      home_layouts?: Array<{ id: string; name: string; description: string }>
+      maintenance_mode?: boolean
+      maintenance_message?: string
       updated_at?: string | null
     }>('/platform/site-theme', body),
 }

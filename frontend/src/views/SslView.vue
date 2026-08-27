@@ -4,6 +4,8 @@ import { RouterLink } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
+import UiAlert from '@/components/ui/UiAlert.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import { sslApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
 import { usePermissions } from '@/composables/usePermissions'
@@ -176,40 +178,28 @@ onMounted(load)
 <template>
   <DashboardLayout @refresh="load">
     <div class="animate-fade-in space-y-5">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 class="text-lg font-semibold text-slate-900 dark:text-white">SSL Certificates</h1>
-          <p class="text-sm text-surface-muted">
-            IFNOTUS-managed and VPS-discovered certificates
-            <span v-if="discoveredTotal"> · {{ discoveredTotal }} discovered</span>
-          </p>
-        </div>
-        <div class="flex flex-wrap gap-2">
-          <RouterLink
-            to="/domains"
-            class="rounded-lg border border-surface-border px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-800"
-          >
-            Manage domains
-          </RouterLink>
-          <button
-            type="button"
-            class="rounded-lg border border-surface-border px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-800"
-            :disabled="loading"
-            @click="load"
-          >
-            Refresh
-          </button>
-          <button
-            v-if="canWrite"
-            type="button"
-            class="rounded-lg bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
-            :disabled="!!actionKey"
-            @click="renewAll"
-          >
-            Renew all
-          </button>
-        </div>
-      </div>
+      <UiPageHeader
+        title="SSL Certificates"
+        :lede="`IFNOTUS-managed and VPS-discovered certificates${discoveredTotal ? ` · ${discoveredTotal} discovered` : ''}`"
+      >
+        <template #actions>
+          <div class="flex flex-wrap gap-2">
+            <RouterLink to="/domains" class="ds-btn-ghost text-sm">Manage domains</RouterLink>
+            <button type="button" class="ds-btn-ghost text-sm" :disabled="loading" @click="load">
+              {{ loading ? 'Loading…' : 'Refresh' }}
+            </button>
+            <button
+              v-if="canWrite"
+              type="button"
+              class="ds-btn-primary text-sm"
+              :disabled="!!actionKey"
+              @click="renewAll"
+            >
+              Renew all
+            </button>
+          </div>
+        </template>
+      </UiPageHeader>
 
       <section v-if="summary" class="dashboard-grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8">
         <Card padding="sm"><p class="text-xs text-surface-muted">Total</p><p class="text-xl font-semibold">{{ summary.total }}</p></Card>
@@ -238,13 +228,7 @@ onMounted(load)
         </label>
       </Card>
 
-      <p
-        v-if="message"
-        class="rounded-lg px-3 py-2 text-sm"
-        :class="message.type === 'ok' ? 'bg-emerald-500/10 text-emerald-700' : 'bg-red-500/10 text-red-700'"
-      >
-        {{ message.text }}
-      </p>
+      <UiAlert v-if="message" :tone="message.type === 'ok' ? 'ok' : 'err'">{{ message.text }}</UiAlert>
 
       <Card v-if="actionLog" padding="md">
         <div class="mb-2 flex items-center justify-between">

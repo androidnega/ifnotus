@@ -45,7 +45,11 @@ class TaskQueue:
     async def dequeue(self, queue: str = "default", timeout: int = 5) -> tuple[TaskContext, str, dict[str, Any]] | None:
         """Blocking dequeue — returns (context, task_name, payload) or None."""
         target = f"{self._queue_name}:{queue}"
-        result = await self._redis.blpop(target, timeout=timeout)
+        try:
+            result = await self._redis.blpop(target, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 — Redis blips must not kill the worker process
+            logger.warning("redis_dequeue_failed", queue=target, error=str(exc)[:200])
+            return None
         if result is None:
             return None
 

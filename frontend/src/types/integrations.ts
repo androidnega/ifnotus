@@ -32,6 +32,8 @@ export interface SmsIntegrationStatus {
   api_key_masked?: string | null
   api_secret_set: boolean
   sender_id?: string | null
+  fallback_provider?: string | null
+  fallback_api_key_set?: boolean
 }
 
 export interface IntegrationsStatus {
@@ -78,6 +80,9 @@ export interface IntegrationsUpdatePayload {
     api_secret?: string | null
     clear_api_secret?: boolean
     sender_id?: string | null
+    fallback_provider?: string | null
+    fallback_api_key?: string | null
+    clear_fallback_api_key?: boolean
   }
   momo?: {
     network?: string | null

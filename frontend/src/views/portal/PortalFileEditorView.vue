@@ -133,7 +133,7 @@ function closeWindow() {
 }
 
 function openManager() {
-  const href = `/account/files?env=${encodeURIComponent(envId.value)}&path=${encodeURIComponent(folderPath.value)}`
+  const href = `/hosting/${encodeURIComponent(envId.value)}/files?path=${encodeURIComponent(folderPath.value)}`
   window.open(href, `ifnotus-files-${envId.value}`)
 }
 

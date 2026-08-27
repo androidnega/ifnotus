@@ -399,13 +399,19 @@ class EnvironmentAbuseService:
         elif action.kind == "admin_alert":
             phone = (self._settings.operator_alert_phone or self._settings.support_whatsapp or "").strip()
             body = (
-                f"IFNOTUS abuse alert: {env.domain or env.id} — {action.reason} "
+                f"Abuse alert: {env.domain or env.id} — {action.reason} "
                 f"({', '.join(s.kind for s in action.signals)})"
             )
-            if phone:
-                from app.services.platform.delivery import MessageDelivery
+            from app.services.platform.delivery import MessageDelivery
 
-                MessageDelivery(self._settings).send_sms(to=phone, body=body[:320])
+            delivery = MessageDelivery(self._settings)
+            if phone:
+                delivery.send_sms(to=phone, body=body[:320])
+            delivery.mirror_sms_to_email(
+                to_email=getattr(self._settings, "support_email", None),
+                sms_body=body,
+                subject="Abuse alert",
+            )
             logger.warning("abuse_admin_alert", environment_id=str(env.id), domain=env.domain, body=body)
 
         self._audit(env, action.kind, meta, success=result["ok"])

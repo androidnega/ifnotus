@@ -1,0 +1,7 @@
+// Platform apex zone (wildcard student / project hostnames)
+zone "ifnotus.space" {
+    type master;
+    file "/etc/bind/zones/db.ifnotus.space";
+    allow-transfer { none; };
+    allow-update { none; };
+};

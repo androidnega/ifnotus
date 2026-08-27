@@ -1,0 +1,85 @@
+================================================================================
+PHASE C REPORT — BACKUP BEFORE ISPCONFIG INSTALLATION
+Master prompt: IFNOTUS Production Server Remediation & ISPConfig Migration Master Prompt.md
+Date: 2026-08-27
+Result: PASS
+STOPPING — next is Phase D only when instructed.
+================================================================================
+
+## POSITION IN MASTER PROMPT
+
+  Phase A — Security stabilization ......... DONE (PARTIAL/PASS) — docs/PHASE_A_SECURITY_REPORT.txt
+  Phase B — Provider architecture code ..... DONE (PASS) — docs/PHASE_B_PROVIDER_ARCHITECTURE_REPORT.txt
+  Phase C — Backup before ISPConfig ........ DONE (PASS) — THIS REPORT
+  Phase D — Resolve FTP/SFTP overlap ....... NEXT
+  Phase E — ISPConfig installation plan .... later
+
+## RESULT: PASS
+
+All required archives created, readable, and SHA256 verified.
+
+### Backup location
+
+  /srv/backups/phase-c-pre-ispconfig-20260827T192243Z/
+  Total ~5.9G
+
+### Archives created
+
+  Apps:
+    ifnotus-app.tar.gz           147M
+    ifnotus-customers.tar.gz     128M
+    sibling-csdttu.tar.gz        3.2G
+    sibling-quiz.tar.gz          901M
+    sibling-other.tar.gz         119M
+
+  Config:
+    etc-nginx.tar.gz
+    etc-bind.tar.gz
+    etc-postfix.tar.gz
+    etc-dovecot.tar.gz
+    etc-ssh.tar.gz
+    etc-letsencrypt.tar.gz
+    etc-systemd.tar.gz
+
+  Databases:
+    mysql-all-databases.sql      1.5G
+    pg_dumpall.sql               2.4M
+
+  Snapshots:
+    ufw-status.txt
+    systemd-enabled.txt
+    listening-ports.txt
+    packages.list
+    root-crontab.txt / cron.d-list.txt / crontab-etc.txt
+    hostname.txt / ip-addr.txt / timestamp-utc.txt
+    CHECKSUMS.txt / BACKUP.log
+
+### Verification
+
+  tar -tzf on all major tarballs: OK
+  sha256sum -c CHECKSUMS.txt: all OK
+  Note: csdttu/ceeu.sock ignored by tar (socket) — expected, not a failure
+
+### Commands executed
+
+  nohup bash /tmp/phase-c-backup.sh
+  tar/mysqldump/pg_dumpall/sha256sum/ufw/systemctl/ss/dpkg snapshots
+  post-verify: tar -tzf + sha256sum -c
+
+### Services restarted
+
+  None
+
+### Files modified on live system
+
+  None (write-only under /srv/backups/...)
+
+### What remains unchanged
+
+  nginx, tenants, product apps, ISPConfig not installed, provider=legacy
+
+================================================================================
+STOP.
+
+Say "Phase D" to continue (FTP/SFTP overlap resolution per master prompt).
+================================================================================

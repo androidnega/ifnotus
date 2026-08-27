@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.core.exceptions import AppException, ValidationError
 from app.core.logging import get_logger
-from app.services.platform.plan_matrix import SFTP_BETA_NOTE, SFTP_LIVE_VERIFIED
+from app.services.platform.plan_matrix import SFTP_LIVE_VERIFIED
 from app.models.platform import CustomerEnvironment, HostingPlan, PlatformAuditLog, Subscription
 from app.services.hosting.databases import DatabaseManagerService
 
@@ -36,7 +36,7 @@ SFTP_CONTENT_DIR = "public"
 SSHD_DROPIN = Path("/etc/ssh/sshd_config.d/ifnotus-sftp.conf")
 AUTHORIZED_KEYS_DIR = Path("/etc/ssh/ifnotus_authorized_keys")
 NOLOGIN = "/usr/sbin/nologin"
-DEFAULT_SFTP_HOST = "serverlabsttu.space"
+DEFAULT_SFTP_HOST = "ifnotus.space"
 # Fallback hosts customers already know
 ALT_SFTP_HOST = "ssh.ifnotus.space"
 
@@ -82,9 +82,14 @@ class EnvironmentSftpService:
         return Path(self._settings.customer_environments_root).resolve()
 
     def _assert_tenant_home(self, env: CustomerEnvironment, home: Path) -> Path:
-        root = self._customers_root()
         resolved = home.resolve()
-        customer_prefix = (root / str(env.customer_id)).resolve()
+        from app.services.platform.customer_storage import resolve_customer_prefix
+
+        customer_prefix = resolve_customer_prefix(
+            self._settings,
+            customer_id=env.customer_id,
+            document_root=env.document_root or str(resolved),
+        )
         try:
             resolved.relative_to(customer_prefix)
         except ValueError as exc:
@@ -193,8 +198,13 @@ class EnvironmentSftpService:
         if not str(raw):
             raise AppException("Environment has no document root.", code="sftp_no_docroot")
         doc = raw.resolve()
-        root = self._customers_root()
-        customer_prefix = (root / str(env.customer_id)).resolve()
+        from app.services.platform.customer_storage import resolve_customer_prefix
+
+        customer_prefix = resolve_customer_prefix(
+            self._settings,
+            customer_id=env.customer_id,
+            document_root=str(doc),
+        )
         try:
             doc.relative_to(customer_prefix)
         except ValueError as exc:
@@ -567,6 +577,9 @@ class EnvironmentSftpService:
         )
         # Attach SFTP Match group; never grant interactive SSH group here.
         subprocess.run(["usermod", "-aG", SFTP_GROUP, username], capture_output=True, check=False)
+        # FTP provisioning may have synced SSH group membership — SFTP Match requires
+        # ifnotus-sftp without ifnotus-ssh (see sshd Match Group line in install_sshd_dropin).
+        subprocess.run(["gpasswd", "-d", username, "ifnotus-ssh"], capture_output=True, check=False)
         subprocess.run(["usermod", "-U", username], capture_output=True, check=False)
         if password:
             # PHASE 38E — Unix login password is shared by SSH+SFTP; never FTP.
@@ -709,12 +722,10 @@ class EnvironmentSftpService:
                 "SSH (when entitled) uses the same Unix login; FTP is a separate account."
             )
         elif allowed:
-            hint = "SFTP is included on this package (beta). Create your SFTP login or use FTP meanwhile."
+            hint = "SFTP is included on this package. Create your SFTP login below or use FTP."
         else:
             hint = "SFTP is not included on this package."
-        beta_note = None if SFTP_LIVE_VERIFIED else SFTP_BETA_NOTE
-        if beta_note and allowed:
-            hint = f"{hint} {beta_note}"
+        beta_note = None
         return {
             "environment_id": env.id,
             "sftp_allowed": allowed,

@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
+import UiAlert from '@/components/ui/UiAlert.vue'
 import { platformAdminApi } from '@/api'
+import { getApiErrorMessage } from '@/lib/apiError'
 import { usePermissions } from '@/composables/usePermissions'
 import { Permission } from '@/lib/permissions'
 import type { HostingPlan } from '@/types/platform'
@@ -22,6 +25,20 @@ const sizeFromPrice = ref(true)
 const formRamMb = ref(256)
 const formAccent = ref('')
 const formCustomDomains = ref(1)
+
+type TermRow = {
+  months: number
+  enabled: boolean
+  discount_pct: number
+  fixed_price: number | null
+  label: string
+  recommended: boolean
+  min_monthly_price: number | null
+}
+const termMonths = [1, 3, 6, 12, 24, 36] as const
+const termRows = ref<TermRow[]>([])
+const termsBusy = ref(false)
+const termsMsg = ref('')
 
 const form = ref<StaffPlanInput>({
   name: '',
@@ -60,13 +77,62 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const { data } = await platformAdminApi.listPlans(true)
+    const [{ data }, termsRes] = await Promise.all([
+      platformAdminApi.listPlans(true),
+      platformAdminApi.getBillingTerms().catch(() => null),
+    ])
     plans.value = data
+    if (termsRes?.data?.terms) {
+      termRows.value = termMonths.map((m) => {
+        const row = termsRes.data.terms[String(m)] || {}
+        return {
+          months: m,
+          enabled: row.enabled !== false,
+          discount_pct: Number(row.discount_pct || 0),
+          fixed_price: row.fixed_price == null ? null : Number(row.fixed_price),
+          label: String(row.label || `${m} month${m === 1 ? '' : 's'}`),
+          recommended: Boolean(row.recommended),
+          min_monthly_price: row.min_monthly_price == null ? null : Number(row.min_monthly_price),
+        }
+      })
+    }
   } catch (e: unknown) {
     const err = e as { response?: { data?: { error?: { message?: string } } } }
     error.value = err.response?.data?.error?.message ?? 'Could not load plans.'
   } finally {
     loading.value = false
+  }
+}
+
+async function saveBillingTerms() {
+  if (!canWrite.value) return
+  termsBusy.value = true
+  termsMsg.value = ''
+  try {
+    const terms: Record<string, TermRow> = {}
+    for (const row of termRows.value) {
+      terms[String(row.months)] = { ...row }
+    }
+    const { data } = await platformAdminApi.updateBillingTerms({ terms })
+    termsMsg.value = 'Billing terms saved.'
+    if (data.terms) {
+      termRows.value = termMonths.map((m) => {
+        const row = data.terms[String(m)] as TermRow
+        return {
+          months: m,
+          enabled: row?.enabled !== false,
+          discount_pct: Number(row?.discount_pct || 0),
+          fixed_price: row?.fixed_price == null ? null : Number(row.fixed_price),
+          label: String(row?.label || `${m} months`),
+          recommended: Boolean(row?.recommended),
+          min_monthly_price: row?.min_monthly_price == null ? null : Number(row.min_monthly_price),
+        }
+      })
+    }
+  } catch (e: unknown) {
+    termsMsg.value = getApiErrorMessage(e, 'Could not save billing terms.')
+  } finally {
+    termsBusy.value = false
   }
 }
 
@@ -192,40 +258,39 @@ onMounted(load)
 <template>
   <DashboardLayout>
     <div class="space-y-4 p-6">
-      <div class="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 class="text-xl font-semibold text-slate-900 dark:text-white">Hosting plans</h1>
-          <p class="text-sm text-slate-500">
-            Resources follow price (₵30 → 0.25 vCPU / 256 MB · ₵70 → 0.5 vCPU / 512 MB)
-          </p>
-        </div>
-        <div class="flex flex-wrap gap-2">
-          <button type="button" class="rounded border border-slate-300 px-3 py-1.5 text-sm" @click="load">
-            Refresh
-          </button>
-          <button
-            v-if="canWrite"
-            type="button"
-            class="rounded border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-50"
-            :disabled="busy"
-            @click="rebalanceAll"
-          >
-            Rebalance from price
-          </button>
-          <button
-            v-if="canWrite"
-            type="button"
-            class="rounded bg-[#ff6c2c] px-3 py-1.5 text-sm font-medium text-white"
-            @click="resetForm"
-          >
-            New plan
-          </button>
-        </div>
-      </div>
+      <UiPageHeader
+        title="Hosting plans"
+        lede="Resources follow price (₵30 → 0.25 vCPU / 256 MB · ₵70 → 0.5 vCPU / 512 MB)"
+      >
+        <template #actions>
+          <div class="flex flex-wrap gap-2">
+            <button type="button" class="rounded border border-slate-300 px-3 py-1.5 text-sm" @click="load">
+              Refresh
+            </button>
+            <button
+              v-if="canWrite"
+              type="button"
+              class="rounded border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-50"
+              :disabled="busy"
+              @click="rebalanceAll"
+            >
+              Rebalance from price
+            </button>
+            <button
+              v-if="canWrite"
+              type="button"
+              class="rounded bg-[#ff6c2c] px-3 py-1.5 text-sm font-medium text-white"
+              @click="resetForm"
+            >
+              New plan
+            </button>
+          </div>
+        </template>
+      </UiPageHeader>
 
-      <p v-if="msg" class="text-sm text-slate-600">{{ msg }}</p>
+      <UiAlert v-if="msg" tone="ok">{{ msg }}</UiAlert>
       <p v-if="loading" class="text-sm text-slate-500">Loading…</p>
-      <p v-else-if="error" class="text-sm text-red-600">{{ error }}</p>
+      <UiAlert v-else-if="error" tone="err">{{ error }}</UiAlert>
 
       <div
         v-if="showForm && canWrite"
@@ -402,6 +467,91 @@ onMounted(load)
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <div
+        v-if="termRows.length"
+        class="mt-6 overflow-hidden rounded border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"
+      >
+        <div class="border-b border-slate-100 px-4 py-3 dark:border-slate-800">
+          <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">Billing terms</h2>
+          <p class="mt-1 text-xs text-slate-500">
+            Enable checkout lengths and optional discounts. Leave discounts at 0% unless you want term savings.
+          </p>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="min-w-full text-left text-sm">
+            <thead class="border-b border-slate-100 bg-slate-50 text-xs uppercase text-slate-500 dark:border-slate-800 dark:bg-slate-800/50">
+              <tr>
+                <th class="px-3 py-2">Term</th>
+                <th class="px-3 py-2">Label</th>
+                <th class="px-3 py-2">On</th>
+                <th class="px-3 py-2">Discount %</th>
+                <th class="px-3 py-2">Fixed price</th>
+                <th class="px-3 py-2">Min monthly</th>
+                <th class="px-3 py-2">Best</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+              <tr v-for="row in termRows" :key="row.months">
+                <td class="px-3 py-2 font-medium">{{ row.months }} mo</td>
+                <td class="px-3 py-2">
+                  <input v-model="row.label" class="w-28 rounded border border-slate-300 px-2 py-1 text-sm" :disabled="!canWrite" />
+                </td>
+                <td class="px-3 py-2">
+                  <input v-model="row.enabled" type="checkbox" :disabled="!canWrite" />
+                </td>
+                <td class="px-3 py-2">
+                  <input v-model.number="row.discount_pct" type="number" min="0" max="90" step="0.5" class="w-20 rounded border border-slate-300 px-2 py-1" :disabled="!canWrite" />
+                </td>
+                <td class="px-3 py-2">
+                  <input
+                    :value="row.fixed_price ?? ''"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    class="w-24 rounded border border-slate-300 px-2 py-1"
+                    placeholder="—"
+                    :disabled="!canWrite"
+                    @input="row.fixed_price = ($event.target as HTMLInputElement).value === '' ? null : Number(($event.target as HTMLInputElement).value)"
+                  />
+                </td>
+                <td class="px-3 py-2">
+                  <input
+                    :value="row.min_monthly_price ?? ''"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    class="w-24 rounded border border-slate-300 px-2 py-1"
+                    placeholder="—"
+                    :disabled="!canWrite"
+                    @input="row.min_monthly_price = ($event.target as HTMLInputElement).value === '' ? null : Number(($event.target as HTMLInputElement).value)"
+                  />
+                </td>
+                <td class="px-3 py-2">
+                  <input
+                    type="radio"
+                    name="recommended-term"
+                    :checked="row.recommended"
+                    :disabled="!canWrite"
+                    @change="termRows.forEach((t) => (t.recommended = t.months === row.months))"
+                  />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-if="canWrite" class="flex flex-wrap items-center gap-3 border-t border-slate-100 px-4 py-3 dark:border-slate-800">
+          <button
+            type="button"
+            class="rounded bg-slate-900 px-3 py-2 text-sm text-white disabled:opacity-50"
+            :disabled="termsBusy"
+            @click="saveBillingTerms"
+          >
+            {{ termsBusy ? 'Saving…' : 'Save billing terms' }}
+          </button>
+          <p v-if="termsMsg" class="text-sm text-slate-600">{{ termsMsg }}</p>
+        </div>
       </div>
     </div>
   </DashboardLayout>

@@ -27,6 +27,8 @@ def test_settings() -> Settings:
         sms_provider="none",
         paystack_secret_key=None,
         paystack_public_key=None,
+        student_zone="ifnotus.space",
+        legacy_student_zone="serverlabsttu.space",
     )
 
 

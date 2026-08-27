@@ -134,6 +134,12 @@ class Settings(BaseSettings):
     sms_api_key: str | None = None
     sms_api_secret: str | None = None
     sms_sender_id: str | None = "IFNOTUS"
+    # Optional second provider (default Moolre) when primary SMS fails.
+    sms_fallback_provider: str | None = "moolre"
+    sms_fallback_api_key: str | None = None
+    # When true, OTP is shown in the API response and SMS is not required to log in.
+    # Intended for staging / SMS-provider outages; turn off once SMS is reliable.
+    sms_debug_mode: bool = False
 
     # Mobile Money checkout (used while Paystack is not live)
     momo_network: str = "MTN"
@@ -142,6 +148,7 @@ class Settings(BaseSettings):
 
     # Hosting control plane
     webmail_url: str | None = "https://mail.ifnotus.space"
+    staff_panel_url: str = "https://cpanel.ifnotus.space"
     roundcube_public_html: str = "/var/lib/roundcube/public_html"
     php_fpm_socket: str = "/run/php/php8.3-fpm.sock"
     certbot_binary: str | None = None
@@ -159,7 +166,7 @@ class Settings(BaseSettings):
     discovery_scan_paths: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["/srv/apps", "/var/www", "/opt"]
     )
-    discovery_max_depth: int = 4
+    discovery_max_depth: int = 5
     discovery_auto_register: bool = True
     discovery_auto_register_exclude: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["/srv/apps/ifnotus", "/var/www/ifnotus"]
@@ -174,7 +181,9 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-chat"
     ai_settings_path: str = ".ifnotus/settings/ai.json"
     integrations_settings_path: str = ".ifnotus/settings/integrations.json"
+    hosting_panel_theme_path: str = ".ifnotus/settings/hosting_panel_themes.json"
     site_theme_settings_path: str = ".ifnotus/settings/site_theme.json"
+    billing_terms_path: str = ".ifnotus/settings/billing_terms.json"
     webmail_settings_path: str = ".ifnotus/settings/webmail.json"
     webmail_support_whatsapp: str = "+233541069241"
     webmail_brand_assets_dir: str = "assets/webmail"
@@ -200,6 +209,7 @@ class Settings(BaseSettings):
     databases_registry_path: str = ".ifnotus/databases/registry.json"
     databases_sqlite_root: str = "/srv/apps"
     databases_backup_root: str = ".ifnotus/databases/backups"
+    phpmyadmin_url: str = "https://ifnotus.space/phpmyadmin"
 
     # Background workers
     worker_concurrency: int = 4
@@ -228,8 +238,10 @@ class Settings(BaseSettings):
     dns_ns1: str = "ns1.ifnotus.space"
     dns_ns2: str = "ns2.ifnotus.space"
     # Student/project hostnames (not the control plane). Legacy zone kept for recognition only.
-    student_zone: str = "serverlabsttu.space"
-    legacy_student_zone: str = "ifnotus.space"
+    student_zone: str = "ifnotus.space"
+    legacy_student_zone: str = "serverlabsttu.space"
+    # Extra comma-separated labels merged into RESERVED_PLATFORM_SUBDOMAINS.
+    reserved_platform_subdomains: str = ""
     bind_zones_dir: str = "/etc/bind/zones"
     bind_named_conf_local: str = "/etc/bind/named.conf.local"
     bind_customer_conf: str = "/etc/bind/named.conf.customer"
@@ -292,8 +304,31 @@ class Settings(BaseSettings):
     # Shared customer access IP/host — not the operator VPS address. SSH from ₵300+.
     customer_shared_ip: str = ""
     customer_ssh_host: str = "ssh.ifnotus.space"
-    customer_sftp_host: str = "serverlabsttu.space"
+    customer_sftp_host: str = "ifnotus.space"
     customer_ssh_min_price_ghs: int = 300
+
+    # Hosting engine: legacy (current) | ispconfig (preferred) | olspanel (parked)
+    hosting_provider_default: str = "legacy"
+    # ISPConfig 3 remote API (preferred engine)
+    ispconfig_base_url: str = ""  # e.g. https://127.0.0.1:8081
+    ispconfig_remote_user: str = ""
+    ispconfig_remote_password: str = ""
+    ispconfig_timeout_seconds: int = 60
+    ispconfig_verify_ssl: bool = True  # set false for self-signed panel certs
+    ispconfig_server_id: int = 1
+    ispconfig_reseller_id: int = 0  # 0 = under admin; set >0 when using a reseller
+    ispconfig_default_php_version: str = "8.2"
+    ispconfig_default_template_id: int | None = None
+    # JSON: {"starter": 1, "student": 2, "<plan-uuid>": 3}
+    ispconfig_template_map: str = ""
+    # OLSPanel (superseded — kept for rollback only)
+    olspanel_base_url: str = ""
+    olspanel_admin_username: str = ""
+    olspanel_admin_password: str = ""
+    olspanel_timeout_seconds: int = 60
+    olspanel_default_php_version: str = "8.2"
+    olspanel_default_pkg_id: int | None = None
+    olspanel_package_map: str = ""
 
     @field_validator("cors_origins", mode="before")
     @classmethod

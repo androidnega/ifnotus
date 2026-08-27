@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import CurrentUser, DbSession, RequirePermission, SettingsDep
@@ -11,18 +13,32 @@ from app.core.permissions import Permission
 from app.models.platform import Customer
 from app.schemas.common import MessageResponse
 from app.schemas.integrations import IntegrationsStatusResponse, IntegrationsUpdateRequest
-from app.schemas.platform import CustomerResponse, HostingPlanSchema, OrderResponse
+from app.schemas.platform import (
+    CapacityNodeResponse,
+    CustomerResponse,
+    HostingPlanSchema,
+    InvoiceViewResponse,
+    OrderResponse,
+    StaffCapacityDashboardResponse,
+    BillingTermsAdminResponse,
+    BillingTermsAdminUpdateRequest,
+)
 from app.schemas.platform_admin import (
     HostingPlanPatchRequest,
     HostingPlanUpsertRequest,
     SiteThemeStatusResponse,
     SiteThemeUpdateRequest,
+    StaffAccountingSummaryResponse,
+    StaffAccountingLedgerItem,
     StaffConfirmPaymentRequest,
     StaffCustomerDetailResponse,
     StaffCustomerListItem,
+    StaffCustomerUpdateRequest,
+    StaffDeleteCustomerRequest,
     StaffEnvironmentItem,
     StaffGrantCreditsRequest,
     StaffGrantCreditsResponse,
+    StaffOpsInboxResponse,
     StaffOrderItem,
     StaffProvisionHostingRequest,
     StaffUserCreateRequest,
@@ -72,6 +88,51 @@ async def get_customer(
     )
 
 
+@router.patch(
+    "/customers/{customer_id}",
+    response_model=CustomerResponse,
+    dependencies=[Depends(RequirePermission(Permission.PLATFORM_OPS))],
+)
+async def update_customer(
+    customer_id: UUID,
+    body: StaffCustomerUpdateRequest,
+    session: DbSession,
+    settings: SettingsDep,
+    user: CurrentUser,
+) -> CustomerResponse:
+    """Update tenant phone, email, and profile from the staff console."""
+    customer = await StaffPlatformService(settings, session).update_customer(
+        customer_id,
+        body,
+        actor_id=user.id,
+    )
+    await session.commit()
+    from app.services.platform.customers import CustomerService
+
+    return CustomerService.to_response(customer)
+
+
+@router.post(
+    "/customers/{customer_id}/delete",
+    response_model=MessageResponse,
+    dependencies=[Depends(RequirePermission(Permission.PLATFORM_OPS))],
+)
+async def delete_customer(
+    customer_id: UUID,
+    body: StaffDeleteCustomerRequest,
+    session: DbSession,
+    settings: SettingsDep,
+    user: CurrentUser,
+) -> MessageResponse:
+    """Super admin: terminate hosting and permanently remove the customer account."""
+    result = await StaffPlatformService(settings, session).delete_customer(
+        customer_id,
+        confirm_email=body.confirm_email,
+        actor_id=user.id,
+    )
+    return MessageResponse(message=result["message"])
+
+
 @router.post(
     "/customers/{customer_id}/credits/grant",
     response_model=StaffGrantCreditsResponse,
@@ -111,7 +172,7 @@ async def grant_customer_credits(
 @router.get(
     "/orders",
     response_model=list[StaffOrderItem],
-    dependencies=[Depends(RequirePermission(Permission.PLATFORM_READ))],
+    dependencies=[Depends(RequirePermission(Permission.CUSTOMERS_MANAGE))],
 )
 async def list_orders(
     session: DbSession,
@@ -123,6 +184,81 @@ async def list_orders(
         payment_status=payment_status, limit=limit
     )
     return [StaffOrderItem.model_validate(r) for r in rows]
+
+
+@router.get(
+    "/ops-inbox",
+    response_model=StaffOpsInboxResponse,
+    dependencies=[Depends(RequirePermission(Permission.PLATFORM_READ))],
+)
+async def ops_inbox(
+    session: DbSession,
+    settings: SettingsDep,
+) -> StaffOpsInboxResponse:
+    """Bell + Orders badge: new MoMo submissions and recently paid hosting invoices."""
+    data = await StaffPlatformService(settings, session).ops_inbox()
+    return StaffOpsInboxResponse.model_validate(data)
+
+
+@router.get(
+    "/accounting/summary",
+    response_model=StaffAccountingSummaryResponse,
+    dependencies=[Depends(RequirePermission(Permission.CUSTOMERS_MANAGE))],
+)
+async def accounting_summary(
+    session: DbSession,
+    settings: SettingsDep,
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+) -> StaffAccountingSummaryResponse:
+    from app.services.platform.accounting import AccountingService
+
+    data = await AccountingService(settings, session).summary(
+        date_from=date_from, date_to=date_to
+    )
+    return StaffAccountingSummaryResponse.model_validate(data)
+
+
+@router.get(
+    "/accounting/ledger",
+    response_model=list[StaffAccountingLedgerItem],
+    dependencies=[Depends(RequirePermission(Permission.CUSTOMERS_MANAGE))],
+)
+async def accounting_ledger(
+    session: DbSession,
+    settings: SettingsDep,
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    payment_status: str | None = Query(default=None),
+    cash_only: bool = Query(default=False),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[StaffAccountingLedgerItem]:
+    from app.services.platform.accounting import AccountingService
+
+    rows = await AccountingService(settings, session).ledger(
+        date_from=date_from,
+        date_to=date_to,
+        payment_status=payment_status,
+        cash_only=cash_only,
+        limit=limit,
+    )
+    return [StaffAccountingLedgerItem.model_validate(r) for r in rows]
+
+
+@router.get(
+    "/orders/{order_id}/invoice",
+    response_model=InvoiceViewResponse,
+    dependencies=[Depends(RequirePermission(Permission.CUSTOMERS_MANAGE))],
+)
+async def get_order_invoice(
+    order_id: UUID,
+    session: DbSession,
+    settings: SettingsDep,
+) -> InvoiceViewResponse:
+    """Staff receipt / proforma for paid or pending orders."""
+    from app.services.platform.orders import OrderService
+
+    return await OrderService(settings, session).staff_invoice_view(order_id)
 
 
 @router.post(
@@ -479,7 +615,7 @@ async def staff_env_stacks(
     return {
         "environment_id": env.id,
         "stacks": svc.list_stacks(plan),
-        "current": svc.current_stack(env),
+        "current": await svc.reconcile_stack(env),
         "progress": progress,
         "active_job_id": active_job_id,
     }
@@ -609,6 +745,33 @@ async def platform_admin_ready() -> MessageResponse:
 
 
 @router.get(
+    "/hosting-provider",
+    dependencies=[Depends(RequirePermission(Permission.PLATFORM_READ))],
+)
+async def hosting_provider_status(settings: SettingsDep) -> dict:
+    """Staff: which hosting engine is default + OLSPanel connectivity (no secrets)."""
+    from app.services.hosting_provider import get_hosting_provider, resolve_provider_kind
+
+    kind = resolve_provider_kind(settings)
+    provider = get_hosting_provider(kind, settings=settings)
+    health = await provider.health()
+    return {
+        "default_provider": kind.value,
+        "olspanel_configured": bool(
+            (settings.olspanel_base_url or "").strip()
+            and (settings.olspanel_admin_username or "").strip()
+            and (settings.olspanel_admin_password or "").strip()
+        ),
+        "olspanel_base_url": (settings.olspanel_base_url or "").rstrip("/") or None,
+        "health": health,
+        "note": (
+            "Install OLSPanel only on a clean hosting node (ports 80/443). "
+            "Keep billing on IFNOTUS. Existing nginx tenants stay provider=legacy until migrated."
+        ),
+    }
+
+
+@router.get(
     "/integrations",
     response_model=IntegrationsStatusResponse,
     dependencies=[Depends(RequirePermission(Permission.PLATFORM_READ))],
@@ -616,6 +779,33 @@ async def platform_admin_ready() -> MessageResponse:
 async def get_integrations(settings: SettingsDep) -> IntegrationsStatusResponse:
     data = IntegrationsSettingsStore(settings).status()
     return IntegrationsStatusResponse.model_validate(data)
+
+
+@router.get(
+    "/billing-terms",
+    response_model=BillingTermsAdminResponse,
+    dependencies=[Depends(RequirePermission(Permission.PLATFORM_READ))],
+)
+async def get_billing_terms(settings: SettingsDep) -> BillingTermsAdminResponse:
+    from app.services.platform.billing_terms_store import BillingTermsStore
+
+    data = BillingTermsStore(settings).get_config()
+    return BillingTermsAdminResponse.model_validate(data)
+
+
+@router.put(
+    "/billing-terms",
+    response_model=BillingTermsAdminResponse,
+    dependencies=[Depends(RequirePermission(Permission.PLATFORM_WRITE))],
+)
+async def update_billing_terms(
+    body: BillingTermsAdminUpdateRequest,
+    settings: SettingsDep,
+) -> BillingTermsAdminResponse:
+    from app.services.platform.billing_terms_store import BillingTermsStore
+
+    data = BillingTermsStore(settings).update_config(body.model_dump())
+    return BillingTermsAdminResponse.model_validate(data)
 
 
 @router.put(
@@ -644,6 +834,97 @@ async def import_integrations_from_env(settings: SettingsDep) -> IntegrationsSta
 
 
 @router.get(
+    "/coupons",
+    dependencies=[Depends(RequirePermission(Permission.PLATFORM_READ))],
+)
+async def list_coupons(session: DbSession) -> list[dict]:
+    from app.services.platform.coupons import CouponService
+
+    rows = await CouponService(session).list_coupons()
+    return [
+        {
+            "id": str(c.id),
+            "code": c.code,
+            "description": c.description,
+            "discount_type": c.discount_type,
+            "discount_value": float(c.discount_value),
+            "active": c.active,
+            "usage_limit": c.usage_limit,
+            "usage_count": int(c.usage_count or 0),
+            "usage_limit_per_customer": c.usage_limit_per_customer,
+            "minimum_order_amount": float(c.minimum_order_amount) if c.minimum_order_amount is not None else None,
+            "maximum_discount_amount": float(c.maximum_discount_amount)
+            if c.maximum_discount_amount is not None
+            else None,
+            "plan_slugs": list(c.plan_slugs or []),
+            "billing_term_months": list(c.billing_term_months or []),
+            "new_customers_only": bool(c.new_customers_only),
+        }
+        for c in rows
+    ]
+
+
+@router.post(
+    "/coupons",
+    dependencies=[Depends(RequirePermission(Permission.PLATFORM_WRITE))],
+)
+async def upsert_coupon(
+    body: dict,
+    session: DbSession,
+    user: CurrentUser,
+) -> dict:
+    from decimal import Decimal
+
+    from app.services.platform.coupons import CouponService
+
+    c = await CouponService(session).upsert(
+        code=str(body.get("code") or ""),
+        description=body.get("description"),
+        discount_type=str(body.get("discount_type") or "percentage"),
+        discount_value=Decimal(str(body.get("discount_value") or 0)),
+        active=bool(body.get("active", True)),
+        usage_limit=body.get("usage_limit"),
+        usage_limit_per_customer=body.get("usage_limit_per_customer"),
+        minimum_order_amount=body.get("minimum_order_amount"),
+        maximum_discount_amount=body.get("maximum_discount_amount"),
+        plan_slugs=list(body.get("plan_slugs") or []),
+        billing_term_months=list(body.get("billing_term_months") or []),
+        new_customers_only=bool(body.get("new_customers_only", False)),
+        created_by=user.id,
+    )
+    await session.commit()
+    return {"id": str(c.id), "code": c.code, "active": c.active}
+
+
+@router.get(
+    "/capacity",
+    response_model=StaffCapacityDashboardResponse,
+    dependencies=[Depends(RequirePermission(Permission.PLATFORM_READ))],
+)
+async def platform_capacity(
+    session: DbSession,
+    settings: SettingsDep,
+) -> StaffCapacityDashboardResponse:
+    """Staff hosting-operations capacity dashboard for the shared node."""
+    from app.services.platform.staff_capacity import StaffCapacityService
+
+    data = await StaffCapacityService(settings, session).dashboard()
+    nodes = [CapacityNodeResponse.model_validate(n) for n in data.get("nodes") or []]
+    return StaffCapacityDashboardResponse(
+        display_name=str(data.get("display_name") or "Shared Node 01"),
+        hostname=str(data.get("hostname") or "ifnotus-1"),
+        checked_at=data.get("checked_at"),
+        live=dict(data.get("live") or {}),
+        policy=dict(data.get("policy") or {}),
+        counts=dict(data.get("counts") or {}),
+        ops=dict(data.get("ops") or {}),
+        host_pressure=dict(data.get("host_pressure") or {}),
+        nodes=nodes,
+        selling_paused=bool(data.get("selling_paused")),
+    )
+
+
+@router.get(
     "/site-theme",
     response_model=SiteThemeStatusResponse,
     dependencies=[Depends(RequirePermission(Permission.PLATFORM_READ))],
@@ -665,5 +946,8 @@ async def update_site_theme(
         body.theme,
         colors=body.colors,
         plan_colors=body.plan_colors,
+        home_layout=body.home_layout,
+        maintenance_mode=body.maintenance_mode,
+        maintenance_message=body.maintenance_message,
     )
     return SiteThemeStatusResponse.model_validate(data)

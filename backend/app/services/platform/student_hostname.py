@@ -1,8 +1,8 @@
 """Allocate unique student hostnames under the student project zone.
 
-New assignments use serverlabsttu.space (configurable via Settings.student_zone).
-Legacy *.ifnotus.space student hostnames remain recognized for compatibility
-and are never mass-renamed by this module.
+New assignments use ifnotus.space (configurable via Settings.student_zone).
+Legacy *.serverlabsttu.space student hostnames remain recognized and are never
+mass-renamed by this module.
 """
 
 from __future__ import annotations
@@ -19,73 +19,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import ConflictError, ValidationError
 from app.models.hosting import Domain
 from app.models.platform import CustomerDomain, CustomerEnvironment, Order
+from app.services.platform.reserved_subdomains import (
+    RESERVED_PLATFORM_SUBDOMAINS,
+    is_reserved_platform_subdomain,
+    normalize_dns_label,
+)
 
-# Active assignment zone (PHASE 1). Control plane stays on ifnotus.space.
-STUDENT_ZONE = "serverlabsttu.space"
-LEGACY_STUDENT_ZONE = "ifnotus.space"
+# Active assignment zone. Control-plane hostnames stay reserved under ifnotus.space.
+STUDENT_ZONE = "ifnotus.space"
+LEGACY_STUDENT_ZONE = "serverlabsttu.space"
 MAX_SUFFIX = 999
 
-RESERVED_LABELS = frozenset(
-    {
-        "www",
-        "ready",
-        "mail",
-        "webmail",
-        "ns1",
-        "ns2",
-        "ftp",
-        "ssh",
-        "sftp",
-        "api",
-        "app",
-        "admin",
-        "panel",
-        "account",
-        "portal",
-        "login",
-        "signup",
-        "billing",
-        "support",
-        "customers",
-        "customer",
-        "demo",
-        "test",
-        "staging",
-        "dev",
-        "cdn",
-        "static",
-        "assets",
-        "mx",
-        "smtp",
-        "imap",
-        "pop",
-        "pop3",
-        "root",
-        "host",
-        "server",
-        "vps",
-        "cloud",
-        "status",
-        "monitor",
-        "vpn",
-        "git",
-        "ci",
-        "docs",
-        "blog",
-        "shop",
-        "store",
-        "ifnotus",
-        "localhost",
-        "cpanel",
-        "whm",
-        "webdisk",
-        "autoconfig",
-        "autodiscover",
-        "serverlabsttu",
-        "serverlabs",
-        "env",
-    }
-)
+# Backward-compatible alias — always the central reserved set.
+RESERVED_LABELS = RESERVED_PLATFORM_SUBDOMAINS
 
 _ACTIVE_ORDER = {"pending", "submitted", "paid"}
 _DEAD_PROVISION = {"failed", "cancelled", "canceled"}
@@ -123,15 +69,15 @@ def all_student_zones(settings: object | None = None) -> tuple[str, ...]:
 def normalize_surname(raw: str) -> str:
     text = unicodedata.normalize("NFKD", raw or "")
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    text = text.lower()
-    text = re.sub(r"[^a-z]+", "", text)
-    return text[:32]
+    text = re.sub(r"[''`´‘’]", "", text)
+    return normalize_dns_label(text, max_len=32)
 
 
 def student_label(base: str, index: int) -> str:
+    """Duplicate variants: mensah, mensah2, mensah3 (skip mensah1)."""
     if index <= 0:
         return base
-    return f"{base}{index}"
+    return f"{base}{index + 1}"
 
 
 def student_hostname(base: str, index: int = 0, *, zone: str | None = None) -> str:
@@ -197,7 +143,17 @@ class StudentHostnameService:
         if not is_student_hostname(host, settings=self._settings):
             raise ValidationError("That is not a valid student address.", code="student_hostname_invalid")
         label = host.split(".", 1)[0]
+        if is_reserved_platform_subdomain(label, settings=self._settings):
+            raise ValidationError(
+                "That name is reserved for IFNOTUS. Choose another project label.",
+                code="student_surname_reserved",
+            )
         base = re.sub(r"\d+$", "", label) or label
+        if is_reserved_platform_subdomain(base, settings=self._settings):
+            raise ValidationError(
+                "That name is reserved for IFNOTUS. Choose another project label.",
+                code="student_surname_reserved",
+            )
         await self._lock(base)
         if await self._is_taken(host, exclude_order_id=exclude_order_id):
             raise ConflictError("That student address is already in use.", code="student_hostname_taken")
@@ -210,9 +166,9 @@ class StudentHostnameService:
                 "Enter your surname using letters only (at least 2 letters).",
                 code="student_surname_invalid",
             )
-        if base in RESERVED_LABELS:
+        if is_reserved_platform_subdomain(base, settings=self._settings):
             raise ValidationError(
-                "That surname can’t be used as a site name. Try your full surname.",
+                "That name is reserved for IFNOTUS. Choose another project label.",
                 code="student_surname_reserved",
             )
         return base

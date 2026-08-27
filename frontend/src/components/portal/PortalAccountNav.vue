@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import UiTabBar from '@/components/ui/UiTabBar.vue'
+import { PORTAL_ACCOUNT_TABS } from '@/lib/uiRegistry'
+import { openHostingFromAccount } from '@/lib/hostingDeepLink'
 
 const props = defineProps<{
   hasEnv?: boolean
   environmentId?: string | null
+  domain?: string | null
   active?: string
 }>()
 
@@ -24,6 +28,13 @@ const panel = computed(() => {
   return q
 })
 
+const tabItems = computed(() =>
+  PORTAL_ACCOUNT_TABS.filter((t) => !('requiresEnv' in t && t.requiresEnv) || props.hasEnv).map((t) => ({
+    id: t.id,
+    label: t.label,
+  })),
+)
+
 function go(next: string) {
   if (next === 'support') {
     void router.push({ name: 'portal-support' })
@@ -38,80 +49,46 @@ function go(next: string) {
     return
   }
   if (next === 'hosting') {
-    const id = props.environmentId
-    if (id) {
-      void router.push({ name: 'hosting-panel', params: { environmentId: id } })
-      return
-    }
-    void router.push({ name: 'portal-dashboard', query: { panel: 'site', tab: 'stack' } })
+    if (props.domain && openHostingFromAccount(props.domain)) return
+    void router.push({ name: 'portal-dashboard', query: { panel: 'billing' } })
     return
   }
   void router.push({ name: 'portal-dashboard', query: { panel: next } })
 }
+
+function onTab(id: string) {
+  go(id)
+}
 </script>
 
 <template>
-  <nav class="pills" aria-label="Account">
-    <button type="button" :class="{ on: panel === 'home' }" @click="go('home')">Overview</button>
-    <button
-      v-if="hasEnv"
-      type="button"
-      :class="{ on: panel === 'hosting' || panel === 'site' }"
-      @click="go('hosting')"
-    >
-      Hosting services
-    </button>
-    <button type="button" :class="{ on: panel === 'billing' }" @click="go('billing')">Billing</button>
-    <button type="button" :class="{ on: panel === 'support' }" @click="go('support')">Support</button>
-    <button type="button" :class="{ on: panel === 'settings' }" @click="go('settings')">Settings</button>
-  </nav>
+  <UiTabBar
+    :items="tabItems"
+    :model-value="panel"
+    variant="sidebar"
+    aria-label="Account"
+    class="portal-account-nav"
+    @update:model-value="onTab"
+  />
 </template>
 
 <style scoped>
-.pills {
-  display: flex;
-  gap: 0.25rem;
-  padding: 0.28rem;
-  width: fit-content;
-  max-width: 100%;
-  overflow-x: auto;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--if-border) 55%, var(--if-surface));
+.portal-account-nav :deep(.ds-tabbar--sidebar) {
+  background: color-mix(in srgb, var(--if-border) 45%, var(--if-surface));
 }
-.pills button {
-  border: none;
-  background: transparent;
-  color: var(--if-muted);
-  font-size: 0.86rem;
-  font-weight: 650;
-  padding: 0.48rem 1.05rem;
-  border-radius: 999px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.pills button.on {
-  background: var(--if-surface);
-  color: var(--if-ink);
-  box-shadow: 0 1px 2px rgb(22 26 29 / 0.08);
-}
-.pills button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-@media (min-width: 1100px) {
-  .pills {
-    flex-direction: column;
-    width: 100%;
-    border-radius: 1rem;
-    padding: 0.4rem;
-    gap: 0.2rem;
+@media (max-width: 1099px) {
+  .portal-account-nav :deep(.ds-tabbar--sidebar) {
+    flex-direction: row;
+    width: fit-content;
+    max-width: 100%;
+    border-radius: 999px;
+    padding: 0.28rem;
   }
-  .pills button {
-    width: 100%;
-    text-align: left;
-    border-radius: 0.7rem;
-    padding: 0.62rem 0.85rem;
+  .portal-account-nav :deep(.ds-tabbar--sidebar .ds-tab) {
+    width: auto;
+    text-align: center;
+    border-radius: 999px;
+    padding: 0.48rem 1.05rem;
   }
 }
 </style>

@@ -16,7 +16,7 @@ from pathlib import Path
 from fastapi import UploadFile
 
 from app.core.config import Settings
-from app.core.exceptions import AppException, NotFoundError
+from app.core.exceptions import AppException, NotFoundError, ValidationError
 from app.repositories.applications import ApplicationRepository
 from app.schemas.hosting import (
     FileDetailSchema,
@@ -28,6 +28,36 @@ from app.schemas.operations import FileEntry, FileListResponse, OperationResult
 from app.services.applications.path_scanner import ApplicationPathScanner
 
 
+def safe_upload_basename(filename: str | None) -> str:
+    """Strip directories from an upload name so it cannot escape the destination dir."""
+    raw = (filename or "upload.bin").replace("\x00", "").strip()
+    name = Path(raw).name.strip()
+    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        return "upload.bin"
+    return name
+
+
+def zip_member_is_safe(member_name: str, dest: Path) -> Path:
+    """Resolve archive member under dest; raise on zip-slip / absolute / parent segments."""
+    raw = (member_name or "").replace("\\", "/").strip()
+    if not raw or raw.endswith("/"):
+        # Directory entries are validated when children are written.
+        target = (dest / raw).resolve() if raw else dest.resolve()
+    else:
+        target = (dest / raw).resolve()
+    dest_resolved = dest.resolve()
+    if raw.startswith("/") or (len(raw) >= 2 and raw[1] == ":"):
+        raise ValidationError("Archive contains an absolute path.", code="zip_slip")
+    parts = Path(raw).parts
+    if any(p == ".." for p in parts):
+        raise ValidationError("Archive contains a path traversal entry.", code="zip_slip")
+    try:
+        target.relative_to(dest_resolved)
+    except ValueError as exc:
+        raise ValidationError("Archive entry escapes the extract folder.", code="zip_slip") from exc
+    return target
+
+
 class FileManagerService:
     def __init__(
         self,
@@ -36,11 +66,15 @@ class FileManagerService:
         admin_storage: bool = False,
         only_roots: list[Path] | None = None,
         storage_limit_gb: int | float | None = None,
+        owner_uid: int | None = None,
+        owner_gid: int | None = None,
     ) -> None:
         self._settings = settings
         self._admin_storage = admin_storage
         self._only_roots = [Path(p).resolve() for p in only_roots] if only_roots else None
         self._storage_limit_gb = storage_limit_gb
+        self._owner_uid = owner_uid
+        self._owner_gid = owner_gid
         self._apps = ApplicationRepository(settings)
         self._path_scanner = ApplicationPathScanner(settings)
 
@@ -232,6 +266,7 @@ class FileManagerService:
         self._assert_quota(base, extra_bytes=new_bytes - old_bytes)
         target.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(target.write_text, content, encoding="utf-8")
+        self._apply_owner(target)
         return OperationResult(success=True, message=f"Saved {path}")
 
     async def mkdir(self, path: str, *, app_id: str | None = None, root_id: str | None = None) -> OperationResult:
@@ -240,6 +275,7 @@ class FileManagerService:
         self._assert_quota(base, extra_bytes=0)
         target = self._safe_path(base, path)
         target.mkdir(parents=True, exist_ok=True)
+        self._apply_owner(target)
         return OperationResult(success=True, message=f"Created directory {path}")
 
     async def move(
@@ -256,19 +292,88 @@ class FileManagerService:
         if not src.exists():
             raise NotFoundError("Source not found.")
         dst.parent.mkdir(parents=True, exist_ok=True)
+        self._apply_owner(dst.parent)
         shutil.move(str(src), str(dst))
+        self._apply_owner(dst)
         return OperationResult(success=True, message=f"Moved to {destination}")
+
+    async def copy(
+        self,
+        source: str,
+        destination: str,
+        *,
+        app_id: str | None = None,
+        root_id: str | None = None,
+    ) -> OperationResult:
+        base = self._resolve_base(app_id, root_id)
+        src = self._safe_path(base, source)
+        dst = self._safe_path(base, destination)
+        if not src.exists():
+            raise NotFoundError("Source not found.")
+        extra = self._path_size_bytes(src)
+        self._assert_quota(base, extra_bytes=extra)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        self._apply_owner(dst.parent)
+        if src.is_dir():
+            if dst.exists():
+                raise ValidationError("Destination already exists.", code="destination_exists")
+            shutil.copytree(src, dst, symlinks=False)
+        else:
+            shutil.copy2(src, dst)
+        self._apply_owner_tree(dst)
+        return OperationResult(success=True, message=f"Copied to {destination}")
 
     async def delete(self, path: str, *, app_id: str | None = None, root_id: str | None = None) -> OperationResult:
         base = self._resolve_base(app_id, root_id)
         target = self._safe_path(base, path)
         if not target.exists():
             raise NotFoundError("Path not found.")
+        try:
+            self._unlink_path(target)
+        except PermissionError as exc:
+            # Parking pages / root-owned files: reclaim then retry when API is privileged.
+            try:
+                self._reclaim_for_delete(target)
+                self._unlink_path(target)
+            except OSError as retry_exc:
+                raise AppException(
+                    "Could not delete this file (permission denied). Try again or contact support.",
+                    code="delete_denied",
+                ) from retry_exc
+            except PermissionError as retry_exc:
+                raise AppException(
+                    "Could not delete this file (permission denied). Try again or contact support.",
+                    code="delete_denied",
+                ) from retry_exc
+        except OSError as exc:
+            raise AppException(
+                f"Could not delete this file: {exc}",
+                code="delete_failed",
+            ) from exc
+        return OperationResult(success=True, message=f"Deleted {path}")
+
+    def _unlink_path(self, target: Path) -> None:
         if target.is_dir():
             shutil.rmtree(target)
         else:
             target.unlink()
-        return OperationResult(success=True, message=f"Deleted {path}")
+
+    def _reclaim_for_delete(self, target: Path) -> None:
+        if hasattr(os, "geteuid") and os.geteuid() != 0:
+            raise PermissionError("not privileged")
+        uid = int(self._owner_uid) if self._owner_uid is not None else os.geteuid()
+        gid = int(self._owner_gid) if self._owner_gid is not None else os.getegid()
+        if target.is_dir():
+            for child in [target, *target.rglob("*")]:
+                try:
+                    os.chown(child, uid, gid)
+                    mode = child.stat().st_mode
+                    os.chmod(child, mode | (stat.S_IWUSR if child.is_file() or child.is_dir() else 0))
+                except OSError:
+                    continue
+        else:
+            os.chown(target, uid, gid)
+            os.chmod(target, 0o600)
 
     async def chmod(
         self, path: str, mode: str, *, app_id: str | None = None, root_id: str | None = None
@@ -284,9 +389,14 @@ class FileManagerService:
         self, path: str, file: UploadFile, *, app_id: str | None = None, root_id: str | None = None
     ) -> OperationResult:
         base = self._resolve_base(app_id, root_id)
-        target = self._safe_path(base, path)
-        if target.is_dir():
-            target = target / (file.filename or "upload.bin")
+        dest = self._safe_path(base, path)
+        filename = safe_upload_basename(file.filename)
+        if dest.is_dir():
+            target = (dest / filename).resolve()
+        else:
+            target = (dest.parent / safe_upload_basename(dest.name)).resolve()
+        if not any(target == root or target.is_relative_to(root) for root in self.allowed_roots()):
+            raise AppException("Path traversal denied.", code="forbidden")
         old_bytes = 0
         if target.exists() and target.is_file():
             try:
@@ -307,13 +417,13 @@ class FileManagerService:
         from app.services.platform.usage import limit_bytes, measure_path_usage
 
         used_before, _ = measure_path_usage(self._quota_root(base))
-        # Exclude bytes we are about to replace.
         used_base = max(0, used_before - old_bytes)
         limit = (
             limit_bytes(self._storage_limit_gb) if self._storage_limit_gb is not None else None
         )
 
         target.parent.mkdir(parents=True, exist_ok=True)
+        self._apply_owner(target.parent)
         written = 0
         with target.open("wb") as out:
             while chunk := await file.read(1024 * 1024):
@@ -324,13 +434,12 @@ class FileManagerService:
                         target.unlink(missing_ok=True)
                     except OSError:
                         pass
-                    from app.core.exceptions import ValidationError
-
                     raise ValidationError(
                         "Storage limit reached while uploading. Delete files or upgrade your plan.",
                         code="storage_quota_exceeded",
                     )
                 out.write(chunk)
+        self._apply_owner(target)
         return OperationResult(success=True, message=f"Uploaded to {target.relative_to(base)}")
 
     async def init_chunked_upload(
@@ -344,21 +453,24 @@ class FileManagerService:
         chunk_size: int | None = None,
     ) -> FileUploadInitResponse:
         base = self._resolve_base(app_id, root_id)
+        safe_name = safe_upload_basename(filename)
         self._assert_quota(base, extra_bytes=max(int(size_bytes), 0))
         chunk = chunk_size or self._settings.file_upload_chunk_size
         upload_id = str(uuid.uuid4())
         session_dir = self._upload_session_dir(upload_id)
         session_dir.mkdir(parents=True, exist_ok=True)
+        total_chunks = max(1, math.ceil(max(int(size_bytes), 1) / chunk))
         meta = {
-            "filename": filename,
+            "filename": safe_name,
             "path": path,
-            "size_bytes": size_bytes,
+            "size_bytes": int(size_bytes),
             "chunk_size": chunk,
+            "total_chunks": total_chunks,
             "app_id": app_id,
             "root_id": root_id,
+            "bound_root": str(self._quota_root(base).resolve()),
         }
         (session_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
-        total_chunks = max(1, math.ceil(size_bytes / chunk))
         return FileUploadInitResponse(upload_id=upload_id, chunk_size=chunk, total_chunks=total_chunks)
 
     async def upload_chunk(
@@ -368,8 +480,13 @@ class FileManagerService:
         data: bytes,
     ) -> OperationResult:
         session_dir = self._upload_session_dir(upload_id)
-        if not session_dir.exists():
+        meta_path = session_dir / "meta.json"
+        if not meta_path.exists():
             raise NotFoundError("Upload session not found or expired.")
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        total_chunks = int(meta.get("total_chunks") or 0)
+        if total_chunks and (chunk_index < 0 or chunk_index >= total_chunks):
+            raise ValidationError("Chunk index out of range.", code="invalid_chunk")
         chunk_path = session_dir / f"chunk_{chunk_index:06d}"
         await asyncio.to_thread(chunk_path.write_bytes, data)
         return OperationResult(success=True, message=f"Chunk {chunk_index} stored.")
@@ -381,20 +498,58 @@ class FileManagerService:
             raise NotFoundError("Upload session not found or expired.")
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         base = self._resolve_base(meta.get("app_id"), meta.get("root_id"))
+        bound = meta.get("bound_root")
+        if bound and bound != str(self._quota_root(base).resolve()):
+            raise AppException("Upload session does not match this environment.", code="upload_bound_mismatch")
+
         dest_dir = self._safe_path(base, meta["path"])
         if not dest_dir.is_dir():
             dest_dir = dest_dir.parent
-        target = dest_dir / meta["filename"]
-        target.parent.mkdir(parents=True, exist_ok=True)
+        filename = safe_upload_basename(meta.get("filename"))
+        target = (dest_dir / filename).resolve()
+        if not any(target == root or target.is_relative_to(root) for root in self.allowed_roots()):
+            raise AppException("Path traversal denied.", code="forbidden")
 
-        chunks = sorted(session_dir.glob("chunk_*"))
+        expected_size = int(meta.get("size_bytes") or 0)
+        total_chunks = int(meta.get("total_chunks") or 0)
+        chunks = []
+        for index in range(total_chunks or 0):
+            chunk_file = session_dir / f"chunk_{index:06d}"
+            if not chunk_file.exists():
+                raise AppException(f"Missing chunk {index}.", code="upload_incomplete")
+            chunks.append(chunk_file)
         if not chunks:
             raise AppException("No chunks received.", code="upload_incomplete")
 
+        old_bytes = 0
+        if target.exists() and target.is_file():
+            try:
+                old_bytes = target.stat().st_size
+            except OSError:
+                old_bytes = 0
+        self._assert_quota(base, extra_bytes=max(expected_size - old_bytes, 0))
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self._apply_owner(target.parent)
+        written = 0
         with target.open("wb") as out:
             for chunk_file in chunks:
-                out.write(chunk_file.read_bytes())
+                data = chunk_file.read_bytes()
+                written += len(data)
+                out.write(data)
 
+        if expected_size and written != expected_size:
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                pass
+            shutil.rmtree(session_dir, ignore_errors=True)
+            raise AppException(
+                f"Upload size mismatch ({written} != {expected_size}).",
+                code="upload_size_mismatch",
+            )
+
+        self._apply_owner(target)
         shutil.rmtree(session_dir, ignore_errors=True)
         rel = target.relative_to(base)
         return OperationResult(success=True, message=f"Uploaded to {rel}")
@@ -413,21 +568,125 @@ class FileManagerService:
         return target, target.name
 
     def _upload_session_dir(self, upload_id: str) -> Path:
+        # Reject path traversal in upload_id.
+        clean = (upload_id or "").strip()
+        if not clean or "/" in clean or "\\" in clean or ".." in clean or len(clean) > 80:
+            raise ValidationError("Invalid upload id.", code="invalid_upload_id")
         root = Path(self._settings.file_upload_temp_dir)
         if not root.is_absolute():
             root = Path.cwd() / root
-        return root / upload_id
+        return root / clean
 
-    async def unzip(self, path: str, *, app_id: str | None = None, root_id: str | None = None) -> OperationResult:
+    async def unzip(
+        self,
+        path: str,
+        *,
+        app_id: str | None = None,
+        root_id: str | None = None,
+        destination: str | None = None,
+        extract_here: bool = False,
+    ) -> OperationResult:
+        """Extract a ZIP with zip-slip protection and quota checks.
+
+        - extract_here=True → contents land in the archive's parent folder
+        - destination set → relative extract folder under the jail
+        - default → sibling folder named after the archive stem
+        """
         base = self._resolve_base(app_id, root_id)
         target = self._safe_path(base, path)
-        if not target.is_file() or not target.suffix.lower() == ".zip":
+        if not target.is_file() or target.suffix.lower() != ".zip":
             raise AppException("Only .zip archives can be extracted.", code="invalid_archive")
-        dest = target.parent / target.stem
+
+        if destination:
+            dest = self._safe_path(base, destination)
+        elif extract_here:
+            dest = target.parent
+        else:
+            dest = self._safe_path(base, str(target.parent.relative_to(base) / target.stem) if target.parent != base else target.stem)
+
+        return await asyncio.to_thread(self._extract_zip_sync, base, target, dest)
+
+    def _extract_zip_sync(self, base: Path, archive: Path, dest: Path) -> OperationResult:
         dest.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(target, "r") as zf:
-            zf.extractall(dest)
+        self._apply_owner(dest)
+        with zipfile.ZipFile(archive, "r") as zf:
+            # Validate every member first, then compute projected size.
+            members = list(zf.infolist())
+            projected = 0
+            for info in members:
+                zip_member_is_safe(info.filename, dest)
+                if not info.is_dir():
+                    projected += max(int(info.file_size or 0), 0)
+            self._assert_quota(base, extra_bytes=projected)
+
+            for info in members:
+                member_dest = zip_member_is_safe(info.filename, dest)
+                if info.is_dir():
+                    member_dest.mkdir(parents=True, exist_ok=True)
+                    self._apply_owner(member_dest)
+                    continue
+                member_dest.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(info, "r") as src, member_dest.open("wb") as out:
+                    shutil.copyfileobj(src, out, length=1024 * 1024)
+                self._apply_owner(member_dest)
+                # Re-verify after write in case of race / odd zip metadata.
+                zip_member_is_safe(info.filename, dest)
+
         return OperationResult(success=True, message=f"Extracted to {dest.relative_to(base)}")
+
+    async def compress(
+        self,
+        paths: list[str],
+        *,
+        archive_name: str | None = None,
+        destination_dir: str | None = None,
+        app_id: str | None = None,
+        root_id: str | None = None,
+    ) -> OperationResult:
+        """Create a ZIP from one or more paths inside the jail."""
+        if not paths:
+            raise ValidationError("Select at least one file or folder.", code="empty_selection")
+        base = self._resolve_base(app_id, root_id)
+        sources = [self._safe_path(base, p) for p in paths]
+        for src in sources:
+            if not src.exists():
+                raise NotFoundError(f"Path not found: {src.relative_to(base)}")
+
+        dest_dir = self._safe_path(base, destination_dir or ".")
+        if not dest_dir.is_dir():
+            dest_dir = dest_dir.parent
+        name = safe_upload_basename(archive_name or f"{sources[0].stem}.zip")
+        if not name.lower().endswith(".zip"):
+            name = f"{name}.zip"
+        archive_path = (dest_dir / name).resolve()
+        if not any(archive_path == root or archive_path.is_relative_to(root) for root in self.allowed_roots()):
+            raise AppException("Path traversal denied.", code="forbidden")
+
+        # Rough upper bound: sum of source sizes (ZIP usually smaller).
+        projected = sum(self._path_size_bytes(s) for s in sources)
+        self._assert_quota(base, extra_bytes=projected)
+
+        def _build() -> None:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            self._apply_owner(dest_dir)
+            with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for src in sources:
+                    if src.is_dir():
+                        for child in src.rglob("*"):
+                            if child.is_symlink():
+                                continue
+                            if child.is_file():
+                                arcname = str(child.relative_to(src.parent))
+                                zf.write(child, arcname=arcname)
+                    else:
+                        zf.write(src, arcname=src.name)
+            self._apply_owner(archive_path)
+
+        await asyncio.to_thread(_build)
+        return OperationResult(
+            success=True,
+            message=f"Created archive {archive_path.relative_to(base)}",
+        )
 
     async def stat_file(
         self, path: str, *, app_id: str | None = None, root_id: str | None = None
@@ -437,6 +696,40 @@ class FileManagerService:
         if not target.exists():
             raise NotFoundError("Path not found.")
         return self._file_detail(target, base)
+
+    @staticmethod
+    def _path_size_bytes(path: Path) -> int:
+        if path.is_file():
+            try:
+                return int(path.stat().st_size)
+            except OSError:
+                return 0
+        total = 0
+        if path.is_dir():
+            for child in path.rglob("*"):
+                if child.is_file() and not child.is_symlink():
+                    try:
+                        total += int(child.stat().st_size)
+                    except OSError:
+                        continue
+        return total
+
+    def _apply_owner(self, path: Path) -> None:
+        if self._owner_uid is None or self._owner_gid is None:
+            return
+        if hasattr(os, "geteuid") and os.geteuid() != 0:
+            return
+        try:
+            os.chown(path, int(self._owner_uid), int(self._owner_gid))
+        except OSError:
+            pass
+
+    def _apply_owner_tree(self, path: Path) -> None:
+        self._apply_owner(path)
+        if not path.is_dir():
+            return
+        for child in path.rglob("*"):
+            self._apply_owner(child)
 
     def _app_root(self, app) -> Path:
         root = Path(app.paths.root)

@@ -1,0 +1,1660 @@
+IFNOTUS.SPACE — HOSTING PANEL, FILE MANAGER, RESOURCE ENFORCEMENT, BILLING TERMS, THEMES & DOMAIN BEHAVIOR
+
+ROLE
+Act as a senior hosting-platform architect, Linux hosting engineer, Vue frontend engineer, FastAPI backend engineer,
+UX designer, DNS/mail engineer, and production operator.
+
+You are working inside the EXISTING IFNOTUS codebase.
+
+This task is a CONTROLLED PRODUCT IMPROVEMENT.
+Do not rewrite the system from scratch.
+Do not break existing customer accounts, subscriptions, environments, domains, invoices, payments, or provisioning.
+
+The goal is to make IFNOTUS feel like a real hosting platform/cPanel-style system while keeping the Account Portal
+and Hosting Panel properly separated.
+
+1. CORE PRODUCT SEPARATION
+
+A. ACCOUNT PORTAL
+Purpose:
+- account/profile
+- billing
+- subscriptions
+- invoices
+- plans
+- purchased domains
+- renewals
+- support
+- security
+- list of hosting services
+
+This area should NOT contain the full technical hosting tools.
+
+B. HOSTING PANEL
+Purpose:
+- complete technical hosting management
+- file manager
+- applications/stacks
+- databases
+- domains
+- SSL
+- FTP/SFTP/SSH
+- cron
+- logs
+- backups
+- email
+- resource usage
+- AI engineer
+- settings specific to that hosting environment
+
+The Hosting Panel must feel like a complete hosting control panel, similar in usefulness to cPanel,
+but it remains the custom IFNOTUS panel.
+
+2. HOSTING ENTRY / AUTHENTICATION MODEL
+
+FROM ACCOUNT PORTAL
+When a logged-in customer clicks Manage Hosting, open the Hosting Panel without asking them to log in again.
+Use the existing authenticated session / SSO / signed environment handoff.
+
+Flow:
+Account Portal -> Manage Hosting -> ownership check -> Hosting Panel for selected environment
+
+DIRECT HOSTING PANEL ACCESS
+If the customer opens a direct hosting-panel URL manually, authentication must be required.
+
+For users with custom domains, allow an optional Hosting Panel credential/account model:
+username
+password
+
+Example:
+cpanel.customer-domain.com
+
+Rules:
+- direct panel credentials must be scoped to one customer/environment
+- main account-owner login must still work
+- support password reset
+- support disabling direct panel credentials
+- audit login attempts
+- no root shell access
+- do not duplicate the whole IFNOTUS account system
+
+3. FILE MANAGER — COMPLETE REDESIGN
+
+Users must manage files inside their own environment document root.
+Example:
+/srv/apps/ifnotus-customers/<customer_id>/<hostname>/public
+
+Never allow traversal outside tenant boundaries.
+
+4. ZIP UPLOAD SUPPORT — ALL PACKAGES
+
+ALL hosting packages must support uploading .zip files through the File Manager.
+This is NOT a premium entitlement.
+
+Mandatory:
+.zip
+
+Optional later:
+.tar
+.tar.gz
+.tgz
+
+Implement a proper upload queue.
+
+Each file should show:
+- file name
+- total size
+- bytes uploaded
+- percentage
+- speed if practical
+- state
+- cancel
+- retry
+
+States:
+queued
+uploading
+processing
+complete
+failed
+cancelled
+
+Support multiple queued uploads.
+Do not freeze the page during upload.
+Use chunked/resumable upload if the current architecture supports it safely.
+Otherwise still provide accurate browser upload progress.
+
+5. ZIP EXTRACTION / ARCHIVE OPERATIONS
+
+Allow:
+- extract ZIP
+- extract here
+- extract to folder
+- create ZIP
+- compress selected files
+- download archive
+- delete archive
+
+Security:
+- block zip-slip/path traversal
+- reject archive entries containing ../
+- enforce tenant path boundary
+- prevent extraction outside document root
+- calculate projected storage requirement before extraction
+- respect hard disk quota
+- set extracted file ownership to tenant UID/GID
+- do not create root-owned customer files
+
+Large archive extraction should run as a background job with progress.
+
+6. FILE OPERATIONS
+
+Support:
+New File
+New Folder
+Upload
+Download
+Rename
+Move
+Copy
+Paste
+Delete
+Compress
+Extract
+Edit text/code files
+
+Batch operations:
+- multiple selection
+- move
+- copy
+- delete
+- compress
+- download where practical
+
+All operations must:
+- enforce environment ownership
+- enforce safe paths
+- enforce disk quota
+- preserve tenant ownership
+
+7. FILE MANAGER UI
+
+Redesign the File Manager to feel familiar to users of Windows Explorer / modern cloud file managers.
+
+Desktop header:
+- Environment/domain
+- breadcrumb
+- storage usage
+- search
+- upload
+- new
+- refresh
+- AI Engineer
+
+Sidebar:
+- Home
+- public
+- folders
+- recent
+- trash if supported
+- AI Engineer
+
+Main pane:
+- Name
+- Type
+- Size
+- Modified
+- Permissions/owner where appropriate
+- Actions
+
+Folders should use clean generic folder icons similar in feel to Windows folders.
+Do not copy Microsoft assets directly.
+
+Mobile:
+- single-column list
+- breadcrumb
+- upload/new
+- overflow menu
+- directory tree in drawer
+- AI in drawer/sidebar
+- no horizontal overflow
+
+8. AI ENGINEER INSIDE FILE MANAGER
+
+Add the existing AI Engineer / AI Assistant to the File Manager sidebar.
+
+Possible actions:
+- explain selected file
+- find error
+- suggest fix
+- generate config
+- explain project structure
+- help deploy
+- identify entry point
+- debug logs
+
+AI must NOT:
+- bypass file permissions
+- read other tenants
+- expose secrets automatically
+- execute destructive actions without confirmation
+
+The AI panel should know:
+- current environment
+- current working directory
+- selected file(s)
+- installed stack
+- package limits
+
+9. STACK DISPLAY MUST REFLECT REALITY
+
+Current problem:
+An environment may actually have WordPress/Laravel/etc installed, but UI still says "No stack installed".
+
+Fix this.
+
+Determine installed stack from real environment state.
+
+Priority:
+1. ApplicationInstance / stack record
+2. .ifnotus/stack.json or existing stack metadata
+3. known installer/provisioning records
+4. controlled filesystem detection as fallback
+
+Do not rely only on one stale DB field.
+
+If WordPress is installed, show:
+Stack: WordPress
+Runtime: PHP 8.x
+Database: MySQL
+Status: Running
+Installed: <date>
+
+Do not show "No stack installed" when metadata/files prove otherwise.
+
+10. APPLICATIONINSTANCE CONSISTENCY
+
+One-click stack installs should create/update an ApplicationInstance or equivalent canonical application record.
+
+Example:
+CustomerEnvironment
+├── ApplicationInstance
+│   ├── runtime=php
+│   ├── framework=wordpress
+│   ├── source=one_click
+│   ├── status=running
+│   └── installed_at
+├── EnvironmentDatabase
+└── Domain
+
+Do not maintain two disconnected truths:
+- stack installed in filesystem
+- zero applications in database
+
+Add reconciliation for existing environments.
+
+11. CPU / RAM / MEMORY MUST BE REAL
+
+Displayed tenant resources must not be decorative values.
+
+Example:
+0.200 vCPU
+0.1875 GB RAM
+2 GB disk
+
+These must map to ACTUAL enforceable limits.
+
+Audit:
+- provisioning
+- cgroups
+- systemd scopes
+- containers
+- process manager
+- prlimit
+- Unix users
+- app workers
+- PHP-FPM
+- Node/Python apps
+- cron
+- storage quotas
+
+For every environment track:
+cpu_limit
+memory_limit_mb
+storage_limit_bytes
+pids_max
+app_workers_max
+background_process_max
+
+And actual usage:
+cpu_usage
+memory_usage
+storage_usage
+process_count
+
+Preferred enforcement:
+cgroup v2 or systemd scopes/slices per tenant/environment.
+
+Example:
+ifnotus-env-<id>.slice
+
+Enforce:
+CPUQuota=
+MemoryMax=
+TasksMax=
+
+If Docker is used:
+apply equivalent container limits.
+
+For PHP:
+ensure PHP-FPM pool/process limits are tenant-aware.
+
+For Node/Python:
+run managed processes inside tenant resource scope.
+
+Cron:
+must inherit tenant limits.
+
+FTP/SFTP writes:
+must respect storage quota.
+
+12. RESOURCE UI — CLEAN AND DYNAMIC
+
+Hosting Panel Overview should display real or periodically refreshed usage.
+
+Example:
+CPU
+0.04 / 0.20 vCPU
+20%
+
+Memory
+78 MB / 192 MB
+41%
+
+Storage
+640 MB / 2 GB
+32%
+
+Processes
+3 / 10
+
+Use clean usage bars.
+Refresh at a reasonable interval or use existing WebSocket/SSE.
+Do not overload the server.
+Show last updated time.
+
+Thresholds:
+80% warning
+90% high
+95% critical
+
+13. DNS BEHAVIOR WHEN NO STACK IS INSTALLED
+
+IMPORTANT:
+It is NOT normal for a valid provisioned hostname to return DNS_PROBE_FINISHED_NXDOMAIN just because no stack is installed.
+
+DNS and application stack are separate concerns.
+
+Expected behavior:
+Hosting provisioned -> DNS resolves -> nginx recognizes hostname
+
+If no stack/site exists:
+show a default IFNOTUS placeholder page.
+
+Example:
+Your hosting is ready
+theofiluskwame.ifnotus.space
+
+No application has been installed yet.
+
+[ Install WordPress ]
+[ Upload Website ]
+[ Create Application ]
+
+NXDOMAIN means DNS does not know the hostname.
+That is a DNS/provisioning problem, not a stack-installation state.
+
+Fix active-host provisioning so hostnames resolve immediately.
+
+14. DEFAULT EMPTY HOSTING PAGE
+
+Every ACTIVE hosting environment should have a default landing page until customer content replaces it.
+
+Example:
+IFNOTUS
+Your hosting is ready.
+
+Domain:
+manuel.ifnotus.space
+
+Choose how to start:
+[ Upload Website ]
+[ Install WordPress ]
+[ Deploy Application ]
+
+This page must be lightweight and replaceable by customer content.
+
+15. PLAN BILLING TERM SELECTION
+
+Allow users to choose:
+1 month
+3 months
+6 months
+12 months
+24 months
+36 months
+
+Store:
+billing_term_months
+
+Values:
+1
+3
+6
+12
+24
+36
+
+Base price:
+monthly_price * months
+
+Support optional superadmin-configured discount by term.
+
+Example only:
+1 month   0%
+3 months  0%
+6 months  5%
+12 months 10%
+24 months 15%
+36 months 20%
+
+Do NOT hardcode those discounts as permanent business rules.
+
+16. BILLING TERM ADMIN SETTINGS
+
+Superadmin manages:
+- enabled terms
+- discount %
+- optional fixed price override
+- display label
+- recommended flag
+- minimum package eligibility
+
+Checkout should clearly show:
+Plan
+Monthly price
+Term
+Subtotal
+Discount
+Total
+Renewal/expiry date
+
+17. SUBSCRIPTION DURATION / EXPIRY
+
+Subscription activation must respect purchased term.
+A 6-month purchase must not create a 30-day subscription.
+
+Renewal/invoice logic must understand:
+1/3/6/12/24/36 months.
+
+Auto-renew should use selected renewal term unless changed.
+
+18. COMPLETE HOSTING PANEL EXPERIENCE
+
+Hosting Panel navigation should organize technical tools cleanly:
+
+Overview
+
+FILES
+- File Manager
+- Backups
+
+WEBSITE
+- Applications
+- Stacks
+- Domains
+- SSL
+- Redirects
+
+DATABASES
+- MySQL
+- PostgreSQL
+- Database Studio
+
+ACCESS
+- FTP
+- SFTP
+- SSH
+- Git
+
+AUTOMATION
+- Cron Jobs
+- Logs
+
+EMAIL
+- Mailboxes
+- Forwarders
+- Email DNS
+
+ADVANCED
+- Environment Variables
+- Runtime Settings
+- Resource Usage
+
+AI ENGINEER
+
+Do not put these tools back into the normal billing/account dashboard.
+
+19. THEMES — REAL LAYOUT THEMES, NOT JUST COLORS
+
+Upgrade the theme concept.
+
+A theme may change:
+- layout
+- navigation style
+- cards
+- icons
+- spacing
+- dashboard composition
+- tool presentation
+- typography within approved families
+- density
+
+Not only colors.
+
+Example themes:
+
+DEFAULT
+Clean IFNOTUS
+Sidebar + cards
+
+CLASSIC HOST
+cPanel-inspired category sections
+large tool icons
+dense utilities
+
+MODERN CARDS
+dashboard cards
+feature tiles
+large resource widgets
+
+MINIMAL
+compact navigation
+list-based tools
+low visual noise
+
+DEVELOPER
+runtime/app first
+logs/status prominent
+
+Do not clone copyrighted cPanel assets/layout exactly.
+
+20. THEME TRIALS
+
+Allow paid theme trial for:
+3 hours
+
+Flow:
+Theme Gallery -> Preview -> Start 3-hour trial -> apply
+
+At expiry:
+- if paid: keep
+- if unpaid: automatically revert to default
+
+Track:
+theme_id
+trial_started_at
+trial_expires_at
+purchased_at
+active_theme_id
+
+Prevent unlimited repeated trial abuse of the same paid theme.
+
+21. THEME PRICING — SUPERADMIN CONTROL
+
+Superadmin manages:
+theme name
+status
+price
+currency
+trial duration
+free/paid
+preview metadata/image
+active/inactive
+sort order
+
+Do not hardcode theme prices in frontend.
+Frontend reads theme catalog API.
+
+22. THEME PURCHASE
+
+Integrate theme purchase with existing order/payment system where practical.
+
+Theme purchase is NOT a hosting plan change.
+
+Use the simplest correct model:
+one-time theme purchase
+
+unless current architecture already supports something cleaner.
+
+23. MAIL FOR SUBDOMAINS — DO NOT AUTO-CREATE WEBMAIL
+
+A student/project subdomain must NOT automatically create:
+- mailbox
+- webmail account
+- mail user
+- email domain
+
+unless the customer explicitly enables/creates mail and the package supports it.
+
+Example:
+manuel.ifnotus.space
+
+Provisioning this website should NOT automatically create:
+webmail.manuel.ifnotus.space
+mailbox @manuel.ifnotus.space
+
+If plan has mail entitlement:
+Email
+No mailboxes yet
+[ Create Mailbox ]
+
+Hosting environment creation != mailbox creation.
+
+24. MAIL / WEBMAIL URL RULE
+
+Do not create random webmail subdomains for every student host automatically.
+
+Use centralized platform webmail/mail where appropriate:
+mail.ifnotus.space
+
+For custom domains where email is enabled:
+mail.customdomain.tld
+
+But only after customer explicitly configures email.
+
+25. SUPERADMIN CONFIGURATION
+
+Add admin settings where appropriate for:
+- billing terms
+- term discounts
+- theme catalog
+- theme prices
+- theme trial duration
+- allowed archive extensions
+- upload max size
+- reserved hostnames
+- default empty-site template
+
+26. PACKAGE RULES
+
+ZIP upload:
+ALL packages
+
+File move/copy/delete/extract:
+ALL packages that include file manager
+
+Theme trial:
+all active hosting customers
+
+Theme purchase:
+all active hosting customers
+
+Stacks:
+existing plan entitlements
+
+Databases:
+existing plan entitlements
+
+SSH/SFTP:
+existing plan entitlements
+
+Mail:
+existing plan entitlements
+
+Resource limits:
+must follow actual subscription entitlement snapshot
+
+27. SECURITY REQUIREMENTS
+
+FILE MANAGER
+- safe_join
+- no ..
+- no symlink escape
+- zip-slip protection
+- quota before upload/extract
+- tenant UID/GID ownership
+- no root-owned extraction output
+
+HOSTING PANEL
+- environment ownership enforcement
+- no IDOR
+- direct login rate limiting
+- audit direct panel login
+- secure sessions
+
+RESOURCES
+- no root fallback
+- host-level enforcement
+- customers cannot edit their own CPU/RAM caps
+
+THEMES
+- presentation only
+- no arbitrary backend code injection
+- sanitize metadata
+
+28. PHASED IMPLEMENTATION ORDER
+
+PHASE A — Audit current code and models
+Do not change code.
+Inspect:
+- File Manager
+- upload endpoints
+- archive operations
+- stack detection
+- ApplicationInstance
+- resource enforcement
+- account vs hosting routes
+- billing term schema
+- theme system
+- mail provisioning
+
+Return exact gaps.
+STOP.
+
+PHASE B — File Manager ZIP + Queue
+Implement upload queue, ZIP upload, progress, extraction/compression.
+STOP.
+
+PHASE C — File Manager UI + AI
+Redesign File Manager and wire AI Engineer.
+STOP.
+
+PHASE D — Stack Truth + ApplicationInstance
+Fix installed-stack detection and reconcile one-click installs.
+STOP.
+
+PHASE E — Real CPU/RAM/Memory Enforcement
+Implement/verify cgroup/systemd/container enforcement and dynamic metrics.
+STOP.
+
+PHASE F — DNS + Empty Hosting Page
+Ensure active hostname resolves with or without stack.
+Add default hosting-ready page.
+Fix NXDOMAIN provisioning issue.
+STOP.
+
+PHASE G — Billing Terms
+Implement 1/3/6/12/24/36-month purchase and subscription expiry.
+STOP.
+
+PHASE H — Account vs Hosting Separation
+Ensure technical tools live only in Hosting Panel.
+Implement seamless Account -> Hosting SSO.
+STOP.
+
+PHASE I — Direct Hosting Panel Credentials
+Implement optional scoped username/password for direct custom-domain cpanel access.
+STOP.
+
+PHASE J — Complete cPanel-style Hosting UI
+Rebuild Hosting Panel navigation/overview around complete technical tooling.
+STOP.
+
+PHASE K — Theme Architecture
+Implement distinct layout themes.
+STOP.
+
+PHASE L — Theme Trials + Purchase + Superadmin Pricing
+Implement 3-hour trial, revert, purchase and admin pricing.
+STOP.
+
+PHASE M — Mail Provisioning Rules
+Stop automatic webmail/mailbox creation for student/project subdomains.
+Verify custom-domain mail behavior.
+STOP.
+
+PHASE N — Full Production Verification
+Run complete smoke/regression tests and live verification.
+STOP.
+
+29. REQUIRED TESTS
+
+FILE MANAGER
+- ZIP upload
+- multiple upload queue
+- cancel
+- retry
+- extract
+- zip-slip blocked
+- quota exceeded blocked
+- move
+- copy
+- rename
+- delete
+- ownership preserved
+- cross-tenant path denied
+
+STACK
+- WordPress installed -> UI says WordPress
+- Laravel installed -> UI says Laravel
+- removed stack -> correct state
+- ApplicationInstance synced
+
+RESOURCES
+- CPU cap enforced
+- RAM cap enforced
+- process cap enforced
+- storage cap enforced
+- cron inherits limit
+- runtime inherits limit
+- metrics match actual usage
+
+DNS
+- active host resolves before stack install
+- default page appears
+- after stack install, app replaces placeholder
+
+BILLING
+- 1/3/6/12/24/36 months
+- discount calculation
+- subscription expiry
+- renewal
+
+HOSTING AUTH
+- account -> hosting no second password
+- direct panel unauth -> login
+- wrong customer denied
+- custom-domain panel credential works
+- reset works
+
+THEMES
+- default
+- 3-hour trial
+- expiry revert
+- purchase keeps theme
+- admin price changes reflect
+- themes change layout, not only color
+
+MAIL
+- new student host has zero mailboxes
+- no auto webmail tenant subdomain
+- package mail entitlement still allows manual mailbox creation
+
+30. FINAL ACCEPTANCE CRITERIA
+
+[ ] ZIP upload works on all packages
+[ ] Upload queue shows actual progress
+[ ] ZIP extraction is safe
+[ ] Move/copy/rename/delete work
+[ ] File Manager is responsive and professional
+[ ] AI Engineer is available in File Manager
+[ ] Installed stack always displays correctly
+[ ] One-click stacks create/sync ApplicationInstance
+[ ] CPU limit is actually enforced
+[ ] RAM limit is actually enforced
+[ ] Storage limit is actually enforced
+[ ] Usage display is dynamic and real
+[ ] Active host resolves even with no installed stack
+[ ] No-stack environment shows ready page, not NXDOMAIN
+[ ] User can select 1/3/6/12/24/36 months
+[ ] Subscription expiry follows selected term
+[ ] Account Portal remains billing/account-focused
+[ ] Hosting Panel contains technical tools
+[ ] Account -> Hosting opens without second login
+[ ] Direct Hosting Panel requires authentication
+[ ] Custom-domain direct panel credentials are scoped
+[ ] Hosting Panel has complete cPanel-style feel
+[ ] Themes change actual layout/component presentation
+[ ] Theme trials last 3 hours
+[ ] Unpaid trial reverts to default
+[ ] Superadmin can change theme prices
+[ ] Student/project hosting does not auto-create webmail/mailboxes
+[ ] Existing plan entitlements remain respected
+[ ] Backend tests pass
+[ ] Frontend build passes
+[ ] Production smoke passes
+
+31. REQUIRED PHASE REPORT
+
+At the end of each phase return:
+
+{
+  "phase": "",
+  "status": "complete | partial | blocked",
+  "what_was_found": [],
+  "files_changed": [],
+  "database_changes": [],
+  "backend_changes": [],
+  "frontend_changes": [],
+  "infrastructure_changes": [],
+  "security_changes": [],
+  "tests_added": [],
+  "tests_run": [],
+  "live_checks": [],
+  "manual_steps": [],
+  "known_issues": [],
+  "rollback": [],
+  "next_phase": "",
+  "git_commit": ""
+}
+
+Do not continue automatically.
+
+STARTING INSTRUCTION
+
+Start with PHASE A — AUDIT CURRENT CODE AND MODELS.
+
+DO NOT modify code yet.
+
+Specifically inspect:
+- current File Manager upload implementation
+- whether .zip is blocked anywhere
+- upload progress support
+- archive extraction/compression
+- file move/copy implementation
+- current tenant path/ACL/ownership model
+- current stack detection logic for environments like media1.ifnotus.space
+- ApplicationInstance creation for one-click stacks
+- CPU/RAM limit fields vs actual host enforcement
+- resource monitoring APIs
+- DNS provisioning for active hosts with no stack
+- default document-root content
+- current billing/subscription term logic
+- Account Portal vs Hosting Panel route separation
+- direct custom-domain cpanel authentication
+- theme model/components/pricing
+- current automatic mail/webmail behavior for subdomains
+
+Return:
+1. what already works,
+2. what is partial,
+3. what is missing,
+4. what is unsafe,
+5. exact files/modules to change for PHASE B.
+
+Then STOP.
+
+
+=================================================================
+APPENDIX A — AUTOMATIC HOSTING ACCOUNT NAMES
+=================================================================
+
+Every hosting environment must receive a clean, short, unique hosting name generated automatically by IFNOTUS.
+
+The customer must NEVER be asked to choose this name.
+
+The system must NEVER stop with:
+"hosting name already exists"
+
+Instead, IFNOTUS must automatically generate the next available valid name.
+
+PURPOSE
+-------
+The hosting name is a human-readable operational identifier for staff/server work.
+
+Example:
+
+Environment UUID:
+dc784620-5982-4ae2-b8ff-b8734dde1205
+
+Hosting Name:
+manuelhost
+
+The UUID remains the permanent technical database identifier.
+
+Use hosting_name for:
+- staff display
+- search
+- logs
+- support
+- backups
+- server operations
+- hosting lists
+
+SOURCE PRIORITY
+---------------
+1. Custom domain label
+   csdttu.online -> csdttu
+   votebridge.online -> votebridge
+   manuelcode.com -> manuelcode
+
+2. Student hostname
+   kwofie.ifnotus.space -> kwofiehost
+
+3. Customer surname
+   Kwofie -> kwofiehost
+
+4. Customer first name
+   Manuel -> manuelhost
+
+RULES
+-----
+- lowercase
+- a-z and 0-9 only
+- must start with a letter
+- no spaces
+- no underscore
+- preferably no hyphen
+- readable
+- globally unique
+- recommended max length: 12 characters
+
+COLLISION HANDLING
+------------------
+manuelhost
+manuelh2
+manuelh3
+manuelh4
+
+csdttu
+csdttu2
+csdttu3
+
+The system keeps trying automatically until it saves a unique valid name.
+
+CENTRAL SERVICE
+---------------
+Create one centralized service:
+
+HostingNameService
+
+Suggested responsibility:
+- choose source
+- normalize
+- truncate safely
+- reject reserved names
+- generate suffix
+- check global uniqueness
+- handle race-condition retry
+
+Do not duplicate naming logic across:
+- orders.py
+- provisioning.py
+- customers.py
+- frontend
+- migration scripts
+
+RESERVED NAMES
+--------------
+Never allocate:
+
+admin
+root
+system
+server
+host
+hosting
+mail
+cpanel
+panel
+api
+mysql
+postgres
+redis
+ftp
+sftp
+ssh
+backup
+support
+billing
+www
+
+If a reserved name is produced, automatically generate a safe variant.
+
+DATABASE
+--------
+Ensure a database uniqueness constraint:
+
+UNIQUE(hosting_name)
+
+Do not depend only on SELECT-before-INSERT.
+
+Handle concurrent provisioning by retrying when a uniqueness conflict occurs.
+
+PERMANENCE
+----------
+Once assigned, hosting_name remains stable even if:
+- customer changes first name
+- surname changes
+- domain changes
+- plan changes
+- hosting renews
+
+Only superadmin may rename it through an explicit controlled migration.
+
+EXISTING ENVIRONMENTS
+---------------------
+Create reconciliation utility:
+
+scripts/assign-hosting-names.py
+
+Support:
+--dry-run
+--environment <id>
+--all
+--apply
+
+Report:
+- Environment UUID
+- Hostname
+- Customer
+- Proposed Hosting Name
+- Conflict
+- Final Assigned Name
+
+Do not automatically restructure live filesystem paths just because hosting_name is added.
+
+STAFF UI
+--------
+Show the human-readable hosting name first.
+
+Example:
+
+manuelhost
+manuel.ifnotus.space
+Student Basic
+Active
+
+Technical details may show:
+Environment ID: <UUID>
+
+CUSTOMER UI
+-----------
+Show:
+
+Hosting
+manuel.ifnotus.space
+Active
+
+Hosting ID
+manuelhost
+
+[ Manage Hosting ]
+
+Do not ask the customer to approve or select the hosting name.
+
+=================================================================
+APPENDIX B — CPANEL-STYLE PANEL CREDENTIALS
+=================================================================
+
+When hosting becomes ACTIVE, IFNOTUS automatically generates a clean Hosting Panel username.
+
+The customer does not choose it.
+
+Recommended format:
+up to 6 letters + optional numeric suffix
+
+Examples:
+manuel
+manuel8
+johna
+johna8
+kwofi
+kwofi2
+
+Rules:
+- lowercase
+- ASCII
+- letters first
+- optional numeric suffix
+- no spaces
+- no punctuation
+- globally unique
+- reserved names forbidden
+
+Collision handling is automatic:
+manuel
+manuel2
+manuel3
+manuel4
+
+Persist:
+panel_username
+
+Do not regenerate because the customer's name/domain changes.
+
+PANEL PASSWORD
+--------------
+After hosting activation:
+
+Hosting Activated
+        ↓
+panel_username generated
+        ↓
+customer sees username
+        ↓
+customer creates Hosting Panel password
+
+Do not generate and expose permanent plaintext passwords.
+
+Store a strong password hash.
+
+Support:
+- create password
+- change password
+- reset password
+- disable direct panel login
+
+Audit:
+- successful login
+- failed login
+- password change
+- password reset
+- lock/rate-limit events
+
+ACCOUNT SESSION SSO
+-------------------
+If the customer is already logged into their normal IFNOTUS account and clicks:
+
+Manage Hosting
+
+do not ask for the panel username/password again.
+
+Flow:
+
+Account Session
+→ Manage Hosting
+→ Backend ownership check
+→ Secure SSO/signed handoff
+→ Hosting Panel
+
+DIRECT PANEL LOGIN
+------------------
+If the customer directly visits:
+
+cpanel.customer-domain.tld
+
+without an active IFNOTUS account session, require:
+
+Username
+Password
+
+Direct cPanel-style credentials must be scoped to the specific environment.
+
+Account authentication may access all environments the customer owns.
+Direct panel credentials should access only their assigned environment.
+
+Never trust environment ID, hostname, or frontend state alone.
+Backend authorization must verify session/credential + environment + ownership/assignment.
+
+=================================================================
+APPENDIX C — EXISTING SITE TENANT MIGRATION
+=================================================================
+
+Prepare existing sites such as:
+
+csdttu.online
+votebridge.online
+
+and other current non-tenant sites to be imported as proper IFNOTUS tenants.
+
+Create controlled migration tooling, for example:
+
+scripts/import-existing-site.py
+
+Support:
+--scan
+--dry-run
+--domain csdttu.online
+--customer <id>
+--plan <slug>
+--execute
+--rollback
+
+For each site identify:
+- source path
+- customer
+- target plan
+- environment
+- hosting_name
+- domain
+- runtime/framework
+- database
+- Redis/cache
+- WebSocket
+- worker/background service
+- cron
+- SSL
+- DNS
+- filesystem
+- current process supervisor/systemd service
+
+Suggested flow:
+
+Discover
+→ Audit runtime/dependencies
+→ Create CustomerEnvironment
+→ Generate hosting_name
+→ Create Unix tenant identity
+→ Apply CPU/RAM/storage limits
+→ Copy files
+→ Migrate DB
+→ Create/sync ApplicationInstance
+→ Create domain records
+→ Generate nginx
+→ SSL
+→ Health check
+→ Traffic cutover
+→ Verify
+→ Retire old deployment
+
+Do not assume all sites are PHP/static.
+
+For applications such as votebridge.online, inspect:
+- Django/FastAPI
+- PostgreSQL
+- Redis
+- WebSockets
+- workers
+- systemd/supervisor
+
+Always require:
+- dry-run
+- backup
+- rollback plan
+- health verification
+
+=================================================================
+APPENDIX D — DISCOUNTS & COUPONS
+=================================================================
+
+Add a proper hosting discount engine.
+
+Support:
+- automatic discounts
+- billing-term discounts
+- coupon codes
+- customer-specific discounts
+
+DISCOUNT TYPES
+--------------
+percentage
+fixed_amount
+
+SCOPES
+------
+all hosting
+specific plan
+product family
+billing term
+specific customer
+new customers
+
+COUPON MODEL
+------------
+Suggested fields:
+
+code
+description
+discount_type
+discount_value
+currency
+active
+starts_at
+expires_at
+usage_limit
+usage_count
+usage_limit_per_customer
+minimum_order_amount
+maximum_discount_amount
+plan_scope
+billing_term_scope
+new_customers_only
+created_by
+created_at
+
+Normalize:
+- uppercase
+- trim spaces
+
+Examples:
+TTU2026
+WELCOME10
+FASSA25
+STUDENT5
+
+VALIDATION
+----------
+Coupon validation must be backend-authoritative.
+
+Check:
+- exists
+- active
+- valid time range
+- usage remaining
+- per-customer usage
+- customer eligibility
+- plan eligibility
+- billing-term eligibility
+- minimum order
+- maximum discount
+
+Never trust frontend-displayed totals.
+
+CENTRAL PRICING ENGINE
+----------------------
+Use one backend pricing service.
+
+Suggested output:
+
+base_amount
+term_discount
+promotion_discount
+coupon_discount
+total_discount
+subtotal
+final_total
+
+Prevent:
+- negative totals
+- discount greater than subtotal
+- client-controlled prices
+- inconsistent recalculation across frontend/backend
+
+COUPON CONSUMPTION
+------------------
+Recommended lifecycle:
+
+validate at checkout
+→ apply/reserve on order
+→ consume when payment becomes confirmed/paid
+
+If order expires/cancels:
+release reservation according to policy.
+
+Use atomic logic for limited coupons.
+
+SUPERADMIN UI
+-------------
+Add:
+
+Money
+→ Discounts & Coupons
+
+Allow:
+- create
+- edit
+- disable
+- set expiry
+- set usage limit
+- plan scope
+- billing term scope
+- customer scope
+- usage statistics
+
+ORDER / INVOICE SNAPSHOT
+------------------------
+When order is created, snapshot:
+
+plan
+monthly price
+billing term
+original subtotal
+discount breakdown
+coupon code
+final total
+currency
+
+Historical invoices must not change when:
+- plan prices change
+- coupon values change
+- discounts change later
+
+=================================================================
+APPENDIX E — CURSOR EXECUTION ORDER
+=================================================================
+
+Use this complete work order:
+
+PHASE 1 — Audit current implementation
+PHASE 2 — Automatic hosting_name
+PHASE 3 — Automatic panel_username
+PHASE 4 — Panel password creation/reset
+PHASE 5 — Account → Hosting SSO
+PHASE 6 — Direct cpanel.<domain> login
+PHASE 7 — File Manager ZIP + upload queue
+PHASE 8 — File Manager UI + AI Engineer
+PHASE 9 — Stack truth + ApplicationInstance sync
+PHASE 10 — Real CPU/RAM/storage/process enforcement
+PHASE 11 — DNS + default empty-hosting page
+PHASE 12 — Billing terms 1/3/6/12/24/36 months
+PHASE 13 — Discount engine
+PHASE 14 — Coupon model/API
+PHASE 15 — Checkout coupon UI
+PHASE 16 — Superadmin Discounts & Coupons
+PHASE 17 — Order/invoice pricing snapshot
+PHASE 18 — Account vs Hosting Panel final separation
+PHASE 19 — Complete cPanel-style Hosting Panel UI
+PHASE 20 — Theme architecture
+PHASE 21 — 3-hour theme trials + purchase + superadmin pricing
+PHASE 22 — Mail provisioning rules
+PHASE 23 — Existing site migration framework
+PHASE 24 — csdttu.online dry-run migration
+PHASE 25 — votebridge.online dry-run migration
+PHASE 26 — Full production verification
+
+Work ONE phase at a time.
+
+At the end of each phase return:
+
+{
+  "phase": "",
+  "status": "complete | partial | blocked",
+  "what_was_found": [],
+  "files_changed": [],
+  "database_changes": [],
+  "backend_changes": [],
+  "frontend_changes": [],
+  "infrastructure_changes": [],
+  "security_changes": [],
+  "migration_changes": [],
+  "pricing_changes": [],
+  "tests_added": [],
+  "tests_run": [],
+  "live_checks": [],
+  "manual_steps": [],
+  "known_issues": [],
+  "rollback": [],
+  "next_phase": "",
+  "git_commit": ""
+}
+
+Do not continue automatically.
+
+=================================================================
+FINAL ACCEPTANCE
+=================================================================
+
+[ ] Every hosting environment receives hosting_name automatically
+[ ] Customer never chooses hosting_name
+[ ] Duplicate names are handled automatically
+[ ] Reserved names are handled automatically
+[ ] hosting_name is globally unique
+[ ] UUID remains technical DB identity
+[ ] panel_username is generated automatically
+[ ] Customer creates panel password
+[ ] Account session opens Hosting Panel without second password
+[ ] Direct cPanel access requires username/password
+[ ] Direct panel credential is environment-scoped
+[ ] ZIP uploads work on all packages
+[ ] Upload queue shows real progress
+[ ] ZIP extraction is safe
+[ ] Move/copy/rename/delete work
+[ ] File Manager is responsive and professional
+[ ] AI Engineer is present in File Manager
+[ ] Installed stack is displayed correctly
+[ ] One-click stack installs sync ApplicationInstance
+[ ] CPU/RAM/storage/process limits are real
+[ ] Resource usage is dynamic
+[ ] Active hosting resolves even without a stack
+[ ] Empty hosting shows ready page instead of NXDOMAIN
+[ ] 1/3/6/12/24/36 month purchase works
+[ ] Subscription expiry matches purchased duration
+[ ] Discounts work
+[ ] Coupon codes work
+[ ] Superadmin manages coupons and discounts
+[ ] Historical invoice values remain immutable
+[ ] Account Portal remains billing/account-focused
+[ ] Hosting Panel contains technical hosting tools
+[ ] Themes change actual layout, not only colors
+[ ] Paid theme trials last 3 hours
+[ ] Unpaid theme trial reverts to default
+[ ] Superadmin controls theme pricing
+[ ] Student/project hosting does not auto-create mail/webmail
+[ ] csdttu.online can be imported safely
+[ ] votebridge.online can be imported with runtime/services
+[ ] Backend tests pass
+[ ] Frontend build passes
+[ ] Production smoke passes
+
+=================================================================
+STARTING INSTRUCTION
+=================================================================
+
+Start with PHASE 1 — AUDIT CURRENT IMPLEMENTATION.
+
+DO NOT modify code first.
+
+Inspect:
+- Customer
+- CustomerEnvironment
+- hosting_name if any
+- panel_username if any
+- Hosting Panel direct auth
+- Account → Hosting SSO
+- cpanel.<domain> routing
+- Unix/FTP/SFTP/SSH identities
+- File Manager uploads
+- ZIP/archive support
+- upload progress
+- file move/copy
+- tenant ACL/ownership
+- stack detection
+- ApplicationInstance creation
+- CPU/RAM/resource enforcement
+- DNS behavior for active no-stack hosting
+- default document-root content
+- billing terms
+- discount logic
+- coupon logic
+- invoice snapshot behavior
+- theme model/pricing/trials
+- automatic mail/webmail provisioning
+- existing non-tenant sites including csdttu.online and votebridge.online
+
+Return exactly:
+
+1. WHAT ALREADY WORKS
+2. WHAT IS PARTIAL
+3. WHAT IS MISSING
+4. WHAT IS UNSAFE
+5. DATABASE MIGRATIONS REQUIRED
+6. INFRASTRUCTURE CHANGES REQUIRED
+7. EXACT FILES/MODULES FOR PHASE 2
+8. RISKS
+9. ROLLBACK CONSIDERATIONS
+
+Then STOP.
+
+Do not begin PHASE 2 until explicitly instructed.

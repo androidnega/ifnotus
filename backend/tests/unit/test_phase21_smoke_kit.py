@@ -8,13 +8,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_phase21_doc_exists() -> None:
-    path = ROOT / "docs" / "phase21-buy-to-hosting-smoke.md"
+def test_phase21_smoke_script_covers_student_zone() -> None:
+    path = ROOT / "scripts" / "smoke_buy_to_hosting.py"
     assert path.is_file()
     text = path.read_text(encoding="utf-8")
-    assert "serverlabsttu.space" in text
     assert "unix_username" in text
     assert "confirm-payment" in text
+    assert "ifnotus.space" in text or "student_zone" in text
 
 
 def test_smoke_script_exists_and_has_safe_default() -> None:

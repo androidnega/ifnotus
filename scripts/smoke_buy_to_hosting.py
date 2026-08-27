@@ -70,7 +70,7 @@ def preflight(base: str) -> dict[str, Any]:
     _ok("catalog meta", code == 200, f"student_zone={meta.get('student_zone')}")
     _ok(
         "student zone",
-        meta.get("student_zone") == "serverlabsttu.space",
+        meta.get("student_zone") == "ifnotus.space",
         str(meta.get("student_zone")),
     )
 
@@ -146,7 +146,7 @@ def assert_active_env(dash: dict[str, Any]) -> None:
     )
     _ok("unix_username set", bool(env.get("unix_username")), str(env.get("unix_username")))
     domain = env.get("domain") or ""
-    if domain.endswith("serverlabsttu.space"):
+    if domain.endswith(".ifnotus.space") or domain.endswith(".serverlabsttu.space"):
         print("[PASS] student zone hostname")
     elif domain:
         print(f"[INFO] domain={domain} (custom or legacy zone)")

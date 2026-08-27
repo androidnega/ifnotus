@@ -1,0 +1,240 @@
+================================================================================
+IFNOTUS × ISPCONFIG — CURRENT STRUCTURE, STATUS & NEXT STEPS
+Date: 2026-08-27
+Server: 80.241.223.82 (single VPS)
+================================================================================
+
+--------------------------------------------------------------------------------
+1. WHAT IFNOTUS IS (PRODUCT STRUCTURE NOW)
+--------------------------------------------------------------------------------
+
+IFNOTUS is a Ghana-focused hosting PLATFORM, not just a web server panel.
+
+LAYERS (top → bottom):
+
+  A) CUSTOMER / STAFF BROWSERS
+        ↓
+  B) IFNOTUS UI  (Vue 3 + Vite)
+        - Public site / plans / checkout
+        - Customer portal + hosting panel (/go/hosting, tenant cPanel-like UI)
+        - Staff control plane (cpanel.ifnotus.space)
+        - File manager, domains, DB studio, stacks, billing screens
+        - Branding stays YOURS — customers never need a raw panel login
+        ↓
+  C) IFNOTUS API  (FastAPI at /srv/apps/ifnotus, port 8010)
+        - Auth, customers, orders, MoMo / Paystack billing
+        - Packages, coupons, renewals, tickets
+        - Student hostnames, reserved labels, hosting_name
+        - Provisioning orchestration
+        - HostingProvider interface (engine switch)
+        ↓
+  D) HOSTING ENGINE  (pluggable)
+        - TODAY (live):     "legacy"  = nginx + unix users + IFNOTUS provisioning
+        - TARGET (planned): "ispconfig" = ISPConfig 3 remote API
+        - PARKED:           "olspanel"  = OLSPanel (attempt stopped)
+        ↓
+  E) OS / DATA ON THE VPS
+        - /srv/apps/ifnotus              → control plane code
+        - /srv/apps/ifnotus-customers    → paying/student TENANT files
+        - /srv/apps/csdttu, quizsnap, …  → YOUR product apps (not tenants)
+        - PostgreSQL (ifnotus DB), MySQL (sibling apps), Redis
+        - nginx on :80/:443 (live again)
+        - BIND named for DNS zones
+        - Postfix / Dovecot / Roundcube mail
+
+RESPONSIBILITY SPLIT:
+
+  IFNOTUS owns forever:
+    - Billing (MoMo, Paystack, invoices, renewals)
+    - Plan catalog & pricing
+    - Student / reserved hostname rules
+    - Custom UI look & feel
+    - Extra features (AI, stacks UI, Flask/Django/React app engine UX)
+    - Ghana / business logic
+
+  ENGINE (ISPConfig when live) owns:
+    - Linux clients / web domains
+    - SSL, FTP, mail mailboxes, MySQL DBs (as configured)
+    - Disk / resource templates
+    - DNS records (if we migrate DNS into ISPConfig later)
+
+RULE: Browser never talks to ISPConfig. Only IFNOTUS backend holds remote API secrets.
+
+
+--------------------------------------------------------------------------------
+2. WHAT LIVES ON THE SERVER (IMPORTANT FOLDERS)
+--------------------------------------------------------------------------------
+
+/srv/apps/
+  ifnotus/                 IFNOTUS platform (API + frontend build source)
+  ifnotus-customers/       Hosting TENANTS only
+                           layout: <storage_slug>/<hostname>/public
+  csdttu/                  ExamFlow, Cliq Hangout, ceeu, etc. (YOUR apps)
+  csdttumain/              csdttu.online
+  quizsnap/                quizsnap.online
+  quiz/                    related quiz stack
+  serverlabsttu/           serverlabsttu.space
+  votebridge/              votebridge.online
+
+/var/www/ifnotus/          Built SPA for ifnotus.space
+
+SIBLING SITES (your products — NOT IFNOTUS paying tenants):
+  votebridge.online
+  quizsnap.online
+  examflow.csdttu.online
+  documento.csdttu.online
+  cth.csdttu.online
+  neckpressing.online / ceeu.neckpressing.online
+  csdttu.online
+  serverlabsttu.space
+
+These stay under /srv/apps/... and must stay online across any cutover.
+They are reattached as dedicated vhosts, not sold as IFNOTUS plans.
+
+
+--------------------------------------------------------------------------------
+3. WHAT ISPCONFIG HAS GOTTEN TO (STATUS)
+--------------------------------------------------------------------------------
+
+DECISION: ISPConfig 3 replaces OLSPanel as the intended hosting engine.
+
+DONE:
+  [x] Pivot away from OLSPanel documented
+      - docs/ISPCONFIG_ENGINE_ROADMAP.md  (active plan)
+      - docs/OLSPANEL_ENGINE_ROADMAP.md   (SUPERSEDED)
+  [x] OLSPanel install STOPPED / OpenLiteSpeed + OLS "cp" disabled
+  [x] nginx restored on :80/:443 — sibling + platform sites smoke OK
+  [x] HostingProvider interface already exists (dual-provider design)
+  [x] ISPConfig CODE FOUNDATION (no downtime):
+        backend/app/integrations/ispconfig/
+          - client.py      (remote JSON API wrapper)
+          - exceptions.py
+        backend/app/services/hosting_provider/
+          - ispconfig_provider.py
+          - factory.py updated (legacy | ispconfig | olspanel)
+          - package_map.py → resolve_ispconfig_template_id()
+        backend/app/core/config.py → ISPCONFIG_* settings
+        .env.example → ISPCONFIG_* placeholders
+        tests/unit/test_hosting_provider.py → 6 passed
+  [x] Backups from OLS attempt still on disk (usable for ISPConfig too):
+        /srv/backups/ols-cutover-20260827/
+          customer-files.tar.gz
+          sibling-*.tar.gz
+          nginx-config.tar.gz
+          letsencrypt.tar.gz
+          mysql-all-databases.sql (~1.5G)
+          pg_dumpall.sql
+          mail-dns-etc.tar.gz
+          CHECKSUMS.txt
+
+NOT DONE YET:
+  [ ] ISPConfig 3 is NOT installed on the VPS
+  [ ] No ISPCONFIG_* credentials in live .env (still empty / unused)
+  [ ] HOSTING_PROVIDER_DEFAULT is still "legacy"
+  [ ] No tenants provisioned through ISPConfig
+  [ ] Portal APIs not fully wired to ISPConfig for day-to-day ops
+  [ ] OLS leftovers not fully purged (stopped only — purge later)
+  [ ] Staff/tenant UI not yet customized around ISPConfig specifically
+      (UI already exists for legacy; engine swap is next)
+
+LIVE DEFAULT TODAY:
+  Everything still runs the LEGACY nginx path.
+  ISPConfig adapter is ready in code, waiting for a real ISPConfig install.
+
+
+--------------------------------------------------------------------------------
+4. WHAT WE HAVE TO DO NEXT (ORDERED)
+--------------------------------------------------------------------------------
+
+NEXT IMMEDIATE (no downtime):
+  1. Deploy the new ISPConfig adapter code to production VPS
+     (copy files, restart ifnotus-api — still default=legacy, safe)
+  2. Confirm staff endpoint GET /api/v1/platform/hosting-provider
+     reports configured=false until credentials exist
+
+BEFORE INSTALL (mandatory):
+  3. Pick a short maintenance window (sites will briefly go down)
+  4. Refresh backups (or reuse ols-cutover set + verify checksums)
+     - especially MySQL, Postgres, ifnotus-customers, sibling apps, nginx
+  5. Decide ISPConfig web server mode: prefer nginx (matches current stack)
+
+INSTALL WINDOW:
+  6. Install ISPConfig 3 carefully on THIS VPS
+     - Protect existing MySQL 8, PostgreSQL, BIND named, Postfix/Dovecot
+     - Do not blindly let installer replace sibling app databases
+  7. Create ISPConfig remote API user
+  8. Put credentials in IFNOTUS .env:
+       ISPCONFIG_BASE_URL=https://SERVER:8080
+       ISPCONFIG_REMOTE_USER=...
+       ISPCONFIG_REMOTE_PASSWORD=...
+       ISPCONFIG_SERVER_ID=1
+       ISPCONFIG_TEMPLATE_MAP={...plan slug → template id...}
+  9. Keep HOSTING_PROVIDER_DEFAULT=legacy until tenants migrate
+
+AFTER INSTALL (bring world back):
+ 10. Recreate / reattach platform hosts on ISPConfig (or hybrid):
+       ifnotus.space → SPA + proxy API :8010
+       cpanel.ifnotus.space, mail.ifnotus.space
+ 11. Reattach ALL sibling product sites (VoteBridge, QuizSnap, ExamFlow, …)
+       as dedicated sites pointing at existing /srv/apps paths
+ 12. Smoke-test every product URL + IFNOTUS login
+
+MIGRATE TENANTS:
+ 13. For each IFNOTUS tenant: create ISPConfig client + web domain,
+       rsync files (no delete until verified), SSL, update DB:
+         provider=ispconfig, provider_username, provider_user_id, …
+ 14. Wire portal actions (domains/SSL/DB/FTP/usage/suspend) through adapter
+ 15. Set HOSTING_PROVIDER_DEFAULT=ispconfig for NEW sales
+ 16. Build / extend IFNOTUS UI so customers manage hosting without SSH
+       including Flask/Django/React app engine (IFNOTUS feature on top)
+ 17. Staff “Server files” tree: Tenants / Products / Platform
+ 18. After stable: purge OLS leftovers; archive old customer trees
+
+DO NOT:
+  - Install ISPConfig without a maintenance window + backups
+  - Point paying customers at raw ISPConfig UI (keep IFNOTUS UI)
+  - Mix sibling product apps into paid tenant packages unless intentional
+  - Delete /srv/apps product folders or tenant trees until verified
+
+
+--------------------------------------------------------------------------------
+5. TARGET END STATE (ONE PICTURE)
+--------------------------------------------------------------------------------
+
+  Customer uses IFNOTUS UI only
+        ↓
+  IFNOTUS API (billing + business rules + app engine UX)
+        ↓
+  HostingProvider → ISPConfig adapter
+        ↓
+  ISPConfig 3 manages web/DNS/mail/DB/FTP/SSL under the hood
+        ↓
+  Tenants isolated; your products (ExamFlow, QuizSnap, …) still separate
+
+
+--------------------------------------------------------------------------------
+6. KEY DOCS / CODE PATHS
+--------------------------------------------------------------------------------
+
+  docs/ISPCONFIG_ENGINE_ROADMAP.md          ← active roadmap
+  docs/OLSPANEL_ENGINE_ROADMAP.md           ← superseded
+  backend/app/services/hosting_provider/    ← engine interface + providers
+  backend/app/integrations/ispconfig/       ← ISPConfig remote client
+  backend/app/integrations/olspanel/        ← parked
+  /srv/backups/ols-cutover-20260827/        ← backups on VPS
+
+
+--------------------------------------------------------------------------------
+7. ONE-LINE STATUS
+--------------------------------------------------------------------------------
+
+IFNOTUS product + billing + UI are live on nginx/legacy.
+ISPConfig installed + remote API wired; Phase G client coverage done.
+Phase H first test tenant PARTIAL PASS.
+Phase J resource enforcement PARTIAL PASS — truthful status model in API/UI;
+OS quota + slice activation on VPS still required (run phase_j script as root).
+Default provider still legacy. Next = Phase K domain architecture.
+
+================================================================================
+END
+================================================================================

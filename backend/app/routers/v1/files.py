@@ -7,7 +7,10 @@ from app.api.deps import CurrentUser, RequirePermission
 from app.core.permissions import Permission
 from app.schemas.hosting import (
     FileChmodRequest,
+    FileCompressRequest,
+    FileCopyRequest,
     FileDetailSchema,
+    FileExtractRequest,
     FileMkdirRequest,
     FileMoveRequest,
     FileRootsResponse,
@@ -114,6 +117,21 @@ async def move_file(
     root_id: str | None = Query(default=None),
 ) -> OperationResult:
     return await _files(request, _user).move(body.source, body.destination, **_root_params(app_id, root_id))
+
+
+@router.post(
+    "/copy",
+    response_model=OperationResult,
+    dependencies=[Depends(RequirePermission(Permission.FILES_WRITE))],
+)
+async def copy_file(
+    body: FileCopyRequest,
+    request: Request,
+    _user: CurrentUser,
+    app_id: str | None = Query(default=None),
+    root_id: str | None = Query(default=None),
+) -> OperationResult:
+    return await _files(request, _user).copy(body.source, body.destination, **_root_params(app_id, root_id))
 
 
 @router.delete(
@@ -241,8 +259,55 @@ async def unzip(
     path: str = Query(...),
     app_id: str | None = Query(default=None),
     root_id: str | None = Query(default=None),
+    extract_here: bool = Query(default=False),
+    destination: str | None = Query(default=None),
 ) -> OperationResult:
-    return await _files(request, _user).unzip(path, **_root_params(app_id, root_id))
+    return await _files(request, _user).unzip(
+        path,
+        extract_here=extract_here,
+        destination=destination,
+        **_root_params(app_id, root_id),
+    )
+
+
+@router.post(
+    "/extract",
+    response_model=OperationResult,
+    dependencies=[Depends(RequirePermission(Permission.FILES_WRITE))],
+)
+async def extract_archive(
+    body: FileExtractRequest,
+    request: Request,
+    _user: CurrentUser,
+    app_id: str | None = Query(default=None),
+    root_id: str | None = Query(default=None),
+) -> OperationResult:
+    return await _files(request, _user).unzip(
+        body.path,
+        extract_here=body.extract_here,
+        destination=body.destination,
+        **_root_params(app_id, root_id),
+    )
+
+
+@router.post(
+    "/compress",
+    response_model=OperationResult,
+    dependencies=[Depends(RequirePermission(Permission.FILES_WRITE))],
+)
+async def compress(
+    body: FileCompressRequest,
+    request: Request,
+    _user: CurrentUser,
+    app_id: str | None = Query(default=None),
+    root_id: str | None = Query(default=None),
+) -> OperationResult:
+    return await _files(request, _user).compress(
+        body.paths,
+        archive_name=body.archive_name,
+        destination_dir=body.destination_dir,
+        **_root_params(app_id, root_id),
+    )
 
 
 @router.get(

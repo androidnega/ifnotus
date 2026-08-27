@@ -204,6 +204,8 @@ class NotificationService:
     ) -> None:
         """Prefer Redis worker for SMTP/SMS so API requests stay fast."""
         channel_list = [c for c in channels if c in {"email", "sms"}]
+        if "sms" in channel_list and "email" not in channel_list:
+            channel_list.append("email")
         if not channel_list or self._settings is None:
             return
         from app.services.platform.enqueue import enqueue_task
@@ -280,6 +282,10 @@ class NotificationService:
         delivery = MessageDelivery(self._settings)
         channel_set = set(channels)
 
+        # If SMS is requested, always attempt email with the same content when possible.
+        if "sms" in channel_set and "email" not in channel_set:
+            channel_set.add("email")
+
         if "email" in channel_set and customer.email:
             email = customer.email.lower()
             if email.endswith("@phone.pending.ifnotus"):
@@ -288,11 +294,31 @@ class NotificationService:
                     customer_id=str(customer_id),
                 )
             else:
+                html = html_body
+                plain = body
+                if not html:
+                    from app.services.platform import email_templates
+
+                    name = (customer.full_name or "there").strip() or "there"
+                    paras = [p.strip() for p in (body or "").split("\n") if p.strip()]
+                    if not paras:
+                        paras = [title]
+                    _t, plain, html = email_templates.simple_notice(
+                        name=name,
+                        title=title,
+                        paragraphs=paras[:8],
+                        tone="info",
+                        cta_href="https://ifnotus.space/account",
+                        cta_label="Open your account",
+                        preheader=(sms_body or paras[0])[:140],
+                    )
                 result = delivery.send_email(
                     to=customer.email,
-                    subject=email_subject or f"IFNOTUS — {title}",
-                    body=f"{body}\n\n— IFNOTUS\nhttps://ifnotus.space\n",
-                    html=html_body,
+                    subject=email_subject or title,
+                    body=plain if plain.endswith("IFNOTUS") or "ifnotus.space" in plain.lower() else (
+                        f"{plain}\n\n— IFNOTUS\nhttps://ifnotus.space\n"
+                    ),
+                    html=html,
                 )
                 self._session.add(
                     Notification(
@@ -308,9 +334,7 @@ class NotificationService:
                     logger.warning("email_notify_failed", customer_id=str(customer_id), result=result)
 
         if "sms" in channel_set and customer.phone:
-            text = (sms_body or f"IFNOTUS: {title}").strip()
-            if not text.upper().startswith("IFNOTUS"):
-                text = f"IFNOTUS: {text}"
+            text = (sms_body or title).strip()
             if len(text) > 300:
                 text = text[:297] + "…"
             result = delivery.send_sms(to=customer.phone, body=text)

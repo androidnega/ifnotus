@@ -64,7 +64,7 @@ function formatBytes(n: number) {
 }
 
 function backToFiles() {
-  const href = `/account/files?env=${encodeURIComponent(envId.value)}&path=${encodeURIComponent(targetPath.value || '.')}`
+  const href = `/hosting/${encodeURIComponent(envId.value)}/files?path=${encodeURIComponent(targetPath.value || '.')}`
   window.location.href = href
 }
 </script>

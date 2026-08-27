@@ -1,0 +1,58 @@
+================================================================================
+PHASE G — ISPConfig client coverage REPORT
+Date: 2026-08-27
+Result: PASS
+================================================================================
+
+SCOPE
+  Implement IFNOTUS-needed ISPConfig adapter methods with typed schemas and
+  customer-safe error normalization. No real tenant migration (Phase H+).
+
+DELIVERED
+  1) Client expansion — backend/app/integrations/ispconfig/client.py
+     - client: add/get/update/delete/change_password/delete_everything
+     - websites: add/update/delete/get/list + subdomain/alias
+     - databases: user add/delete + database add/get/delete/list
+     - FTP / shell users
+     - cron add/get/delete
+     - quota + trafficquota
+     - mail domain/mailbox (client methods ready; capability gated)
+     - DNS zone + A record (client methods ready; capability gated)
+
+  2) Typed schemas — backend/app/schemas/ispconfig_provider.py
+     IspClientCreateParams, IspWebsiteCreateParams, subdomain/alias,
+     DB user/DB, FTP, shell, cron, SSL enable, IspProviderResult
+
+  3) Error normalization — backend/app/integrations/ispconfig/errors.py
+     Maps ISPConfigAPIError → AppException codes:
+       provider_resource_not_found / provider_conflict /
+       provider_validation_error / provider_permission_denied /
+       provider_not_configured / provider_operation_failed
+     Never returns raw SQL/PHP to customers.
+     Server logs keep truncated provider_message only.
+
+  4) Provider — backend/app/services/hosting_provider/ispconfig_provider.py
+     Wired create/suspend/unsuspend/delete, update_package, get_usage,
+     websites (+ subdomain/alias helpers), SSL via domain_id,
+     databases (user+db), FTP/shell, cron, mail/dns wrappers (capability-gated).
+
+  5) Capabilities — FTP, SFTP, SSL, CRON added for ispconfig.
+     MAIL/DNS remain off until remote ACL grants those functions
+     (Phase F user ifnotus_api intentionally least-privilege).
+
+TESTS
+  pytest tests/unit/test_ispconfig_phase_g.py tests/unit/test_hosting_provider.py
+  → 17 passed
+
+DEPLOY
+  Phase G modules copied to /srv/apps/ifnotus/backend and ifnotus-api restarted.
+
+STOP — do not create the first ISPConfig test tenant until Phase H is requested.
+
+NEXT
+  Phase H — non-paying internal test tenant (isp-test.ifnotus.space) full
+  create → SSL → DB → FTP → suspend/unsuspend → delete cycle.
+
+================================================================================
+END REPORT
+================================================================================

@@ -9,14 +9,14 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.exceptions import AuthenticationError, ConflictError, NotFoundError
 from app.core.permissions import Role
 from app.core.security import hash_password, verify_password
-from app.models.platform import AiCreditAccount, Customer, PlatformAuditLog
+from app.models.platform import AiCreditAccount, Customer, CustomerEnvironment, PlatformAuditLog
 from app.models.user import User
 from app.schemas.platform import (
     CustomerCompleteProfileRequest,
@@ -53,6 +53,22 @@ class CustomerService:
 
             raise ValidationError("Enter a valid mobile number.")
         return phone
+
+    async def _email_for_phone(self, phone: str) -> str | None:
+        """Return a real customer email for OTP mirroring, if one exists."""
+        try:
+            result = await self._session.execute(
+                select(Customer).where(Customer.phone == phone).limit(1)
+            )
+            customer = result.scalar_one_or_none()
+        except Exception:  # noqa: BLE001
+            return None
+        if customer is None or not customer.email:
+            return None
+        email = customer.email.strip().lower()
+        if not email or email.endswith(f"@{PENDING_EMAIL_DOMAIN}"):
+            return None
+        return customer.email.strip()
 
     @staticmethod
     def _is_pending_email(email: str | None) -> bool:
@@ -172,7 +188,6 @@ class CustomerService:
     async def request_phone_otp(self, body: CustomerPhoneOtpRequest) -> CustomerPhoneOtpRequestResponse:
         from app.core.exceptions import AppException, ValidationError
         from app.services.platform import phone_otp
-        from app.services.platform.delivery import MessageDelivery
 
         phone = self.normalize_phone(body.phone)
         # Resend / request cooldown by phone (and production fails closed without Redis).
@@ -184,14 +199,100 @@ class CustomerService:
             raise
 
         challenge = await phone_otp.create_challenge(phone, settings=self._settings)
-        sms_body = f"IFNOTUS code: {challenge.code}. Valid for {phone_otp.OTP_TTL_MINUTES} minutes."
-        delivery = MessageDelivery(self._settings).send_sms(to=phone, body=sms_body)
-        sms_sent = bool(delivery.get("ok"))
         from app.core.dev_mode import dev_show_otp_code
+        from app.core.logging import get_logger
+        from app.services.platform import email_templates
+        from app.services.platform.delivery import MessageDelivery
+        import asyncio
 
+        logger = get_logger(__name__)
         show_debug = dev_show_otp_code(self._settings)
-        if sms_sent:
-            message = "We sent a code by SMS."
+        sms_debug = bool(getattr(self._settings, "sms_debug_mode", False))
+        existing = await self._find_by_phone(phone)
+        known_account = existing is not None
+        sms_body = (
+            f"Your code is {challenge.code}. Valid for {phone_otp.OTP_TTL_MINUTES} minutes."
+        )
+        title, text, html = email_templates.security_code(
+            title="Your IFNOTUS sign-in code",
+            code=challenge.code,
+            minutes=phone_otp.OTP_TTL_MINUTES,
+            context="Use this code to continue signing in to IFNOTUS.",
+            recipient_hint=f"Sent for {phone}.",
+        )
+        email_target = await self._email_for_phone(phone)
+        delivery = MessageDelivery(self._settings)
+
+        if sms_debug:
+            # Debug mode: skip provider send so signup/login works without SMS.
+            return CustomerPhoneOtpRequestResponse(
+                challenge_id=challenge.challenge_id,
+                phone=phone,
+                message="SMS debug mode — enter the code shown on this page.",
+                sms_sent=False,
+                debug_code=challenge.code if show_debug else None,
+            )
+
+        # New numbers (not in DB): show the code on-screen — do not claim SMS was sent.
+        if not known_account:
+            logger.info("otp_on_screen_for_new_phone", phone=phone)
+            return CustomerPhoneOtpRequestResponse(
+                challenge_id=challenge.challenge_id,
+                phone=phone,
+                message=(
+                    "This number is not linked to an account yet. "
+                    "Enter the code shown below to continue."
+                ),
+                sms_sent=False,
+                debug_code=challenge.code,
+            )
+
+        # Known account: deliver OTP by SMS (and email mirror when available).
+        sms_sent = False
+        if delivery.sms_enabled:
+            try:
+                result = await asyncio.to_thread(delivery.send_sms, to=phone, body=sms_body)
+                sms_sent = bool(result.get("ok"))
+                if sms_sent:
+                    logger.info(
+                        "otp_sms_ok",
+                        phone=phone,
+                        provider=result.get("provider"),
+                        status_code=result.get("status_code"),
+                        response=(result.get("response") or "")[:240],
+                    )
+                else:
+                    logger.warning("otp_sms_failed", phone=phone, result=result)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("otp_sms_error", phone=phone, error=str(exc))
+
+        email_queued = bool(email_target and delivery.email_enabled)
+
+        def _deliver_email() -> None:
+            if not (email_queued and email_target):
+                return
+            try:
+                mail = delivery.send_email(
+                    to=email_target, subject=title, body=text, html=html
+                )
+                if not mail.get("ok"):
+                    logger.warning("otp_email_bg_failed", to=email_target, result=mail)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("otp_email_bg_error", to=email_target, error=str(exc))
+
+        if email_queued:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.run_in_executor(None, _deliver_email)
+            except RuntimeError:
+                _deliver_email()
+
+        if sms_sent and email_queued:
+            message = "We sent a code by SMS and email. Use the newest message only."
+        elif sms_sent:
+            message = "We sent a code by SMS. Use the newest message only."
+        elif email_queued:
+            message = "We sent a code by email."
         elif show_debug:
             message = "SMS is not configured yet — use the code shown on this page."
         else:
@@ -199,6 +300,7 @@ class CustomerService:
                 "We could not deliver the SMS right now. Wait a minute and try again, "
                 "or contact support if it keeps failing."
             )
+
         return CustomerPhoneOtpRequestResponse(
             challenge_id=challenge.challenge_id,
             phone=phone,
@@ -482,6 +584,36 @@ class CustomerService:
             raise NotFoundError("No customer profile for this account.")
         return customer
 
+    async def _resolve_user_by_identity(self, identity: str) -> User | None:
+        """Resolve customer login by email, account username, or hosting_name."""
+        key = identity.lower().strip()
+        if not key:
+            return None
+        result = await self._session.execute(
+            select(User).where(User.email == key, User.deleted_at.is_(None))
+        )
+        user = result.scalar_one_or_none()
+        if user is not None:
+            return user
+        result = await self._session.execute(
+            select(User).where(func.lower(User.username) == key, User.deleted_at.is_(None))
+        )
+        user = result.scalar_one_or_none()
+        if user is not None:
+            return user
+        env_result = await self._session.execute(
+            select(CustomerEnvironment).where(
+                func.lower(CustomerEnvironment.hosting_name) == key,
+            )
+        )
+        env = env_result.scalar_one_or_none()
+        if env is None:
+            return None
+        customer = await self._session.get(Customer, env.customer_id)
+        if customer is None or not customer.user_id:
+            return None
+        return await self._session.get(User, customer.user_id)
+
     async def authenticate_password(
         self,
         email: str,
@@ -489,10 +621,8 @@ class CustomerService:
         *,
         ip_address: str | None = None,
     ) -> tuple[User, Customer]:
-        identity = email.lower().strip()
-        result = await self._session.execute(select(User).where(User.email == identity, User.deleted_at.is_(None)))
-        user = result.scalar_one_or_none()
-        if user is None or not verify_password(password, user.hashed_password):
+        user = await self._resolve_user_by_identity(email)
+        if user is None or user.deleted_at is not None or not verify_password(password, user.hashed_password):
             raise AuthenticationError("Invalid credentials.")
         if Role.CUSTOMER.value not in (user.roles or []) and not user.is_superuser:
             # Staff can still have a customer profile later; for portal login require customer role
@@ -631,10 +761,26 @@ class CustomerService:
         return UUID(customer_id_s), code
 
     async def _try_send_verify_email(self, email: str, code: str) -> None:
+        from app.services.platform import email_templates
         from app.services.platform.delivery import MessageDelivery
+        import asyncio
 
-        MessageDelivery(self._settings).send_email(
-            to=email,
-            subject="Verify your IFNOTUS account",
-            body=f"Your IFNOTUS verification code is: {code}\n\nValid for 24 hours.",
+        title, text, html = email_templates.security_code(
+            title="Verify your IFNOTUS email",
+            code=code,
+            minutes=24 * 60,
+            context="Enter this code in your IFNOTUS account to confirm your email address.",
+            validity_label="24 hours",
         )
+        # Prefer a friendlier subject for 24h email verification.
+        try:
+            await asyncio.to_thread(
+                MessageDelivery(self._settings).send_email,
+                to=email,
+                subject=title,
+                body=text,
+                html=html,
+            )
+        except Exception:  # noqa: BLE001
+            # Best-effort — never block signup/profile on SMTP failures.
+            return

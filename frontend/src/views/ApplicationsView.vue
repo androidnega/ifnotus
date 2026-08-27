@@ -5,6 +5,9 @@ import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Card from '@/components/ui/Card.vue'
 import Skeleton from '@/components/ui/Skeleton.vue'
+import UiAlert from '@/components/ui/UiAlert.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
+import UiTabBar from '@/components/ui/UiTabBar.vue'
 import { applicationsApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
 import type { ApplicationSummary, ClearablePath } from '@/types/dashboard'
@@ -27,6 +30,13 @@ const reconciliationVariant = (state: string) => {
 }
 
 const registryIssueApps = computed(() => apps.value.filter((app) => app.registry_valid === false))
+
+const filterTabs = computed(() => [
+  { id: 'all', label: 'All' },
+  { id: 'registered', label: 'Registered' },
+  { id: 'discovered', label: 'Discovered' },
+  { id: 'issues', label: `Issues (${issuesCount.value})` },
+])
 
 const filteredRegistered = computed(() => {
   if (filter.value === 'discovered') return []
@@ -120,43 +130,32 @@ onMounted(load)
 <template>
   <DashboardLayout @refresh="load">
     <div class="animate-fade-in space-y-5">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 class="text-lg font-semibold text-slate-900 dark:text-white">Applications</h1>
-          <p class="text-sm text-surface-muted">
-            Live RAM/CPU per app, plus temporary files that can be cleared
-          </p>
-        </div>
-        <div class="flex flex-wrap gap-2">
+      <UiPageHeader
+        title="Apps"
+        lede="Every hosted site and subdomain on this server — live RAM/CPU, plus clearable temp files"
+      >
+        <template #actions>
           <button
             type="button"
-            class="rounded-lg border border-surface-border px-3 py-1.5 text-xs hover:bg-slate-50 disabled:opacity-50 dark:hover:bg-slate-800"
+            class="ds-btn-ghost text-xs"
             :disabled="!!actionBusy"
             @click="clearAllCaches"
           >
             {{ actionBusy === 'cache-all' ? 'Clearing…' : 'Clear all temp/caches' }}
           </button>
-          <button
-            v-for="tab in [
-              { id: 'all', label: 'All' },
-              { id: 'registered', label: 'Registered' },
-              { id: 'discovered', label: 'Discovered' },
-              { id: 'issues', label: `Issues (${issuesCount})` },
-            ]"
-            :key="tab.id"
-            type="button"
-            class="rounded-lg border px-3 py-1.5 text-xs"
-            :class="
-              filter === tab.id
-                ? 'border-brand-500 bg-brand-500/10 text-brand-700'
-                : 'border-surface-border text-surface-muted'
-            "
-            @click="filter = tab.id as typeof filter"
-          >
-            {{ tab.label }}
-          </button>
-        </div>
-      </div>
+        </template>
+      </UiPageHeader>
+
+      <UiTabBar
+        :model-value="filter"
+        :items="filterTabs"
+        aria-label="Application filters"
+        @update:model-value="(id) => (filter = id as typeof filter)"
+      />
+
+      <UiAlert v-if="actionMessage" :tone="actionMessage.ok ? 'ok' : 'err'">
+        {{ actionMessage.text }}
+      </UiAlert>
 
       <div
         v-if="!loading && apps.length"
@@ -182,16 +181,7 @@ onMounted(load)
         </Card>
       </div>
 
-      <p
-        v-if="actionMessage"
-        class="rounded-lg px-3 py-2 text-sm"
-        :class="actionMessage.ok ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-red-500/10 text-red-700 dark:text-red-300'"
-      >
-        {{ actionMessage.text }}
-      </p>
-      <p v-if="loadError" class="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300">
-        {{ loadError }}
-      </p>
+      <UiAlert v-if="loadError" tone="err">{{ loadError }}</UiAlert>
 
       <div v-if="loading" class="space-y-3">
         <Skeleton v-for="n in 4" :key="n" height="3.5rem" width="100%" />

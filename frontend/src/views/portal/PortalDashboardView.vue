@@ -5,13 +5,15 @@ import { catalogApi, customersApi } from '@/api'
 import PortalAccountNav from '@/components/portal/PortalAccountNav.vue'
 import PortalBillingPanel from '@/components/portal/PortalBillingPanel.vue'
 import PortalOverviewPanel from '@/components/portal/PortalOverviewPanel.vue'
+import PortalProfileStageGate from '@/components/portal/PortalProfileStageGate.vue'
 import PortalShell from '@/components/portal/PortalShell.vue'
-import PortalSitePanel from '@/components/portal/PortalSitePanel.vue'
 import PortalSupportView from '@/views/portal/PortalSupportView.vue'
-import type { CustomerDashboard, HostingPlan } from '@/types/platform'
+import type { CustomerDashboard, CustomerProfile, HostingPlan } from '@/types/platform'
 import { planAccentFromPrice } from '@/lib/theme'
 import { useSiteTheme } from '@/composables/useSiteTheme'
 import { usePortalSiteTools } from '@/composables/usePortalSiteTools'
+import { nextProfileStage } from '@/lib/portalProfileStages'
+import { openHostingFromAccount } from '@/lib/hostingDeepLink'
 
 const PLANS_CACHE_KEY = 'ifnotus.catalog.plans'
 
@@ -30,6 +32,8 @@ const router = useRouter()
 const route = useRoute()
 const { planColors } = useSiteTheme()
 const dash = ref<CustomerDashboard | null>(null)
+const profile = ref<CustomerProfile | null>(null)
+const showStageGate = ref(false)
 const plans = ref<HostingPlan[]>(readCachedPlans())
 const loading = ref(true)
 const error = ref('')
@@ -37,106 +41,18 @@ const selectedPlanId = ref(localStorage.getItem('ifnotus_selected_plan') || '')
 const billingMsg = ref('')
 const changePlanId = ref('')
 const topUpCredits = ref(20)
-const panel = ref<'home' | 'site' | 'billing' | 'support'>('home')
-const siteInitialTab = ref<'files' | 'stack' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail' | ''>('')
+const panel = ref<'home' | 'billing' | 'support'>('home')
 
 const {
   activeEnv,
-  dbCanWrite,
-  filePath,
-  fileEntries,
-  fileContent,
-  editingFile,
-  fileMsg,
-  dbInfo,
-  dbCreds,
-  dbSchema,
-  dbRows,
-  dbStudioBusy,
-  dbStudioMsg,
-  dbSelectedTable,
-  dbRowOffset,
-  dbSql,
-  dbList,
-  selectedDbId,
-  dbBusy,
-  dbActionMsg,
-  newDbEngine,
-  newDbName,
-  ftpInfo,
-  ftpCreds,
-  sftpCreds,
-  sftpInfo,
-  sftpKeyInput,
-  sftpKeyName,
-  sshCreds,
   usageInfo,
-  logEntries,
-  logMsg,
-  logBusy,
   usageStatus,
   usagePct,
+  usageSnapshot,
   healthInfo,
-  dnsInfo,
-  dnsData,
-  sslMsg,
-  backups,
-  backupMsg,
-  stackMsg,
-  stackBusy,
-  stackProgress,
-  stackOutcome,
-  selectedStack,
-  stacks,
-  currentStack,
-  cronJobs,
-  cronSchedule,
-  cronCommand,
-  cronMsg,
-  cronBusy,
-  cronLimits,
   setActiveEnvId,
   selectEnv,
   hydrateActiveEnv,
-  loadFiles,
-  openEntry,
-  goUp,
-  saveFile,
-  loadDb,
-  loadDbList,
-  loadDbSchema,
-  loadDbRows,
-  runDbQuery,
-  createDatabase,
-  deleteDatabase,
-  resetDbPassword,
-  selectDatabase,
-  loadFtp,
-  loadSftp,
-  ensureSftp,
-  addSftpKey,
-  removeSftpKey,
-  setSftpKeyInput,
-  setSftpKeyName,
-  loadSsh,
-  ensureSsh,
-  ensureFtp,
-  repairFs,
-  loadDns,
-  ensureDns,
-  attachCustomDomain,
-  unassignCustomDomain,
-  issueSsl,
-  loadBackups,
-  createBackup,
-  restoreBackup,
-  installStack,
-  clearStack,
-  loadLogs,
-  addCron,
-  toggleCron,
-  runCron,
-  deleteCron,
 } = usePortalSiteTools(dash)
 
 const selectedPlan = computed(() => plans.value.find((p) => p.id === selectedPlanId.value) || plans.value[0])
@@ -159,7 +75,17 @@ const packageAccent = computed(() => {
   return planAccentFromPrice(Number(plan.price_monthly), planColors.value, plan.features)
 })
 
-const firstName = computed(() => dash.value?.customer.full_name?.split(' ')[0] || 'there')
+const firstName = computed(
+  () =>
+    profile.value?.first_name ||
+    dash.value?.customer.full_name?.split(' ')[0] ||
+    'there',
+)
+
+const stageMode = computed(() => {
+  if (!profile.value) return 'gate' as const
+  return profile.value.can_order || profile.value.profile_complete ? ('card' as const) : ('gate' as const)
+})
 
 onMounted(() => {
   void loadAccount()
@@ -170,22 +96,16 @@ async function loadAccount() {
   error.value = ''
   try {
     const me = await customersApi.me()
-    if (!me.data.profile_complete) {
-      await router.replace({ name: 'portal-signup', query: { complete: '1' } })
+    profile.value = me.data
+    const needsStage = Boolean(nextProfileStage(me.data, { includeOptional: true }))
+    showStageGate.value = needsStage
+    const requiredDone = Boolean(me.data.can_order || me.data.profile_complete)
+    if (!requiredDone) {
+      // Overlay only — account loads after required stages finish.
+      loading.value = false
       return
     }
-    const { data } = await customersApi.dashboard()
-    dash.value = data
-    const envFromQuery = typeof route.query.env === 'string' ? route.query.env : ''
-    if (envFromQuery && data.environments.some((e) => e.id === envFromQuery)) {
-      setActiveEnvId(envFromQuery)
-    } else if (data.environments[0]) {
-      setActiveEnvId(data.environments[0].id)
-    }
-    if (data.plans?.length) {
-      plans.value = data.plans
-      if (!selectedPlanId.value) selectedPlanId.value = data.plans[0].id
-    }
+    await loadDashboard()
   } catch (e: unknown) {
     const err = e as { response?: { status?: number; data?: { error?: { message?: string } } } }
     if (err.response?.status === 401 || err.response?.status === 403) {
@@ -197,18 +117,33 @@ async function loadAccount() {
   } finally {
     loading.value = false
   }
+}
+
+async function loadDashboard() {
+  const { data } = await customersApi.dashboard()
+  dash.value = data
+  const envFromQuery = typeof route.query.env === 'string' ? route.query.env : ''
+  if (envFromQuery && data.environments.some((e) => e.id === envFromQuery)) {
+    setActiveEnvId(envFromQuery)
+  } else if (data.environments[0]) {
+    setActiveEnvId(data.environments[0].id)
+  }
+  if (data.plans?.length) {
+    plans.value = data.plans
+    if (!selectedPlanId.value) selectedPlanId.value = data.plans[0].id
+  }
   void hydrateActiveEnv()
   void catalogApi
     .plans()
-    .then(({ data }) => {
-      if (!data.items?.length) return
-      const byId = new Map<string, (typeof data.items)[0]>()
-      for (const p of data.items) byId.set(p.id, p)
+    .then(({ data: catalog }) => {
+      if (!catalog.items?.length) return
+      const byId = new Map<string, (typeof catalog.items)[0]>()
+      for (const p of catalog.items) byId.set(p.id, p)
       for (const p of plans.value) byId.set(p.id, p)
       plans.value = [...byId.values()]
-      if (!selectedPlanId.value && data.items[0]) selectedPlanId.value = data.items[0].id
+      if (!selectedPlanId.value && catalog.items[0]) selectedPlanId.value = catalog.items[0].id
       try {
-        sessionStorage.setItem(PLANS_CACHE_KEY, JSON.stringify(data.items))
+        sessionStorage.setItem(PLANS_CACHE_KEY, JSON.stringify(catalog.items))
       } catch {
         /* ignore quota */
       }
@@ -216,6 +151,37 @@ async function loadAccount() {
     .catch(() => {
       /* overview still works from the cached matrix */
     })
+}
+
+function onProfileUpdated(next: CustomerProfile) {
+  profile.value = next
+  showStageGate.value = Boolean(nextProfileStage(next, { includeOptional: true }))
+  // Once required fields are done, hydrate the workspace under the remaining optional prompts.
+  if ((next.can_order || next.profile_complete) && !dash.value) {
+    void loadDashboard().catch(() => {
+      /* gate still works */
+    })
+  }
+}
+
+async function onProfileComplete(next: CustomerProfile) {
+  profile.value = next
+  showStageGate.value = false
+  if (dash.value) return
+  loading.value = true
+  try {
+    await loadDashboard()
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { error?: { message?: string } } } }
+    error.value = err.response?.data?.error?.message ?? 'Failed to load dashboard.'
+  } finally {
+    loading.value = false
+  }
+}
+
+function onStageDismiss() {
+  showStageGate.value = false
+  if (!dash.value && profile.value) void onProfileComplete(profile.value)
 }
 
 async function refreshDash() {
@@ -295,45 +261,38 @@ async function buyCredits() {
 }
 
 function openInvoice(id: string) {
-  router.push({ name: 'portal-invoice', params: { id } })
+  if (!id) {
+    billingMsg.value = 'Invoice not found.'
+    return
+  }
+  void router.push(`/account/invoice/${id}`)
 }
 
 function onOpenPanel(next: 'site' | 'billing' | 'ai' | 'support') {
-  if (next === 'ai') {
-    if (activeEnv.value) {
-      window.open(`/account/files?env=${encodeURIComponent(activeEnv.value.id)}`, '_blank')
-    } else {
-      goNav('site', 'files')
+  if (next === 'ai' || next === 'site') {
+    goToHosting(next === 'ai' ? 'apps' : 'overview')
+      return
     }
-    return
-  }
   goNav(next)
 }
 
 function onOpenSiteTab(tab: string) {
-  goNav('site', tab)
+  goToHosting(tab)
+}
+
+function goToHosting(tab?: string) {
+  const domain = activeEnv.value?.domain
+  if (!domain) {
+    panel.value = 'billing'
+    void router.replace({ name: 'portal-dashboard', query: { panel: 'billing' } })
+    return
+  }
+  openHostingFromAccount(domain, tab)
 }
 
 function goNav(next: 'home' | 'billing' | 'ai' | 'support' | 'site', tab?: string) {
-  if (next === 'ai') {
-    onOpenPanel('ai')
-    return
-  }
-  if (next === 'site') {
-    const t = tab || 'stack'
-    if (
-      t === 'files' ||
-      t === 'stack' ||
-      t === 'cron' ||
-      t === 'database' ||
-      t === 'protect' ||
-      t === 'ftp' ||
-      t === 'logs'
-    ) {
-      siteInitialTab.value = t
-    }
-    panel.value = 'site'
-    void router.replace({ name: 'portal-dashboard', query: { panel: 'site', tab: t } })
+  if (next === 'ai' || next === 'site') {
+    goToHosting(tab || (next === 'ai' ? 'apps' : 'overview'))
     return
   }
   panel.value = next
@@ -345,26 +304,21 @@ function goNav(next: 'home' | 'billing' | 'ai' | 'support' | 'site', tab?: strin
 }
 
 watch(
-  () => [route.name, route.query.panel, route.query.tab, route.query.env] as const,
+  () => [route.name, route.query.panel, route.query.tab, route.query.env, activeEnv.value?.id] as const,
   ([name, qPanel, qTab, qEnv]) => {
     if (name !== 'portal-dashboard') return
     if (typeof qEnv === 'string' && dash.value?.environments.some((e) => e.id === qEnv)) {
       setActiveEnvId(qEnv)
     }
     let p = typeof qPanel === 'string' ? qPanel : 'home'
-    if (p === 'ai') {
-      p = 'site'
-      void router.replace({ name: 'portal-dashboard', query: { panel: 'site', tab: 'files' } })
+    // Phase H: technical tools live only in Hosting Panel.
+    if (p === 'site' || p === 'ai') {
+      const tab = typeof qTab === 'string' ? qTab : p === 'ai' ? 'apps' : 'overview'
+      goToHosting(tab)
+      return
     }
-    if (p === 'site' && !activeEnv.value) {
-      p = 'home'
-      void router.replace({ name: 'portal-dashboard' })
-    }
-    if (p === 'billing' || p === 'support' || p === 'site' || p === 'home') {
+    if (p === 'billing' || p === 'support' || p === 'home') {
       panel.value = p
-    }
-    if (typeof qTab === 'string' && qTab) {
-      siteInitialTab.value = qTab as typeof siteInitialTab.value
     }
   },
   { immediate: true },
@@ -372,14 +326,31 @@ watch(
 </script>
 
 <template>
-  <PortalShell mode="app" :email="dash?.customer.email" :display-name="dash?.customer.full_name" :plan-accent="packageAccent">
+  <PortalShell
+    mode="app"
+    :email="profile?.email?.includes('@phone.pending.ifnotus') ? undefined : (profile?.email || dash?.customer.email)"
+    :display-name="profile?.full_name || dash?.customer.full_name"
+    :plan-accent="packageAccent"
+    :support-count="dash?.unread_notifications"
+  >
     <template #sidebar>
       <PortalAccountNav
         :has-env="!!activeEnv"
         :environment-id="activeEnv?.id"
+        :domain="activeEnv?.domain"
         :active="panel"
       />
     </template>
+
+    <PortalProfileStageGate
+      v-if="showStageGate && profile"
+      :profile="profile"
+      :mode="stageMode"
+      :include-optional="true"
+      @updated="onProfileUpdated"
+      @complete="onProfileComplete"
+      @dismiss="onStageDismiss"
+    />
 
     <p v-if="loading" class="muted">Loading your account…</p>
     <div v-else-if="error" class="p-card account-error">
@@ -387,6 +358,17 @@ watch(
       <h2>Couldn’t open your workspace</h2>
       <p class="lede">{{ error }}</p>
       <button type="button" class="nav-cta" @click="loadAccount">Try again</button>
+    </div>
+
+    <div
+      v-else-if="!dash && showStageGate"
+      class="p-card account-error"
+    >
+      <p class="eyebrow">Welcome back</p>
+      <h2>Finish a few details</h2>
+      <p class="lede">
+        We’ll ask for one thing at a time — email and the rest of your account info — then open your workspace.
+      </p>
     </div>
 
     <template v-else-if="dash">
@@ -398,113 +380,12 @@ watch(
         :usage-pct="usagePct"
         :usage-status="usageStatus"
         :usage-info="usageInfo"
+        :usage-snapshot="usageSnapshot"
         :health-info="healthInfo"
         :first-name="firstName"
         @open-panel="onOpenPanel"
         @select-env="selectEnv"
         @open-site-tab="onOpenSiteTab"
-      />
-
-      <PortalSitePanel
-        v-else-if="panel === 'site' && activeEnv"
-        :environments="dash.environments"
-        :active-env="activeEnv"
-        :active-plan="activePlan"
-        :initial-tab="siteInitialTab"
-        :file-path="filePath"
-        :file-entries="fileEntries"
-        :file-content="fileContent"
-        :editing-file="editingFile"
-        :file-msg="fileMsg"
-        :stacks="stacks"
-        v-model:selected-stack="selectedStack"
-        :current-stack="currentStack"
-        :stack-busy="stackBusy"
-        :stack-msg="stackMsg"
-        :stack-progress="stackProgress"
-        :stack-outcome="stackOutcome"
-        :cron-jobs="cronJobs"
-        v-model:cron-schedule="cronSchedule"
-        v-model:cron-command="cronCommand"
-        :cron-busy="cronBusy"
-        :cron-msg="cronMsg"
-        :cron-limits="cronLimits"
-        :db-info="dbInfo"
-        :db-creds="dbCreds"
-        :db-schema="dbSchema"
-        :db-rows="dbRows"
-        :db-studio-busy="dbStudioBusy"
-        :db-studio-msg="dbStudioMsg"
-        :db-selected-table="dbSelectedTable"
-        :db-row-offset="dbRowOffset"
-        :db-sql="dbSql"
-        :db-can-write="dbCanWrite"
-        :db-list="dbList"
-        :selected-db-id="selectedDbId"
-        :db-busy="dbBusy"
-        :db-action-msg="dbActionMsg"
-        :new-db-engine="newDbEngine"
-        :new-db-name="newDbName"
-        :ftp-info="ftpInfo"
-        :ftp-creds="ftpCreds"
-        :sftp-creds="sftpCreds"
-        :sftp-info="sftpInfo"
-        :sftp-key-input="sftpKeyInput"
-        :sftp-key-name="sftpKeyName"
-        :ssh-creds="sshCreds"
-        :dns-info="dnsInfo"
-        :dns-data="dnsData"
-        :ssl-msg="sslMsg"
-        :backups="backups"
-        :backup-msg="backupMsg"
-        :log-entries="logEntries"
-        :log-msg="logMsg"
-        :log-busy="logBusy"
-        @select-env="selectEnv"
-        @load-files="loadFiles"
-        @load-logs="loadLogs"
-        @go-up="goUp"
-        @open-entry="openEntry"
-        @save-file="saveFile"
-        @install-stack="installStack"
-        @clear-stack="clearStack"
-        @add-cron="addCron"
-        @run-cron="runCron"
-        @toggle-cron="toggleCron"
-        @delete-cron="deleteCron"
-        @load-db="loadDb"
-        @load-db-list="loadDbList"
-        @load-db-schema="loadDbSchema"
-        @load-db-rows="loadDbRows"
-        @create-database="createDatabase"
-        @delete-database="deleteDatabase"
-        @reset-db-password="resetDbPassword"
-        @select-database="selectDatabase"
-        @update:new-db-engine="(v) => (newDbEngine = v)"
-        @update:new-db-name="(v) => (newDbName = v)"
-        @run-db-query="runDbQuery"
-        @update-db-sql="(v) => (dbSql = v)"
-        @load-ftp="loadFtp"
-        @ensure-ftp="ensureFtp"
-        @load-sftp="loadSftp"
-        @ensure-sftp="ensureSftp"
-        @add-sftp-key="addSftpKey"
-        @remove-sftp-key="removeSftpKey"
-        @update:sftp-key-input="setSftpKeyInput"
-        @update:sftp-key-name="setSftpKeyName"
-        @load-ssh="loadSsh"
-        @ensure-ssh="ensureSsh"
-        @repair-fs="repairFs"
-        @load-dns="loadDns"
-        @ensure-dns="ensureDns"
-        @attach-custom="attachCustomDomain"
-        @unassign-custom="unassignCustomDomain"
-        @issue-ssl="issueSsl"
-        @load-backups="loadBackups"
-        @create-backup="createBackup"
-        @restore-backup="restoreBackup"
-        @open-support="router.push({ name: 'portal-support' })"
-        @update:file-content="(v) => (fileContent = v)"
       />
 
       <PortalBillingPanel

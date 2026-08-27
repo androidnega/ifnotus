@@ -8,6 +8,8 @@ import { syncSiteDocumentTone } from '@/composables/useSiteTheme'
 
 defineProps<{
   refreshing?: boolean
+  /** Edge-to-edge main content (no outer padding). */
+  flush?: boolean
 }>()
 
 defineEmits<{
@@ -62,8 +64,8 @@ onUnmounted(() => {
         @refresh="$emit('refresh')"
       />
 
-      <main class="control-main min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div class="control-main-inner">
+      <main class="control-main min-h-0 flex-1 overflow-y-auto overscroll-contain" :class="{ 'control-main--flush': flush }">
+        <div class="control-main-inner" :class="{ 'control-main-inner--flush': flush }">
           <slot />
         </div>
       </main>
@@ -100,5 +102,13 @@ onUnmounted(() => {
   .control-main {
     padding: 1.5rem 2.75rem 2.75rem;
   }
+}
+.control-main--flush {
+  padding: 0 !important;
+}
+.control-main-inner--flush {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 </style>

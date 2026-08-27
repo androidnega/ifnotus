@@ -56,10 +56,9 @@ async function changePrivilege(role: string) {
 
 const titles: Record<string, string> = {
   dashboard: 'Dashboard',
-  monitoring: 'Monitoring',
-  applications: 'Websites',
-  'application-detail': 'Website',
-  operations: 'Backups',
+  applications: 'Apps',
+  'application-detail': 'App',
+  operations: 'Operations',
   domains: 'Domains / DNS',
   ssl: 'SSL',
   'mail-admin': 'Email',
@@ -76,18 +75,18 @@ const pageTitle = computed(() => titles[String(route.name)] || 'IFNOTUS')
 
 const palettes = [
   { label: 'Dashboard', to: '/panel', hint: 'overview' },
-  { label: 'Websites', to: '/applications', hint: 'apps' },
+  { label: 'Apps', to: '/applications', hint: 'apps' },
   { label: 'Domains', to: '/domains', hint: 'dns' },
   { label: 'File Manager', to: '/files', hint: 'files' },
   { label: 'Databases', to: '/databases', hint: 'mysql' },
   { label: 'Email', to: '/admin/mail', hint: 'mail' },
   { label: 'SSL', to: '/ssl', hint: 'https' },
-  { label: 'Monitoring', to: '/monitoring', hint: 'cpu' },
-  { label: 'Terminal', to: '/terminal', hint: 'ssh' },
-  { label: 'Security', to: '/security', hint: 'firewall' },
+  { label: 'Operations', to: '/operations', hint: 'backups' },
+  { label: 'Terminal', to: '/terminal', hint: 'commands' },
+  { label: 'Security', to: '/security', hint: 'audit' },
+  { label: 'Host', to: '/servers', hint: 'services' },
   { label: 'Customers', to: '/platform/customers', hint: 'accounts' },
   { label: 'Plans', to: '/platform/plans', hint: 'packages' },
-  { label: 'Capacity', to: '/platform/capacity', hint: 'shared node' },
   { label: 'Support', to: '/support', hint: 'tickets' },
 ]
 
@@ -106,7 +105,7 @@ function goSearch(to: string) {
 async function handleLogout() {
   menuOpen.value = false
   await auth.logout()
-  await router.replace({ name: 'login' })
+  await router.replace({ name: 'admin-login' })
 }
 
 function onDocClick(event: MouseEvent) {
@@ -161,7 +160,7 @@ onUnmounted(() => {
           v-model="search"
           type="search"
           class="h-9 w-full rounded-lg border border-surface-border bg-slate-50 px-3 text-sm outline-none ring-blue-500/30 placeholder:text-surface-muted focus:ring-2 dark:bg-slate-800"
-          placeholder="Search websites, domains, tools…"
+          placeholder="Search apps, domains, tools…"
           @focus="searchOpen = true"
         />
         <kbd class="pointer-events-none absolute right-2 top-1.5 rounded border border-surface-border px-1.5 py-0.5 text-[10px] text-surface-muted">⌘K</kbd>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch, computed } from 'vue'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import { domainsApi, mailApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
 import { usePermissions } from '@/composables/usePermissions'
@@ -199,7 +200,15 @@ async function syncWebmail() {
     const { data } = await mailApi.syncDomains()
     message.value = { type: 'ok', text: data.message || 'Webmail /mail locations synced.' }
   } catch (e) {
-    message.value = { type: 'err', text: getApiErrorMessage(e, 'Webmail sync failed') }
+    const err = e as { response?: { status?: number } }
+    const status = err.response?.status
+    message.value = {
+      type: 'err',
+      text:
+        status === 502 || status === 503
+          ? 'API was restarting (502). Wait a few seconds and try Sync /mail again.'
+          : getApiErrorMessage(e, 'Webmail sync failed'),
+    }
   } finally {
     actionKey.value = null
   }
@@ -439,48 +448,44 @@ onMounted(async () => {
 <template>
   <DashboardLayout @refresh="() => { loadDomains(); loadMail() }">
     <div class="mail">
-      <header class="hero">
-        <div class="hero-copy">
-          <p class="kicker">Shared mail · {{ mailHost }}</p>
-          <div class="title-row">
-            <h1>Mail</h1>
+      <UiPageHeader :eyebrow="`Shared mail · ${mailHost}`" title="Mail">
+        <template #actions>
+          <div class="hero-actions">
             <select v-model="selectedId" class="domain" aria-label="Mail domain">
               <option v-for="d in sortedDomains" :key="d.id" :value="d.id">{{ d.name }}</option>
             </select>
+            <a class="btn primary" :href="webmailUrl" target="_blank" rel="noopener">Roundcube</a>
+            <button
+              v-if="canWrite"
+              type="button"
+              class="btn"
+              :disabled="authBusy"
+              @click="ensureDeliveryAuth"
+            >
+              {{ authBusy ? '…' : 'Recheck DNS' }}
+            </button>
+            <button v-if="canWrite" type="button" class="btn" :disabled="authBusy" @click="syncAllAuth">
+              Sync all
+            </button>
+            <button
+              v-if="canAdmin"
+              type="button"
+              class="btn"
+              :disabled="!!actionKey"
+              @click="syncWebmail"
+            >
+              {{ actionKey === 'webmail' ? '…' : 'Sync /mail' }}
+            </button>
           </div>
-          <div v-if="mailData" class="meta">
-            <span class="stat">{{ mailData.mailboxes.length }} boxes</span>
-            <span class="stat">{{ mailData.aliases.length }} fwd</span>
-            <span class="pill" :class="authStatus?.ready ? 'ok' : 'warn'">
-              {{ authStatus?.ready ? 'DNS ready' : 'DNS needed' }}
-            </span>
-          </div>
+        </template>
+        <div v-if="mailData" class="meta" style="margin-top: 0.65rem">
+          <span class="stat">{{ mailData.mailboxes.length }} boxes</span>
+          <span class="stat">{{ mailData.aliases.length }} fwd</span>
+          <span class="pill" :class="authStatus?.ready ? 'ok' : 'warn'">
+            {{ authStatus?.ready ? 'DNS ready' : 'DNS needed' }}
+          </span>
         </div>
-        <div class="hero-actions">
-          <a class="btn primary" :href="webmailUrl" target="_blank" rel="noopener">Roundcube</a>
-          <button
-            v-if="canWrite"
-            type="button"
-            class="btn"
-            :disabled="authBusy"
-            @click="ensureDeliveryAuth"
-          >
-            {{ authBusy ? '…' : 'Recheck DNS' }}
-          </button>
-          <button v-if="canWrite" type="button" class="btn" :disabled="authBusy" @click="syncAllAuth">
-            Sync all
-          </button>
-          <button
-            v-if="canAdmin"
-            type="button"
-            class="btn"
-            :disabled="!!actionKey"
-            @click="syncWebmail"
-          >
-            {{ actionKey === 'webmail' ? '…' : 'Sync /mail' }}
-          </button>
-        </div>
-      </header>
+      </UiPageHeader>
 
       <p v-if="message" class="flash" :class="message.type">
         {{ message.text }}

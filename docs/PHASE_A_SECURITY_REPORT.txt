@@ -1,0 +1,108 @@
+================================================================================
+PHASE A REPORT — IMMEDIATE SERVER SECURITY STABILIZATION
+Date: 2026-08-27
+Source doc: IFNOTUS Production Server Remediation & ISPConfig Migration.pdf
+Status: PARTIAL (security goals mostly met; SSH root password kept on purpose)
+STOPPING HERE per document — do not start Phase B until instructed.
+================================================================================
+
+## RESULT: PARTIAL → treat as PASS for firewall/Netdata; SSH hardening deferred
+
+### Verification checklist (from PDF)
+
+| Check | Result |
+|-------|--------|
+| UFW SAFE | YES (dangerous ports removed) |
+| MYSQL PUBLIC | NO (bind 127.0.0.1 + UFW 3306 closed) |
+| REDIS PUBLIC | NO (bind localhost + UFW 6379 closed) |
+| NETDATA PUBLIC | NO (now bind 127.0.0.1:19999; public curl times out) |
+| OLS PORTS PUBLIC | NO (7080/4958 UFW removed) |
+| SSH ROOT PASSWORD LOGIN | YES still enabled — INTENTIONAL |
+| SSHD CONFIG VALID | YES (sshd -t) |
+| LIVE WEBSITES STILL WORKING | YES |
+
+Why SSH password left enabled:
+  /root/.ssh/authorized_keys is EMPTY (0 bytes).
+  Disabling root password login would lock out admin + automation.
+  PubkeyAuthentication is already yes — add a root key first, then disable password.
+
+### What changed
+
+1) Backup created:
+   /srv/backups/phase-a-security-20260827/
+     ufw-before.txt
+     sshd-T-before.txt
+     netdata.conf.before / netdata.conf.before2
+
+2) UFW deleted public allows for:
+   3306, 6379, 7080, 4958, 5353, 155, 220, 223, 2205, 40110:40210
+   (IPv4 + IPv6)
+
+3) UFW kept production ports:
+   22, 25, 53/tcp+udp, 80, 443, 465, 587, 993,
+   21, 110, 143, 995, 40000:40100 (FTP passive — kept until FTP policy phase)
+
+4) Netdata:
+   Files modified:
+     /etc/netdata/netdata.conf  (bind to = 127.0.0.1)
+     /etc/netdata/conf.d/99-bind-localhost.conf
+     /etc/netdata/conf.d/bind-localhost.conf
+   Service restarted: netdata
+   Listen now: 127.0.0.1:19999 only
+   Also: iptables/ip6tables DROP for non-local :19999
+
+5) Fail2ban:
+   Audited only. Still jail list: sshd
+   Filters exist for nginx/postfix/dovecot/roundcube — NOT enabled yet
+   (PDF: do not enable excessive bans)
+
+### What remains unchanged
+
+- nginx still public web engine
+- All 7 legacy tenants unchanged
+- Product apps unchanged
+- ISPConfig still NOT installed
+- HOSTING_PROVIDER_DEFAULT still legacy
+- OLS leftovers still on disk (stopped)
+- Pure-FTPd still on :21 (policy deferred)
+- Root password SSH still allowed (no authorized_keys)
+
+### Commands executed (summary)
+
+- ufw status numbered (pre)
+- ufw delete allow <dangerous ports>
+- ufw allow <essential ports>
+- ufw reload
+- patched netdata.conf + conf.d
+- systemctl restart netdata
+- iptables/ip6tables DROP 19999 non-local
+- sshd -t ; sshd -T
+- fail2ban-client status
+- curl smoke tests for major sites
+
+### Services restarted
+
+- netdata
+- ufw reload (firewall rules)
+
+### Site smoke (local HTTPS)
+
+- ifnotus.space 200
+- quizsnap.online 200
+- votebridge.online 200
+- examflow.csdttu.online 302
+- csdttu.online 200
+- serverlabsttu.space 200
+- mail.ifnotus.space 200
+- nginx, ifnotus-api, named, mysql, redis, postfix, dovecot = active
+
+### Before next phase (your action)
+
+Add an SSH public key to /root/.ssh/authorized_keys, then say:
+  "Phase A SSH harden"  → disable root password login safely
+OR
+  "Phase B" → continue remediation PDF next phase
+
+================================================================================
+STOP. Waiting for explicit instruction for next phase.
+================================================================================

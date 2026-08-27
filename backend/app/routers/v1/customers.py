@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from app.api.deps import AccessControlDep, CurrentUser, DbSession, SettingsDep
 from app.core.exceptions import AppException, AuthenticationError, AuthorizationError, NotFoundError
-from app.core.permissions import Role
+from app.core.permissions import Permission, Role
 from app.core.security import create_token_pair
 from app.models.platform import HostingPlan, Subscription
 from app.schemas.ai import (
@@ -70,6 +70,10 @@ from app.schemas.platform import (
     CustomerDashboardResponse,
     CustomerFileMkdirRequest,
     CustomerFileWriteRequest,
+    CustomerFileMoveRequest,
+    CustomerFileCopyRequest,
+    CustomerFileExtractRequest,
+    CustomerFileCompressRequest,
     CustomerPasswordChangeRequest,
     CustomerPhoneOtpRequest,
     CustomerPhoneOtpRequestResponse,
@@ -83,11 +87,16 @@ from app.schemas.platform import (
     DomainAvailabilityResponse,
     StudentHostnameRequest,
     StudentHostnameResponse,
+    PanelAliasResolveResponse,
+    PanelLoginRequest,
+    PanelPasswordCreateRequest,
+    PanelStatusResponse,
     TotpConfirmRequest,
     TotpSetupResponse,
     EnvironmentDatabaseResponse,
     EnvironmentDatabaseCreateRequest,
     EnvironmentDatabaseRevealResponse,
+    PhpMyAdminOpenResponse,
     EnvironmentDatabaseV2Response,
     ApplicationInstanceCreateRequest,
     ApplicationInstanceResponse,
@@ -105,9 +114,13 @@ from app.schemas.platform import (
     EnvironmentMonitoringResponse,
     EnvironmentUsageResponse,
     EnvironmentHealthResponse,
+    HostingPanelThemeActivateRequest,
+    HostingPanelThemePurchaseRequest,
+    HostingPanelThemeStatusResponse,
     NotificationResponse,
     OrderResponse,
     RenewPaymentResponse,
+    RenewSubscriptionRequest,
     StackInstallRequest,
     StackInstallResponse,
     StackClearRequest,
@@ -144,6 +157,7 @@ from app.services.platform.provisioning import ProvisioningEngine
 from app.services.platform.registrar import DomainRegistrar
 from app.services.platform.resources import ResourceManager
 from app.services.platform.tenant import TenantService
+from app.services.platform.tickets import SupportTicketService
 
 router = APIRouter()
 
@@ -338,6 +352,83 @@ async def customer_login(
     )
 
 
+@router.get("/panel/status", response_model=PanelStatusResponse)
+async def panel_status(
+    session: DbSession,
+    username: str | None = Query(default=None, max_length=16),
+    host: str | None = Query(default=None, max_length=253),
+) -> PanelStatusResponse:
+    """Public hint for tenant cpanel login (username + whether password exists)."""
+    from app.services.platform.panel_passwords import PanelPasswordService
+
+    data = await PanelPasswordService(session).status(username=username, host=host)
+    return PanelStatusResponse.model_validate(data)
+
+
+@router.post("/panel/create-password", response_model=PanelStatusResponse)
+async def panel_create_password(
+    body: PanelPasswordCreateRequest,
+    session: DbSession,
+) -> PanelStatusResponse:
+    """First-time hosting panel password (username is the auto-assigned hosting_name)."""
+    from app.services.platform.panel_passwords import PanelPasswordService
+
+    data = await PanelPasswordService(session).create_password(body.username, body.password)
+    return PanelStatusResponse.model_validate(data)
+
+
+@router.post("/panel/login", response_model=LoginResponse)
+async def panel_login(
+    body: PanelLoginRequest,
+    request: Request,
+    session: DbSession,
+    settings: SettingsDep,
+    access: AccessControlDep,
+) -> LoginResponse:
+    """Tenant-only hosting panel login (hosting_name + panel password). Not for staff."""
+    from app.services.access_control import AccessContext
+    from app.services.platform.panel_passwords import PanelPasswordService
+    from app.services.security_actions import detect_source
+
+    ua = request.headers.get("user-agent")
+    ip = _client_ip(request)
+    ctx = AccessContext(
+        ip_address=ip,
+        user_agent=ua,
+        device_fingerprint=body.device_fingerprint or request.headers.get("x-device-fingerprint"),
+        request_id=request.headers.get("x-request-id"),
+        source=detect_source(ua),
+    )
+    try:
+        user, customer, env = await PanelPasswordService(session).authenticate(
+            body.username,
+            body.password,
+            ip_address=ip,
+        )
+    except AuthenticationError as exc:
+        await access.record_login_failure(
+            ctx,
+            username_or_email=body.username,
+            reason=str(exc.message) if hasattr(exc, "message") else "invalid_panel_credentials",
+        )
+        raise
+    pair = create_token_pair(settings, subject=user.id)
+    await access.record_login_success(
+        ctx,
+        username_or_email=user.email,
+        user_id=user.id,
+        trust_ip=False,
+    )
+    return LoginResponse(
+        status="ok",
+        access_token=pair.access_token,
+        refresh_token=pair.refresh_token,
+        token_type=pair.token_type,
+        expires_in=pair.expires_in,
+        message=f"Welcome to the hosting panel for {env.domain or body.username}.",
+    )
+
+
 async def _db_user(session, user):
     from app.models.user import User
 
@@ -477,7 +568,7 @@ async def customer_dashboard(
         .order_by(Subscription.created_at.desc())
     )
     subs = list(subs_result.scalars().all())
-    unread_badge = await NotificationService(session, settings).unread_badge_count(customer.id)
+    unread_badge = await SupportTicketService(settings, session).count_awaiting_customer(customer.id)
     usage = await ResourceManager(session).active_subscription_usage(customer.id)
     orders = await OrderService(settings, session).list_orders(customer.id)
     from app.services.platform.plan_matrix import features_for
@@ -541,6 +632,55 @@ async def create_order(
         )
     data = await OrderService(settings, session).create_order(customer, body)
     return CreateOrderResponse(**data)
+
+
+@router.post("/orders/preview-coupon")
+async def preview_coupon(
+    body: dict,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> dict:
+    """Validate a coupon against a plan + term without creating an order."""
+    from decimal import Decimal
+    from uuid import UUID as _UUID
+
+    from app.core.exceptions import NotFoundError, ValidationError
+    from app.models.platform import HostingPlan, Order
+    from app.services.platform.billing_terms_store import BillingTermsStore
+    from app.services.platform.coupons import CouponService
+    from sqlalchemy import func, select
+
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    plan_id = body.get("plan_id")
+    code = body.get("code")
+    if not plan_id or not code:
+        raise ValidationError("plan_id and code are required.", code="coupon_preview_input")
+    plan = await session.get(HostingPlan, _UUID(str(plan_id)))
+    if not plan or not plan.is_active:
+        raise NotFoundError("Plan not found.")
+    months = int(body.get("billing_term_months") or 1)
+    term = BillingTermsStore(settings).resolve_term(months, monthly_price=plan.price_monthly)
+    prior = (
+        await session.execute(select(func.count()).select_from(Order).where(Order.customer_id == customer.id))
+    ).scalar_one()
+    applied = await CouponService(session).validate_for_order(
+        code=str(code),
+        customer=customer,
+        plan=plan,
+        plan_total=term["plan_total"],
+        billing_term_months=int(term["months"]),
+        is_new_customer=int(prior or 0) == 0,
+    )
+    return {
+        "code": applied["code"],
+        "discount_type": applied["discount_type"],
+        "discount_value": float(applied["discount_value"]),
+        "discount_amount": float(applied["discount_amount"]),
+        "plan_total_before": float(term["plan_total"]),
+        "plan_total_after": float(applied["plan_total_after"]),
+    }
 
 
 @router.get("/orders", response_model=list[OrderResponse])
@@ -693,9 +833,7 @@ async def write_env_file(
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     await TenantService(session).require_capability(env, "file_manager", label="File manager")
     roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
-    return await FileManagerService(
-        settings, only_roots=roots, storage_limit_gb=env.storage_limit_gb
-    ).write_file(body.path, body.content)
+    return await _tenant_files(settings, env, roots).write_file(body.path, body.content)
 
 
 @router.post(
@@ -714,9 +852,7 @@ async def mkdir_env_file(
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     await TenantService(session).require_capability(env, "file_manager", label="File manager")
     roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
-    return await FileManagerService(
-        settings, only_roots=roots, storage_limit_gb=env.storage_limit_gb
-    ).mkdir(body.path)
+    return await _tenant_files(settings, env, roots).mkdir(body.path)
 
 
 @router.delete(
@@ -735,9 +871,143 @@ async def delete_env_file(
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     await TenantService(session).require_capability(env, "file_manager", label="File manager")
     roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
-    return await FileManagerService(
-        settings, only_roots=roots, storage_limit_gb=env.storage_limit_gb
-    ).delete(path)
+    return await _tenant_files(settings, env, roots).delete(path)
+
+
+def _tenant_files(settings, env, roots) -> FileManagerService:
+    return FileManagerService(
+        settings,
+        only_roots=roots,
+        storage_limit_gb=env.storage_limit_gb,
+        owner_uid=getattr(env, "unix_uid", None),
+        owner_gid=getattr(env, "unix_gid", None),
+    )
+
+
+@router.post(
+    "/environments/{environment_id}/files/move",
+    response_model=OperationResult,
+)
+async def move_env_file(
+    environment_id: UUID,
+    body: CustomerFileMoveRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> OperationResult:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "file_manager", label="File manager")
+    roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
+    return await _tenant_files(settings, env, roots).move(body.source, body.destination)
+
+
+@router.post(
+    "/environments/{environment_id}/files/copy",
+    response_model=OperationResult,
+)
+async def copy_env_file(
+    environment_id: UUID,
+    body: CustomerFileCopyRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> OperationResult:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "file_manager", label="File manager")
+    roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
+    return await _tenant_files(settings, env, roots).copy(body.source, body.destination)
+
+
+@router.post(
+    "/environments/{environment_id}/files/unzip",
+    response_model=OperationResult,
+)
+async def unzip_env_file(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+    path: str = Query(...),
+    extract_here: bool = Query(default=False),
+    destination: str | None = Query(default=None),
+) -> OperationResult:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "file_manager", label="File manager")
+    roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
+    return await _tenant_files(settings, env, roots).unzip(
+        path, extract_here=extract_here, destination=destination
+    )
+
+
+@router.post(
+    "/environments/{environment_id}/files/extract",
+    response_model=OperationResult,
+)
+async def extract_env_archive(
+    environment_id: UUID,
+    body: CustomerFileExtractRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> OperationResult:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "file_manager", label="File manager")
+    roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
+    return await _tenant_files(settings, env, roots).unzip(
+        body.path, extract_here=body.extract_here, destination=body.destination
+    )
+
+
+@router.post(
+    "/environments/{environment_id}/files/compress",
+    response_model=OperationResult,
+)
+async def compress_env_files(
+    environment_id: UUID,
+    body: CustomerFileCompressRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> OperationResult:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "file_manager", label="File manager")
+    roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
+    return await _tenant_files(settings, env, roots).compress(
+        body.paths,
+        archive_name=body.archive_name,
+        destination_dir=body.destination_dir,
+    )
+
+
+@router.get(
+    "/environments/{environment_id}/files/download",
+)
+async def download_env_file(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+    path: str = Query(...),
+):
+    from fastapi.responses import FileResponse
+
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "file_manager", label="File manager")
+    roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
+    file_path, filename = _tenant_files(settings, env, roots).resolve_download(path)
+    return FileResponse(path=file_path, filename=filename, media_type="application/octet-stream")
 
 
 @router.post(
@@ -758,9 +1028,7 @@ async def upload_env_file(
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     await TenantService(session).require_capability(env, "file_manager", label="File manager")
     roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
-    return await FileManagerService(
-        settings, only_roots=roots, storage_limit_gb=env.storage_limit_gb
-    ).upload(path, file)
+    return await _tenant_files(settings, env, roots).upload(path, file)
 
 
 @router.post(
@@ -779,9 +1047,7 @@ async def upload_env_init(
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     await TenantService(session).require_capability(env, "file_manager", label="File manager")
     roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
-    return await FileManagerService(
-        settings, only_roots=roots, storage_limit_gb=env.storage_limit_gb
-    ).init_chunked_upload(
+    return await _tenant_files(settings, env, roots).init_chunked_upload(
         body.filename,
         body.path,
         body.size_bytes,
@@ -807,12 +1073,8 @@ async def upload_env_chunk(
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     await TenantService(session).require_capability(env, "file_manager", label="File manager")
     roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
-    # Touch FileManagerService so only_roots/quota context matches init (meta stores path).
-    _ = FileManagerService(settings, only_roots=roots, storage_limit_gb=env.storage_limit_gb)
     data = await file.read()
-    return await FileManagerService(
-        settings, only_roots=roots, storage_limit_gb=env.storage_limit_gb
-    ).upload_chunk(upload_id, chunk_index, data)
+    return await _tenant_files(settings, env, roots).upload_chunk(upload_id, chunk_index, data)
 
 
 @router.post(
@@ -831,9 +1093,7 @@ async def upload_env_complete(
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     await TenantService(session).require_capability(env, "file_manager", label="File manager")
     roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
-    return await FileManagerService(
-        settings, only_roots=roots, storage_limit_gb=env.storage_limit_gb
-    ).complete_chunked_upload(body.upload_id)
+    return await _tenant_files(settings, env, roots).complete_chunked_upload(body.upload_id)
 
 
 @router.get(
@@ -941,6 +1201,82 @@ async def reveal_env_database(
     from app.services.platform.environment_databases import EnvironmentDatabaseService
 
     return await EnvironmentDatabaseService(settings, session).reveal(env, database_id)
+
+
+@router.post(
+    "/environments/{environment_id}/databases/{database_id}/phpmyadmin",
+    response_model=PhpMyAdminOpenResponse,
+)
+async def open_env_phpmyadmin(
+    environment_id: UUID,
+    database_id: str,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> PhpMyAdminOpenResponse:
+    """Issue a one-time phpMyAdmin sign-on URL for a MySQL database on this site."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "db_manage", label="Database management")
+    from app.services.hosting.phpmyadmin import PhpMyAdminService
+    from app.services.platform.environment_databases import EnvironmentDatabaseService
+
+    revealed = await EnvironmentDatabaseService(settings, session).reveal(env, database_id)
+    PhpMyAdminService.assert_mysql_engine(revealed.engine)
+    if not revealed.password:
+        raise AppException("No password stored for this database.", code="db_no_password")
+    issued = PhpMyAdminService(settings).issue_signon(
+        username=revealed.username or "",
+        password=revealed.password,
+        database=revealed.name,
+        host=revealed.host or "localhost",
+        port=int(revealed.port or 3306),
+    )
+    return PhpMyAdminOpenResponse(
+        url=issued["url"],
+        engine=str(revealed.engine or "mysql"),
+        database=revealed.name,
+        expires_in=int(issued["expires_in"]),
+    )
+
+
+@router.post(
+    "/environments/{environment_id}/database/phpmyadmin",
+    response_model=PhpMyAdminOpenResponse,
+)
+async def open_primary_env_phpmyadmin(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> PhpMyAdminOpenResponse:
+    """phpMyAdmin for the site's primary stack database (legacy / WordPress MySQL)."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "db_manage", label="Database management")
+    from app.services.hosting.phpmyadmin import PhpMyAdminService
+    from app.services.platform.environment_databases import EnvironmentDatabaseService
+
+    db_id = str(getattr(env, "db_registry_id", None) or f"legacy:{env.id}")
+    revealed = await EnvironmentDatabaseService(settings, session).reveal(env, db_id)
+    PhpMyAdminService.assert_mysql_engine(revealed.engine)
+    if not revealed.password:
+        raise AppException("No password stored for this database.", code="db_no_password")
+    issued = PhpMyAdminService(settings).issue_signon(
+        username=revealed.username or "",
+        password=revealed.password,
+        database=revealed.name,
+        host=revealed.host or "localhost",
+        port=int(revealed.port or 3306),
+    )
+    return PhpMyAdminOpenResponse(
+        url=issued["url"],
+        engine=str(revealed.engine or "mysql"),
+        database=revealed.name,
+        expires_in=int(issued["expires_in"]),
+    )
 
 
 @router.post(
@@ -1463,6 +1799,79 @@ async def get_env_ssh(
     return EnvironmentSshResponse(**ssh.status_payload(env, allowed=allowed, reveal=reveal, password=password))
 
 
+@router.get(
+    "/environments/{environment_id}/panel-theme",
+    response_model=HostingPanelThemeStatusResponse,
+)
+async def get_env_panel_theme(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> HostingPanelThemeStatusResponse:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.services.platform.hosting_panel_theme_store import HostingPanelThemeStore
+
+    return HostingPanelThemeStatusResponse.model_validate(
+        HostingPanelThemeStore(settings).status_for(environment_id)
+    )
+
+
+@router.put(
+    "/environments/{environment_id}/panel-theme",
+    response_model=HostingPanelThemeStatusResponse,
+)
+async def set_env_panel_theme(
+    environment_id: UUID,
+    body: HostingPanelThemeActivateRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> HostingPanelThemeStatusResponse:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.services.platform.hosting_panel_theme_store import HostingPanelThemeStore
+
+    return HostingPanelThemeStatusResponse.model_validate(
+        HostingPanelThemeStore(settings).set_active(environment_id, body.theme_id)
+    )
+
+
+@router.post(
+    "/environments/{environment_id}/panel-theme/purchase",
+    response_model=RenewPaymentResponse,
+)
+async def purchase_env_panel_theme(
+    environment_id: UUID,
+    body: HostingPanelThemePurchaseRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> RenewPaymentResponse:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    await TenantService(session).get_owned_environment(customer.id, environment_id)
+    result = await OrderService(settings, session).create_panel_theme_order(
+        customer,
+        environment_id=environment_id,
+        theme_id=body.theme_id,
+    )
+    order = result.get("order")
+    return RenewPaymentResponse(
+        reference=result["reference"],
+        authorization_url=None,
+        demo=False,
+        amount=result["amount"],
+        currency="GHS",
+        invoice_number=getattr(order, "invoice_number", None) or result.get("invoice_number"),
+        order_id=getattr(order, "id", None),
+        message="Pay ₵2 via Mobile Money, then share the transaction ID on the invoice to unlock this hosting theme.",
+    )
+
+
 @router.get("/environments/{environment_id}/mail", response_model=MailDomainResponse)
 async def get_env_mail(
     environment_id: UUID,
@@ -1787,6 +2196,81 @@ async def env_usage(
 
     composite = await EnvironmentStorageService(settings, session).composite_snapshot(env, plan)
     disk = dict(composite.get("disk") or {})
+
+    live: dict = {}
+    applied: dict = {}
+    slice_limits = None
+    app_limits = None
+    try:
+        from app.services.platform.resource_enforcement import limits_for_plan
+        from app.services.platform.systemd_env_slice import EnvironmentSliceService, limits_from_env
+
+        slice_svc = EnvironmentSliceService()
+        # Ensure slice exists so usage + enforcement stay aligned (no-op if already applied).
+        applied = slice_svc.ensure_slice(env, plan)
+        live = slice_svc.read_usage(env)
+        slice_limits = limits_from_env(env, plan)
+        app_limits = limits_for_plan(plan)
+    except Exception:  # noqa: BLE001
+        # Slice module may be missing on older hosts — still sample processes.
+        from app.services.platform.environment_monitoring import environment_live_stats
+        from app.services.platform.resource_enforcement import limits_for_plan
+
+        applied = {}
+        slice_limits = None
+        try:
+            app_limits = limits_for_plan(plan)
+        except Exception:  # noqa: BLE001
+            app_limits = None
+        proc = environment_live_stats(
+            unix_username=env.unix_username,
+            unix_uid=getattr(env, "unix_uid", None),
+            document_root=env.document_root,
+            domain=env.domain,
+        )
+        if proc.get("available"):
+            live = {
+                "available": True,
+                "source": proc.get("source") or "psutil",
+                "memory_mb": float(proc.get("memory_rss_mb") or 0),
+                "cpu_percent": float(proc.get("cpu_percent") or 0),
+                "process_count": int(proc.get("process_count") or 0),
+            }
+
+    ram_limit_mb = float(env.ram_limit_gb or 0) * 1024
+    mem_mb = live.get("memory_mb")
+    # Idle sites are a valid 0 reading once metrics are available.
+    if mem_mb is None and live.get("available"):
+        mem_mb = 0.0
+    mem_pct = None
+    if mem_mb is not None and ram_limit_mb > 0:
+        mem_pct = round(min(999.0, (float(mem_mb) / ram_limit_mb) * 100), 1)
+    cpu_pct = live.get("cpu_percent")
+    if cpu_pct is None and live.get("available"):
+        cpu_pct = 0.0
+    cpu_vcpu = None
+    cpu_of_limit_pct = None
+    if cpu_pct is not None:
+        # psutil CPU% is relative to one core (can exceed 100 with multiple threads).
+        cpu_vcpu = round(max(0.0, float(cpu_pct) / 100.0), 3)
+        limit_vcpu = float(env.cpu_limit or 0)
+        if limit_vcpu > 0:
+            cpu_of_limit_pct = round(min(999.0, (cpu_vcpu / limit_vcpu) * 100), 1)
+
+    from datetime import UTC, datetime
+
+    from app.services.platform.resource_status import build_resource_statuses
+
+    resource_statuses = build_resource_statuses(
+        env=env,
+        plan=plan,
+        settings=settings,
+        disk=disk,
+        os_quota=dict(composite.get("os_quota") or {}),
+        live=live,
+        slice_applied=applied,
+    )
+
     return EnvironmentUsageResponse(
         environment_id=env.id,
         domain=env.domain,
@@ -1807,12 +2291,31 @@ async def env_usage(
         components=dict(composite.get("components") or {}),
         os_quota=dict(composite.get("os_quota") or {}),
         host=dict(composite.get("host") or {}),
+        cpu_usage_percent=float(cpu_of_limit_pct) if cpu_of_limit_pct is not None else (
+            float(cpu_pct) if cpu_pct is not None else None
+        ),
+        cpu_usage_vcpu=cpu_vcpu,
+        memory_usage_mb=float(mem_mb) if mem_mb is not None else None,
+        memory_limit_mb=round(ram_limit_mb, 1) if ram_limit_mb else None,
+        memory_pct=mem_pct,
+        process_count=int(live["process_count"]) if live.get("process_count") is not None else None,
+        process_limit=(
+            int(slice_limits.tasks_max)
+            if slice_limits is not None
+            else (int(app_limits.max_processes) if app_limits is not None else None)
+        ),
+        resources_enforced=bool(resource_statuses.get("resources_enforced")),
+        resource_slice=str(applied.get("slice") or live.get("slice") or "") or None,
+        metrics_source=str(live.get("source") or "") or None,
+        metrics_updated_at=datetime.now(UTC).isoformat(),
+        resource_statuses=resource_statuses,
         message=str(composite.get("message") or disk.get("message") or ""),
         note=str(
             composite.get("note")
+            or resource_statuses.get("summary")
             or (
-                "CPU/RAM are plan limits. Live disk usage is measured under your site folder. "
-                "OS quotas apply when the filesystem supports them."
+                "Live disk is measured under your site folder. CPU/RAM samples come from your "
+                "environment resource slice when available."
             )
         ),
     )
@@ -1877,7 +2380,7 @@ async def env_stacks(
     return StackStatusResponse(
         environment_id=env.id,
         stacks=[StackInfoSchema(**s) for s in svc.list_stacks(plan)],
-        current=svc.current_stack(env),
+        current=await svc.reconcile_stack(env),
         progress=progress,
         active_job_id=active_job_id,
     )
@@ -2217,7 +2720,7 @@ async def env_dns_ensure_a(
     session: DbSession,
     settings: SettingsDep,
 ) -> EnvironmentDnsResponse:
-    """Publish the site on IFNOTUS nameservers (never returns the VPS IP)."""
+    """Publish the site on IFNOTUS nameservers or push A records when Namecheap DNS is used."""
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
@@ -3440,16 +3943,102 @@ async def student_hostname_preview(
     return StudentHostnameResponse.model_validate(result)
 
 
+@router.get("/panel-alias", response_model=PanelAliasResolveResponse)
+async def resolve_panel_alias(
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+    host: str = Query(min_length=3, max_length=253),
+) -> PanelAliasResolveResponse:
+    """Map cpanel.<domain> / site hostname to the caller's environment. Never trust Host alone."""
+    _require_customer_user(user)
+    from app.models.platform import CustomerDomain, CustomerEnvironment
+    from app.services.platform.customers import CustomerService
+    from app.services.platform.host_routing import classify_host, panel_alias_apex
+    from sqlalchemy import func
+
+    kind = classify_host(host, settings=settings)
+    if kind.kind == "platform":
+        raise AppException("That hostname is reserved for IFNOTUS.", code="host_reserved")
+    lookup = None
+    if kind.kind == "custom_panel":
+        lookup = panel_alias_apex(host)
+    elif kind.kind == "student":
+        lookup = kind.hostname
+    elif kind.kind == "custom_site":
+        lookup = kind.apex or kind.hostname
+    if not lookup:
+        raise NotFoundError("Unknown hosting hostname.")
+    lookup = lookup.lower().rstrip(".")
+    if lookup.startswith("www."):
+        lookup = lookup[4:]
+
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = (
+        await session.execute(
+            select(CustomerEnvironment).where(
+                CustomerEnvironment.customer_id == customer.id,
+                func.lower(CustomerEnvironment.domain) == lookup,
+            )
+        )
+    ).scalar_one_or_none()
+    if env is None:
+        owned = (
+            await session.execute(
+                select(CustomerDomain).where(
+                    CustomerDomain.customer_id == customer.id,
+                    func.lower(CustomerDomain.domain_name) == lookup,
+                )
+            )
+        ).scalar_one_or_none()
+        if owned is not None:
+            env = (
+                await session.execute(
+                    select(CustomerEnvironment).where(CustomerEnvironment.id == owned.environment_id)
+                )
+            ).scalar_one_or_none()
+    if env is None:
+        # Exists for someone else?
+        other = (
+            await session.execute(
+                select(CustomerEnvironment.id).where(func.lower(CustomerEnvironment.domain) == lookup)
+            )
+        ).scalar_one_or_none()
+        other_dom = (
+            await session.execute(
+                select(CustomerDomain.id).where(func.lower(CustomerDomain.domain_name) == lookup)
+            )
+        ).scalar_one_or_none()
+        if other is not None or other_dom is not None:
+            raise AuthorizationError("You do not have access to that site.")
+        raise NotFoundError("No hosting environment for that hostname.")
+    if env.status in {"terminated", "terminating"}:
+        raise AppException("That hosting service is no longer available.", code="env_terminated")
+    return PanelAliasResolveResponse(
+        host=kind.hostname,
+        kind=kind.kind,
+        environment_id=env.id,
+        domain=env.domain or lookup,
+        status=env.status,
+    )
+
+
 @router.post("/subscriptions/{subscription_id}/renew", response_model=RenewPaymentResponse)
 async def renew_subscription(
     subscription_id: UUID,
     user: CurrentUser,
     session: DbSession,
     settings: SettingsDep,
+    body: RenewSubscriptionRequest | None = None,
 ) -> RenewPaymentResponse:
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
-    result = await OrderService(settings, session).create_renewal_payment(customer, subscription_id)
+    term = body.billing_term_months if body else None
+    result = await OrderService(settings, session).create_renewal_payment(
+        customer,
+        subscription_id,
+        billing_term_months=term,
+    )
     order = result.get("order")
     return RenewPaymentResponse(
         reference=result["reference"],
@@ -3558,15 +4147,20 @@ async def capacity(
     session: DbSession,
     settings: SettingsDep,
 ) -> StaffCapacityDashboardResponse:
-    """Staff hosting-operations capacity dashboard for the shared node."""
-    if not (
-        user.is_superuser
-        or Role.ADMIN.value in (user.roles or [])
-        or Role.SUPERADMIN.value in (user.roles or [])
-    ):
-        raise AuthorizationError("Staff only.")
+    """Legacy alias — prefer GET /platform/capacity."""
+    from app.core.permissions import permissions_for_roles
     from app.services.platform.staff_capacity import StaffCapacityService
 
+    roles = list(user.roles or [])
+    role_enums = []
+    for r in roles:
+        try:
+            role_enums.append(Role(r))
+        except ValueError:
+            continue
+    perms = permissions_for_roles(role_enums, is_superuser=user.is_superuser)
+    if Permission.PLATFORM_READ not in perms and not user.is_superuser:
+        raise AuthorizationError("Staff only.")
     data = await StaffCapacityService(settings, session).dashboard()
     nodes = [CapacityNodeResponse.model_validate(n) for n in data.get("nodes") or []]
     return StaffCapacityDashboardResponse(

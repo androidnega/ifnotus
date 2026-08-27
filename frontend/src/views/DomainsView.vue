@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
+import UiAlert from '@/components/ui/UiAlert.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import { domainsApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
 import { usePermissions } from '@/composables/usePermissions'
@@ -158,18 +160,15 @@ onMounted(load)
 <template>
   <DashboardLayout @refresh="load">
     <div class="ctrl">
-      <header class="head">
-        <div>
-          <p class="k">DNS</p>
-          <h1>Zones</h1>
-          <p class="muted">Nameservers, records, and checks — nothing else on this page.</p>
-        </div>
-        <div class="head-actions">
-          <button type="button" class="ghost" :disabled="loading" @click="load">Refresh</button>
-          <button v-if="canWrite" type="button" class="cta" @click="openCreate('primary')">Add zone</button>
-          <button v-if="canWrite" type="button" class="ghost" @click="openCreate('subdomain')">Add subdomain</button>
-        </div>
-      </header>
+      <UiPageHeader eyebrow="DNS" title="Zones" lede="Nameservers, records, and checks — nothing else on this page.">
+        <template #actions>
+          <div class="head-actions">
+            <button type="button" class="ghost" :disabled="loading" @click="load">Refresh</button>
+            <button v-if="canWrite" type="button" class="cta" @click="openCreate('primary')">Add zone</button>
+            <button v-if="canWrite" type="button" class="ghost" @click="openCreate('subdomain')">Add subdomain</button>
+          </div>
+        </template>
+      </UiPageHeader>
 
       <article class="card ns">
         <p class="k">Nameservers</p>
@@ -177,14 +176,14 @@ onMounted(load)
         <p class="muted">Point the domain here, then add A / MX / TXT records below.</p>
       </article>
 
-      <p v-if="message" class="note" :class="message.type">{{ message.text }}</p>
-      <p v-if="dnsResult" class="note" :class="dnsResult.points_to_server ? 'ok' : 'err'">
+      <UiAlert v-if="message" :tone="message.type === 'ok' ? 'ok' : 'err'">{{ message.text }}</UiAlert>
+      <UiAlert v-if="dnsResult" :tone="dnsResult.points_to_server ? 'ok' : 'err'">
         {{ dnsResult.domain }}:
         {{ dnsResult.resolves ? dnsResult.addresses.join(', ') : dnsResult.message || 'Does not resolve' }}
         <span v-if="dnsResult.points_to_server !== null">
           · {{ dnsResult.points_to_server ? 'points here' : 'does not point here' }}
         </span>
-      </p>
+      </UiAlert>
 
       <article v-if="showForm && canWrite" class="card">
         <header>

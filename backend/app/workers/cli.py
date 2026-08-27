@@ -23,6 +23,7 @@ def main() -> None:
         BackupDailyTickTask,
         BackupEnvironmentTask,
         ConfigureDnsTask,
+        DnsSweepTickTask,
         HealthCheckEnvironmentTask,
         HealthCheckTickTask,
         IssueSslTask,
@@ -34,12 +35,14 @@ def main() -> None:
         EnvCronTickTask,
         RegisterDomainTask,
         DeliverNotificationTask,
+        DiscoveryTickTask,
         SubscriptionTickTask,
     )
 
     factory = container.db_session_factory()
     task_registry.register(ProvisionEnvironmentTask(settings=settings, session_factory=factory))
     task_registry.register(ConfigureDnsTask(settings=settings, session_factory=factory))
+    task_registry.register(DnsSweepTickTask(settings=settings, session_factory=factory))
     task_registry.register(IssueSslTask(settings=settings, session_factory=factory))
     task_registry.register(SubscriptionTickTask(settings=settings, session_factory=factory))
     task_registry.register(BackupEnvironmentTask(settings=settings, session_factory=factory))
@@ -53,6 +56,7 @@ def main() -> None:
     task_registry.register(EnvCronTickTask(settings=settings, session_factory=factory))
     task_registry.register(RegisterDomainTask(settings=settings, session_factory=factory))
     task_registry.register(DeliverNotificationTask(settings=settings, session_factory=factory))
+    task_registry.register(DiscoveryTickTask(settings=settings, session_factory=factory))
 
     runner = WorkerRunner(
         settings=settings,

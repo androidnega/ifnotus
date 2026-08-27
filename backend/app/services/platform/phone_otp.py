@@ -164,9 +164,16 @@ async def create_challenge(phone: str, *, settings: object | None = None) -> Pho
 
     if redis is not None:
         try:
+            # Invalidate prior open challenges for this phone so an older SMS
+            # code cannot be entered against a newer signup screen (or vice versa).
+            phone_key = f"{KEY_PREFIX}phone:{phone}"
+            old_id = await redis.get(phone_key)
+            if old_id:
+                old = old_id.decode() if isinstance(old_id, (bytes, bytearray)) else str(old_id)
+                await redis.delete(f"{KEY_PREFIX}{old}", f"{ATTEMPTS_PREFIX}{old}")
             key = f"{KEY_PREFIX}{ch.challenge_id}"
             await redis.setex(key, OTP_TTL_MINUTES * 60, json.dumps(asdict(ch)))
-            await redis.setex(f"{KEY_PREFIX}phone:{phone}", OTP_TTL_MINUTES * 60, ch.challenge_id)
+            await redis.setex(phone_key, OTP_TTL_MINUTES * 60, ch.challenge_id)
             await redis.setex(f"{ATTEMPTS_PREFIX}{ch.challenge_id}", OTP_TTL_MINUTES * 60, "0")
             await redis.aclose()
             return ch

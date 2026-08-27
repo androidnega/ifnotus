@@ -681,13 +681,15 @@ onBeforeUnmount(() => {
             <table v-else-if="result.columns.length" class="data-table">
               <thead>
                 <tr>
+                  <th class="row-num">#</th>
                   <th v-for="col in result.columns" :key="col">{{ col }}</th>
                   <th v-if="canWrite">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="(row, idx) in result.rows" :key="idx">
-                  <td v-for="col in result.columns" :key="col" :title="cell(row[col])">
+                  <td class="row-num">{{ idx + 1 }}</td>
+                  <td v-for="col in result.columns" :key="col">
                     <span :class="row[col] == null ? 'nullish' : ''">{{ cell(row[col]) }}</span>
                   </td>
                   <td v-if="canWrite" class="actions">
@@ -1085,17 +1087,36 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--panel) 92%, #0f766e 8%);
   padding: 0.55rem 0.7rem;
   font-weight: 650;
+  white-space: nowrap;
 }
 .data-table td {
-  max-width: 18rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
   padding: 0.45rem 0.7rem;
+  white-space: pre;
+  vertical-align: top;
+}
+.data-table th.row-num,
+.data-table td.row-num {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  width: 3rem;
+  min-width: 3rem;
+  text-align: right;
+  color: var(--muted);
+  background: var(--panel);
+  border-right: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  user-select: none;
+}
+.data-table th.row-num {
+  z-index: 3;
+  background: color-mix(in srgb, var(--panel) 92%, #0f766e 8%);
 }
 .data-table tr:hover td {
   background: rgb(15 118 110 / 0.06);
+}
+.data-table tr:hover td.row-num {
+  background: color-mix(in srgb, var(--panel) 88%, #0f766e 12%);
 }
 .nullish {
   font-style: italic;

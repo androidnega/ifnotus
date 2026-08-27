@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { customersApi } from '@/api'
 import PortalAccountNav from '@/components/portal/PortalAccountNav.vue'
+import PortalProfileStageGate from '@/components/portal/PortalProfileStageGate.vue'
 import PortalShell from '@/components/portal/PortalShell.vue'
+import type { CustomerProfile } from '@/types/platform'
+import { nextProfileStage } from '@/lib/portalProfileStages'
 
-const name = ref('')
+const profile = ref<CustomerProfile | null>(null)
+const firstName = ref('')
+const lastName = ref('')
+const email = ref('')
 const phone = ref('')
 const company = ref('')
 const currentPassword = ref('')
@@ -15,25 +21,45 @@ const totpCode = ref('')
 const msg = ref('')
 const err = ref('')
 const twoFactor = ref(false)
+const showStage = ref(false)
 
-async function load() {
-  const { data } = await customersApi.me()
-  name.value = data.full_name
+const displayName = computed(
+  () =>
+    [firstName.value, lastName.value].filter(Boolean).join(' ') ||
+    profile.value?.full_name ||
+    '',
+)
+
+function applyProfile(data: CustomerProfile) {
+  profile.value = data
+  firstName.value = data.first_name || ''
+  lastName.value = data.last_name || ''
+  email.value = data.email?.includes('@phone.pending.ifnotus') ? '' : data.email || ''
   phone.value = data.phone || ''
   company.value = data.company || ''
   twoFactor.value = data.two_factor_enabled
+  showStage.value = Boolean(nextProfileStage(data, { includeOptional: true }))
+}
+
+async function load() {
+  const { data } = await customersApi.me()
+  applyProfile(data)
 }
 
 onMounted(load)
 
 async function saveProfile() {
   err.value = ''
+  msg.value = ''
   try {
-    await customersApi.updateMe({
-      full_name: name.value,
-      phone: phone.value,
-      company: company.value,
+    const { data } = await customersApi.updateMe({
+      first_name: firstName.value.trim() || undefined,
+      last_name: lastName.value.trim() || undefined,
+      email: email.value.trim() || undefined,
+      phone: phone.value.trim() || undefined,
+      company: company.value.trim() || null,
     })
+    applyProfile(data)
     msg.value = 'Profile saved.'
   } catch (e: unknown) {
     const x = e as { response?: { data?: { error?: { message?: string } } } }
@@ -43,6 +69,7 @@ async function saveProfile() {
 
 async function savePassword() {
   err.value = ''
+  msg.value = ''
   try {
     await customersApi.changePassword({
       current_password: currentPassword.value,
@@ -69,10 +96,19 @@ async function confirmTotp() {
   totpSecret.value = ''
   msg.value = 'Authenticator is on.'
 }
+
+function onStageUpdated(next: CustomerProfile) {
+  applyProfile(next)
+}
+
+function onStageDone(next: CustomerProfile) {
+  applyProfile(next)
+  showStage.value = false
+}
 </script>
 
 <template>
-  <PortalShell mode="app" :email="undefined" profile-menu>
+  <PortalShell mode="app" :email="email || undefined" :display-name="displayName || undefined">
     <template #sidebar>
       <PortalAccountNav active="settings" />
     </template>
@@ -82,11 +118,23 @@ async function confirmTotp() {
       <p v-if="msg" class="ok">{{ msg }}</p>
       <p v-if="err" class="err">{{ err }}</p>
 
+      <PortalProfileStageGate
+        v-if="showStage && profile"
+        :profile="profile"
+        mode="card"
+        :include-optional="true"
+        @updated="onStageUpdated"
+        @complete="onStageDone"
+        @dismiss="showStage = false"
+      />
+
       <section class="card">
         <h2>Profile</h2>
-        <label>Full name <input v-model="name" class="input" /></label>
-        <label>Phone <input v-model="phone" class="input" /></label>
-        <label>Company <input v-model="company" class="input" /></label>
+        <label>First name <input v-model="firstName" class="input" autocomplete="given-name" /></label>
+        <label>Family name <input v-model="lastName" class="input" autocomplete="family-name" /></label>
+        <label>Email <input v-model="email" type="email" class="input" autocomplete="email" /></label>
+        <label>Phone <input v-model="phone" class="input" autocomplete="tel" /></label>
+        <label>Company <input v-model="company" class="input" autocomplete="organization" /></label>
         <button type="button" class="btn" @click="saveProfile">Save</button>
       </section>
 

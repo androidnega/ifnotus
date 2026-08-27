@@ -3,10 +3,12 @@ import { createPinia } from 'pinia'
 import VueApexCharts from 'vue3-apexcharts'
 import App from './App.vue'
 import router from './router'
-import { useSiteTheme } from './composables/useSiteTheme'
+import { useSiteTheme, hydrateThemeFromCache } from './composables/useSiteTheme'
 import './assets/main.css'
+import './assets/design-system.css'
 import './assets/portal.css'
 import './assets/control.css'
+import '@fortawesome/fontawesome-free/css/all.min.css'
 
 const isApple =
   typeof navigator !== 'undefined' &&
@@ -14,6 +16,8 @@ const isApple =
 if (!isApple) {
   document.documentElement.classList.add('os-non-mac')
 }
+
+hydrateThemeFromCache()
 
 const app = createApp(App)
 

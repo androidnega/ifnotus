@@ -5,6 +5,8 @@ import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import ErrorState from '@/components/ui/ErrorState.vue'
+import UiAlert from '@/components/ui/UiAlert.vue'
+import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import { serverApi } from '@/api'
 import { REALTIME_POLL_MS } from '@/config/polling'
 import { usePolling } from '@/composables/usePolling'
@@ -127,30 +129,26 @@ async function refreshServer() {
     <ErrorState v-if="errorMessage && !overview" :message="errorMessage" @retry="refreshAll" />
 
     <div v-else class="animate-fade-in space-y-5">
+      <UiPageHeader title="Host" :lede="overview?.hostname || 'Server inventory, ports, and services'">
+        <template #actions>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              class="ds-btn-primary text-xs"
+              :disabled="refreshBusy"
+              @click="refreshServer"
+            >
+              {{ refreshBusy ? 'Refreshing…' : 'Refresh inventory' }}
+            </button>
+            <RouterLink to="/operations" class="ds-btn-ghost text-xs">
+              Cache / nginx / restarts → Operations
+            </RouterLink>
+          </div>
+        </template>
+      </UiPageHeader>
+      <UiAlert v-if="cacheMessage" :tone="cacheMessage.ok ? 'ok' : 'err'">{{ cacheMessage.text }}</UiAlert>
+
       <Card title="Host Overview" :subtitle="overview?.hostname">
-        <div class="mb-4 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            class="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50"
-            :disabled="refreshBusy"
-            @click="refreshServer"
-          >
-            {{ refreshBusy ? 'Refreshing…' : 'Refresh inventory' }}
-          </button>
-          <RouterLink
-            to="/operations"
-            class="rounded-lg border border-surface-border px-3 py-1.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-800"
-          >
-            Cache / nginx / restarts → Operations
-          </RouterLink>
-          <p
-            v-if="cacheMessage"
-            class="text-xs"
-            :class="cacheMessage.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-600'"
-          >
-            {{ cacheMessage.text }}
-          </p>
-        </div>
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div>
             <p class="text-xs text-surface-muted">Status</p>

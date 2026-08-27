@@ -76,6 +76,17 @@ async function boot() {
       customersApi.getEnvDatabase(envId.value, false),
       customersApi.dashboard().catch(() => null),
     ])
+    const eng = String(db.engine || '').toLowerCase()
+    if (eng === 'mysql' || eng === 'mariadb') {
+      try {
+        const { data } = await customersApi.openEnvPhpMyAdmin(envId.value)
+        window.location.replace(data.url)
+        return
+      } catch (e: unknown) {
+        // Keep SQL studio as fallback if phpMyAdmin sign-on fails.
+        error.value = getApiErrorMessage(e, 'Could not open phpMyAdmin — using SQL studio.')
+      }
+    }
     if (!db.name && !db.engine) {
       error.value = 'No database on this site yet. Install WordPress or Laravel from Site → Stack when you need one.'
       loading.value = false
@@ -279,7 +290,7 @@ function closeWindow() {
   }
   window.setTimeout(() => {
     if (!window.closed) {
-      router.push({ name: 'portal-dashboard', query: { panel: 'site', tab: 'database', env: envId.value } })
+      router.push({ name: 'hosting-panel', params: { environmentId: envId.value }, query: { tab: 'databases' } })
     }
   }, 120)
 }
@@ -405,17 +416,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
             <table class="grid">
               <thead>
                 <tr>
+                  <th class="row-num">#</th>
                   <th v-if="canWrite" class="acts" />
                   <th v-for="col in rows.columns" :key="col">{{ col }}</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="(row, idx) in rows.rows || []" :key="idx">
+                  <td class="row-num">{{ idx + 1 }}</td>
                   <td v-if="canWrite" class="acts">
                     <button type="button" class="link" @click="startEdit(row)">Edit</button>
                     <button type="button" class="link danger" @click="deleteRow(row)">Del</button>
                   </td>
-                  <td v-for="col in rows.columns" :key="col" :title="cell(row[col])">{{ cell(row[col]) }}</td>
+                  <td v-for="col in rows.columns" :key="col">{{ cell(row[col]) }}</td>
                 </tr>
               </tbody>
             </table>
@@ -435,11 +448,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
             <table class="grid">
               <thead>
                 <tr>
+                  <th class="row-num">#</th>
                   <th v-for="col in queryResult.columns" :key="col">{{ col }}</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="(row, idx) in queryResult.rows || []" :key="idx">
+                  <td class="row-num">{{ idx + 1 }}</td>
                   <td v-for="col in queryResult.columns" :key="col">{{ cell(row[col]) }}</td>
                 </tr>
               </tbody>
@@ -655,20 +670,40 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
   width: max-content;
   min-width: 100%;
   font-size: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 .grid th, .grid td {
   border-bottom: 1px solid #e2e8f0;
   padding: 0.35rem 0.5rem;
   text-align: left;
-  max-width: 280px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre;
   vertical-align: top;
 }
 .is-dark .grid th, .is-dark .grid td { border-color: #1e293b; }
-.grid th { background: #f8fafc; position: sticky; top: 0; z-index: 1; }
+.grid th { background: #f8fafc; position: sticky; top: 0; z-index: 1; white-space: nowrap; }
 .is-dark .grid th { background: #111827; }
+.grid th.row-num,
+.grid td.row-num {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  width: 2.75rem;
+  min-width: 2.75rem;
+  text-align: right;
+  color: #64748b;
+  background: #fff;
+  border-right: 1px solid #e2e8f0;
+  user-select: none;
+}
+.grid th.row-num {
+  z-index: 3;
+  background: #f8fafc;
+}
+.is-dark .grid th.row-num,
+.is-dark .grid td.row-num {
+  background: #111827;
+  border-right-color: #1e293b;
+}
 .acts { width: 4.5rem; white-space: nowrap; }
 .sql-panel .sql {
   width: 100%;

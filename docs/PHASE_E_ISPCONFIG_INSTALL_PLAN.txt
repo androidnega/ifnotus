@@ -1,0 +1,133 @@
+================================================================================
+PHASE E — ISPConfig installation PLAN (then controlled install)
+Date: 2026-08-27
+Server: 80.241.223.82 (Ubuntu 24.04.4)
+ISPConfig target: 3.3.1p1 stable (official tarball)
+================================================================================
+
+RULES (from master prompt)
+- Do NOT run the get.ispconfig.org Perfect-Server autoinstaller blindly.
+- Prefer nginx (do not switch production to Apache).
+- Preserve existing stack; admin UI is infrastructure-only (not customer cPanel).
+- STOP when ISPConfig itself is healthy — do NOT migrate tenants (Phase G+).
+
+--------------------------------------------------------------------------------
+1. EXISTING STACK TO PRESERVE (verified)
+--------------------------------------------------------------------------------
+Service / component          State
+---------------------------- ----------------------------------
+nginx 1.24                   active, :80/:443, 20+ site vhosts
+MySQL 8.0.46                 active; root via auth_socket
+PostgreSQL 16                active (IFNOTUS + apps)
+BIND 9.18                    active, authoritative zones
+Postfix 3.8                 active
+Dovecot 2.3                  active
+Roundcube                    installed (mail.ifnotus.space)
+Let's Encrypt / certbot      live certs under /etc/letsencrypt
+IFNOTUS API                  :8010 active
+Product apps                 /srv/apps/{csdttu,quizsnap,...}
+Tenant files                 /srv/apps/ifnotus-customers/...
+Pure-FTPd packages           installed; daemon stopped (Phase D)
+UFW                          Phase A hardened
+Phase C backup               /srv/backups/phase-c-pre-ispconfig-20260827T192243Z (~5.9G)
+
+PORT CONFLICT
+- 127.0.0.1:8080 = quizsnap Laravel Reverb (php artisan reverb:start)
+- ISPConfig default panel port is 8080 → use **8081** for ISPConfig UI
+
+--------------------------------------------------------------------------------
+2. REJECTED approach
+--------------------------------------------------------------------------------
+  wget -O - https://get.ispconfig.org | sh -s -- ...
+
+Why rejected on this host:
+- Officially intended for a *fresh* OS install
+- Reconfigures/reinstalls nginx, mail, DNS, firewall, PHP stacks
+- Would collide with IFNOTUS tenants, sibling product apps, Phase A UFW,
+  authoritative BIND, and existing Roundcube/Postfix/Dovecot
+
+--------------------------------------------------------------------------------
+3. SELECTED approach (controlled)
+--------------------------------------------------------------------------------
+Official stable tarball + expert non-interactive install.php:
+
+  https://www.ispconfig.org/downloads/ISPConfig-3-stable.tar.gz
+  → ISPConfig 3.3.1p1
+  php install.php --autoinstall=/root/ifnotus-secrets/ispconfig-autoinstall.ini
+
+Expert flags (intent):
+  install_mode=expert
+  http_server=nginx
+  configure_mail=n          # keep Postfix/Dovecot/Roundcube as-is
+  configure_dns=n           # keep authoritative BIND as-is
+  configure_firewall=n      # keep Phase A UFW as-is
+  configure_webserver=y     # required for panel + future web engine
+  install_ispconfig_web_interface=y
+  ispconfig_port=8081
+  ispconfig_use_ssl=y
+  ignore_hostname_dns=y
+  join_multiserver_setup=n
+
+MySQL:
+  Create root@127.0.0.1 with password + GRANT OPTION (keep root@localhost
+  auth_socket for local admin CLI). Installer connects via 127.0.0.1.
+
+FTP:
+  Pure-FTPd packages already present; installer will configure/enable them
+  (expected for ISPConfig). Customer default remains SFTP via IFNOTUS (Phase D).
+
+Jailkit / Fail2ban:
+  Fail2ban already active — installer may touch its ISPConfig jails.
+  Jailkit configured only if package present / detect allows.
+
+--------------------------------------------------------------------------------
+4. PRE-INSTALL FREEZE
+--------------------------------------------------------------------------------
+Directory: /srv/backups/phase-e-pre-install-<UTC>/
+
+Capture:
+  /etc/nginx
+  /etc/mysql /etc/bind /etc/postfix /etc/dovecot
+  /etc/letsencrypt (refs)
+  /etc/ufw /etc/fail2ban
+  sites-enabled listing, ss -lntp, systemctl snapshot
+  mysqldump --all-databases (quick safety; Phase C already has full dump)
+
+Secrets (root-only, NOT in git):
+  /root/ifnotus-secrets/phase-e-ispconfig.txt
+  /root/ifnotus-secrets/ispconfig-autoinstall.ini
+
+--------------------------------------------------------------------------------
+5. POST-INSTALL VERIFICATION (PASS criteria)
+--------------------------------------------------------------------------------
+  [ ] /usr/local/ispconfig exists
+  [ ] HTTPS panel responds on :8081
+  [ ] nginx active; ifnotus.space / cpanel.ifnotus.space HTTP 200/301/302
+  [ ] mysql / postgresql / named / postfix / dovecot active
+  [ ] Roundcube / mail.ifnotus.space reachable
+  [ ] ifnotus-api active on :8010
+  [ ] Product app roots under /srv/apps still present
+  [ ] Tenant tree /srv/apps/ifnotus-customers intact
+  [ ] UFW still denies public MySQL/Redis
+  [ ] No tenant migrated into ISPConfig yet
+
+If nginx vhosts break: restore /etc/nginx from Phase E freeze, keep ISPConfig
+vhost include for :8081, reload nginx.
+
+--------------------------------------------------------------------------------
+6. ADMIN ACCESS POLICY
+--------------------------------------------------------------------------------
+  Panel: https://<server-ip>:8081  (infrastructure only)
+  Do NOT publish as customer cPanel.
+  Do NOT point domain.tld/cpanel at ISPConfig (that stays IFNOTUS /go/hosting).
+  UFW: allow 8081/tcp (can tighten to staff IPs later).
+
+--------------------------------------------------------------------------------
+7. OUT OF SCOPE (later phases)
+--------------------------------------------------------------------------------
+  Phase F — remote API user + IFNOTUS env credentials
+  Phase G+ — tenant migration, DNS/mail cutover, provider default flip
+
+================================================================================
+END PLAN
+================================================================================

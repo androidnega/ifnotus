@@ -34,7 +34,11 @@ export const DEFAULT_PLAN_TIERS: PlanColorTier[] = [
   { id: 'power', label: 'Power', max_price: 99999, accent: '#1e3a5f' },
 ]
 
-export function applyThemeColors(colors: Partial<ThemeColors>, root: HTMLElement = document.documentElement) {
+export function applyThemeColors(
+  colors: Partial<ThemeColors>,
+  root: HTMLElement = document.documentElement,
+  themeId?: string | null,
+) {
   const merged = { ...DEFAULT_COLORS, ...colors }
   root.style.setProperty('--if-primary', merged.primary)
   root.style.setProperty('--if-primary-hover', merged.primary_hover)
@@ -57,8 +61,19 @@ export function applyThemeColors(colors: Partial<ThemeColors>, root: HTMLElement
   root.style.setProperty('--color-border', merged.border)
   root.style.setProperty('--color-text-muted', merged.muted)
 
+  const known = ['studio-light', 'ocean-clean', 'graphite', 'palm-grove', 'server-dark']
+  for (const id of known) {
+    root.classList.remove(`theme-${id}`)
+  }
+  if (themeId) {
+    const safe = String(themeId).replace(/[^a-z0-9-]/gi, '')
+    root.dataset.siteTheme = safe
+    root.classList.add(`theme-${safe}`)
+  }
+
   try {
     localStorage.setItem('ifnotus_theme_colors', JSON.stringify(merged))
+    if (themeId) localStorage.setItem('ifnotus_theme_id', String(themeId))
   } catch {
     /* ignore quota / private mode */
   }

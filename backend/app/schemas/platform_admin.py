@@ -21,6 +21,27 @@ class StaffCustomerListItem(SchemaBase):
     environment_count: int = 0
     subscription_count: int = 0
     credits_remaining: int = 0
+    hosting_status: str = "none"
+    """none | live | suspended | setting_up | awaiting_payment"""
+    primary_domain: str | None = None
+    awaiting_payment_count: int = 0
+
+
+class StaffDeleteCustomerRequest(SchemaBase):
+    confirm_email: str = Field(..., min_length=3, max_length=320)
+
+
+class StaffCustomerUpdateRequest(SchemaBase):
+    """Staff edit of tenant contact details (login phone / email)."""
+
+    email: str | None = Field(default=None, min_length=3, max_length=320)
+    phone: str | None = Field(default=None, min_length=9, max_length=32)
+    first_name: str | None = Field(default=None, min_length=1, max_length=120)
+    last_name: str | None = Field(default=None, min_length=2, max_length=120)
+    full_name: str | None = Field(default=None, min_length=2, max_length=255)
+    company: str | None = Field(default=None, max_length=255)
+    phone_verified: bool | None = None
+    email_verified: bool | None = None
 
 
 class StaffSubscriptionItem(SchemaBase):
@@ -40,6 +61,7 @@ class StaffEnvironmentItem(SchemaBase):
     id: UUID
     subscription_id: UUID
     domain: str | None = None
+    hosting_name: str | None = None
     status: str
     health_status: str
     isolation_type: str
@@ -87,8 +109,70 @@ class StaffOrderItem(SchemaBase):
     invoice_number: str | None = None
     payment_method: str | None = None
     momo_transaction_id: str | None = None
+    payment_amount_received: Decimal | None = None
+    payment_notes: str | None = None
+    payment_confirmed_at: datetime | None = None
     paid_at: datetime | None = None
     created_at: datetime
+
+
+class StaffAccountingDayPoint(SchemaBase):
+    date: str
+    collected: float = 0
+    complimentary: float = 0
+    count: int = 0
+
+
+class StaffAccountingLedgerItem(SchemaBase):
+    id: UUID
+    invoice_number: str | None = None
+    customer_id: UUID
+    customer_name: str | None = None
+    customer_email: str | None = None
+    plan_name: str | None = None
+    order_kind: str = "hosting"
+    currency: str = "GHS"
+    invoiced: float
+    collected: float | None = None
+    complimentary: float | None = None
+    entry_type: str = "unknown"
+    payment_status: str
+    payment_method: str | None = None
+    momo_transaction_id: str | None = None
+    payment_notes: str | None = None
+    paid_at: datetime | None = None
+    payment_confirmed_at: datetime | None = None
+    created_at: datetime
+
+
+class StaffAccountingSummaryResponse(SchemaBase):
+    period: dict
+    currency: str = "GHS"
+    totals: dict
+    by_kind: dict[str, float] = Field(default_factory=dict)
+    by_channel: dict[str, float] = Field(default_factory=dict)
+    by_day: list[StaffAccountingDayPoint] = Field(default_factory=list)
+    recent_paid: list[StaffAccountingLedgerItem] = Field(default_factory=list)
+    pipeline: dict = Field(default_factory=dict)
+
+
+class StaffOpsInboxItem(SchemaBase):
+    id: str
+    kind: str
+    title: str
+    message: str
+    severity: str = "warning"
+    timestamp: datetime
+    href: str = "/platform/orders"
+    order_id: UUID | None = None
+    invoice_number: str | None = None
+
+
+class StaffOpsInboxResponse(SchemaBase):
+    awaiting_payment_confirm: int = 0
+    recently_paid: int = 0
+    open_support_tickets: int = 0
+    items: list[StaffOpsInboxItem] = Field(default_factory=list)
 
 
 class StaffConfirmPaymentRequest(SchemaBase):
@@ -199,6 +283,10 @@ class SiteThemeStatusResponse(SchemaBase):
     themes: list[SiteThemeOption]
     colors: dict[str, str] = Field(default_factory=dict)
     plan_colors: list[dict[str, str]] = Field(default_factory=list)
+    home_layout: str = "split-right"
+    home_layouts: list[dict[str, str]] = Field(default_factory=list)
+    maintenance_mode: bool = False
+    maintenance_message: str = ""
     updated_at: str | None = None
 
 
@@ -206,6 +294,9 @@ class SiteThemeUpdateRequest(SchemaBase):
     theme: str = Field(min_length=2, max_length=64)
     colors: dict[str, str] | None = None
     plan_colors: dict[str, str] | None = None
+    home_layout: str | None = None
+    maintenance_mode: bool | None = None
+    maintenance_message: str | None = None
 
 
 __all__ = [
@@ -215,10 +306,16 @@ __all__ = [
     "SiteThemeOption",
     "SiteThemeStatusResponse",
     "SiteThemeUpdateRequest",
+    "StaffAccountingDayPoint",
+    "StaffAccountingLedgerItem",
+    "StaffAccountingSummaryResponse",
     "StaffAuditItem",
     "StaffCustomerDetailResponse",
     "StaffCustomerListItem",
+    "StaffDeleteCustomerRequest",
     "StaffEnvironmentItem",
     "StaffOrderItem",
+    "StaffOpsInboxItem",
+    "StaffOpsInboxResponse",
     "StaffSubscriptionItem",
 ]

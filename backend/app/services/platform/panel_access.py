@@ -1,6 +1,15 @@
-"""Customer control-panel shortcut URLs (cPanel-style cpanel.domain → /account)."""
+"""Customer control-panel shortcut URLs.
+
+Tenant sites always use path-based entry:
+  https://{domain}/cpanel
+  https://{domain}/mail
+
+Only the IFNOTUS staff/admin surface uses cpanel.ifnotus.space.
+"""
 
 from __future__ import annotations
+
+from urllib.parse import quote
 
 from app.services.platform.student_hostname import (
     LEGACY_STUDENT_ZONE,
@@ -10,12 +19,11 @@ from app.services.platform.student_hostname import (
     resolve_student_zone,
 )
 
+STAFF_PANEL_HOST = "cpanel.ifnotus.space"
+
 
 def is_platform_hostname(domain: str | None, *, settings: object | None = None) -> bool:
-    """True for control-plane and managed student/project hostnames.
-
-    Custom customer domains are False so they can use cpanel.<domain>.
-    """
+    """True for control-plane and managed student/project hostnames."""
     host = (domain or "").lower().rstrip(".")
     if not host:
         return False
@@ -30,32 +38,64 @@ def is_platform_hostname(domain: str | None, *, settings: object | None = None) 
 
 
 def control_panel_hostname(domain: str | None, *, settings: object | None = None) -> str | None:
-    """Return cpanel.<domain> for custom domains.
+    """Legacy helper — tenant panels no longer use cpanel.<domain>.
 
-    Platform / student hostnames cannot use cpanel.sub.<zone> reliably when the
-    wildcard cert only covers one label — those sites use /cpanel on the site.
+    Always returns None so callers fall through to path-based /cpanel.
+    Staff panel remains cpanel.ifnotus.space (handled separately in the SPA).
     """
+    _ = domain, settings
+    return None
+
+
+def site_cpanel_url(domain: str | None) -> str | None:
+    """Public tenant panel entry: https://{domain}/cpanel."""
     host = (domain or "").lower().rstrip(".")
-    if not host or "." not in host:
-        return None
-    if is_platform_hostname(host, settings=settings):
-        return None
-    if host.startswith("cpanel."):
-        return host
     if host.startswith("www."):
         host = host[4:]
-    return f"cpanel.{host}"
+    if not host or "." not in host:
+        return None
+    if host in {"ifnotus.space", STAFF_PANEL_HOST, "mail.ifnotus.space"}:
+        return None
+    if host.startswith("cpanel.") and host != STAFF_PANEL_HOST:
+        host = host[len("cpanel.") :]
+    return f"https://{host}/cpanel"
+
+
+def site_mail_url(domain: str | None) -> str | None:
+    """Public tenant webmail entry: https://{domain}/mail (except mail.ifnotus.space)."""
+    host = (domain or "").lower().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    if not host or "." not in host:
+        return None
+    if host in {"ifnotus.space", STAFF_PANEL_HOST}:
+        return "https://mail.ifnotus.space/"
+    if host.startswith("cpanel.") and host != STAFF_PANEL_HOST:
+        host = host[len("cpanel.") :]
+    return f"https://{host}/mail"
 
 
 def control_panel_url(domain: str | None, portal_base: str = "https://ifnotus.space") -> str:
-    """Best URL to open the IFNOTUS customer dashboard for this site."""
+    """Best URL to open the tenant Hosting Panel for this site."""
     base = (portal_base or "https://ifnotus.space").rstrip("/")
-    account = f"{base}/account"
-    host = (domain or "").lower().rstrip(".")
+    url = site_cpanel_url(domain)
+    return url or f"{base}/account"
+
+
+def panel_sso_url(
+    hostname: str,
+    portal_base: str = "https://ifnotus.space",
+    *,
+    tab: str | None = None,
+) -> str:
+    """Portal SSO handoff used by nginx /cpanel → API redirect (no redirect loop)."""
+    base = (portal_base or "https://ifnotus.space").rstrip("/")
+    host = (hostname or "").strip().lower().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
     if not host:
-        return account
-    cpanel = control_panel_hostname(host)
-    if cpanel:
-        return f"https://{cpanel}/"
-    # Student / platform hostname: path on their own HTTPS site
-    return f"https://{host}/cpanel"
+        return f"{base}/account"
+    q = f"host={quote(host)}"
+    if tab:
+        q = f"{q}&tab={quote(tab)}"
+    return f"{base}/go/hosting?{q}"

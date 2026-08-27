@@ -7,8 +7,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 
-from app.api.deps import CurrentUser, DbSession, RequirePermission, get_auth_service
-from app.core.exceptions import AppException, AuthorizationError
+from app.api.deps import CurrentUser, DbSession, RequirePermission, SettingsDep, get_auth_service
+from app.core.exceptions import AppException, AuthorizationError, NotFoundError
 from app.core.permissions import Permission
 from app.models.platform import PlatformAuditLog
 from app.schemas.auth import AuthenticatedUser
@@ -662,3 +662,42 @@ async def reveal_password(
     _user: CurrentUser,
 ) -> DatabasePasswordResponse:
     return await _db_service(request).reveal_password(db_id)
+
+
+@router.post(
+    "/{db_id}/phpmyadmin",
+    dependencies=[Depends(RequirePermission(Permission.DATABASES_READ))],
+)
+async def open_managed_phpmyadmin(
+    db_id: str,
+    request: Request,
+    settings: SettingsDep,
+    _user: CurrentUser,
+) -> dict:
+    """One-time phpMyAdmin sign-on for a managed MySQL database."""
+    from app.services.hosting.phpmyadmin import PhpMyAdminService
+
+    svc = _db_service(request)
+    items = svc._read_registry()
+    match = next((i for i in items if i.get("id") == db_id), None)
+    if not match:
+        raise NotFoundError(f"Managed database {db_id} not found.")
+    engine = str(match.get("engine") or "")
+    PhpMyAdminService.assert_mysql_engine(engine)
+    revealed = await svc.reveal_password(db_id)
+    username = str(match.get("username") or "")
+    if not username:
+        raise AppException("MySQL username is missing for this database.", code="pma_no_user")
+    issued = PhpMyAdminService(settings).issue_signon(
+        username=username,
+        password=revealed.password,
+        database=str(match.get("name") or ""),
+        host=str(match.get("host") or "localhost"),
+        port=int(match.get("port") or 3306),
+    )
+    return {
+        "url": issued["url"],
+        "engine": engine,
+        "database": match.get("name"),
+        "expires_in": int(issued["expires_in"]),
+    }
