@@ -98,10 +98,12 @@ class DomainNginxProvisioner:
             and n != cpanel_host
             and n != mail_host
             and n != webmail_host
-            and not str(n).startswith("cpanel.")
-            and not str(n).startswith("webmail.")
-            and not str(n).startswith("mail.")
+            and (not str(n).startswith("cpanel.") or n == hostname)
+            and (not str(n).startswith("webmail.") or n == hostname)
+            and (not str(n).startswith("mail.") or n == hostname)
         ]
+        if not site_names:
+            site_names = [hostname]
         names_line = " ".join(site_names)
         root = document_root or f"/var/www/{hostname}"
         cert = ssl_certificate
