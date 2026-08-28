@@ -113,11 +113,12 @@ export function customMailHostname(domain: string): string | null {
   }
 }
 
-/** Open tenant cPanel via secure single-use SSO handoff token. */
+/** Open tenant cPanel via secure single-use SSO handoff token (opens in a new tab). */
 export async function openTenantCpanel(
   domain: string,
   tab?: string | null,
   environmentId?: string | null,
+  newTab = true,
 ): Promise<void> {
   if (typeof window === 'undefined') return
 
@@ -128,6 +129,10 @@ export async function openTenantCpanel(
       tab: tab || undefined,
     })
     if (data.handoff_url) {
+      if (newTab) {
+        const opened = window.open(data.handoff_url, '_blank')
+        if (opened) return
+      }
       window.location.href = data.handoff_url
       return
     }
@@ -137,6 +142,10 @@ export async function openTenantCpanel(
 
   const fallback = tenantCpanelUrl(domain, tab)
   if (fallback) {
+    if (newTab) {
+      const opened = window.open(fallback, '_blank')
+      if (opened) return
+    }
     window.location.href = fallback
   }
 }
