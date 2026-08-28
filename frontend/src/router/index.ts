@@ -17,8 +17,8 @@ declare module 'vue-router' {
     /** staff = WHM host panel; portal = customer product panel */
     panel?: 'staff' | 'portal' | 'public'
     permission?: string
-    /** Hosting panel deep-link tab (e.g. files, databases, domains route) */
-    hostingTab?: string
+    /** Hosting panel deep-link tab (e.g. files route) */
+    hostingTab?: 'files' | 'databases' | 'domains' | 'email' | 'apps' | 'cron' | 'backups' | 'logs' | 'usage' | 'transfer'
   }
 }
 

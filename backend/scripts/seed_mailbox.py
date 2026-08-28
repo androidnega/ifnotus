@@ -45,12 +45,12 @@ async def create_domain_mailbox(
 
         mail_svc = MailService(settings, session)
         try:
-            body = MailboxCreate(
-                email=email_address,
-                password=password,
-                name=name,
-                quota_mb=quota_mb,
-            )
+                body = MailboxCreate(
+                    local_part=local_part,
+                    password=password,
+                    display_name=name,
+                    quota_mb=quota_mb,
+                )
             mailbox = await mail_svc.create_mailbox(dom.id, body)
             print(f"[SUCCESS] Mailbox created: {mailbox.email}")
             print(f"Login at https://webmail.{domain_name}")
