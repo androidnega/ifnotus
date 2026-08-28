@@ -17,8 +17,8 @@ declare module 'vue-router' {
     /** staff = WHM host panel; portal = customer product panel */
     panel?: 'staff' | 'portal' | 'public'
     permission?: string
-    /** Hosting panel deep-link tab (e.g. files route) */
-    hostingTab?: 'files'
+    /** Hosting panel deep-link tab (e.g. files, databases, domains route) */
+    hostingTab?: string
   }
 }
 
@@ -513,7 +513,6 @@ router.beforeEach(async (to) => {
 
   // Custom-domain panel host (cpanel.customer.com): stay on this origin — never bounce to ifnotus.space.
   if (isCustomerCpanelHost()) {
-    const panelHost = hostnameNow()
     if (to.name === 'sso-landing' || to.path === '/sso') {
       return true
     }

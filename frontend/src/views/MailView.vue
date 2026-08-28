@@ -57,6 +57,7 @@ const authStatus = ref<{
 const { can } = usePermissions()
 const canWrite = computed(() => can(Permission.MAIL_WRITE))
 const canAdmin = computed(() => can(Permission.SYSTEM_ADMIN))
+const selectedDomain = computed(() => domains.value.find((d) => d.id === selectedId.value))
 const clients = computed(() => mailData.value?.clients)
 const mailHost = computed(
   () =>
