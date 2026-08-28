@@ -704,14 +704,13 @@ class DomainService:
 
         if (
             ensure_https
-            and SslService.is_ifnotus_hostname(entity.name)
+            and not le.exists()
             and entity.name
             not in {
                 "ifnotus.space",
                 getattr(self._settings, "student_zone", "ifnotus.space"),
                 getattr(self._settings, "legacy_student_zone", "serverlabsttu.space"),
             }
-            and not le.exists()
         ):
             try:
                 from app.schemas.hosting import SslActionRequest
