@@ -32,8 +32,19 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/',
     name: 'home',
-    component: () => import('@/views/HomeView.vue'),
+    component: () => {
+      if (typeof window !== 'undefined' && isCustomerCpanelHost()) {
+        return import('@/views/hosting/HostingPanelView.vue')
+      }
+      return import('@/views/HomeView.vue')
+    },
     meta: { panel: 'public' },
+  },
+  {
+    path: '/overview',
+    name: 'cpanel-overview',
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'overview' },
   },
   {
     path: '/plans',
