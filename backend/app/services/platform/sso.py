@@ -16,7 +16,7 @@ from app.core.config import Settings
 from app.core.exceptions import AppException, AuthenticationError, AuthorizationError, NotFoundError
 from app.core.logging import get_logger
 from app.core.security import TokenType, create_token_pair
-from app.models.auth import User
+from app.models.user import User
 from app.models.platform import Customer, CustomerDomain, CustomerEnvironment
 from app.services.platform.host_routing import classify_host, normalize_host, sanitize_panel_hostname
 from app.services.platform.panel_access import control_panel_hostname, site_cpanel_url
