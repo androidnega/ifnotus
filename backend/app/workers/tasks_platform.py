@@ -670,7 +670,6 @@ class RegisterDomainTask(BaseTask):
 
     async def execute(self, payload: dict[str, Any], context: TaskContext) -> TaskResult:
         from app.models.platform import Customer, CustomerDomain
-        from app.services.platform.authoritative_dns import AuthoritativeDnsService
         from app.services.platform.notifications import NotificationService
         from app.services.platform.registrar import DomainRegistrar
 
@@ -711,7 +710,9 @@ class RegisterDomainTask(BaseTask):
                     row.registrar = str(result.get("provider") or "namecheap")
                     row.dns_records = [{"ns": result.get("nameservers") or []}]
                     try:
-                        AuthoritativeDnsService(self._settings).ensure_zone(row.domain_name)
+                        from app.services.platform.dns_writer import DnsWriterService
+
+                        DnsWriterService(self._settings).publish_zone(row.domain_name)
                     except Exception as zexc:  # noqa: BLE001
                         logger.warning("zone_after_register_failed", error=str(zexc))
                     await NotificationService(session, self._settings).notify(

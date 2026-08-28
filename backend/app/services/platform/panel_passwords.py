@@ -111,9 +111,16 @@ class PanelPasswordService:
         await self._session.flush()
 
     async def authenticate(self, username: str, password: str, *, ip_address: str | None = None) -> tuple[User, Customer, CustomerEnvironment]:
-        env = await self.env_by_hosting_name(username)
+        # Constant-time dummy verification hash to protect against timing attacks when username does not exist
+        _dummy_hash = "$2b$12$e8Y7z7rXg8NnLq1sM0dFJu4p6QJm7fB3tH4vZ6wX8yA0bC1dE2fG3"
+        try:
+            env = await self.env_by_hosting_name(username)
+        except (NotFoundError, AppException):
+            verify_password(password or "dummy", _dummy_hash)
+            raise AuthenticationError("Invalid credentials.") from None
+
         if not env.panel_password_hash:
-            raise AuthenticationError("Create a panel password first.")
+            raise AuthenticationError("Invalid credentials.")
         if not verify_password(password, env.panel_password_hash):
             raise AuthenticationError("Invalid credentials.")
         customer = await self._session.get(Customer, env.customer_id)

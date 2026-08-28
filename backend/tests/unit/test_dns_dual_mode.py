@@ -37,7 +37,7 @@ def test_dns_live_via_a_records(monkeypatch) -> None:
         if qtype.upper() == "NS":
             return ["lunar.dns-parking.com"]
         if qtype.upper() == "A":
-            if qname in {"studio.online", "cpanel.studio.online"}:
+            if qname in {"studio.online", "www.studio.online"}:
                 return ["80.241.223.82"]
         return []
 
@@ -45,12 +45,13 @@ def test_dns_live_via_a_records(monkeypatch) -> None:
     live = svc._lookup_dns_live("studio.online", svc.nameservers())
     assert live["ns_live"] is False
     assert live["apex_points_here"] is True
+    assert live["www_points_here"] is True
     assert live["cpanel_points_here"] is True
     assert live["dns_live"] is True
     assert live["dns_mode"] == "a_record"
 
 
-def test_dns_not_live_when_cpanel_missing(monkeypatch) -> None:
+def test_dns_not_live_when_www_missing(monkeypatch) -> None:
     svc = _svc()
 
     def fake_dig(qname: str, qtype: str) -> list[str]:
@@ -62,3 +63,4 @@ def test_dns_not_live_when_cpanel_missing(monkeypatch) -> None:
     live = svc._lookup_dns_live("studio.online", svc.nameservers())
     assert live["dns_live"] is False
     assert live["dns_mode"] is None
+    assert live["cpanel_points_here"] is True  # path-based /cpanel on apex

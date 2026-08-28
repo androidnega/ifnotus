@@ -1,0 +1,72 @@
+================================================================================
+PHASE P — ROLE HARDENING & PERMISSION BOUNDARIES REPORT
+Date: 2026-08-28
+Server: 80.241.223.82 (single VPS)
+================================================================================
+
+1. EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+Phase P solidifies role-based access control across the IFNOTUS platform,
+eliminating staff/customer crossover, enforcing the principle of least privilege,
+and locking down tenant boundaries against IDOR vulnerabilities.
+
+Role Matrix & Capabilities:
+  1. Super Admin (`superadmin`):
+     - Capabilities: Manage servers, infrastructure, provider credentials, staff accounts,
+       privilege switching, host terminal, and environment terminations.
+     - Safety: Destructive actions (e.g. environment termination) require confirmation.
+
+  2. Admin (`admin`):
+     - Capabilities: Business operations — customers, billing, plans, orders, domains,
+       and environment remediation.
+     - Restrictions: NO root terminal / shell, NO direct server storage writes.
+
+  3. Operator (`operator`):
+     - Capabilities: Hosting operations — files, DNS, mail, databases, diagnostics,
+       and environment remediation.
+     - Restrictions: NO billing management, NO plan creation/editing, NO terminal.
+
+  4. Customer Care (`customer_care`):
+     - Capabilities: Support tickets, customer lookup, and MoMo payment confirmation.
+     - Restrictions: NO hosting edits, NO file writes, NO database actions, NO environment remediation.
+
+  5. Viewer (`viewer`):
+     - Capabilities: Strictly read-only monitoring and overview across the panel.
+     - Restrictions: All writes and executions blocked.
+
+  6. Customer (`customer`):
+     - Capabilities: Portal access to their own registered domains and environments only.
+     - Restrictions: Zero host/platform administrative permissions.
+
+Tenant Isolation & IDOR Protection:
+  - Strict separation between `/customer` routes (customer ownership) and `/platform` routes (staff).
+  - All customer APIs enforce `TenantService.get_owned_environment(customer.id, env_id)`.
+  - Attempts to access other tenants' resources fail with `NotFoundError` (anti-enumeration).
+
+
+2. VERIFICATION RESULTS
+--------------------------------------------------------------------------------
+[1] Role Boundaries:
+    ✓ Super Admin: all permissions (infrastructure, terminal, terminate, credentials)
+    ✓ Admin: business & remediation permitted; terminal & direct files blocked
+    ✓ Operator: hosting ops permitted; billing & plans write blocked
+    ✓ Customer Care: MoMo & tickets permitted; hosting edits blocked
+    ✓ Viewer: read-only permitted; all mutations blocked
+    ✓ Customer: zero platform permissions
+
+[2] Destructive Confirmations:
+    ✓ Environment termination requires explicit confirmation (`confirm=true`)
+    ✓ Customer deletion requires matching email confirmation (`confirm_email`)
+
+[3] IDOR & Tenant Boundary Verification:
+    ✓ `TenantService.get_owned_environment` strictly queries by `(id, customer_id)`
+
+[4] Test Suite:
+    ✓ 8/8 tests passed in backend/tests/unit/test_phase_p_role_hardening.py
+    ✓ 284/284 unit tests passed across the backend test suite
+
+
+3. VERDICT
+--------------------------------------------------------------------------------
+PHASE P: PASS
+================================================================================

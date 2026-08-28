@@ -110,9 +110,26 @@ class AuthService:
 
         from app.core.dev_mode import dev_auth_bypass_allowed
 
-        if getattr(user, "totp_enabled", False) and not dev_auth_bypass_allowed(self._settings):
+        sensitive_roles = {
+            Role.PLATFORM_OWNER.value,
+            Role.PLATFORM_ADMIN.value,
+            Role.HOSTING_OPERATOR.value,
+            Role.SUPERADMIN.value,
+            Role.ADMIN.value,
+            Role.OPERATOR.value,
+        }
+        requires_2fa = getattr(user, "totp_enabled", False) or (
+            bool(getattr(self._settings, "enforce_staff_2fa", False))
+            and (bool(user.is_superuser) or bool(roles & sensitive_roles))
+        )
+        if requires_2fa and not dev_auth_bypass_allowed(self._settings):
             from app.services import totp as totp_svc
 
+            if not getattr(user, "totp_enabled", False):
+                return LoginResponse(
+                    status="totp_required",
+                    message="2FA setup required for your staff role before accessing infrastructure.",
+                )
             if not totp_svc.verify_code(user.totp_secret or "", credentials.totp_code or ""):
                 return LoginResponse(
                     status="totp_required",

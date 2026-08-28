@@ -411,6 +411,9 @@ class MailAuthService:
             MailDnsHint("MX", "@", f"{MAIL_HOSTNAME}.", priority=10),
             MailDnsHint("TXT", "@", spf),
             MailDnsHint("TXT", "_dmarc", f"v=DMARC1; p=none; rua=mailto:postmaster@{domain}"),
+            MailDnsHint("A", "mail", ip),
+            MailDnsHint("CNAME", "autoconfig", f"mail.{domain}."),
+            MailDnsHint("CNAME", "autodiscover", f"mail.{domain}."),
         ]
         if dkim_public:
             hints.append(MailDnsHint("TXT", f"{SELECTOR}._domainkey", dkim_public))
@@ -445,11 +448,13 @@ class MailAuthService:
         await self._session.flush()
 
     async def _live_status(self, domain: str, dkim_public: str | None) -> dict:
-        spf_ok, dkim_dns_ok, mx_ok, dmarc_ok = await asyncio.gather(
+        spf_ok, dkim_dns_ok, mx_ok, dmarc_ok, ptr_info, autoconfig_ok = await asyncio.gather(
             asyncio.to_thread(self._check_spf, domain),
             asyncio.to_thread(self._check_dkim_dns, domain, dkim_public),
             asyncio.to_thread(self._check_mx, domain),
             asyncio.to_thread(self._check_dmarc, domain),
+            asyncio.to_thread(self._check_ptr),
+            asyncio.to_thread(self._check_autoconfig, domain),
         )
         signing = (OPENDKIM_KEYS / domain / f"{SELECTOR}.private").exists()
         ready = bool(signing and spf_ok and dkim_dns_ok)
@@ -472,6 +477,11 @@ class MailAuthService:
             )
         if not dmarc_ok:
             messages.append(f"Publish TXT _dmarc.{domain} (v=DMARC1; p=none).")
+        if not ptr_info.get("ptr_ok"):
+            messages.append(
+                f"rDNS/PTR for server IP {self.server_ip} does not point to {MAIL_HOSTNAME} "
+                f"(current: {', '.join(ptr_info.get('ptrs', [])) or 'none'}). Delivery to Gmail/Yahoo may be degraded."
+            )
         if ready:
             messages.append("Outbound authentication is ready for this domain.")
         return {
@@ -479,9 +489,48 @@ class MailAuthService:
             "dkim_dns_ok": dkim_dns_ok,
             "mx_ok": mx_ok,
             "dmarc_ok": dmarc_ok,
+            "ptr_ok": bool(ptr_info.get("ptr_ok")),
+            "ptr_records": ptr_info.get("ptrs", []),
+            "autoconfig_ok": autoconfig_ok,
             "ready": ready,
             "messages": messages,
         }
+
+    def _check_ptr(self) -> dict:
+        """Check reverse DNS (PTR) for outbound server IP."""
+        ip = self.server_ip
+        try:
+            proc = subprocess.run(
+                ["dig", "+short", "-x", ip],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            ptrs = [
+                line.strip().rstrip(".")
+                for line in (proc.stdout or "").splitlines()
+                if line.strip() and not line.startswith(";")
+            ]
+            ptr_ok = any(MAIL_HOSTNAME in p or "ifnotus.space" in p for p in ptrs)
+            return {"ptr_ok": ptr_ok, "ptrs": ptrs}
+        except (OSError, subprocess.SubprocessError):
+            return {"ptr_ok": False, "ptrs": []}
+
+    def _check_autoconfig(self, domain: str) -> bool:
+        """Check if autoconfig or autodiscover records exist for client auto-setup."""
+        try:
+            proc = subprocess.run(
+                ["dig", "+short", "CNAME", f"autoconfig.{domain}"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            val = (proc.stdout or "").strip().rstrip(".")
+            return bool(val)
+        except (OSError, subprocess.SubprocessError):
+            return False
 
     def _check_spf(self, domain: str) -> bool:
         records = _dig_txt(domain)

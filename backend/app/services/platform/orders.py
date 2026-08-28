@@ -1006,9 +1006,9 @@ class OrderService:
                         domain.dns_records = [{"ns": result.get("nameservers")}]
                 if result.get("registered") and result.get("domain"):
                     try:
-                        from app.services.platform.authoritative_dns import AuthoritativeDnsService
+                        from app.services.platform.dns_writer import DnsWriterService
 
-                        AuthoritativeDnsService(self._settings).ensure_zone(str(result["domain"]))
+                        DnsWriterService(self._settings).publish_zone(str(result["domain"]))
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("zone_after_register_failed", error=str(exc))
                 job.status = "success" if result.get("registered") else "failed"

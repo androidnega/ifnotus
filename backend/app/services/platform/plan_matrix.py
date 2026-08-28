@@ -576,12 +576,24 @@ def features_for(plan: HostingPlan | None, **identity: str | None) -> dict[str, 
     stored = dict(raw) if isinstance(raw, dict) else {}
     key = stored.get("matrix_key") or plan_key(plan, slug=identity.get("slug"), name=identity.get("name"))
     base = dict(MATRIX.get(str(key), MATRIX["personal"]))
-    # Keep staff-set accent and custom_domains override if present.
+    # Keep staff-set accent, custom_domains, and mail overrides if present.
     if "custom_domains" in stored and stored["custom_domains"] is not None:
         try:
             base["custom_domains"] = int(stored["custom_domains"])
         except (TypeError, ValueError):
             pass
+    if "mail_enabled" in stored and stored["mail_enabled"] is not None:
+        base["mail_enabled"] = bool(stored["mail_enabled"])
+    if "mailboxes" in stored and stored["mailboxes"] is not None:
+        try:
+            base["mailboxes"] = int(stored["mailboxes"])
+        except (TypeError, ValueError):
+            base["mailboxes"] = stored["mailboxes"]
+    if "mail_storage_mb" in stored and stored["mail_storage_mb"] is not None:
+        try:
+            base["mail_storage_mb"] = int(stored["mail_storage_mb"])
+        except (TypeError, ValueError):
+            base["mail_storage_mb"] = stored["mail_storage_mb"]
     if isinstance(stored.get("accent"), str):
         base["accent"] = stored["accent"]
     base["matrix_key"] = key

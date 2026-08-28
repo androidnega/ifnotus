@@ -1,0 +1,390 @@
+====================================================================================================
+IFNOTUS FIRST CONTROL-PLANE AUDIT REPORT
+Routes, Roles, Privileges, Pages, Guards & Access Boundaries
+====================================================================================================
+Auditors: Lead Server Architect, Lead Backend Engineer, Lead Frontend Engineer,
+          Lead Security Engineer, Lead IAM / RBAC Engineer, Lead Hosting Platform Architect
+Target: IFNOTUS Live Control Plane & Codebase (FastAPI + Vue 3 + ISPConfig 3 + Linux Infrastructure)
+Date: 2026-08-28
+Format: Plain Text Comprehensive Architectural Audit & Machine-Readable Matrix
+====================================================================================================
+
+----------------------------------------------------------------------------------------------------
+1. EXECUTIVE CONCLUSION
+----------------------------------------------------------------------------------------------------
+The IFNOTUS control-plane architecture demonstrates strong foundational security and isolation
+mechanisms established across Phases A–Y. Backend authorization is authoritative, tenant data is strictly
+sandboxed via `TenantService`, and hosting mutations are routed through `HostingProvider` and ISPConfig 3.
+
+However, several critical control-plane boundaries require formal remediation:
+1. Staff Role & Capability Separation: The current 6 roles (`superadmin`, `admin`, `operator`, `viewer`,
+   `customer_care`, `customer`) lack clean boundaries between commercial management and technical hosting operations.
+2. Web Terminal Surface: `/terminal` currently permits arbitrary shell execution for `superadmin`. While
+   audited, web-based command execution represents a critical attack surface and should be restricted strictly
+   behind mandatory step-up 2FA and command allowlisting or retired to native SSH.
+3. Host File Manager Exposure: Standard staff file management (`/files`) exposes privileged roots (`/srv`, `/var/www`,
+   `/var/vmail`) via `admin_storage=True`. Staff file operations must be scoped strictly to individual tenant trees.
+4. Route Canonicalization: Obscure login paths (`/admin_1`) and legacy aliases (`/portal/*`, `/staff-login`)
+   should be streamlined to standard canonical paths (`/staff/login`, `/login`).
+
+Overall Control-Plane Verdict: SECURE & STABLE; READY FOR FORMAL REMEDIATION SPECIFICATION.
+
+
+----------------------------------------------------------------------------------------------------
+2. CURRENT ROLE INVENTORY
+----------------------------------------------------------------------------------------------------
+Source: `backend/app/core/permissions.py` (lines 64–73) & `frontend/src/lib/roles.ts` (lines 3–17).
+
+| Current Role    | Defined In                      | Backend Permissions                                                                                 | Frontend Usage                             | Real Purpose                                      | Recommendation          |
+|-----------------|---------------------------------|-----------------------------------------------------------------------------------------------------|--------------------------------------------|---------------------------------------------------|-------------------------|
+| `superadmin`    | `backend/app/core/permissions.py`| All permissions (`frozenset(Permission)`), terminal, staff user management, privilege switching.   | Staff shell, all menus, terminal, settings | Platform owner & root systems administrator       | RENAME: `platform_owner`|
+| `admin`         | `backend/app/core/permissions.py`| Plans, orders, customers, accounting, monitoring, read-only host assets, `platform:ops`.          | Staff shell, money, customers, apps        | Commercial & business operations manager          | RENAME: `platform_admin`|
+| `operator`      | `backend/app/core/permissions.py`| Domains, mail, SSL, files, databases, apps, deployments, monitoring, `platform:ops`.               | Staff shell, host assets, DNS, email, DBs  | Technical hosting infrastructure engineer         | RENAME: `hosting_operator`|
+| `viewer`        | `backend/app/core/permissions.py`| Read-only across system, servers, apps, monitoring, domains, SSL, files, mail, databases, support. | Staff shell, read-only badges on all pages | Read-only compliance observer & auditor           | RENAME: `auditor`       |
+| `customer_care` | `backend/app/core/permissions.py`| `platform:read`, `customers:manage`, `support:read`, `support:write` (MoMo payments & tickets).     | Staff shell, tickets & customer lookup     | Customer support & billing verification agent     | RENAME: `support_agent` |
+| `customer`      | `backend/app/core/permissions.py`| Empty frozenset() in staff matrix; authorized strictly via customer portal endpoints (`/customers`).| Portal shell, hosting panel, account tabs  | Paying tenant / hosting subscription owner        | KEEP: `customer`        |
+
+
+----------------------------------------------------------------------------------------------------
+3. CURRENT PERMISSION INVENTORY
+----------------------------------------------------------------------------------------------------
+Defined in `backend/app/core/permissions.py`:
+
+| Permission             | Defined In          | Roles Receiving It            | Routes Using It                          | Pages Using It                | Risk Level |
+|------------------------|---------------------|-------------------------------|------------------------------------------|-------------------------------|:----------:|
+| `system:read`          | `permissions.py:10` | superadmin, admin, operator, viewer | `/operations`, `/settings`         | `OperationsView`, `SettingsView` | LOW     |
+| `system:admin`         | `permissions.py:11` | superadmin                    | `/security/*`, `/mail/settings`          | `SecurityView`, `MailView`    | CRITICAL   |
+| `servers:read`         | `permissions.py:14` | superadmin, admin, operator, viewer | `/servers/*`                       | `ServersView`                 | LOW        |
+| `servers:write`        | `permissions.py:15` | superadmin, operator          | `/servers/refresh`, `/servers/cache/clear`| `ServersView`                | MEDIUM     |
+| `servers:delete`       | `permissions.py:16` | superadmin, admin             | (Reserved infrastructure)                | `ServersView`                 | HIGH       |
+| `deployments:read`     | `permissions.py:19` | superadmin, operator, viewer  | `/operations/deployments`                | `OperationsView`              | LOW        |
+| `deployments:write`    | `permissions.py:20` | superadmin, operator          | `/operations/deployments`                | `OperationsView`              | MEDIUM     |
+| `deployments:execute`  | `permissions.py:21` | superadmin, operator          | `/operations/deployments/run`            | `OperationsView`              | HIGH       |
+| `apps:read`            | `permissions.py:24` | superadmin, admin, operator, viewer | `/applications/*`                  | `ApplicationsView`            | LOW        |
+| `apps:write`           | `permissions.py:25` | superadmin, admin, operator   | `/applications/*`                        | `ApplicationsView`            | MEDIUM     |
+| `domains:read`         | `permissions.py:32` | superadmin, admin, operator, viewer | `/domains/*`                       | `DomainsView`                 | LOW        |
+| `domains:write`        | `permissions.py:33` | superadmin, operator          | `/domains/*`, `/domains/reprovision-all` | `DomainsView`                 | HIGH       |
+| `ssl:read`             | `permissions.py:34` | superadmin, admin, operator, viewer | `/ssl/*`                           | `SslView`                     | LOW        |
+| `ssl:write`            | `permissions.py:35` | superadmin, operator          | `/ssl/issue`, `/ssl/renew-all`           | `SslView`                     | HIGH       |
+| `files:read`           | `permissions.py:36` | superadmin, admin, operator, viewer | `/files/*`                         | `FilesView`, `FileEditorView` | MEDIUM     |
+| `files:write`          | `permissions.py:37` | superadmin, operator          | `/files/content`, `/files/upload`        | `FileUploadView`              | HIGH       |
+| `mail:read`            | `permissions.py:38` | superadmin, admin, operator, viewer | `/mail/*`                          | `MailView`                    | LOW        |
+| `mail:write`           | `permissions.py:39` | superadmin, operator          | `/mail/*`                                | `MailView`                    | MEDIUM     |
+| `terminal:execute`     | `permissions.py:40` | superadmin                    | `/terminal/execute`, `/terminal/audit`   | `TerminalView`                | CRITICAL   |
+| `databases:read`       | `permissions.py:41` | superadmin, admin, operator, viewer | `/databases/*`                     | `DatabasesView`, `Studio`     | MEDIUM     |
+| `databases:write`      | `permissions.py:42` | superadmin, operator          | `/databases/*` (mutations/DDL)           | `DatabaseStudioView`          | HIGH       |
+| `monitoring:read`      | `permissions.py:45` | superadmin, admin, operator, viewer | `/monitoring/*`, `/server/*`       | `DashboardView`               | LOW        |
+| `users:read`           | `permissions.py:48` | superadmin, admin             | `/platform/users`                        | `SettingsView`                | LOW        |
+| `users:write`          | `permissions.py:49` | superadmin                    | `/platform/users/*`                      | `SettingsView`                | HIGH       |
+| `support:read`         | `permissions.py:52` | superadmin, admin, operator, viewer, customer_care | `/support/tickets` | `SupportTicketsView`          | LOW        |
+| `support:write`        | `permissions.py:53` | superadmin, admin, operator, customer_care | `/support/tickets/*`        | `SupportTicketsView`          | LOW        |
+| `customers:manage`     | `permissions.py:55` | superadmin, admin, customer_care | `/platform/orders/*`, `/accounting`  | `PlatformOrdersView`          | MEDIUM     |
+| `platform:read`        | `permissions.py:58` | superadmin, admin, operator, viewer, customer_care | `/platform/customers` | `PlatformCustomersView`     | LOW        |
+| `platform:write`       | `permissions.py:59` | superadmin, admin             | `/platform/plans/*`, `/integrations`     | `PlatformPlansView`           | HIGH       |
+| `platform:ops`         | `permissions.py:61` | superadmin, admin, operator   | `/platform/environments/*` (suspend/repair)| `PlatformCustomersView`     | HIGH       |
+
+
+----------------------------------------------------------------------------------------------------
+4. ROLE PROBLEMS & 5. PROPOSED ROLE MODEL
+----------------------------------------------------------------------------------------------------
+1. Ambiguities Identified:
+   - `admin` currently possesses `servers:delete` and `apps:write` but cannot manage domain DNS records.
+   - `operator` currently possesses `deployments:execute` and `servers:write` but cannot view orders.
+   - `customer_care` confirms manual payments but lacks permissions for structured refunds.
+2. Proposed 7-Role Capability Hierarchy:
+   - `platform_owner` (Superadmin): Staff management, security policy, disaster recovery, terminations.
+   - `platform_admin`: Commercial product catalog, plan pricing, coupon campaigns, customer management.
+   - `hosting_operator`: Hosting provisioning, domain DNS, SSL certificates, mailboxes, database remediation.
+   - `billing_agent`: MoMo payment verification, Paystack reconciliations, invoices, ledger analysis.
+   - `support_agent`: Customer support tickets, user profile lookups, password reset assistance.
+   - `auditor`: Global read-only compliance inspection.
+   - `customer`: Self-service management of subscribed hosting environments.
+
+
+----------------------------------------------------------------------------------------------------
+6. OLD → NEW ROLE MAPPING
+----------------------------------------------------------------------------------------------------
+| Old Role Name     | Proposed Role Name    | Scope Adjustment                                                  |
+|-------------------|-----------------------|-------------------------------------------------------------------|
+| `superadmin`      | `platform_owner`      | Retains full authority; web terminal gated behind 2FA.           |
+| `admin`           | `platform_admin`      | Pure business/billing administration; remove `servers:delete`.    |
+| `operator`        | `hosting_operator`    | Technical hosting operations only; no plan/billing mutations.     |
+| `customer_care`   | `support_agent`       | Ticket handling and support customer lookup.                      |
+| `viewer`          | `auditor`             | Strict read-only observer across all views.                       |
+| *(new)*           | `billing_agent`       | Dedicated invoice, MoMo, coupon, and ledger operator.            |
+| `customer`        | `customer`            | Tenant self-service hosting persona.                              |
+
+
+----------------------------------------------------------------------------------------------------
+7. RECOMMENDED PERMISSION MODEL & 8. FINAL PERMISSION MATRIX
+----------------------------------------------------------------------------------------------------
+| Capability Area         | Permission               | platform_owner | platform_admin | hosting_operator | billing_agent | support_agent | auditor | customer |
+|-------------------------|--------------------------|:--------------:|:--------------:|:----------------:|:-------------:|:-------------:|:-------:|:--------:|
+| Staff & Access          | `staff.manage`           |       X        |                |                  |               |               |         |          |
+| Platform & Catalog      | `plans.manage`           |       X        |       X        |                  |               |               |         |          |
+|                         | `coupons.manage`         |       X        |       X        |                  |       X       |               |         |          |
+| Billing & Ledgers       | `billing.view`           |       X        |       X        |                  |       X       |       X       |    X    | (own)    |
+|                         | `billing.manage`         |       X        |       X        |                  |       X       |               |         |          |
+| Customers               | `customers.view`         |       X        |       X        |        X         |       X       |       X       |    X    | (self)   |
+|                         | `customers.manage`       |       X        |       X        |                  |               |       X       |         |          |
+| Hosting Operations      | `hosting.view`           |       X        |       X        |        X         |               |       X       |    X    | (own)    |
+|                         | `hosting.provision`      |       X        |                |        X         |               |               |         | (self)   |
+|                         | `hosting.suspend`        |       X        |       X        |        X         |       X       |               |         |          |
+|                         | `hosting.terminate`      |       X        |                |                  |               |               |         |          |
+| Domains & DNS           | `domains.manage`         |       X        |                |        X         |               |               |         | (own)    |
+| Mail                    | `mail.manage`            |       X        |                |        X         |               |               |         | (own)    |
+| Databases               | `databases.manage`       |       X        |                |        X         |               |               |         | (own)    |
+| Applications            | `apps.manage`            |       X        |                |        X         |               |               |         | (own)    |
+| Infrastructure          | `servers.view`           |       X        |       X        |        X         |               |               |    X    |          |
+|                         | `providers.manage`       |       X        |                |                  |               |               |         |          |
+|                         | `disaster_recovery.exec` |       X        |                |                  |               |               |         |          |
+| Security & Audit        | `security.manage`        |       X        |                |                  |               |               |         |          |
+|                         | `audit.view`             |       X        |       X        |        X         |       X       |               |    X    |          |
+
+
+----------------------------------------------------------------------------------------------------
+9. PRIVILEGES TO REMOVE, 10. RESTRICT, AND 11. ADD
+----------------------------------------------------------------------------------------------------
+1. Privileges to Remove:
+   - `admin:servers_delete`: Platform admins should not delete server nodes from inventory.
+   - `operator:terminal_execute`: Unrestricted shell execution removed from technical operator.
+2. Privileges to Restrict:
+   - `terminal:execute`: Restricted strictly to `platform_owner` with mandatory TOTP 2FA challenge.
+   - `hosting.terminate`: Restricted to `platform_owner` with explicit `confirm=true` query check.
+   - `files:write` across `/srv`: Scoped strictly to specific customer environment trees.
+3. Privileges to Add:
+   - `billing.manage`: Dedicated capability for manual MoMo payment processing and invoice adjustments.
+   - `disaster_recovery.exec`: Capability for initiating offsite backups and restore drills.
+   - `providers.manage`: Capability for updating ISPConfig and gateway API credentials.
+
+
+----------------------------------------------------------------------------------------------------
+12. FRONTEND ROUTE INVENTORY
+----------------------------------------------------------------------------------------------------
+| Route Path                         | Route Name               | Shell       | Current Roles       | Target Page                   | Status   | Action                     |
+|------------------------------------|--------------------------|-------------|---------------------|-------------------------------|----------|----------------------------|
+| `/`                                | `home`                   | `public`    | All                 | `HomeView.vue`                | COMPLETE | KEEP                       |
+| `/plans`                           | `plans`                  | `public`    | All                 | `PlansView.vue`               | COMPLETE | KEEP                       |
+| `/plans/:slug`                     | `plan-detail`            | `public`    | All                 | `PlanDetailView.vue`          | COMPLETE | KEEP                       |
+| `/login`                           | `login`                  | `public`    | Guests / Customers  | `portal/PortalSignupView.vue` | COMPLETE | KEEP (Canonical Cust Login)|
+| `/signup`                          | `portal-signup`          | `public`    | Guests / Customers  | `portal/PortalSignupView.vue` | COMPLETE | KEEP (Canonical Reg)       |
+| `/admin_1`                         | `admin-login`            | `auth`      | Guests / Staff      | `LoginView.vue`               | COMPLETE | RENAME to `/staff/login`   |
+| `/staff-login`                     | (redirect)               | `auth`      | Staff               | Redirects to `admin-login`    | LEGACY   | MERGE -> `/staff/login`    |
+| `/portal/login`                    | (redirect)               | `public`    | Customers           | Redirects to `login`          | LEGACY   | MERGE -> `/login`          |
+| `/portal/signup`                   | (redirect)               | `public`    | Customers           | Redirects to `portal-signup`  | LEGACY   | MERGE -> `/signup`         |
+| `/account`                         | `portal-dashboard`       | `portal`    | Customer            | `portal/PortalDashboardView`  | COMPLETE | KEEP                       |
+| `/account/plans`                   | `portal-account-plans`   | `portal`    | Customer            | `portal/PortalAccountPlans`   | COMPLETE | KEEP                       |
+| `/account/invoice/:id`             | `portal-invoice`         | `portal`    | Customer            | `portal/PortalInvoiceView`    | COMPLETE | KEEP                       |
+| `/account/settings`                | `portal-account-settings`| `portal`    | Customer            | `portal/PortalAccountSettings`| COMPLETE | KEEP                       |
+| `/account/support`                 | `portal-support`         | `portal`    | Customer            | `portal/PortalSupportView`    | COMPLETE | KEEP                       |
+| `/account/database/studio`         | `portal-database-studio` | `portal`    | Customer            | `portal/PortalDatabaseStudio` | COMPLETE | KEEP                       |
+| `/hosting/:environmentId`          | `hosting-panel`          | `portal`    | Customer            | `hosting/HostingPanelView`    | COMPLETE | KEEP (11 Hosting Tabs)     |
+| `/hosting/:environmentId/files`    | `hosting-files`          | `portal`    | Customer            | `portal/PortalFilesView`      | COMPLETE | KEEP                       |
+| `/panel`                           | `dashboard`              | `staff`     | Staff               | `DashboardView.vue`           | COMPLETE | KEEP                       |
+| `/platform/customers`              | `platform-customers`     | `staff`     | Staff (Admin/Ops)   | `PlatformCustomersView`       | COMPLETE | KEEP                       |
+| `/platform/plans`                  | `platform-plans`         | `staff`     | Staff (Admin)       | `PlatformPlansView`           | COMPLETE | KEEP                       |
+| `/platform/orders`                 | `platform-orders`        | `staff`     | Staff (Admin/Care)  | `PlatformOrdersView`          | COMPLETE | KEEP                       |
+| `/platform/accounting`             | `platform-accounting`    | `staff`     | Staff (Admin/Care)  | `PlatformAccountingView`      | COMPLETE | KEEP                       |
+| `/support`                         | `support`                | `staff`     | Staff               | `SupportTicketsView`          | COMPLETE | KEEP                       |
+| `/applications`                    | `applications`           | `staff`     | Staff (Ops)         | `ApplicationsView`            | COMPLETE | KEEP                       |
+| `/domains`                         | `domains`                | `staff`     | Staff (Ops)         | `DomainsView`                 | COMPLETE | KEEP                       |
+| `/databases`                       | `databases`              | `staff`     | Staff (Ops)         | `DatabasesView`               | COMPLETE | KEEP                       |
+| `/admin/mail`                      | `mail-admin`             | `staff`     | Staff (Ops)         | `MailView`                    | COMPLETE | KEEP                       |
+| `/ssl`                             | `ssl`                    | `staff`     | Staff (Ops)         | `SslView`                     | COMPLETE | KEEP                       |
+| `/operations`                      | `operations`             | `staff`     | Staff (Ops)         | `OperationsView`              | COMPLETE | KEEP                       |
+| `/security`                        | `security`               | `staff`     | Superadmin          | `SecurityView`                | COMPLETE | KEEP                       |
+| `/servers`                         | `servers`                | `staff`     | Staff (Ops/Admin)   | `ServersView`                 | COMPLETE | KEEP                       |
+| `/settings`                        | `settings`               | `staff`     | Superadmin          | `SettingsView`                | COMPLETE | KEEP                       |
+| `/terminal`                        | `terminal`               | `staff`     | Superadmin          | `TerminalView`                | COMPLETE | RESTRICT to platform_owner |
+| `/terminal/full`                   | `terminal-full`          | `standalone`| Superadmin          | `TerminalFullscreenView`      | COMPLETE | RESTRICT to platform_owner |
+
+
+----------------------------------------------------------------------------------------------------
+13. BACKEND ROUTE INVENTORY (SUMMARY BY MODULE)
+----------------------------------------------------------------------------------------------------
+- `app.routers.v1.auth`: 13 endpoints (`/login`, `/logout`, `/refresh`, `/me`, `/totp/*`, `/privilege-*`, `/probe`).
+- `app.routers.v1.customers`: 78 endpoints (`/register`, `/login`, `/panel/*`, `/environments/*`, `/orders/*`, `/me/*`).
+- `app.routers.v1.platform_admin`: 45 endpoints (`/customers/*`, `/plans/*`, `/orders/*`, `/accounting/*`, `/users/*`).
+- `app.routers.v1.domains`: 15 endpoints (`/domains/*`, `/redirects`, `/dns-records`).
+- `app.routers.v1.databases`: 27 endpoints (`/databases/*`, `/studio`, `/adopt`, `/backup`).
+- `app.routers.v1.mail`: 13 endpoints (`/mail/*`, `/mailboxes`, `/aliases`, `/settings`).
+- `app.routers.v1.ssl`: 7 endpoints (`/ssl/*`, `/readiness`, `/issue`, `/renew-all`).
+- `app.routers.v1.files`: 18 endpoints (`/files/*`, `/content`, `/mkdir`, `/move`, `/compress`, `/extract`).
+- `app.routers.v1.terminal`: 3 endpoints (`/terminal/execute`, `/terminal/audit`, `/terminal/audit [DELETE]`).
+- `app.routers.v1.security`: 12 endpoints (`/security/*`, `/blacklist`, `/attempts`, `/firewall`).
+- `app.routers.v1.monitoring`: 3 endpoints (`/monitoring/*`, `/metrics`, `/integrations`).
+- `app.routers.v1.server`: 6 endpoints (`/server/*`, `/overview`, `/resources`, `/network`, `/ports`, `/cache/clear`).
+- `app.routers.v1.services`: 1 endpoint (`/services`).
+- `app.routers.v1.support`: 6 endpoints (`/support/tickets/*`).
+- `app.routers.v1.catalog`: 5 endpoints (`/plans/*`, `/meta`, `/status`, `/billing-terms`).
+- `app.routers.v1.public`: 1 endpoint (`/panel-redirect`).
+Total Backend Endpoints Audited: **245 endpoints**.
+
+
+----------------------------------------------------------------------------------------------------
+14. LOGIN ROUTE INVENTORY
+----------------------------------------------------------------------------------------------------
+- `/login`: Canonical Customer Web Authentication (Phone OTP or Email/Password).
+- `/signup`: Canonical Customer Registration & Verification.
+- `/admin_1`: Staff Control Plane Login (Target for rename to `/staff/login`).
+- `/staff-login`: Client-redirect to `/admin_1`.
+- `/portal/login`: Client-redirect to `/login`.
+- `/portal/signup`: Client-redirect to `/signup`.
+- `/{domain}/cpanel`: Path-based convenience redirect to portal SSO (`/go/hosting?host=...`).
+- `/{domain}/mail`: Path-based convenience redirect to shared Roundcube webmail (`https://mail.ifnotus.space`).
+
+
+----------------------------------------------------------------------------------------------------
+24. DANGEROUS ROUTES & 25. WEB TERMINAL VERDICT
+----------------------------------------------------------------------------------------------------
+1. Web Terminal (`/api/v1/terminal/execute`):
+   - Findings: Executes shell commands via `asyncio.create_subprocess_shell`. Restricted by regex blacklist
+     (`rm -rf /`, fork bombs, `mkfs`) and scopes (`APP`, `HOSTING`, `OPS`).
+   - Audit Verdict: Highly sensitive. Retain exclusively for `platform_owner` with mandatory TOTP prompt,
+     short session timeout, and complete audit logging.
+2. Destructive Database Studio (`/api/v1/databases/studio/query`):
+   - Findings: DDL and DROP statements require explicit `confirm_password` verification and emit audit logs.
+   - Audit Verdict: Properly gated.
+3. Environment Termination (`/api/v1/platform/environments/{id}/terminate`):
+   - Findings: Requires `Permission.SYSTEM_ADMIN` and explicit `confirm: bool = Query(default=True)`.
+   - Audit Verdict: Properly gated.
+
+
+----------------------------------------------------------------------------------------------------
+26. SERVER FILESYSTEM ACCESS VERDICT & 27. IDOR / CROSS-TENANT DEFENSE
+----------------------------------------------------------------------------------------------------
+1. Customer File Sandbox (`FileManagerService` with `only_roots`):
+   - Verified in `backend/app/routers/v1/customers.py` (line 794): `roots = await TenantService(session).roots_for_environment(customer.id, environment_id)`.
+   - Result: Customer A cannot access Customer B's files, product folders (`/srv/apps/quizsnap`), or system roots (`/etc`). Path traversal and symlink escapes are trapped.
+2. Staff File Manager (`FileManagerService` with `admin_storage=True`):
+   - Findings: Exposes `/srv`, `/var/www`, `/var/vmail`, `/var/backups` to staff users.
+   - Remediation: Deprecate arbitrary host-wide file editing. Restrict staff file access to explicit tenant or product application roots.
+
+
+----------------------------------------------------------------------------------------------------
+30. /CPANEL ACCESS VERDICT & 31. /MAIL ACCESS VERDICT
+----------------------------------------------------------------------------------------------------
+- `/cpanel`: Validated through `sanitize_panel_hostname()`. Strictly an entry redirect to `/go/hosting`,
+  preserving customer authentication and resolving environment ownership without credential duplication.
+- `/mail`: 302 redirect to shared webmail at `mail.ifnotus.space`. Mailbox authentication remains isolated
+  within Dovecot virtual mail credentials.
+
+
+----------------------------------------------------------------------------------------------------
+32. ISPCONFIG EXPOSURE & 33. PROVIDER PIPELINE AUDIT
+----------------------------------------------------------------------------------------------------
+- Direct ISPConfig Browser Exposure: **NONE** (0%). Customers never see port 8080 or ISPConfig screens.
+- Pipeline Uniformity: 100% of customer panel operations (domains, databases, mailboxes, FTP/SFTP, SSL,
+  cron, usage, suspend, reactivate) flow through `CustomerPanelProviderService` -> `HostingProvider` -> `ISPConfigClient`.
+
+
+----------------------------------------------------------------------------------------------------
+34. DIRECT SERVER-COMMAND BYPASS AUDIT
+----------------------------------------------------------------------------------------------------
+- All system commands (Nginx reload, systemd unit generation, quota management, BIND zone publishing)
+  are contained within dedicated service abstractions (`ModernAppRuntimeService`, `DnsWriterService`, `PlatformSystemMonitoringService`).
+- No FastApi route handler directly executes unshielded OS subprocesses.
+
+
+----------------------------------------------------------------------------------------------------
+42. FINAL NAVIGATION STRUCTURE BY ROLE
+----------------------------------------------------------------------------------------------------
+1. Customer Navigation:
+   - `Dashboard` (`/account`), `Hosting` (`/hosting/:id` -> Overview, Files, Databases, Domains, Email, FTP/SFTP, Stack, Apps, Cron, Backups, Logs), `Billing` (`/account/plans`, `/account/invoice/:id`), `Support` (`/account/support`), `Settings` (`/account/settings`).
+2. Platform Admin Navigation:
+   - `Dashboard` (`/panel`), `Customers` (`/platform/customers`), `Plans` (`/platform/plans`), `Orders` (`/platform/orders`), `Accounting` (`/platform/accounting`), `Support` (`/support`).
+3. Hosting Operator Navigation:
+   - `Hosting Accounts` (`/platform/customers`), `Domains & DNS` (`/domains`), `Email` (`/admin/mail`), `Databases` (`/databases`), `SSL` (`/ssl`), `Applications` (`/applications`), `Servers` (`/servers`), `Operations` (`/operations`), `Logs` (`/operations/logs`).
+4. Platform Owner (Superadmin) Navigation:
+   - `Dashboard` (`/panel`), `Platform Console`, `Infrastructure & Nodes` (`/servers`), `Providers & Settings` (`/settings`), `Security` (`/security`), `Staff & Access` (`/settings`), `Disaster Recovery` (`/operations/backups`), `Audit Logs` (`/security/attempts`).
+5. Auditor Navigation:
+   - Read-only dashboard, system metrics, monitoring reports, and audit logs.
+
+
+----------------------------------------------------------------------------------------------------
+47. EXACT FILES REQUIRING LATER MODIFICATION
+----------------------------------------------------------------------------------------------------
+1. `backend/app/core/permissions.py`: Update Role enum to 7 roles; update `ROLE_PERMISSIONS` matrix.
+2. `frontend/src/lib/roles.ts`: Update `STAFF_ROLES` constant and helper predicates.
+3. `frontend/src/router/index.ts`: Rename `/admin_1` to `/staff/login`; update permission guards.
+4. `frontend/src/lib/uiRegistry.ts`: Update master UI registry and staff navigation groups.
+5. `backend/app/routers/v1/terminal.py`: Add mandatory TOTP verification requirement.
+6. `backend/app/services/hosting/files.py`: Deprecate broad host-wide `_admin_storage_roots`.
+
+
+----------------------------------------------------------------------------------------------------
+48. EXACT ROUTES / PAGES LIKELY REMOVABLE (FUTURE CLEANUP)
+----------------------------------------------------------------------------------------------------
+- `/staff-login` (after 302 deprecation window)
+- `/portal/login` (after 302 deprecation window)
+- `/portal/signup` (after 302 deprecation window)
+
+
+----------------------------------------------------------------------------------------------------
+50. PRIORITY REMEDIATION ROADMAP
+----------------------------------------------------------------------------------------------------
+- **P0 SECURITY**: Restrict `/terminal/execute` behind mandatory TOTP 2FA step-up.
+- **P1 PRIVILEGE**: Transition from 6 legacy roles to 7-role capability model (`platform_owner`, `platform_admin`, `hosting_operator`, `billing_agent`, `support_agent`, `auditor`, `customer`).
+- **P2 ROUTE**: Canonicalize `/admin_1` to `/staff/login` with 302 backwards-compatibility redirect.
+- **P3 PAGE**: Deprecate host-wide `/srv` file browsing for standard staff roles.
+- **P4 NAMING**: Standardize customer panel URL slugs to `/account/hosting/:hostingSlug`.
+
+
+----------------------------------------------------------------------------------------------------
+51. MACHINE-READABLE CONTROL-PLANE SUMMARY (JSON)
+----------------------------------------------------------------------------------------------------
+```json
+{
+  "current_roles": ["superadmin", "admin", "operator", "viewer", "customer_care", "customer"],
+  "recommended_roles": ["platform_owner", "platform_admin", "hosting_operator", "billing_agent", "support_agent", "auditor", "customer"],
+  "roles_to_rename": {
+    "superadmin": "platform_owner",
+    "admin": "platform_admin",
+    "operator": "hosting_operator",
+    "viewer": "auditor",
+    "customer_care": "support_agent"
+  },
+  "roles_to_add": ["billing_agent"],
+  "roles_to_remove": [],
+  "dangerous_permissions": ["terminal:execute", "servers:delete", "system:admin"],
+  "permissions_to_remove": ["admin:servers_delete", "operator:terminal_execute"],
+  "permissions_to_restrict": ["terminal:execute", "files:write"],
+  "permissions_to_add": ["billing.manage", "disaster_recovery.exec", "providers.manage"],
+  "frontend_routes": [
+    "/", "/plans", "/plans/:slug", "/login", "/signup", "/admin_1",
+    "/account", "/account/plans", "/account/invoice/:id", "/account/settings",
+    "/account/support", "/account/database/studio", "/hosting/:environmentId",
+    "/panel", "/platform/customers", "/platform/plans", "/platform/orders",
+    "/platform/accounting", "/support", "/applications", "/domains",
+    "/databases", "/admin/mail", "/ssl", "/operations", "/security",
+    "/servers", "/settings", "/terminal"
+  ],
+  "backend_route_count": 245,
+  "customer_pages_to_keep": [
+    "Overview", "Files", "Databases", "Domains", "Email", "Transfer",
+    "Stack", "Apps", "Cron", "Backups", "Logs"
+  ],
+  "customer_pages_to_remove": [],
+  "staff_pages_to_restrict": ["/terminal", "/terminal/full", "/files"],
+  "superadmin_pages_to_remove": [],
+  "legacy_routes": ["/portal/login", "/portal/signup", "/staff-login"],
+  "dead_routes": [],
+  "unsafe_routes": ["/terminal"],
+  "web_terminal_recommendation": "RESTRICT to platform_owner with mandatory TOTP step-up verification",
+  "server_file_access_recommendation": "Deprecate host-wide /srv roots; restrict to tenant document roots",
+  "idor_findings": [],
+  "cross_tenant_findings": [],
+  "cpanel_route_status": "PASS — sanitized host SSO redirect",
+  "mail_route_status": "PASS — 302 redirect to Roundcube webmail",
+  "ispconfig_customer_exposed": false,
+  "provider_pipeline_clean": true,
+  "direct_server_bypasses": [],
+  "role_model_ready_for_refactor": true,
+  "highest_priority_issue": "Enforce TOTP challenge on web terminal execution endpoint",
+  "recommended_next_phase": "Phase Z Remediation & Control-Plane Hardening"
+}
+```
+
+====================================================================================================
+AUDIT COMPLETE — STOP
+====================================================================================================

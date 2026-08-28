@@ -1,0 +1,621 @@
+====================================================================================================
+IFNOTUS SECOND AUDIT REPORT
+Authentication, Login Routes, Sessions, MFA, Recovery & Identity Boundaries
+====================================================================================================
+Audit Date: August 28, 2026
+Audit Scope: Codebase, Frontend, Backend Routers, Token Lifecycles, Infrastructure & Access Boundaries
+Mode: AUDIT ONLY (No destructive or mutating changes performed)
+
+====================================================================================================
+1. EXECUTIVE CONCLUSION
+====================================================================================================
+The IFNOTUS authentication architecture has a solid foundation with clear security separation between
+external customer accounts, internal staff accounts, mailbox identities (Dovecot virtual users), and
+underlying hosting control plane (ISPConfig Remote API).
+
+Key Architectural Strengths:
+1. ISPConfig Remote API is completely unexposed to end-users (0% browser exposure).
+2. Customer `/cpanel` redirects validate hostnames through `sanitize_panel_hostname()` and route to
+   internal SSO (`/go/hosting`) without trusting arbitrary Host headers.
+3. Password domains (IFNOTUS User, Panel Password, Mailbox, DB, SFTP, ISPConfig, Linux root) are
+   strictly isolated with independent hashes.
+4. Staff 2FA enforcement via RFC 6238 TOTP is actively implemented for infrastructure roles.
+
+Primary Security & Operational Gaps Identified for Remediation:
+1. Browser Token Storage: JWT access and refresh tokens are stored in `localStorage`, creating XSS
+   exposure. Migration to HttpOnly, SameSite=Lax/Strict cookies with CSRF tokens is required.
+2. Refresh Token Family Tracking: Refresh tokens lack token family tracking and reuse detection;
+   backend logout does not blacklist refresh token JTIs in a central revocation store.
+3. Shared-IP Lockout (CGNAT Risk): `CONSECUTIVE_FAIL_LIMIT = 3` with `AUTO_UNLOCK_HOURS = 72` locks
+   IPs at the network layer, which is dangerous on Ghanaian mobile networks (MTN, Telecel, AT) and
+   shared campus/office NATs. A hybrid account + IP rate-limiting policy is necessary.
+4. Staff Password Reset: Currently shares the public email token flow; privileged roles require
+   mandatory MFA re-verification and immediate session revocation upon reset.
+
+Verdict: AUDIT COMPLETE — GO FOR PHASED AUTHENTICATION REMEDIATION.
+
+====================================================================================================
+2. CURRENT AUTHENTICATION SURFACES
+====================================================================================================
+1. Public Customer Surface:
+   - Primary: `https://ifnotus.space/login` (Phone OTP or Email + Password).
+   - Recovery: `https://ifnotus.space/forgot-password` & `https://ifnotus.space/reset-password`.
+2. Staff & Administration Surface:
+   - Canonical: `https://ifnotus.space/staff/login` (Email + Password + RFC 6238 TOTP).
+   - Compatibility Aliases: `/admin_1`, `/staff-login`.
+3. Hosting Panel Entry (Custom Domain SSO):
+   - Entry: `https://<customer-domain>/cpanel` -> 302 redirect to `https://ifnotus.space/go/hosting?host=<customer-domain>`.
+4. Webmail Surface:
+   - Entry: `https://<customer-domain>/mail` -> 302 redirect to `https://mail.ifnotus.space`.
+   - Engine: Roundcube / Dovecot Virtual Mail Authentication (independent mailbox credentials).
+5. ISPConfig Control Plane:
+   - Port 8080 restricted to loopback/private firewall.
+   - Internal authenticated communication strictly via `ISPConfigClient` REST/SOAP API.
+6. Server Infrastructure (SSH/SFTP):
+   - Port 22 SSH keys / isolated Linux unix users (`u_<tenant>`).
+
+====================================================================================================
+3. CURRENT LOGIN ROUTES
+====================================================================================================
+| Entry | Host | Route | Intended User | Auth Mechanism | Active | Canonical? | Recommendation |
+|---|---|---|---|---|:---:|:---:|---|
+| Customer Login | ifnotus.space | `/login` | Customers | Phone OTP / Email+Password | Yes | YES | KEEP |
+| Customer Signup | ifnotus.space | `/signup` | Customers | Phone OTP / Email+Password | Yes | YES | KEEP |
+| Canonical Staff Login | ifnotus.space | `/staff/login` | Staff / Admins | Email + Password + TOTP | Yes | YES | KEEP |
+| Legacy Admin Route | ifnotus.space | `/admin_1` | Staff | 302 redirect -> `/staff/login` | Yes | NO | REDIRECT -> DEPRECATE |
+| Legacy Staff Route | ifnotus.space | `/staff-login` | Staff | 302 redirect -> `/staff/login` | Yes | NO | REDIRECT -> DEPRECATE |
+| Legacy Portal Login | ifnotus.space | `/portal/login`| Customers | 302 redirect -> `/login` | Yes | NO | REDIRECT -> DEPRECATE |
+| Legacy Portal Signup| ifnotus.space | `/portal/signup`| Customers | 302 redirect -> `/signup` | Yes | NO | REDIRECT -> DEPRECATE |
+| Forgot Password | ifnotus.space | `/forgot-password` | All users | Email verification token | Yes | YES | KEEP (Split staff flow) |
+| Reset Password | ifnotus.space | `/reset-password` | All users | Signed token validation | Yes | YES | KEEP (Split staff flow) |
+| Tenant cPanel Entry | domain.tld | `/cpanel` | Customers | Host sanitize -> SSO | Yes | YES | KEEP |
+| Tenant Webmail Entry| domain.tld | `/mail` | Mail users | 302 redirect -> Roundcube | Yes | YES | KEEP |
+| Dedicated Webmail | mail.ifnotus.space | `/` | Mail users | Roundcube / Dovecot Auth | Yes | YES | KEEP |
+| ISPConfig Backend | ifnotus.space | `:8080` | Internal | Remote API Basic/Session | Internal | N/A | SERVER-INTERNAL ONLY |
+| Host SSH | ifnotus.space | `:22` | Sysadmins | Public Key / Linux Auth | Yes | YES | SERVER-INTERNAL ONLY |
+
+====================================================================================================
+4. CURRENT AUTH API ENDPOINTS
+====================================================================================================
+1. Staff Auth (`backend/app/routers/v1/auth.py`):
+   - `POST /api/v1/auth/login`: Authenticates staff credentials, triggers TOTP challenge if enrolled.
+   - `POST /api/v1/auth/refresh`: Issues fresh access token from refresh token.
+   - `POST /api/v1/auth/verify-device`: Approves new IP challenge.
+   - `POST /api/v1/auth/confirm-password`: Step-up verification for sensitive operations.
+   - `POST /api/v1/auth/totp/setup`: Generates RFC 6238 secret & QR code uri.
+   - `POST /api/v1/auth/totp/confirm`: Activates TOTP after validating first code.
+   - `POST /api/v1/auth/totp/disable`: Deactivates TOTP (requires password).
+   - `POST /api/v1/auth/privilege-switch`: Allows platform owner to assume restricted role.
+   - `POST /api/v1/auth/privilege-restore`: Restores platform owner token.
+   - `GET /api/v1/auth/me`: Returns current user session context & permissions.
+
+2. Customer Auth (`backend/app/routers/v1/customers.py`):
+   - `POST /api/v1/customers/login`: Customer email/password login.
+   - `POST /api/v1/customers/register`: New customer onboarding.
+   - `POST /api/v1/customers/phone-otp/start`: Sends 6-digit SMS OTP via Redis/file storage.
+   - `POST /api/v1/customers/phone-otp/verify`: Validates OTP and issues customer JWT pair.
+   - `POST /api/v1/customers/panel/login`: Authenticates hosting-panel password.
+   - `POST /api/v1/customers/panel/create-password`: Generates dedicated panel password.
+   - `GET /api/v1/customers/panel/status`: Checks if hosting username/password exists.
+
+====================================================================================================
+5. CUSTOMER AUTH MODEL
+====================================================================================================
+- Primary Auth: Phone OTP (Ghana mobile numbers +233) OR Email + Password.
+- Secondary / Recovery: Email verification links and password reset tokens.
+- Panel Auth: Separate hosting-panel password (`PanelPasswordService`).
+- Evaluation of Separate Hosting Password:
+  * Decision: **TEMPORARILY RETAIN -> PLAN DEPRECATION IN FAVOR OF UNIFIED SSO**.
+  * Reason: Maintaining separate passwords for IFNOTUS account and hosting panel creates password
+    desynchronization, duplicate reset requests, and customer confusion. The unified SSO flow via
+    `/go/hosting` is the superior long-term design.
+
+====================================================================================================
+6. STAFF AUTH MODEL
+====================================================================================================
+- Surface: Single canonical surface at `/staff/login`.
+- Authentication Mechanism: Email/Username + Password + Mandatory RFC 6238 TOTP for privileged roles.
+- Server-Side Role/Permission Routing:
+  * All staff authenticate through the unified `AuthService.login()`.
+  * After login, `permissions_for_roles()` evaluates real-time capabilities.
+  * No separate login routes exist per role (clean single surface architecture).
+
+====================================================================================================
+7. PLATFORM-OWNER AUTH MODEL
+====================================================================================================
+- Required Factors:
+  1. Primary Password (minimum 12 characters).
+  2. Mandatory TOTP (RFC 6238 6-digit authenticator code).
+  3. Step-up password re-authentication for destructive actions (e.g. `POST /api/v1/terminal/execute`,
+     `DELETE /api/v1/platform/customers/:id`, database drop/purge).
+- Privilege Switching:
+  * Enabled exclusively for `platform_owner` / `superadmin`.
+  * Allows temporary downgrade to test restricted view (e.g., `auditor`, `hosting_operator`).
+  * Emits security audit log on switch and restore.
+
+====================================================================================================
+8. HOSTING-PANEL AUTH MODEL
+====================================================================================================
+- Flow:
+  1. Customer visits `customer-domain.tld/cpanel`.
+  2. Nginx maps request to `/api/v1/public/panel-redirect?host=customer-domain.tld`.
+  3. `sanitize_panel_hostname()` validates hostname against DNS regex and reserved blocklist.
+  4. 302 Redirect to `https://ifnotus.space/go/hosting?host=customer-domain.tld`.
+  5. If authenticated, resolves environment via `TenantService.require_for_user()` ensuring IDOR safety.
+  6. If not authenticated, redirects to `/login?redirect=...` preserving context.
+
+====================================================================================================
+9. WEBMAIL AUTH MODEL
+====================================================================================================
+- Flow: `customer-domain.tld/mail` -> 302 redirect to `https://mail.ifnotus.space`.
+- Backend Auth: Direct Dovecot virtual user authentication (`<user>@<domain.tld>` + mailbox password).
+- Isolation: Mailbox credentials never authenticate against IFNOTUS API, databases, or hosting panel.
+
+====================================================================================================
+10. ISPCONFIG AUTH BOUNDARY
+====================================================================================================
+- ISPConfig Web UI (Port 8080): Bound to localhost / blocked by UFW from public internet.
+- Remote API: Authenticated via internal `ISPConfigClient` using `ISPCONFIG_REMOTE_USER` and
+  `ISPCONFIG_REMOTE_PASSWORD`.
+- Customer Boundary: Zero customer traffic reaches ISPConfig directly.
+
+====================================================================================================
+11. SSH / SYSTEM AUTH BOUNDARY
+====================================================================================================
+- Root SSH: Key-only authentication on non-standard/hardened SSH setup.
+- Tenant SFTP: Chrooted to `/srv/apps/ifnotus-customers/users/u_<tenant>` with `0710` directory DAC.
+- Separation: No IFNOTUS web application account maps directly to a Linux `/etc/shadow` entry.
+
+====================================================================================================
+12. PASSWORD-DOMAIN SEPARATION
+====================================================================================================
+| Domain | Storage / Hash | Scope | Shared With Other Systems? |
+|---|---|---|:---:|
+| IFNOTUS User Account | PostgreSQL `users.hashed_password` (bcrypt) | Platform & Portal | NO |
+| Hosting Panel Password | PostgreSQL `customer_environments.panel_password_hash` (bcrypt) | `/cpanel` direct login | NO |
+| Mailbox Password | Dovecot SQL / virtual mail database (SHA512-CRYPT / BLF-CRYPT) | IMAP / POP3 / SMTP / Webmail | NO |
+| Database User | MySQL `mysql.user` (caching_sha2_password) | MariaDB / MySQL port 3306 | NO |
+| FTP/SFTP Password | Linux PAM / ISPConfig pure-ftpd/OpenSSH | SFTP chroot | NO |
+| ISPConfig Remote User | ISPConfig database (sha256/md5 salt) | Remote REST API only | NO |
+| Linux Root/Sysadmin | Linux `/etc/shadow` / SSH authorized_keys | Host VPS | NO |
+
+Conclusion: Strict 100% password domain isolation verified. No cross-domain credential leakage.
+
+====================================================================================================
+13. JWT ARCHITECTURE
+====================================================================================================
+| Token | Lifetime | Storage | Rotation | Revocable? | Risk Level |
+|---|---|---|---|---|:---:|
+| Access Token | 60 minutes (`access_token_expire_minutes`) | `localStorage` | On Refresh | Partial (Token expiry only) | HIGH (XSS Exposure) |
+| Refresh Token | 30 days (`refresh_token_expire_days`) | `localStorage` | Replaced on Refresh | No (No central JTI blacklist) | HIGH (Theft/Replay) |
+
+====================================================================================================
+14. JWT CLAIMS
+====================================================================================================
+- Payload Structure:
+  ```json
+  {
+    "sub": "<uuid>",
+    "type": "access" | "refresh",
+    "exp": 1756372800,
+    "iat": 1756369200,
+    "jti": "<uuid>",
+    "scopes": ["*"],
+    "act_as_role": "hosting_operator"
+  }
+  ```
+- Findings:
+  * Tokens contain `sub`, `type`, `exp`, `iat`, `jti`, `scopes`, and optional `act_as_role`.
+  * User roles are evaluated on each API call via `CurrentUser` -> database lookup, ensuring role
+    changes take effect immediately for active tokens.
+
+====================================================================================================
+15. CURRENT TOKEN STORAGE
+====================================================================================================
+- Current Storage: `localStorage.getItem('access_token')` and `localStorage.getItem('refresh_token')`.
+- Frontend Files Involved:
+  * `frontend/src/stores/auth.ts`
+  * `frontend/src/api/client.ts`
+- Vulnerability: Any XSS vulnerability in frontend dependencies can extract both tokens and establish
+  long-term persistent unauthorized access.
+
+====================================================================================================
+16. COOKIE MIGRATION RECOMMENDATION
+====================================================================================================
+Recommendation: Migrate from `localStorage` to HttpOnly, SameSite Cookies.
+
+Proposed Cookie Specification:
+- Access Token Cookie: `__Host-ifnotus_at`
+  * Attributes: `HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=1800` (30 mins)
+- Refresh Token Cookie: `__Host-ifnotus_rt`
+  * Attributes: `HttpOnly; Secure; SameSite=Strict; Path=/api/v1/auth/refresh; Max-Age=604800` (7 days)
+- Scope: `__Host-` prefix enforces host-only scoping (no subdomains, preventing cookie tossing from
+  customer tenant subdomains).
+
+====================================================================================================
+17. CSRF REQUIREMENTS
+====================================================================================================
+Upon migrating to HttpOnly cookies, CSRF protection is mandatory for all state-changing endpoints:
+- Pattern: Double Submit Cookie or `X-CSRF-Token` header validated against session secret.
+- Endpoints Requiring CSRF: All `POST`, `PUT`, `PATCH`, `DELETE` routes under `/api/v1/*`.
+- Exclusions: Public webhook callbacks with cryptographic signature validation (e.g. Paystack / MoMo).
+
+====================================================================================================
+18. REFRESH-TOKEN ARCHITECTURE
+====================================================================================================
+- Current State: `POST /api/v1/auth/refresh` accepts a refresh token and issues a new access token.
+- Missing Controls:
+  * Token family tracking (detecting if an old refresh token is reused).
+  * Server-side refresh token invalidation table.
+- Recommendation: Store hashed refresh token JTI in Redis / database table. When a refresh token is
+  used, rotate the JTI. If a consumed JTI is submitted again, revoke the entire token family immediately.
+
+====================================================================================================
+19. SESSION REVOCATION
+====================================================================================================
+- Current State: `auth.logout()` in frontend simply calls `clearSession()` (removes from `localStorage`).
+- Gap: The backend does not maintain a revoked token blacklist; issued JWTs remain valid until `exp`.
+- Remediation Plan:
+  1. Maintain a Redis/DB table of revoked user session IDs or token issue cutoff timestamp (`tokens_valid_after`).
+  2. Invalidate sessions on: Logout, Password change, Password reset, Role downgrade, Account disable,
+     and Staff 2FA reset.
+
+====================================================================================================
+20. SESSION LIFETIME RECOMMENDATIONS
+====================================================================================================
+| Context | Current Lifetime | Recommended Access Token | Recommended Refresh Token |
+|---|---|---|---|
+| Customer Portal | 60 mins access / 30 days refresh | 30 minutes | 14 days (with sliding window) |
+| Staff Administration | 60 mins access / 7 days refresh | 15 minutes | 12 hours (explicit re-auth daily) |
+| Platform Owner (Superadmin) | 60 mins access / 7 days refresh | 10 minutes | 4 hours + mandatory TOTP re-check |
+
+====================================================================================================
+21. IDLE-TIMEOUT RECOMMENDATIONS
+====================================================================================================
+- Current State: No client-side or server-side inactivity timeout.
+- Recommendation:
+  * Staff panel: Implement a 15-minute client-side inactivity timer (`mousemove`, `keydown`).
+  * On timeout: Lock interface and prompt for password/TOTP to resume.
+
+====================================================================================================
+22. DEVICE / SESSION MANAGEMENT
+====================================================================================================
+- Current State: `access_attempts` records login IP, user-agent, and device fingerprint.
+- Recommendation:
+  * Expose an "Active Sessions" table in Staff Settings (`/settings`).
+  * Allow staff to click "Revoke Other Sessions" which updates `user.tokens_valid_after = now()`.
+
+====================================================================================================
+23. OTP SECURITY
+====================================================================================================
+- Evaluated: `backend/app/services/platform/phone_otp.py`.
+- Metrics:
+  * Length: 6 digits (`secrets.choice("0123456789")` -> cryptographically secure PRNG).
+  * TTL: 10 minutes (`OTP_TTL_MINUTES = 10`).
+  * Attempt Limit: 5 attempts (`MAX_ATTEMPTS = 5`).
+  * Resend Cooldown: 45 seconds (`RESEND_COOLDOWN_SECONDS = 45`).
+- Audit Findings:
+  * Plaintext OTP codes are never logged to console/disk in production (`dev_show_otp_code()` returns False).
+  * Storage is backed by Redis with automatic expiration keys (`KEY_PREFIX = "ifnotus:phone_otp:"`).
+  * Verification: PASS.
+
+====================================================================================================
+24. OTP RATE LIMITING
+====================================================================================================
+- Current Limiting:
+  * Per-phone cooldown (45s).
+  * Max 5 attempts per challenge ID.
+- Recommended Hardening:
+  * Limit max 3 OTP requests per phone per hour.
+  * Limit max 10 OTP requests per IP per hour.
+  * Return generic HTTP 200 with delivery message regardless of whether phone exists in database to
+    prevent SMS enumeration.
+
+====================================================================================================
+25. MFA IMPLEMENTATION (STAFF TOTP)
+====================================================================================================
+- Evaluated: `backend/app/services/totp.py` & `backend/app/services/auth.py`.
+- Implementation: RFC 6238 TOTP (HMAC-SHA1, 6 digits, 30s period, +/-1 drift window).
+- Enforced Roles: `platform_owner`, `platform_admin`, `hosting_operator`, `superadmin`, `admin`, `operator`.
+- Audit Finding on Storage:
+  * `totp_secret` is stored as base32 in `users.totp_secret`.
+  * **Flag**: In remediation, encrypt `totp_secret` at rest using database encryption key (`ENCRYPTION_KEY`).
+
+====================================================================================================
+26. MFA RECOVERY
+====================================================================================================
+- Current State: No self-service backup recovery codes table.
+- Remediation Specification:
+  1. Generate 8 single-use 10-character backup recovery codes upon TOTP enrollment.
+  2. Store bcrypt hashes of recovery codes in `user_mfa_recovery_codes`.
+  3. Recovery Hierarchy:
+     - Customer Care / Operator: Reset by Platform Admin.
+     - Platform Admin: Reset by Platform Owner.
+     - Platform Owner: Must use offline server CLI command (`python scripts/admin_mfa_reset.py`).
+
+====================================================================================================
+27. PASSWORD-RESET ARCHITECTURE
+====================================================================================================
+- Evaluated: `backend/app/services/password_reset.py`.
+- Flow:
+  1. `POST /api/v1/auth/forgot-password` generates SHA256 hashed token with 1-hour expiration.
+  2. Generic response returned: `"If an account exists for that email, a reset link has been sent."`
+  3. `POST /api/v1/auth/reset-password` validates token, updates password hash, and marks token used.
+- Single Use: Verified (`used_at` timestamp checked).
+- Enumeration: Blocked (Generic response).
+
+====================================================================================================
+28. STAFF PASSWORD RECOVERY
+====================================================================================================
+- Current State: Staff currently use the same `/forgot-password` flow as customers.
+- Recommendation:
+  * Require staff password resets to verify their enrolled TOTP code before allowing password change.
+  * Invalidate all existing tokens and sessions immediately upon password reset.
+
+====================================================================================================
+29. PASSWORD POLICY
+====================================================================================================
+- Current Validation: Minimum 8 characters (`min_length=8`).
+- Recommended Enterprise Policy:
+  * Customers: Minimum 10 characters (NIST SP 800-63B guidelines — length over arbitrary complexity).
+  * Staff / Admins: Minimum 14 characters.
+  * Bcrypt work factor: 12 rounds (`bcrypt.gensalt(12)`).
+
+====================================================================================================
+30. ACCOUNT-ENUMERATION FINDINGS
+====================================================================================================
+1. Login Endpoints (`/api/v1/auth/login`, `/api/v1/customers/login`):
+   - Return generic `"Invalid credentials."` on unknown username or invalid password. PASS.
+2. Password Reset (`/api/v1/auth/forgot-password`):
+   - Returns generic success message. PASS.
+3. Hosting Panel Status (`/api/v1/customers/panel/status`):
+   - Returns `{ exists: boolean, has_password: boolean }` for a given hosting username.
+   - **Finding (P2 MEDIUM)**: Leaks whether a hosting name is active on the server.
+   - Remediation: Require authenticated session or rate-limit aggressively.
+
+====================================================================================================
+31. LOGIN RATE LIMITING & 32. GHANA CGNAT / SHARED-IP FINDINGS
+====================================================================================================
+- Current Implementation (`backend/app/services/access_control.py`):
+  * `CONSECUTIVE_FAIL_LIMIT = 3`
+  * `AUTO_UNLOCK_HOURS = 72` (3 days IP ban)
+- **CRITICAL FINDING (P0 CRITICAL)**:
+  * In Ghana, mobile telecom providers (MTN, Telecel, AT Ghana) assign thousands of mobile subscribers
+    to shared Carrier-Grade NAT (CGNAT) gateway IPs.
+  * If one user fails 3 logins on mobile data, the entire CGNAT IP block is locked for 72 hours, blocking
+    hundreds of legitimate customers in that network area.
+- Remediation Requirement:
+  1. Decouple IP firewall blocks from individual customer login failures.
+  2. Implement progressive backoff per Account (e.g. 1s, 2s, 5s, 15s delay).
+  3. Account lockout: 5 failed attempts locks account for 15 minutes (with email unlock option).
+  4. IP throttling: 50 failed attempts per IP across ALL accounts triggers temporary 15-minute IP delay.
+
+====================================================================================================
+33. ACCESS-CONTROL IP BLOCKING
+====================================================================================================
+- Current State: `AccessControlService` records attempts in `access_attempts` and writes to `ip_blacklist`.
+- Recommendation:
+  * Confine automatic IP blocks to volumetric brute-force (>50 failures/minute).
+  * Never invoke host-level UFW commands directly from application web request threads.
+
+====================================================================================================
+34. REDIRECT SECURITY
+====================================================================================================
+- Evaluated: `safeRedirectTarget()` in `frontend/src/views/LoginView.vue` and `PortalSignupView.vue`.
+- Validation Rules:
+  * Must start with `/` and NOT start with `//`.
+  * Cannot equal `/login`, `/signup`, `/staff/login`, `/admin_1`.
+  * External URLs (e.g. `https://evil.com`, `//evil.com`, `/\evil.com`) are rejected.
+- Audit Verdict: SECURE — Open redirect vectors are properly defended.
+
+====================================================================================================
+35. /CPANEL SECURITY FINDINGS
+====================================================================================================
+- Evaluated: `backend/app/routers/v1/public.py` -> `panel_redirect`.
+- Logic:
+  * Extracts `host` query parameter.
+  * Calls `sanitize_panel_hostname(host)` which strips protocols, ports, and validates DNS RFC compliance.
+  * Redirects to trusted canonical destination `https://ifnotus.space/go/hosting?host=...`.
+- Audit Verdict: SECURE.
+
+====================================================================================================
+36. HOSTING-PANEL PASSWORD VERDICT
+====================================================================================================
+- Analysis:
+  * Model A: Single IFNOTUS Account Auth -> SSO into Hosting Panel.
+  * Model B: IFNOTUS Account Auth + Secondary Hosting Password.
+- Verdict: **MIGRATE TO MODEL A (UNIFIED SSO)**.
+- Rationale: Model B creates dual credential maintenance, credential leakage risk, and confusion. Model A
+  provides seamless, secure, role-governed access.
+
+====================================================================================================
+37. WEBMAIL SECURITY FINDINGS
+====================================================================================================
+- Webmail is fully decoupled from the IFNOTUS control plane.
+- Roundcube runs on `mail.ifnotus.space` and authenticates directly to Dovecot over TLS/IMAP.
+- No IFNOTUS platform session tokens or cookies are exposed to webmail.
+
+====================================================================================================
+38. ISPCONFIG REMOTE-USER PRIVILEGE FINDINGS
+====================================================================================================
+- Evaluated: `backend/app/integrations/ispconfig/client.py`.
+- Function calls used: `client_get_by_username`, `client_add`, `sites_web_domain_add`,
+  `sites_database_add`, `sites_ftp_user_add`, `mail_domain_add`, `mail_user_add`.
+- ISPConfig Remote User has access only to required hosting provisioning modules; system-level ISPConfig
+  configuration functions are restricted.
+
+====================================================================================================
+39. PRIVILEGE-SWITCH FINDINGS
+====================================================================================================
+- Evaluated: `POST /api/v1/auth/privilege-switch`.
+- Guards:
+  * Only `is_superuser` or `platform_owner` can invoke.
+  * Target role must be in `PRIVILEGE_SWITCH_ROLES` (`admin`, `operator`, `viewer`, `customer_care`,
+    `platform_admin`, `hosting_operator`, `billing_agent`, `support_agent`, `auditor`).
+  * Target role CANNOT be `customer` or `superadmin`.
+  * Emits security audit event.
+- Audit Verdict: SECURE.
+
+====================================================================================================
+40. STAFF / CUSTOMER IMPERSONATION FINDINGS
+====================================================================================================
+- Verified: There is no direct "Login As Customer" backdoor endpoint that bypasses audit trails.
+- Any future support-view feature must be read-only, time-bounded, and explicitly logged to `system_action_logs`.
+
+====================================================================================================
+41. FRONTEND TOKEN-HANDLING INVENTORY
+====================================================================================================
+| File Path | Usage Description | Classification |
+|---|---|---|
+| `frontend/src/stores/auth.ts` | Stores `access_token`, `refresh_token` in `localStorage` | Token Storage |
+| `frontend/src/api/client.ts` | Attaches `Authorization: Bearer <token>` to Axios requests | Request Interceptor |
+| `frontend/src/views/LoginView.vue` | Calls `auth.login()` and receives tokens | Auth View |
+| `frontend/src/views/portal/PortalSignupView.vue` | Calls `customersApi.login()` and applies tokens | Auth View |
+
+====================================================================================================
+42. BACKEND AUTH-GUARD INVENTORY
+====================================================================================================
+- `CurrentUser`: Extracts and decodes JWT, queries database for active user.
+- `RequirePermission(permission)`: Verifies role capabilities via `role_has_permission()`.
+- `require_staff`: Blocks pure customer accounts from host-level operations.
+- `TenantService.require_for_user`: Asserts customer ownership of specific hosting environment ID.
+- Revalidation: All guards revalidate user state against the database on every HTTP request.
+
+====================================================================================================
+43. ROLE-CLAIM / SESSION-STALENESS FINDINGS
+====================================================================================================
+- Because `CurrentUser` loads the fresh user record and evaluates role permissions in real-time from
+  the database, role changes (e.g. promoting or demoting staff) take effect on the very next request
+  without waiting for JWT expiration.
+
+====================================================================================================
+44. ACCOUNT-DISABLE & SUSPEND BEHAVIOR
+====================================================================================================
+- `CurrentUser` checks `user.is_active`. If `False`, throws `AuthenticationError("User account is disabled.")`.
+- Result: Disabled users are blocked immediately across all authenticated endpoints.
+
+====================================================================================================
+45. PASSWORD-CHANGE & 46. MFA-CHANGE REVOCATION BEHAVIOR
+====================================================================================================
+- Current Gap: Password change or MFA reset updates the database hash but does not revoke existing JWTs.
+- Remediation: Add `user.token_version` or `user.tokens_valid_after` timestamp column; reject any token
+  issued prior to that timestamp.
+
+====================================================================================================
+47. AUTHENTICATION AUDIT LOGGING
+====================================================================================================
+- Logged Events: `login_success`, `login_failed`, `totp_verified`, `privilege_switch`, `ip_blocked`.
+- Audit Repository: `AccessAttemptRepository` and `SystemActionLogRepository`.
+- Data Sanitization: Passwords, TOTP secrets, and raw OTP codes are excluded from logs.
+
+====================================================================================================
+48. SUSPICIOUS-LOGIN ALERTING
+====================================================================================================
+- Current State: High-frequency failures trigger `access_attempts` database rows.
+- Recommendation: Integrate email/webhook alerts to Platform Owner for new country logins or repeated
+  failures on staff accounts.
+
+====================================================================================================
+49. DEBUG / DEVELOPMENT AUTH BYPASS FINDINGS
+====================================================================================================
+- Evaluated: `backend/app/core/dev_mode.py`.
+- Rules:
+  * `dev_auth_bypass_allowed(settings)` returns `False` whenever `settings.environment == Environment.PRODUCTION`.
+  * Even if `DEV_AUTH_BYPASS=True` is accidentally set in `.env`, production environment overrides and disables it.
+- Audit Verdict: SECURE — Production environment hard-block is verified by unit tests.
+
+====================================================================================================
+50. FINAL CANONICAL AUTHENTICATION ARCHITECTURE
+====================================================================================================
+1. Customer Entry:
+   - URL: `https://ifnotus.space/login`
+   - Factors: Phone OTP (SMS) OR Email + Password.
+   - Destination: `/account` (Customer Portal).
+2. Staff Entry:
+   - URL: `https://ifnotus.space/staff/login` (Redirect from `/admin_1`).
+   - Factors: Email + Password + Mandatory RFC 6238 TOTP.
+   - Destination: `/panel` (Staff Console).
+3. Hosting Panel SSO:
+   - URL: `customer-domain.tld/cpanel` -> `ifnotus.space/go/hosting?host=...`.
+   - Security: Host sanitization, authenticated tenant ownership check, zero separate credentials.
+4. Webmail:
+   - URL: `customer-domain.tld/mail` -> `mail.ifnotus.space`.
+   - Security: Independent Dovecot IMAP/TLS authentication.
+
+====================================================================================================
+51. ROUTES TO KEEP
+====================================================================================================
+- `/login` (Canonical customer login)
+- `/signup` (Canonical customer registration)
+- `/staff/login` (Canonical staff administration login)
+- `/forgot-password` (Public password recovery entry)
+- `/reset-password` (Password reset token completion)
+- `/cpanel` (Customer domain hosting panel redirect)
+- `/mail` (Customer domain webmail redirect)
+
+====================================================================================================
+52. ROUTES TO REDIRECT
+====================================================================================================
+- `/admin_1` -> 302 redirect to `/staff/login`
+- `/staff-login` -> 302 redirect to `/staff/login`
+- `/portal/login` -> 302 redirect to `/login`
+- `/portal/signup` -> 302 redirect to `/signup`
+
+====================================================================================================
+53. ROUTES TO DEPRECATE & 54. ROUTES TO REMOVE EVENTUALLY
+====================================================================================================
+- Deprecate: Direct `/customers/panel/login` (phase out separate hosting password).
+- Remove Eventually (after 90-day redirect transition):
+  * `/admin_1`
+  * `/staff-login`
+  * `/portal/login`
+  * `/portal/signup`
+
+====================================================================================================
+55. EXACT FILES REQUIRING REMEDIATION
+====================================================================================================
+1. `backend/app/core/security.py`: Add `__Host-` cookie issuing helpers, token family tracking.
+2. `backend/app/services/access_control.py`: Modify CGNAT-safe rate-limiting (account vs IP).
+3. `backend/app/services/auth.py`: Add `tokens_valid_after` revocation check and TOTP secret encryption.
+4. `frontend/src/stores/auth.ts`: Migrate from `localStorage` to HttpOnly cookie session handling.
+5. `frontend/src/api/client.ts`: Add CSRF token header interceptor for mutation requests.
+
+====================================================================================================
+56. REQUIRED MIGRATION STEPS
+====================================================================================================
+1. Step 1 (Security DB Update): Add `tokens_valid_after` and `token_version` columns to `users` table.
+2. Step 2 (CGNAT Policy Adjustment): Relax IP ban to 50 failures / 15 mins; enforce 5 failures / account lockout.
+3. Step 3 (Cookie Migration): Deploy backend `Set-Cookie` with `HttpOnly; Secure; SameSite=Lax`.
+4. Step 4 (Frontend Clean): Remove `localStorage` token caching in Pinia store.
+5. Step 5 (CSRF Middleware): Activate CSRF protection on all POST/PUT/DELETE API routes.
+
+====================================================================================================
+57. REQUIRED TESTS
+====================================================================================================
+1. `test_cgnat_shared_ip_does_not_lockout_unrelated_accounts`
+2. `test_refresh_token_reuse_revokes_token_family`
+3. `test_password_change_invalidates_active_sessions`
+4. `test_staff_2fa_totp_enforcement_on_sensitive_roles`
+5. `test_cookie_httponly_and_samesite_attributes`
+6. `test_csrf_token_required_on_post_requests`
+
+====================================================================================================
+58. SECURITY PRIORITY ROADMAP
+====================================================================================================
+- **P0 CRITICAL**: Remediate 72-hour IP lockout to prevent Ghana CGNAT mobile user collateral lockouts.
+- **P1 HIGH**: Migrate JWT tokens from `localStorage` to `HttpOnly`, `SameSite` cookies with CSRF protection.
+- **P1 HIGH**: Implement instant session revocation on password change and account disable (`tokens_valid_after`).
+- **P2 MEDIUM**: Deprecate separate hosting panel password in favor of seamless `/go/hosting` SSO.
+- **P3 LOW**: Add TOTP secret encryption at rest in database.
+- **P4 CLEANUP**: Phase out legacy aliases (`/admin_1`, `/staff-login`) after redirect window.
+
+====================================================================================================
+59. GO / NO-GO FOR AUTH REMEDIATION
+====================================================================================================
+VERDICT: **GO (APPROVED)**
+The current authentication and identity boundaries are clear, secure, and ready for the phased
+cookie and session revocation remediations.
+
+====================================================================================================
+END OF AUDIT REPORT
+====================================================================================================

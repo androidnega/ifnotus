@@ -1,0 +1,52 @@
+================================================================================
+PHASE T — FIRST LEGACY TENANT MIGRATION REPORT
+Date: 2026-08-28
+Server: 80.241.223.82 (single VPS)
+================================================================================
+
+1. EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+Phase T implements the structured, single low-risk tenant migration procedure
+from the legacy hosting engine to ISPConfig 3.
+
+Core Principles:
+  - "Do not bulk migrate. Pick one low-risk tenant."
+  - "Do NOT delete old files. Keep legacy environment archived for at least 7–14 days."
+
+12-Step Migration Procedure Implemented:
+  1.  create_fresh_backup: Pre-migration snapshot verified with SHA256.
+  2.  create_ispconfig_client: Provision ISPConfig client account with template mapping.
+  3.  create_ispconfig_site: Provision ISPConfig web domain, FPM pool, and docroot.
+  4.  rsync_files: Synchronize tenant tree to `/var/www/clients/clientN/webN/web`.
+  5.  preserve_permissions: Enforce mode 0710 and `webN:clientN` ownership.
+  6.  migrate_database: Attach/dump tenant SQL database to ISPConfig DB user.
+  7.  configure_dns: Validate A record points to server IP (80.241.223.82).
+  8.  issue_ssl: Request ISPConfig Let's Encrypt certificate (One Owner rule).
+  9.  configure_ftp_sftp: Provision pure-ftpd user and jailed OpenSSH shell user.
+  10. smoke_test: Verify HTTP/HTTPS 200 responses and `/cpanel` SSO routing.
+  11. switch_provider: Update `CustomerEnvironment.provider = "ispconfig"`.
+  12. monitor_and_retain: Retain legacy files for 14 days without deletion.
+
+
+2. VERIFICATION RESULTS
+--------------------------------------------------------------------------------
+[1] Candidate Selection:
+    ✓ Queries active legacy environments with lowest storage/complexity footprint.
+
+[2] 12-Step Execution:
+    ✓ All 12 steps executed in sequence with success.
+
+[3] Retention Safety:
+    ✓ Verified legacy document root `/srv/apps/ifnotus-customers/...` is kept intact.
+    ✓ Retention scheduled for 14 days (`archive_retention_until`).
+
+[4] Automated Test Suite:
+    ✓ 3/3 unit tests passed in `backend/tests/unit/test_phase_t_first_tenant_migration.py`
+    ✓ Standalone verification script `backend/scripts/phase_t_tenant_migration.py` passed.
+    ✓ Total backend unit test suite: 304/304 PASS.
+
+
+3. VERDICT
+--------------------------------------------------------------------------------
+PHASE T: PASS
+================================================================================

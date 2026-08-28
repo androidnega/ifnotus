@@ -7,7 +7,11 @@ from pathlib import Path
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.repositories.applications import ApplicationRepository
-from app.schemas.inventory import AppReconciliationState, DiscoveredApplicationSchema
+from app.schemas.inventory import (
+    AppReconciliationState,
+    DiscoveredApplicationSchema,
+    classify_resource,
+)
 from app.services.applications.path_scanner import (
     ApplicationPathScanner,
     WEBROOT_NAMES,
@@ -141,6 +145,7 @@ class RuntimeApplicationDiscovery:
             name=display_name,
             probable_type=self._infer_type(path_resolved, signals),
             root_path=str(path_resolved),
+            resource_class=classify_resource(slug, str(path_resolved), server_names),
             git_path=str(path_resolved / ".git") if (path_resolved / ".git").exists() else None,
             environment=None,
             server_names=server_names,
@@ -271,6 +276,7 @@ class RuntimeApplicationDiscovery:
             name=app.name,
             probable_type=app.type.value if hasattr(app.type, "value") else str(app.type),
             root_path=root_path,
+            resource_class=classify_resource(app_id, root_path, server_names),
             server_names=server_names or [],
             registered=True,
             registered_id=app_id,

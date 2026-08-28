@@ -126,7 +126,7 @@ def test_claim_rejects_reserved_hostname(test_settings) -> None:
     assert reserved.value.code == "student_surname_reserved"
 
 
-def test_nginx_custom_vhost_aliases_cpanel_and_mail(test_settings, tmp_path) -> None:
+def test_nginx_custom_vhost_path_cpanel_and_mail(test_settings, tmp_path) -> None:
     from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
 
     settings = test_settings.model_copy(
@@ -143,19 +143,9 @@ def test_nginx_custom_vhost_aliases_cpanel_and_mail(test_settings, tmp_path) -> 
         force_https=False,
         redirect_url=None,
     )
-    assert "cpanel.studio.online" in cfg
+    assert "location = /cpanel" in cfg
+    assert "go/hosting?host=$host" in cfg
+    assert "cpanel.studio.online" not in cfg
     assert "mail.studio.online" in cfg
-    assert "try_files $uri $uri/ /index.html" in cfg
-    assert "/var/www/ifnotus" in cfg
-    assert "proxy_pass http://127.0.0.1:8010" in cfg
-    assert "return 302 https://ifnotus.space/go/hosting" not in cfg
+    assert "server_name studio.online www.studio.online" in cfg
     assert "mail.ifnotus.space" in cfg
-    assert "root " in cfg
-    # Panel/mail are dedicated servers — not on the site HTTPS server_name.
-    assert "Customer control-panel host" in cfg
-    assert "if ($host = cpanel.studio.online)" not in cfg
-    site_https = cfg.find("listen 443")
-    if site_https != -1:
-        # After first 443 block, cpanel must not appear in that server_name line
-        block = cfg[site_https : site_https + 400]
-        assert "cpanel.studio.online" not in block.split("server_name", 1)[-1].split(";", 1)[0]

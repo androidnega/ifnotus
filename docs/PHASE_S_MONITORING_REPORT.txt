@@ -1,0 +1,78 @@
+================================================================================
+PHASE S — SYSTEM MONITORING & ALERT THRESHOLDS REPORT
+Date: 2026-08-28
+Server: 80.241.223.82 (single VPS)
+================================================================================
+
+1. EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+Phase S establishes a comprehensive, automated system monitoring architecture
+and alert threshold evaluation engine across all required infrastructure layers,
+core platform services, and tenant operational indicators.
+
+Netdata Privacy:
+  - Netdata agent is confirmed bound strictly to `127.0.0.1:19999` (private localhost),
+    preventing unauthenticated public exposure.
+
+Monitored Metrics & Indicators Matrix:
+  1. Host Metrics:
+     - CPU: Utilization percentage & per-core stats
+     - RAM: Active memory percentage, used/total MB, swap usage
+     - Load Average: 1-minute, 5-minute, 15-minute system load averages
+     - Disk: Partition usage percent, used/total GB
+     - Inodes: Total, used, free inode consumption and percentage
+     - Network: Throughput bytes in/out and packet counters
+
+  2. Core Infrastructure & Managed Services:
+     - Web: `nginx` (ports 80/443), `PHP-FPM` (socket/workers)
+     - Database: `MySQL` (port 3306), `PostgreSQL` (port 5432)
+     - Cache: `Redis` (port 6379)
+     - Mail: `Postfix` (SMTP ports 25/587), `Dovecot` (IMAP ports 993/143)
+     - DNS: `BIND` (named DNS port 53)
+
+  3. Operational & Application Indicators:
+     - SSL Expiry: Proactive detection of certificates nearing renewal window (<14 days)
+     - Backup Failures: Tracking failed backup jobs across tenant/platform archives
+     - ISPConfig API: Connectivity status of the control panel remote client
+     - IFNOTUS API: Application liveness, database & redis readiness
+     - Tenant Resource Usage: Tracking tenant CPU/RAM cgroups and disk quotas
+
+  4. Alert Threshold Evaluation Engine:
+     - Configurable thresholds for CPU (85%), RAM (85%), Disk (90%), Inodes (85%),
+       Load 1m (12.0), SSL expiry (14 days), and service outages.
+
+
+2. VERIFICATION RESULTS
+--------------------------------------------------------------------------------
+[1] Host Probes:
+    ✓ CPU %, RAM %, Load (1m, 5m, 15m), Disk %, Inodes %, Network rx/tx verified.
+
+[2] Managed Services Health Probing:
+    ✓ All 8 services (`nginx`, `php_fpm`, `mysql`, `postgresql`, `redis`, `postfix`,
+      `dovecot`, `bind`) monitored and mapped.
+
+[3] Netdata Privacy:
+    ✓ Audited localhost binding: `http://127.0.0.1:19999` (Private local binding).
+
+[4] Alert Thresholds:
+    ✓ Verified evaluation triggers WARNING and CRITICAL alerts across CPU, RAM,
+      Disk, Inodes, Load, Service outages, and Backup failures.
+
+[5] Test Suite & Verification:
+    ✓ 5/5 unit tests passed in `backend/tests/unit/test_phase_s_monitoring.py`
+    ✓ Verification script `backend/scripts/phase_s_monitoring.py` passed
+    ✓ Total backend unit test suite: 301/301 PASS
+
+
+3. FUTURE EVALUATION (MULTI-NODE ROADMAP)
+--------------------------------------------------------------------------------
+As the platform transitions from a single-node VPS to multi-node clusters:
+  - Prometheus for distributed time-series metrics scraping
+  - Grafana for centralized operational visualization
+  - Alertmanager for notification routing (Slack, WhatsApp, SMS, Webhooks)
+
+
+4. VERDICT
+--------------------------------------------------------------------------------
+PHASE S: PASS
+================================================================================

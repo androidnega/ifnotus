@@ -1,0 +1,66 @@
+================================================================================
+PHASE O — PRODUCT APPLICATION SEPARATION AUDIT & VERIFICATION REPORT
+Date: 2026-08-28
+Server: 80.241.223.82 (single VPS)
+================================================================================
+
+1. EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+Phase O establishes clear operational, permission, and architectural boundaries
+between tenant hosting and internal product applications.
+
+Separated Resource Categories:
+  1. Platform:
+     - IFNOTUS API (/srv/apps/ifnotus)
+     - Staff Control Plane (cpanel.ifnotus.space)
+     - Customer Portal (ifnotus.space)
+     - Asynchronous workers
+
+  2. Products (Internal / Sibling Applications — NOT tenant hosting):
+     - VoteBridge (votebridge.online)
+     - QuizSnap (quizsnap.online)
+     - ExamFlow (examflow.csdttu.online)
+     - csdttu (csdttu.online, documento.csdttu.online, cth.csdttu.online, neckpressing.online)
+     - serverlabsttu (serverlabsttu.space)
+
+  3. Tenants:
+     - Customer & student hosting environments (/srv/apps/ifnotus-customers/*)
+     - Gated by plan quotas, package capabilities, and customer permissions
+
+  4. Infrastructure:
+     - Nginx web server (:80/:443)
+     - BIND named DNS server
+     - Postfix / Dovecot / Roundcube mail stack
+     - PostgreSQL, MySQL, Redis databases
+
+Isolation Guarantees:
+  - Product applications NEVER inherit tenant quotas, customer permissions,
+    or customer file-manager access.
+  - Customer file-manager is strictly jailed via `only_roots` to the tenant document root.
+  - Product apps cannot be suspended by customer billing lifecycle actions.
+  - Super Admin UI exposes clean inventory classification for all four tiers.
+
+
+2. VERIFICATION RESULTS
+--------------------------------------------------------------------------------
+[1] Classification:
+    ✓ Platform items mapped to ResourceClass.PLATFORM
+    ✓ Sibling apps (VoteBridge, QuizSnap, ExamFlow, csdttu, serverlabsttu) mapped to ResourceClass.PRODUCT
+    ✓ Customer hosting trees mapped to ResourceClass.TENANT
+    ✓ System services mapped to ResourceClass.INFRASTRUCTURE
+
+[2] Permission & File Isolation:
+    ✓ Customer file manager paths strictly verified with `_safe_path` (path traversal to sibling product apps blocked)
+
+[3] Quota Separation:
+    ✓ Product apps and admin storage operate free of tenant plan storage limits
+
+[4] Test Suite:
+    ✓ 3/3 tests passed in backend/tests/unit/test_phase_o_product_separation.py
+    ✓ 276/276 unit tests passed across the backend test suite
+
+
+3. VERDICT
+--------------------------------------------------------------------------------
+PHASE O: PASS
+================================================================================

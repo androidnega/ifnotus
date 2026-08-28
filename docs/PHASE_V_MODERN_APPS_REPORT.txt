@@ -1,0 +1,57 @@
+================================================================================
+PHASE V — MODERN APPLICATION HOSTING REPORT
+Date: 2026-08-28
+Server: 80.241.223.82 (single VPS)
+================================================================================
+
+1. EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+Phase V establishes the independent Modern Application Hosting Runtime Engine.
+
+Core Principles:
+  - "Do NOT force ISPConfig to become Render/Railway."
+  - "Build IFNOTUS application runtime separately."
+  - "Static SPA builds should not require permanent Node processes."
+
+Runtimes and Frameworks Supported:
+  1. Python Runtime:
+     - Frameworks: Django (gunicorn/wsgi), Flask (gunicorn/wsgi), FastAPI (uvicorn)
+     - Specs: Isolated virtualenv, custom runtime versions, requirements/pyproject parsing,
+              dynamic port binding, environment variables injection, systemd unit generation,
+              isolated process boundaries, and reverse proxy routing.
+  2. Node Runtime:
+     - Frameworks: Express, NestJS (node dist/main.js), Next.js (npm run start), SvelteKit (node build)
+     - Specs: Isolated directory, custom start commands, environment variables, systemd daemonization,
+              and reverse proxy routing.
+  3. Static SPA Runtime:
+     - Frameworks: React, Vue, Svelte, static HTML
+     - Specs: Zero permanent Node process requirement, Nginx `try_files` SPA routing,
+              static asset caching headers.
+  4. PHP Runtime:
+     - Frameworks: Laravel, WordPress, generic PHP
+     - Specs: Handled via PHP-FPM pools and Composer dependency structures.
+
+
+2. VERIFICATION RESULTS
+--------------------------------------------------------------------------------
+[1] Multi-Stack Framework Detection:
+    ✓ Correctly detects and classifies Python, Node, Static SPA, and PHP projects.
+
+[2] Systemd Service Unit Generation:
+    ✓ Generates hardened systemd units (`NoNewPrivileges=true`, `ProtectSystem=full`, `ProtectHome=true`).
+    ✓ Injects environment variables and dynamic worker/port options.
+
+[3] Nginx Routing Generation:
+    ✓ Generates reverse proxy blocks for dynamic Python/Node daemon processes.
+    ✓ Generates zero-overhead SPA fallback try_files blocks for static frontend apps.
+
+[4] Automated Test Suite:
+    ✓ 11/11 unit tests passed in `backend/tests/unit/test_phase_v_modern_apps.py`
+    ✓ Standalone verification script `backend/scripts/phase_v_modern_apps.py` passed.
+    ✓ Total backend unit test suite: 323/323 PASS.
+
+
+3. VERDICT
+--------------------------------------------------------------------------------
+PHASE V: PASS
+================================================================================

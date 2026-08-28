@@ -1,0 +1,108 @@
+================================================================================
+PHASE K — DOMAIN ARCHITECTURE
+Date: 2026-08-27
+Server: 80.241.223.82
+Verdict: PASS
+================================================================================
+
+Scope (master prompt):
+  - Standard: example.com + www.example.com
+  - Tenant panel: https://example.com/cpanel → IFNOTUS (not :2083 / ISPConfig :8080)
+  - Flow: /cpanel → fixed portal /go/hosting → auth → resolve host → ownership → /hosting/{id}
+  - Do not trust Host alone; no open redirects
+
+--------------------------------------------------------------------------------
+1. ARCHITECTURE (AS IMPLEMENTED)
+--------------------------------------------------------------------------------
+
+Customer entry (all tenants):
+  https://{domain}/cpanel
+  https://{domain}/mail  → mail.ifnotus.space (shared Roundcube)
+
+nginx on each tenant vhost:
+  location = /cpanel → 302 https://ifnotus.space/go/hosting?host=$host
+
+Portal SPA (/go/hosting):
+  1. Read ?host= from query (or legacy cpanel.<domain> normalized to apex)
+  2. If unauthenticated → /login?mode=panel&redirect=/go/hosting?host=…
+  3. GET /customers/panel-alias?host=… (authenticated)
+  4. Ownership check: env.domain OR CustomerDomain must match caller
+  5. router.replace → /hosting/{environment_id}
+
+Staff only:
+  https://cpanel.ifnotus.space (never exposed to paying customers)
+
+NOT used for customers:
+  - cPanel :2083
+  - ISPConfig :8080 / :8081 panel URLs
+  - cpanel.<domain> subdomain vhosts (deprecated; legacy DNS still resolves via panel-alias)
+
+--------------------------------------------------------------------------------
+2. PHASE K CHANGES (THIS SESSION)
+--------------------------------------------------------------------------------
+
+NEW:
+  backend/tests/unit/test_phase_k_domain_architecture.py
+  backend/scripts/phase_k_domain_architecture.py
+
+UPDATED:
+  backend/app/services/platform/host_routing.py
+    - sanitize_panel_hostname() — blocks path/@/scheme injection in SSO host param
+
+  backend/app/services/platform/panel_access.py
+    - panel_sso_url() uses sanitize; invalid host → /account
+
+  backend/app/routers/v1/public.py
+    - panel-redirect uses sanitize; invalid → portal /account
+
+  backend/app/routers/v1/customers.py
+    - resolve_panel_alias validates host before ownership lookup
+
+  backend/app/services/platform/dns.py
+    - A-record mode: dns_live = apex + www (not cpanel subdomain)
+    - cpanel_live = apex points here (/cpanel is path on apex vhost)
+    - Customer copy: @, www, mail — panel is /cpanel on domain
+
+  frontend/src/components/portal/PortalSitePanel.vue
+    - DNS instructions updated for path-based /cpanel
+
+TESTS fixed:
+  test_student_hostname.py (nginx path /cpanel, www alias)
+  test_student_zone_panel.py (control_panel_hostname → None)
+  test_dns_dual_mode.py (apex + www, not cpanel subdomain)
+
+Unit tests: 17 passed (Phase K + routing + DNS dual-mode)
+
+--------------------------------------------------------------------------------
+3. VERIFICATION
+--------------------------------------------------------------------------------
+
+| Check                              | Status |
+|------------------------------------|--------|
+| site_cpanel_url = domain/cpanel    | PASS   |
+| nginx /cpanel → go/hosting?host=   | PASS   |
+| Fixed portal origin (no open redirect) | PASS |
+| sanitize_panel_hostname()          | PASS   |
+| panel-alias ownership gate         | PASS   |
+| www + apex on custom vhost         | PASS   |
+| No cpanel.<domain> dedicated vhost | PASS   |
+| Customer UI: no ISPConfig :8080    | PASS   |
+| Live VPS curl (not run this session)| SKIP  |
+
+Run on VPS:
+  cd /srv/apps/ifnotus/backend
+  PHASE_K_DOMAIN=yourdomain.com .venv/bin/python scripts/phase_k_domain_architecture.py
+
+--------------------------------------------------------------------------------
+4. VERDICT
+--------------------------------------------------------------------------------
+
+PASS — Domain architecture matches Phase K spec. Path-based /cpanel routing,
+ownership verification, and fixed IFNOTUS portal origin are implemented and
+tested. DNS guidance aligned to apex + www (cpanel A record no longer required).
+
+STOP — next phase per master prompt: Phase L (DNS single-writer / resilience).
+
+================================================================================
+END
+================================================================================

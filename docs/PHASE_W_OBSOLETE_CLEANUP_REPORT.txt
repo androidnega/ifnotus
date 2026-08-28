@@ -1,0 +1,51 @@
+================================================================================
+PHASE W — REMOVE OBSOLETE LEGACY CODE REPORT
+Date: 2026-08-28
+Server: 80.241.223.82 (single VPS)
+================================================================================
+
+1. EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+Phase W implements the Deprecation and Obsolete Code Audit framework.
+
+Rules:
+  - "Only after ISPConfig is stable and tenants migrated."
+  - "Archive superseded documentation instead of losing migration history."
+
+Deprecation Candidates Identified and Mapped (7 Components):
+  1. OLSPanel Integration (SUPERSEDED) -> ISPConfigHostingProvider
+  2. OpenLiteSpeed leftovers (DEPRECATED) -> Standard ISPConfig Nginx + PHP-FPM pools
+  3. Direct Tenant Nginx Generation (SUPERSEDED) -> HostingProvider.add_domain / ISPConfig vhosts
+  4. Direct Certbot for Migrated Tenants (ISOLATED) -> ISPConfig Let's Encrypt (One Owner rule)
+  5. New-Tenant UNIX Identity Creation (SUPERSEDED) -> ISPConfig webN/clientN management (0710)
+  6. Duplicate FTP Daemon Model (SUPERSEDED) -> ISPConfig Pure-FTPd virtual database users
+  7. Obsolete cpanel.* Customer Vhost Logic (DEPRECATED) -> /cpanel path SSO + CustomerPanelProviderService
+
+Protected Core Invariants Retained:
+  - Billing (Paystack, invoices, checkout, subscriptions)
+  - HostingProvider (pluggable abstraction layer)
+  - DNS UX (single writer gate, instructions, validation)
+  - Reserved names (system routes and product subdomains)
+  - Customer panel (CustomerPortal, HostingPanelView)
+  - Application engine (ModernAppRuntimeService)
+  - Business logic (plans, entitlements, auth, staff permissions)
+
+
+2. VERIFICATION RESULTS
+--------------------------------------------------------------------------------
+[1] Candidates Audit:
+    ✓ 7/7 obsolete legacy components cataloged with clean migration paths.
+
+[2] Invariant Protection Audit:
+    ✓ 7/7 core platform invariants validated as retained and protected.
+
+[3] Automated Test Suite:
+    ✓ 2/2 unit tests passed in `backend/tests/unit/test_phase_w_obsolete_cleanup.py`
+    ✓ Standalone verification script `backend/scripts/phase_w_obsolete_cleanup.py` passed.
+    ✓ Total backend unit test suite: 325/325 PASS.
+
+
+3. VERDICT
+--------------------------------------------------------------------------------
+PHASE W: PASS
+================================================================================

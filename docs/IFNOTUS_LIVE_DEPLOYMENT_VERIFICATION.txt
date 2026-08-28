@@ -1,0 +1,263 @@
+====================================================================================================
+IFNOTUS LIVE DEPLOYMENT & AUTHENTICATION VERIFICATION REPORT
+Verification of Audit #1 and #2 Remediations against Source Code and Live Production Environment
+====================================================================================================
+Date: August 28, 2026
+Auditors: Lead Server Architect, Lead Security Engineer, Lead Vue Engineer, Lead FastAPI Engineer, DevOps Engineer
+Status: VERIFICATION COMPLETE (Audit Only — Zero Production Modifying Actions Taken)
+
+----------------------------------------------------------------------------------------------------
+1. EXECUTIVE VERDICT
+----------------------------------------------------------------------------------------------------
+A strict comparison between the local source repository and the live production deployment at
+`https://cpanel.ifnotus.space` and `https://ifnotus.space` reveals a fundamental divergence:
+
+1. SOURCE CODE STATE:
+   - Audit #1 & #2 remediations (7-role model, web terminal step-up, CGNAT-safe rate limits, MFA backup
+     code generator, and cookie attributes helpers) are fully written in the local workspace files and
+     pass all 415 backend pytest unit tests.
+     
+2. LIVE PRODUCTION STATE:
+   - The production VPS is currently running an older bundle built on Thursday, August 27, 2026 at 16:35:42 GMT
+     (`index-Cf5t5-lP.js`), whereas the updated local build is `index-DEyKh1Mp.js`.
+   - The local git working tree contains unstaged/uncommitted files and has NOT been pushed or deployed
+     to the live VPS server.
+   - Live requests to `https://cpanel.ifnotus.space/admin_1` still serve the SPA directly because the
+     production Nginx configuration routes all paths to `/var/www/ifnotus/index.html` via `try_files`,
+     and the deployed SPA bundle still contains the legacy `/admin_1` routing logic.
+3. CANONICAL STAFF URL DISCREPANCY:
+   - The local source code was previously pointed to `https://ifnotus.space/staff/login` instead of the
+     true desired canonical staff entry: `https://cpanel.ifnotus.space/login`.
+   - On `cpanel.ifnotus.space`, `/login` must serve the staff login view, while `admin_1` and `staff-login`
+     must redirect to `/login`.
+
+VERDICT: DEPLOYMENT GAP CONFIRMED. Changes exist in local source but are NOT DEPLOYED to production.
+Further architectural corrections (cpanel.ifnotus.space/login canonicalization, platform_admin file restriction)
+are required before final production deployment.
+
+----------------------------------------------------------------------------------------------------
+2. WHY /ADMIN_1 IS STILL VISIBLE
+----------------------------------------------------------------------------------------------------
+1. Deployed Bundle Age: The live Nginx web root `/var/www/ifnotus` contains the build from Aug 27, 2026
+   (serving `assets/index-Cf5t5-lP.js`), which hardcodes `/admin_1` as the staff login route.
+2. Nginx Fallback: Nginx `location / { try_files $uri $uri/ /index.html; }` returns HTTP 200 for `/admin_1`
+   and lets the legacy client-side Vue router mount the staff login form at `/admin_1`.
+3. Snippet Inversion: `deploy/nginx/snippets/ifnotus-staff-login-redirect.conf` redirects `/admin_1` on
+   `ifnotus.space` to `https://cpanel.ifnotus.space/admin_1` instead of `https://cpanel.ifnotus.space/login`.
+
+----------------------------------------------------------------------------------------------------
+3. CURRENT CPANEL.IFNOTUS.SPACE NGINX ROUTING
+----------------------------------------------------------------------------------------------------
+- Config File: `deploy/nginx/cpanel.ifnotus.space.conf`
+- Server Name: `cpanel.ifnotus.space`
+- Document Root: `/var/www/ifnotus`
+- API Proxy: `location /api/` -> `http://127.0.0.1:8010`
+- Fallback Route: `location / { try_files $uri $uri/ /index.html; }`
+- HTTP to HTTPS: `return 301 https://$host$request_uri;`
+
+----------------------------------------------------------------------------------------------------
+4. CURRENT CANONICAL STAFF URL
+----------------------------------------------------------------------------------------------------
+- Desired Canonical URL: `https://cpanel.ifnotus.space/login`
+- Current Live URL: `https://cpanel.ifnotus.space/admin_1` (in deployed Aug 27 bundle)
+- Current Local Source: `https://ifnotus.space/staff/login` (incorrectly scoped to main domain in previous edit)
+- Correction Required: Point staff canonical login to `/login` when accessed on `cpanel.ifnotus.space`, and
+  redirect `/admin_1`, `/staff-login`, and `/staff/login` to `https://cpanel.ifnotus.space/login`.
+
+----------------------------------------------------------------------------------------------------
+5. LIVE REDIRECT TEST RESULTS (CURL VERIFICATION)
+----------------------------------------------------------------------------------------------------
+| Request URL | HTTP Status | Server Header | Last-Modified Header | Handled By |
+|---|:---:|---|---|---|
+| `https://cpanel.ifnotus.space/` | 200 OK | nginx/1.24.0 (Ubuntu) | Thu, 27 Aug 2026 16:35:42 GMT | Nginx try_files -> SPA |
+| `https://cpanel.ifnotus.space/login` | 200 OK | nginx/1.24.0 (Ubuntu) | Thu, 27 Aug 2026 16:35:42 GMT | Nginx try_files -> SPA |
+| `https://cpanel.ifnotus.space/admin_1` | 200 OK | nginx/1.24.0 (Ubuntu) | Thu, 27 Aug 2026 16:35:42 GMT | Nginx try_files -> SPA |
+| `https://cpanel.ifnotus.space/staff-login`| 200 OK | nginx/1.24.0 (Ubuntu) | Thu, 27 Aug 2026 16:35:42 GMT | Nginx try_files -> SPA |
+| `https://cpanel.ifnotus.space/staff/login`| 200 OK | nginx/1.24.0 (Ubuntu) | Thu, 27 Aug 2026 16:35:42 GMT | Nginx try_files -> SPA |
+| `https://ifnotus.space/login` | 200 OK | nginx/1.24.0 (Ubuntu) | Thu, 27 Aug 2026 16:35:42 GMT | Nginx try_files -> SPA |
+| `https://ifnotus.space/admin_1` | 200 OK | nginx/1.24.0 (Ubuntu) | Thu, 27 Aug 2026 16:35:42 GMT | Nginx try_files -> SPA |
+
+Note: No HTTP-level 301/302 redirects are currently executed by Nginx for subpaths; all routing is handled
+entirely client-side by Vue Router inside the loaded SPA.
+
+----------------------------------------------------------------------------------------------------
+6. DEPLOYED FRONTEND BUILD VERIFICATION
+----------------------------------------------------------------------------------------------------
+- Live Production Script Asset: `src="/assets/index-Cf5t5-lP.js"` (Timestamp: Aug 27, 2026 16:35:42 GMT)
+- Local Source Build Asset: `src="/assets/index-DEyKh1Mp.js"` (Generated Aug 28, 2026)
+- Finding: Deployed frontend build does NOT match local source code. Production is running un-remediated code.
+
+----------------------------------------------------------------------------------------------------
+7. ALL REMAINING ADMIN_1 REFERENCES IN REPOSITORY
+----------------------------------------------------------------------------------------------------
+| File | Line | Context | Classification | Required Action |
+|---|---:|---|---|---|
+| `frontend/src/router/index.ts` | 75 | `path: '/admin_1', redirect: { name: 'admin-login' }` | LEGACY REDIRECT | Update redirect to `/login` on cpanel host |
+| `frontend/src/router/index.ts` | 407 | `candidate !== '/admin_1'` | LEGACY REDIRECT | Keep in safeRedirectTarget filter |
+| `frontend/src/router/index.ts` | 606 | `path === '/admin_1' \|\| path.startsWith('/admin_1/')` | LEGACY REDIRECT | Update control-ui styling hook |
+| `frontend/src/api/client.ts` | 117 | `path.startsWith('/admin_1')` in 401 interceptor | LEGACY REDIRECT | Update to check canonical login path |
+| `frontend/src/views/LoginView.vue` | 48 | `candidate !== '/admin_1'` in finishRedirect | LEGACY REDIRECT | Keep in candidate sanitizer |
+| `frontend/src/views/portal/PortalSignupView.vue` | 115 | `candidate !== '/admin_1'` in safeRedirectTarget | LEGACY REDIRECT | Keep in candidate sanitizer |
+| `frontend/src/lib/roles.ts` | 58 | `bare.startsWith('/admin_1')` in isStaffPath | LEGACY REDIRECT | Update path classifier |
+| `deploy/nginx/snippets/ifnotus-staff-login-redirect.conf` | 5 | `location = /admin_1 { return 302 .../admin_1; }` | INCORRECT | Change target to `https://cpanel.ifnotus.space/login` |
+
+----------------------------------------------------------------------------------------------------
+8. CUSTOMER LOGIN & 9. STAFF LOGIN VERIFICATION
+----------------------------------------------------------------------------------------------------
+- Customer Login: `https://ifnotus.space/login` renders `PortalSignupView.vue` (Phone OTP + Email/Password).
+- Staff Login: `https://cpanel.ifnotus.space/` or `https://cpanel.ifnotus.space/admin_1` mounts `LoginView.vue`
+  (Email/Password + TOTP challenge).
+- Desired Behavior: When on `cpanel.ifnotus.space`, navigating to `/login` should mount `LoginView.vue`. When
+  on `ifnotus.space`, navigating to `/login` should mount `PortalSignupView.vue`.
+
+----------------------------------------------------------------------------------------------------
+10. HOSTNAME-BASED AUTH SEPARATION
+----------------------------------------------------------------------------------------------------
+- Evaluated: `frontend/src/lib/platformHosts.ts` -> `isStaffPanelHost()`.
+- Mechanism:
+  * The frontend detects `window.location.hostname === 'cpanel.ifnotus.space'`.
+  * The router and view components must use `isStaffPanelHost()` so that `/login` dynamically resolves
+    to Staff `LoginView.vue` on `cpanel.ifnotus.space` and Customer `PortalSignupView.vue` on `ifnotus.space`.
+
+----------------------------------------------------------------------------------------------------
+11. LOCALSTORAGE / JWT REALITY & 12. HTTPONLY COOKIE REALITY
+----------------------------------------------------------------------------------------------------
+- Access Token Storage: `localStorage.getItem('access_token')` -> ACTIVE IN SOURCE & PRODUCTION.
+- Refresh Token Storage: `localStorage.getItem('refresh_token')` -> ACTIVE IN SOURCE & PRODUCTION.
+- Authorization Header: `Authorization: Bearer <access_token>` -> ACTIVE IN SOURCE & PRODUCTION.
+- Cookie Auth: PREPARED ONLY (helper `auth_cookie_attributes` exists in `backend/app/core/security.py`,
+  but `Set-Cookie` headers and cookie parsing in `CurrentUser` dependency are NOT active).
+- Status: **COOKIE MIGRATION INCOMPLETE / NOT DEPLOYED**.
+
+----------------------------------------------------------------------------------------------------
+13. CSRF REALITY
+----------------------------------------------------------------------------------------------------
+- Current State: Because tokens are transmitted via `Authorization: Bearer` in headers and not via
+  automatic browser cookies, CSRF protection is not currently required for API calls.
+- Status: **CSRF WILL BE MANDATORY ONLY AFTER FULL COOKIE MIGRATION**.
+
+----------------------------------------------------------------------------------------------------
+14. CURRENT PRODUCTION ROLES & 15. ROLE MIGRATION STATUS
+----------------------------------------------------------------------------------------------------
+- Source Model: 7 canonical roles (`platform_owner`, `platform_admin`, `hosting_operator`, `billing_agent`,
+  `support_agent`, `auditor`, `customer`) + legacy aliases in `backend/app/core/permissions.py`.
+- Production Database: Existing user rows currently hold legacy strings (`superadmin`, `admin`, `operator`,
+  `viewer`, `customer_care`, `customer`).
+- Status: **COMPATIBILITY LAYER ACTIVE IN CODE; DATABASE ROWS NOT YET MIGRATED TO CANONICAL STRINGS**.
+
+----------------------------------------------------------------------------------------------------
+16. RUNTIME PERMISSION MATRIX & 17. PLATFORM_ADMIN FILESYSTEM ISSUE
+----------------------------------------------------------------------------------------------------
+- Current `backend/app/routers/v1/files.py`:
+  `is_admin = user.is_superuser or bool(roles & {"platform_owner", "superadmin", "platform_admin", "admin"})`
+- **CRITICAL AUDIT FINDING**:
+  * Granting `platform_admin` access to `_admin_storage_roots` (`/srv`, `/var/www`, `/var/vmail`, `/var/backups`)
+    violates least privilege. Business administrators (plans, billing, customers) should NOT browse raw server roots.
+- Required Correction:
+  * Restrict `_admin_storage_roots` strictly to `platform_owner` / `superadmin`.
+  * `hosting_operator` accesses files through tenant/app environments only.
+  * `platform_admin` gets NO host filesystem browsing.
+
+----------------------------------------------------------------------------------------------------
+18. WEB TERMINAL STATUS
+----------------------------------------------------------------------------------------------------
+- Endpoint: `POST /api/v1/terminal/execute`
+- Permissions: Gated strictly by `Permission.TERMINAL_EXECUTE` (`platform_owner` / `superadmin` only).
+- Step-Up: Added `confirm_password` validation in `backend/app/routers/v1/terminal.py`.
+- Status: **SOURCE IMPLEMENTED; PENDING PRODUCTION DEPLOYMENT**.
+
+----------------------------------------------------------------------------------------------------
+19. /CPANEL STATUS & 20. /MAIL STATUS
+----------------------------------------------------------------------------------------------------
+- `/cpanel`: Nginx passes to `/api/v1/public/panel-redirect` -> validates via `sanitize_panel_hostname()` ->
+  redirects to `https://ifnotus.space/go/hosting?host=...`.
+- `/mail`: Nginx returns 302 to `https://mail.ifnotus.space` (Roundcube webmail).
+- Status: **LIVE VERIFIED & ISOLATED**.
+
+----------------------------------------------------------------------------------------------------
+21. ISPCONFIG EXPOSURE STATUS
+----------------------------------------------------------------------------------------------------
+- Port 8080: Blocked from public internet.
+- Browser Bundles: Zero ISPConfig remote user credentials or port 8080 URLs are present in frontend.
+- Status: **LIVE VERIFIED (ZERO EXPOSURE)**.
+
+----------------------------------------------------------------------------------------------------
+22. PANEL-PASSWORD STATUS
+----------------------------------------------------------------------------------------------------
+- Endpoint: `POST /api/v1/customers/panel/login`
+- Constant-time dummy hash verification implemented in `backend/app/services/platform/panel_passwords.py`.
+- Status: **LEGACY COMPATIBILITY ACTIVE; READY FOR PLANNED DEPRECATION**.
+
+----------------------------------------------------------------------------------------------------
+23. CGNAT RATE-LIMIT STATUS
+----------------------------------------------------------------------------------------------------
+- Code Values in `backend/app/services/access_control.py`:
+  * `CONSECUTIVE_FAIL_LIMIT = 10`
+  * `AUTO_UNLOCK_MINUTES = 15`
+- Status: **SOURCE IMPLEMENTED; PENDING PRODUCTION DEPLOYMENT**.
+
+----------------------------------------------------------------------------------------------------
+24. STAFF MFA STATUS & 25. MFA RECOVERY COMPLETENESS
+----------------------------------------------------------------------------------------------------
+- TOTP Enforcement: Enforced in `AuthService.login()` for `platform_owner`, `platform_admin`, `hosting_operator`,
+  `superadmin`, `admin`, `operator`.
+- Backup Recovery Codes: `generate_backup_codes()` helper implemented in `backend/app/services/totp.py`.
+- Gap: Recovery codes generation helper exists, but full database table (`user_mfa_recovery_codes`) and
+  recovery consumption endpoints are NOT yet wired into the user table.
+- Status: **PARTIAL (GENERATOR WRITTEN, DB PERSISTENCE PENDING)**.
+
+----------------------------------------------------------------------------------------------------
+26. EVERY REMEDIATION CLAIM VS ACTUAL DEPLOYMENT
+----------------------------------------------------------------------------------------------------
+| Remediation Item | Source Implemented | Deployed to VPS | Live Verified | Classification |
+|---|:---:|:---:|:---:|---|
+| 7-Role Capability Model in `permissions.py` | YES | NO | NO | SOURCE IMPLEMENTED |
+| Web Terminal `confirm_password` Step-Up | YES | NO | NO | SOURCE IMPLEMENTED |
+| Scoped Staff File Access | PARTIAL (Too broad) | NO | NO | PARTIAL (Needs fix) |
+| Canonical Staff Route (`/staff/login` vs `/login`) | INCORRECT PATH | NO | NO | NEEDS CORRECTION |
+| CGNAT Rate Limits (10 attempts / 15m) | YES | NO | NO | SOURCE IMPLEMENTED |
+| Panel Password Constant-Time Protection | YES | NO | NO | SOURCE IMPLEMENTED |
+| MFA Backup Code Generator | YES | NO | NO | PARTIAL (No DB store) |
+| HttpOnly Cookie Migration | PREPARED ONLY | NO | NO | NOT DONE (Intentional) |
+| Production Nginx Redirects for Staff Login | NO | NO | NO | NOT DONE |
+
+----------------------------------------------------------------------------------------------------
+27. ITEMS FALSELY REPORTED AS COMPLETE & 28. ITEMS ACTUALLY COMPLETE
+----------------------------------------------------------------------------------------------------
+- Items Inaccurately Concluded in Previous Report:
+  1. Staff Canonical URL: Stated as `/staff/login` when the true production requirement is `https://cpanel.ifnotus.space/login`.
+  2. Live Deployment: Previous report implied changes were live in production because local builds passed, when in reality the live VPS is still serving the Aug 27 build.
+  3. HttpOnly Cookie Migration: Stated as remediated when only helper parameters were drafted.
+  4. MFA Recovery: Generator was added, but persistence/consumption was not built.
+- Items Actually Complete in Source:
+  1. Backend permissions matrix and 7-role capability definitions (`permissions.py`).
+  2. Web terminal step-up authorization guard (`terminal.py`).
+  3. CGNAT-safe access control rate limits (`access_control.py`).
+  4. Constant-time panel password check (`panel_passwords.py`).
+  5. 415 backend pytest tests passing.
+
+----------------------------------------------------------------------------------------------------
+29. REQUIRED CORRECTIONS BEFORE PRODUCTION CUTOVER
+----------------------------------------------------------------------------------------------------
+1. Routing Alignment:
+   - In Vue Router (`frontend/src/router/index.ts`):
+     * On `cpanel.ifnotus.space`, `/login` maps to `LoginView.vue` (Staff).
+     * On `ifnotus.space`, `/login` maps to `PortalSignupView.vue` (Customer).
+     * `/admin_1`, `/staff-login`, and `/staff/login` redirect to `/login`.
+   - In Nginx snippet (`deploy/nginx/snippets/ifnotus-staff-login-redirect.conf`):
+     * Redirect `/admin_1` and `/staff-login` to `https://cpanel.ifnotus.space/login`.
+2. Storage Permission Fix:
+   - In `backend/app/routers/v1/files.py`: Strip `_admin_storage_roots` access from `platform_admin` and `admin`, restricting it solely to `platform_owner` / `superadmin`.
+3. Build & Deploy:
+   - Commit changes, push to repository, build frontend (`npm run build`), and deploy new static assets to `/var/www/ifnotus` on the live VPS.
+
+----------------------------------------------------------------------------------------------------
+30. GO / NO-GO FOR FINAL REMEDIATION
+----------------------------------------------------------------------------------------------------
+VERDICT: **NO-GO FOR IMMEDIATE DEPLOYMENT UNTIL REQUIRED ROUTING & FILE PERMISSION CORRECTIONS ARE APPLIED**.
+Once the canonical staff URL is aligned to `https://cpanel.ifnotus.space/login` and `platform_admin` file
+access is restricted, the deployment pipeline can proceed to **GO**.
+
+====================================================================================================
+END OF VERIFICATION REPORT
+====================================================================================================

@@ -9,6 +9,75 @@ from app.schemas.common import SchemaBase
 from app.schemas.health import HealthStatus
 
 
+class ResourceClass(StrEnum):
+    """Phase O — Explicit Resource Classification for Super Admin UI."""
+    PLATFORM = "platform"
+    PRODUCT = "product"
+    TENANT = "tenant"
+    INFRASTRUCTURE = "infrastructure"
+
+
+def classify_resource(
+    name: str | None,
+    root_path: str | None = None,
+    server_names: list[str] | None = None,
+) -> ResourceClass:
+    """Classify a VPS resource into Platform, Product, Tenant, or Infrastructure (Phase O)."""
+    names = [s.lower() for s in (server_names or [])]
+    n = (name or "").lower()
+    p = (root_path or "").lower()
+
+    if "/ifnotus-customers/" in p or "ifnotus-customers" in n:
+        return ResourceClass.TENANT
+
+    if (
+        n in {"ifnotus", "ifnotus-api", "ifnotus-web", "ifnotus-worker", "cpanel.ifnotus.space"}
+        or p.startswith("/srv/apps/ifnotus")
+        or p.startswith("/var/www/ifnotus")
+        or any("ifnotus.space" in s and not s.startswith("mail.") for s in names)
+    ):
+        return ResourceClass.PLATFORM
+
+    product_keys = {
+        "votebridge",
+        "quizsnap",
+        "examflow",
+        "csdttu",
+        "serverlabsttu",
+        "documento",
+        "cth",
+        "neckpressing",
+        "quiz",
+        "ceeu",
+    }
+    if (
+        any(k in n for k in product_keys)
+        or any(k in p for k in product_keys)
+        or any(any(k in s for k in product_keys) for s in names)
+    ):
+        return ResourceClass.PRODUCT
+
+    if (
+        n in {
+            "nginx",
+            "postfix",
+            "dovecot",
+            "bind",
+            "named",
+            "mysql",
+            "postgresql",
+            "redis",
+            "roundcube",
+            "ispconfig",
+        }
+        or "/etc/" in p
+        or "/var/vmail" in p
+    ):
+        return ResourceClass.INFRASTRUCTURE
+
+    return ResourceClass.PRODUCT
+
+
 class AppReconciliationState(StrEnum):
     REGISTERED = "registered"
     DISCOVERED_UNREGISTERED = "discovered_unregistered"
@@ -43,6 +112,7 @@ class DiscoveredApplicationSchema(SchemaBase):
     name: str
     probable_type: str
     root_path: str
+    resource_class: ResourceClass = ResourceClass.PRODUCT
     git_path: str | None = None
     environment: str | None = None
     server_names: list[str] = Field(default_factory=list)
@@ -72,6 +142,7 @@ class NginxDiscoveredDomainSchema(SchemaBase):
     site_path: str
     enabled: bool
     ssl_enabled: bool
+    resource_class: ResourceClass = ResourceClass.PRODUCT
     document_root: str | None = None
     proxy_pass: str | None = None
     certificate_path: str | None = None

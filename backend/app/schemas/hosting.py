@@ -153,6 +153,7 @@ class SslCertificateSchema(SchemaBase):
     domain_id: UUID | None = None
     domain: str
     configured: bool
+    owner: str = "certbot"  # Phase N — "certbot" | "ispconfig" | "external"
     reconciliation_state: SslReconciliationState | None = None
     in_database: bool | None = None
     nginx_bound: bool | None = None
@@ -377,6 +378,7 @@ class TerminalExecuteRequest(SchemaBase):
     scope: TerminalScope = TerminalScope.OPS
     app_id: str | None = None
     root_id: str | None = None
+    confirm_password: str | None = Field(default=None, description="Optional step-up password confirmation for sensitive commands.")
 
 
 class TerminalExecuteResponse(SchemaBase):

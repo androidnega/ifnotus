@@ -1,0 +1,46 @@
+================================================================================
+PHASE N — SSL OWNERSHIP AUDIT & VERIFICATION REPORT
+Date: 2026-08-28
+Server: 80.241.223.82 (single VPS)
+================================================================================
+
+1. EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+Phase N implements the strict SSL ownership model required by the migration plan:
+
+Rule: ONE CERTIFICATE, ONE OWNER.
+
+During migration:
+  - legacy tenant → IFNOTUS Certbot automation (/etc/letsencrypt/live/...)
+  - ispconfig tenant → ISPConfig Let's Encrypt (/var/www/clients/clientN/webN/ssl/...)
+
+Dual-Renewal Conflict Guard:
+  - SslService automatically resolves certificate owner (`certbot` vs `ispconfig`).
+  - Direct Certbot actions (`certonly`, `renew`, `force`) are hard-blocked on ISPConfig-owned
+    domains (raising `AppException` with code `ssl_owner_conflict`).
+  - ISPConfig issues and renews its own Let's Encrypt certificates independently
+    via the remote API (`ssl_letsencrypt = 'y'`).
+
+
+2. VERIFICATION RESULTS
+--------------------------------------------------------------------------------
+[1] Ownership Classification:
+    ✓ `/etc/letsencrypt/live/...` resolved as `certbot`
+    ✓ `/var/www/clients/.../ssl/...` resolved as `ispconfig`
+    ✓ Domain notes metadata containing `ispconfig` correctly tags ownership
+
+[2] Conflict Guard:
+    ✓ Certbot actions on ISPConfig domains rejected with code `ssl_owner_conflict`
+
+[3] ISPConfig Provider SSL Issuance:
+    ✓ `issue_ssl_for_domain_id` updates web domain with `ssl='y'`, `ssl_letsencrypt='y'`
+
+[4] Test Suite:
+    ✓ 3/3 tests passed in backend/tests/unit/test_phase_n_ssl.py
+    ✓ 273/273 unit tests passed across the backend test suite
+
+
+3. VERDICT
+--------------------------------------------------------------------------------
+PHASE N: PASS
+================================================================================

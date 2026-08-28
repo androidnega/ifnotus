@@ -1,0 +1,49 @@
+================================================================================
+PHASE X — DEFAULT PROVIDER CUTOVER REPORT
+Date: 2026-08-28
+Server: 80.241.223.82 (single VPS)
+================================================================================
+
+1. EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+Phase X performs the official hosting engine cutover for all new IFNOTUS accounts:
+  `HOSTING_PROVIDER_DEFAULT = "ispconfig"` (cut over from "legacy").
+
+Pre-Cutover Invariants Verified:
+  ✓ Multiple ISPConfig tenants tested (Phase H, Phase I, Phase T)
+  ✓ Provisioning retries tested (idempotency keys + reconciliation)
+  ✓ Suspend / reactivate tested (Phase H, Phase I, Phase U)
+  ✓ Backups & restore drills verified (Phase R)
+  ✓ Real resource enforcement proven (Phase J, Phase S)
+  ✓ Customer panel provider wiring active (Phase U)
+  ✓ ISPConfig reconciliation working (Phase G, Phase I)
+
+Scope & Blast Radius:
+  - NEW sales / provisioning: Automatically routed to ISPConfig 3.
+  - EXISTING legacy tenants: Remain on `provider = "legacy"` until individually migrated.
+
+
+2. VERIFICATION RESULTS
+--------------------------------------------------------------------------------
+[1] Configuration Cutover:
+    ✓ `app.core.config.Settings.hosting_provider_default = "ispconfig"`
+    ✓ `.env.example` updated with `HOSTING_PROVIDER_DEFAULT=ispconfig`
+    ✓ Local `.env` updated with `HOSTING_PROVIDER_DEFAULT=ispconfig`
+
+[2] Hosting Provider Factory:
+    ✓ `resolve_provider_kind()` defaults to `HostingProviderKind.ISPCONFIG`.
+    ✓ `get_hosting_provider()` instantiates `ISPConfigHostingProvider` by default.
+
+[3] Legacy Isolation:
+    ✓ Existing legacy database records preserve `provider="legacy"` unchanged.
+
+[4] Automated Test Suite:
+    ✓ 5/5 unit tests passed in `backend/tests/unit/test_phase_x_provider_cutover.py`
+    ✓ Standalone verification script `backend/scripts/phase_x_provider_cutover.py` passed.
+    ✓ Total backend unit test suite: 330/330 PASS.
+
+
+3. VERDICT
+--------------------------------------------------------------------------------
+PHASE X: PASS
+================================================================================

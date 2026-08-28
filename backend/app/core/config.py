@@ -107,6 +107,10 @@ class Settings(BaseSettings):
     monitoring_cpu_alert_threshold: float = 85.0
     monitoring_memory_alert_threshold: float = 85.0
     monitoring_disk_alert_threshold: float = 90.0
+    monitoring_inodes_alert_threshold: float = 85.0
+    monitoring_load_alert_threshold: float = 12.0
+    monitoring_ssl_expiry_days_threshold: int = 14
+    monitoring_tenant_resource_alert_threshold: float = 90.0
     monitoring_expected_ports: Annotated[list[int], NoDecode] = Field(
         default_factory=lambda: [8000, 5173, 5432, 6379],
     )
@@ -237,6 +241,10 @@ class Settings(BaseSettings):
     namecheap_contact_email: str = "hostmaster@ifnotus.space"
     dns_ns1: str = "ns1.ifnotus.space"
     dns_ns2: str = "ns2.ifnotus.space"
+    # Phase L — legacy_bind | ispconfig | external (external = guidance only, no BIND writes)
+    dns_writer_mode: str = "legacy_bind"
+    # Planned secondary NS IP (documentation / future cutover — ns2 should not share ns1 failure domain)
+    dns_ns2_target_ip: str | None = None
     # Student/project hostnames (not the control plane). Legacy zone kept for recognition only.
     student_zone: str = "ifnotus.space"
     legacy_student_zone: str = "serverlabsttu.space"
@@ -256,7 +264,7 @@ class Settings(BaseSettings):
     # Shell command after a successful dump. Use {path} and {dir}. Example:
     # rsync -az {dir}/ backup@otherhost:/var/backups/ifnotus/
     platform_backup_offsite_cmd: str = ""
-    # PHASE 24 — environment archive DR target (none | command | s3)
+    # PHASE 24 / PHASE R — environment archive & DR offsite target (none | command | s3 | restic)
     backup_offsite_provider: str = "none"
     # command provider: {path} archive, {key} object key, {dir} parent
     backup_offsite_cmd: str = ""
@@ -269,12 +277,16 @@ class Settings(BaseSettings):
     backup_s3_secret_key: str = ""
     backup_s3_region: str = "auto"
     backup_s3_prefix: str = "ifnotus/"
+    # PHASE R — Restic encrypted offsite repository
+    backup_restic_repository: str = ""
+    backup_restic_password: str = ""
     # Keep a local copy after successful offsite put (recommended until restore-from-offsite is routine)
     backup_keep_local_after_offsite: bool = True
     host_disk_warn_pct: int = 80
     host_disk_high_pct: int = 90
     host_disk_crit_pct: int = 95
     os_user_quota_enabled: bool = True
+    enforce_staff_2fa: bool = False  # Phase Q — Require 2FA for superadmin, admin, operator
 
     # PHASE 30 — automated abuse protection
     abuse_protection_enabled: bool = True
@@ -307,8 +319,8 @@ class Settings(BaseSettings):
     customer_sftp_host: str = "ifnotus.space"
     customer_ssh_min_price_ghs: int = 300
 
-    # Hosting engine: legacy (current) | ispconfig (preferred) | olspanel (parked)
-    hosting_provider_default: str = "legacy"
+    # Hosting engine: legacy (current) | ispconfig (default/preferred) | olspanel (parked)
+    hosting_provider_default: str = "ispconfig"  # Phase X — default cutover for new hosting sales
     # ISPConfig 3 remote API (preferred engine)
     ispconfig_base_url: str = ""  # e.g. https://127.0.0.1:8081
     ispconfig_remote_user: str = ""

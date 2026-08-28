@@ -31,6 +31,12 @@ def _hotp(secret: str, counter: int) -> str:
     return f"{code % 1_000_000:06d}"
 
 
+def generate_code(secret: str) -> str:
+    """Generate the current 6-digit TOTP code for a secret."""
+    counter = int(time.time()) // 30
+    return _hotp(secret, counter)
+
+
 def verify_code(secret: str, code: str, *, window: int = 1) -> bool:
     raw = "".join(ch for ch in (code or "") if ch.isdigit())
     if len(raw) != 6 or not secret:
@@ -40,3 +46,16 @@ def verify_code(secret: str, code: str, *, window: int = 1) -> bool:
         if hmac.compare_digest(_hotp(secret, counter + delta), raw):
             return True
     return False
+
+
+def generate_backup_codes(count: int = 8) -> list[str]:
+    """Generate cryptographically secure 10-character alphanumeric backup recovery codes."""
+    import secrets
+
+    alphabet = "abcdefghjkmnpqrstuvwxyz23456789"  # Unambiguous characters
+    return [
+        "".join(secrets.choice(alphabet) for _ in range(5))
+        + "-"
+        + "".join(secrets.choice(alphabet) for _ in range(5))
+        for _ in range(count)
+    ]

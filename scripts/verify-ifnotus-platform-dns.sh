@@ -31,5 +31,13 @@ echo "NS: $ns"
 echo "$ns" | grep -q "ns1.ifnotus.space" && ok "ns1.ifnotus.space" || bad "missing ns1.ifnotus.space"
 echo "$ns" | grep -q "ns2.ifnotus.space" && ok "ns2.ifnotus.space" || bad "missing ns2.ifnotus.space"
 
+ns1ip="$(digA "ns1.$ZONE")"
+ns2ip="$(digA "ns2.$ZONE")"
+if [[ -n "$ns1ip" && -n "$ns2ip" && "$ns1ip" == "$ns2ip" ]]; then
+  echo "WARN: ns1 and ns2 share IP $ns1ip (single failure domain — plan secondary NS)"
+else
+  ok "ns1/ns2 distinct or unverified ($ns1ip vs $ns2ip)"
+fi
+
 echo "=== SUMMARY fail=${FAIL} ==="
 exit "$FAIL"

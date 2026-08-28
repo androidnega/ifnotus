@@ -1,0 +1,66 @@
+================================================================================
+PHASE M — MAIL ARCHITECTURE AUDIT & VERIFICATION REPORT
+Date: 2026-08-28
+Server: 80.241.223.82 (single VPS)
+================================================================================
+
+1. EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+Phase M establishes a clean, secure, plan-gated mail architecture across the
+IFNOTUS platform.
+
+Mail Architecture Principles:
+  A) Public Webmail Routing:
+     - https://{domain}/mail redirects (302) to https://mail.ifnotus.space/ (Roundcube)
+     - Clean shortcut across all customer nginx vhosts
+
+  B) Native Client Settings (SMTP / IMAP / POP):
+     - Host: mail.ifnotus.space (or mail.{domain})
+     - Ports: IMAP 993 (SSL/TLS), SMTP 587 (STARTTLS / Submission), POP3 995 (SSL/TLS)
+     - Username: full email address (name@domain)
+     - Auth: reject_authenticated_sender_login_mismatch enforced on Postfix submission
+
+  C) Plan Gating:
+     - Free and no-mail packs have mail_enabled=False and mailboxes=0
+     - Gated with pack_feature error if access is attempted
+     - Student packages: Starter has 1 mailbox (512MB), Developer 5, Pro 10 (5GB)
+
+  D) Outbound Authentication Tunnel & DNS Records:
+     - MX: 10 mail.ifnotus.space.
+     - SPF: v=spf1 ip4:80.241.223.82 a:mail.ifnotus.space ~all
+     - DKIM: selector "mail._domainkey.{domain}" (OpenDKIM 2048-bit RSA)
+     - DMARC: _dmarc.{domain} (v=DMARC1; p=none; rua=mailto:postmaster@{domain})
+     - Mail A Record: mail.{domain} -> 80.241.223.82
+     - Auto-configuration: autoconfig and autodiscover CNAMEs to mail.{domain}.
+     - PTR / rDNS: Automated check and advisory warnings in panel/API
+
+  E) Deliverability & Reputation Policy:
+     - Strict guardrail: Do not sell serious business email until outbound deliverability
+       is tested and verified with Gmail, Outlook/Hotmail, and Yahoo.
+
+
+2. VERIFICATION RESULTS
+--------------------------------------------------------------------------------
+[1] Plan-Gating:
+    ✓ Starter plan: 1 mailbox / 512MB storage
+    ✓ Student Pro: 10 mailboxes / 5120MB storage
+    ✓ No-mail custom packs: mail_enabled=False (denied with pack_feature error)
+
+[2] Webmail Path Routing:
+    ✓ Nginx location /mail -> 302 to https://mail.ifnotus.space/
+
+[3] Mail DNS Records & Authoritative Zones:
+    ✓ MX, SPF, DKIM, DMARC, Mail A, autoconfig, autodiscover written to zone files and DNS hints
+
+[4] Reverse DNS (PTR):
+    ✓ Live check implemented in MailAuthService._live_status
+
+[5] Test Suite:
+    ✓ 6/6 tests passed in backend/tests/unit/test_phase_m_mail.py
+    ✓ 270/270 unit tests passed across the backend test suite
+
+
+3. VERDICT
+--------------------------------------------------------------------------------
+PHASE M: PASS
+================================================================================

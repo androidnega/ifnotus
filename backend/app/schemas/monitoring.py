@@ -96,6 +96,10 @@ class DiskPartition(SchemaBase):
     used_bytes: int
     free_bytes: int
     percent: float
+    total_inodes: int | None = None
+    used_inodes: int | None = None
+    free_inodes: int | None = None
+    inodes_percent: float | None = None
 
 
 class DiskData(SchemaBase):
@@ -103,6 +107,7 @@ class DiskData(SchemaBase):
 
     partitions: list[DiskPartition]
     primary_percent: float
+    primary_inodes_percent: float | None = None
 
 
 class NetworkInterface(SchemaBase):

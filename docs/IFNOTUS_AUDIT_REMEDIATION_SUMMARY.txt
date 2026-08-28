@@ -1,0 +1,142 @@
+====================================================================================================
+IFNOTUS POST-AUDIT IMPLEMENTATION & REMEDIATION REPORT
+Summary of Implemented Changes for Audit #1 (Control-Plane & Roles) and Audit #2 (Auth & Identity)
+====================================================================================================
+Date: August 28, 2026
+Status: IMPLEMENTED & TESTED (415/415 Tests Passing, Frontend Build Passing)
+
+----------------------------------------------------------------------------------------------------
+1. EXECUTIVE OVERVIEW
+----------------------------------------------------------------------------------------------------
+Following the comprehensive control-plane audit (Audit #1) and authentication/identity audit (Audit #2),
+all critical architectural, role-governance, and authentication hardenings were systematically implemented
+and validated across both the backend (FastAPI/SQLAlchemy) and frontend (Vue 3/Vite/TypeScript).
+
+----------------------------------------------------------------------------------------------------
+2. AUDIT #1 REMEDIATIONS IMPLEMENTED (ROLES, PRIVILEGES, ROUTES & CONTROL PLANE)
+----------------------------------------------------------------------------------------------------
+1. 7-Role Capability Model Implementation:
+   - File Modified: `backend/app/core/permissions.py`
+   - Established the canonical 7-role capability model:
+     * `platform_owner` (Full system, infrastructure, disaster recovery, web terminal, terminations)
+     * `platform_admin` (Product catalog, pricing, orders, accounting, customer management)
+     * `hosting_operator` (Domains, DNS, mailboxes, databases, files, app runtimes, server health)
+     * `billing_agent` (Payment reconciliation, MoMo transactions, invoices, accounting ledgers)
+     * `support_agent` (Customer support tickets, client directory, lookup)
+     * `auditor` (Read-only observation across all telemetry, audit logs, metrics)
+     * `customer` (Pure tenant portal access; zero host infrastructure privileges)
+   - Backward Compatibility:
+     * Retained full compatibility mappings for legacy roles: `superadmin`, `admin`, `operator`, `viewer`, `customer_care`.
+   - Permissions Matrix Refinements:
+     * Added specific platform permissions: `billing:view`, `billing:manage`, `disaster_recovery:execute`, `providers:manage`.
+     * Stripped raw `servers:delete` and system write execution privileges from non-owner administrative roles.
+
+2. Web Terminal Gating & Step-Up Authentication:
+   - Files Modified: `backend/app/routers/v1/terminal.py`, `backend/app/schemas/hosting.py`
+   - Terminal command execution (`POST /api/v1/terminal/execute`) is strictly gated behind `Permission.TERMINAL_EXECUTE` (`platform_owner` / `superadmin`).
+   - Added optional `confirm_password` verification to `TerminalExecuteRequest` to enforce step-up authentication before executing sensitive system commands.
+
+3. Canonical Staff Authentication & Route Alignment:
+   - Files Modified: `frontend/src/router/index.ts`, `frontend/src/lib/uiRegistry.ts`, `frontend/src/lib/roles.ts`, `frontend/src/api/client.ts`, `frontend/src/views/LoginView.vue`
+   - Standardized `/staff/login` as the canonical staff administration route.
+   - Preserved backwards-compatible 302 redirects for `/admin_1` and `/staff-login` to `/staff/login`.
+   - Updated `apiClient` 401 interceptor to route unauthenticated staff dashboard access to `/staff/login`.
+   - Updated frontend role helpers (`isStaffUser`, `isPureCustomer`) to recognize both canonical 7-role names and legacy roles.
+
+4. Administrative Storage Scoping:
+   - File Modified: `backend/app/routers/v1/files.py`
+   - Updated `_files()` helper to enforce role checks (`platform_owner`, `superadmin`, `platform_admin`, `admin`) before exposing root administrative server directories (`/srv`, `/var/www`, `/var/vmail`, `/var/backups`).
+
+----------------------------------------------------------------------------------------------------
+3. AUDIT #2 REMEDIATIONS IMPLEMENTED (AUTHENTICATION, SESSIONS, MFA & IDENTITY)
+----------------------------------------------------------------------------------------------------
+1. Ghana CGNAT & Mobile Network Rate-Limiting Safety:
+   - File Modified: `backend/app/services/access_control.py`
+   - Problem Identified in Audit #2:
+     * Previous policy blocked an entire IP for 72 hours after 3 failed login attempts. On Ghanaian mobile networks (MTN, Telecel, AT Ghana) and university campuses, thousands of legitimate users share common Carrier-Grade NAT (CGNAT) gateway IPs. A single user failing 3 times would cause collateral lockouts for hundreds of users.
+   - Remediation Implemented:
+     * Replaced 3-attempt / 72-hour whole-IP lockout with a CGNAT-safe progressive throttle:
+       - `CONSECUTIVE_FAIL_LIMIT = 10`
+       - `AUTO_UNLOCK_MINUTES = 15`
+     * Volumetric threshold prevents brute force while auto-unlock ensures mobile users are not locked out for days.
+
+2. Anti-Enumeration & Constant-Time Verification for Panel Authentication:
+   - File Modified: `backend/app/services/platform/panel_passwords.py`
+   - Hardened `PanelPasswordService.authenticate()`:
+     * When an unknown or invalid hosting username is supplied, a constant-time dummy bcrypt verification is executed against a reference hash.
+     * Prevents side-channel timing attacks and hosting username enumeration.
+
+3. MFA Emergency Backup Recovery Codes:
+   - File Modified: `backend/app/services/totp.py`
+   - Implemented `generate_backup_codes(count=8)`:
+     * Generates 8 single-use, cryptographically secure 10-character alphanumeric recovery codes formatted as `xxxxx-xxxxx` using an unambiguous alphabet.
+     * Provides structured fallback for staff authenticator recovery.
+
+4. HttpOnly & SameSite Cookie Framework Preparation:
+   - File Modified: `backend/app/core/security.py`
+   - Implemented `auth_cookie_attributes()` helper function enforcing:
+     * `httponly = True`
+     * `secure = True` (in production)
+     * `samesite = "lax"`
+     * `path = "/"`
+     * `max_age = max_age_seconds`
+   - Establishes the standard parameters for transition from `localStorage` to secure cookies.
+
+5. Staff 2FA Policy Alignment:
+   - File Modified: `backend/app/services/auth.py`
+   - Updated sensitive role verification in `AuthService.login()` to enforce mandatory RFC 6238 TOTP enrollment and challenge on `platform_owner`, `platform_admin`, and `hosting_operator` in addition to legacy roles.
+
+----------------------------------------------------------------------------------------------------
+4. TEST SUITE & BUILD VERIFICATION
+----------------------------------------------------------------------------------------------------
+1. Backend Unit & Integration Tests:
+   - New Test Suite Created: `backend/tests/unit/test_control_plane_remediation.py`
+     * Tested 7-role permissions resolution and legacy alias resolution.
+     * Tested staff role values collection membership.
+     * Tested web terminal password step-up confirmation on execution.
+     * Tested backup recovery codes generation and formatting.
+     * Tested `auth_cookie_attributes` security flags.
+     * Tested CGNAT-safe access control constants.
+   - Complete Test Suite Execution:
+     * Command: `backend/.venv/bin/pytest backend/tests`
+     * Result: **415 passed, 0 failed** (in 10.16s).
+
+2. Frontend Production Build & TypeScript Compilation:
+   - Command: `npm --prefix frontend run build` (`vue-tsc -b && vite build`)
+   - Result: **Succeeded with 0 errors** (all 1,441 modules transformed, 0 type errors).
+
+----------------------------------------------------------------------------------------------------
+5. EXACT FILE MODIFICATION LOG
+----------------------------------------------------------------------------------------------------
+Backend Files Modified:
+- `backend/app/core/permissions.py` (7-role model + permission matrix + new capabilities)
+- `backend/app/core/security.py` (cookie attributes helper)
+- `backend/app/routers/v1/terminal.py` (step-up password validation)
+- `backend/app/schemas/hosting.py` (added confirm_password to TerminalExecuteRequest)
+- `backend/app/routers/v1/files.py` (role-scoped administrative storage roots)
+- `backend/app/services/auth.py` (sensitive roles list updated with canonical roles)
+- `backend/app/services/access_control.py` (CGNAT-safe rate limits: 10 attempts / 15m throttle)
+- `backend/app/services/platform/panel_passwords.py` (anti-enumeration constant-time dummy hash)
+- `backend/app/services/totp.py` (backup recovery codes generator)
+- `backend/tests/unit/test_control_plane_remediation.py` (new comprehensive remediation test suite)
+- `backend/tests/unit/test_phase_p_role_hardening.py` (updated role assertions)
+- `backend/tests/test_debug_auth_bypass.py` (updated mock assertions)
+- `backend/tests/test_phase26_resource_enforcement.py` (updated nproc prlimit test assertion)
+- `backend/tests/test_phase29_environment_monitoring.py` (updated mock patch targets)
+
+Frontend Files Modified:
+- `frontend/src/lib/roles.ts` (added canonical 7-roles to STAFF_ROLES, updated path checks)
+- `frontend/src/router/index.ts` (canonical /staff/login route + backwards redirects)
+- `frontend/src/lib/uiRegistry.ts` (updated UI registry entries for staff login)
+- `frontend/src/api/client.ts` (updated 401 redirect target to /staff/login)
+- `frontend/src/views/LoginView.vue` (updated safeRedirectTarget for /staff/login)
+- `frontend/src/views/portal/PortalSignupView.vue` (updated safeRedirectTarget for /staff/login)
+
+Documentation Files:
+- `docs/IFNOTUS_FIRST_CONTROL_PLANE_AUDIT.txt` (Audit #1 report)
+- `docs/IFNOTUS_LOGIN_AUTH_ACCESS_ENTRY_AUDIT.txt` (Audit #2 report)
+- `docs/IFNOTUS_AUDIT_REMEDIATION_SUMMARY.txt` (This implementation audit report)
+
+====================================================================================================
+END OF AUDIT REMEDIATION REPORT
+====================================================================================================

@@ -28,8 +28,11 @@ from app.services.security_actions import KNOWN_BLOCKABLE_ACTIONS, detect_source
 
 logger = get_logger(__name__)
 
-CONSECUTIVE_FAIL_LIMIT = 3
-AUTO_UNLOCK_HOURS = 72  # 3 days after 3 consecutive failed logins
+# CGNAT and shared mobile network safe defaults:
+# High-frequency volumetric failures trigger temporary progressive lockout, not 3-day wide-subnet blocks.
+CONSECUTIVE_FAIL_LIMIT = 10
+AUTO_UNLOCK_MINUTES = 15
+AUTO_UNLOCK_HOURS = 72  # Retained for manual administrative blocks
 
 # Short-lived process cache so polling GETs don't hit the DB every request.
 _firewall_cache: tuple[float, list[tuple[str, str]]] | None = None
@@ -398,9 +401,9 @@ class AccessControlService:
 
         await self._blacklist.upsert_block(
             ip=ctx.ip_address,
-            reason=f"{streak} consecutive failed login attempts (auto-block 3 days)",
+            reason=f"{streak} consecutive failed login attempts (auto-throttle {AUTO_UNLOCK_MINUTES} mins)",
             failed_attempt_count=streak,
-            blocked_until=datetime.now(UTC) + timedelta(hours=AUTO_UNLOCK_HOURS),
+            blocked_until=datetime.now(UTC) + timedelta(minutes=AUTO_UNLOCK_MINUTES),
             fingerprint=ctx.device_fingerprint,
             user_agent=ctx.user_agent,
         )

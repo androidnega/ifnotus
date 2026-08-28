@@ -27,8 +27,11 @@ router = APIRouter()
 
 def _files(request: Request, user) -> FileManagerService:
     settings = request.app.state.container.config()
-    is_admin = user.is_superuser or "admin" in user.roles or "superadmin" in user.roles
-    return FileManagerService(settings, admin_storage=is_admin)
+    roles = {str(r).lower() for r in (getattr(user, "roles", []) or [])}
+    # Only platform_owner and legacy superadmin get raw administrative host storage roots.
+    privileged = {"platform_owner", "superadmin"}
+    is_owner = bool(getattr(user, "is_superuser", False)) or bool(roles & privileged)
+    return FileManagerService(settings, admin_storage=is_owner)
 
 
 def _root_params(app_id: str | None, root_id: str | None) -> dict[str, str | None]:

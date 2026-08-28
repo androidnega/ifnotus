@@ -111,6 +111,7 @@ function safeRedirectTarget(): string | null {
     !candidate.startsWith('//') &&
     candidate !== '/login' &&
     candidate !== '/signup' &&
+    candidate !== '/staff/login' &&
     candidate !== '/admin_1' &&
     candidate !== '/portal/login'
   ) {

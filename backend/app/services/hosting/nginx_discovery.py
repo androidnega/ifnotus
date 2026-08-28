@@ -7,7 +7,11 @@ from pathlib import Path
 
 from app.core.config import Settings
 from app.core.logging import get_logger
-from app.schemas.inventory import DomainReconciliationState, NginxDiscoveredDomainSchema
+from app.schemas.inventory import (
+    DomainReconciliationState,
+    NginxDiscoveredDomainSchema,
+    classify_resource,
+)
 
 logger = get_logger(__name__)
 
@@ -59,6 +63,7 @@ class NginxDiscoveryService:
                 site_path=str(path),
                 enabled=enabled,
                 ssl_enabled=ssl_enabled,
+                resource_class=classify_resource(name, document_root, [name]),
                 document_root=document_root,
                 proxy_pass=proxy_pass,
                 certificate_path=cert_path,

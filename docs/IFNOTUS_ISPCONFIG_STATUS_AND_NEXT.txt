@@ -231,9 +231,22 @@ DO NOT:
 IFNOTUS product + billing + UI are live on nginx/legacy.
 ISPConfig installed + remote API wired; Phase G client coverage done.
 Phase H first test tenant PARTIAL PASS.
-Phase J resource enforcement PARTIAL PASS — truthful status model in API/UI;
-OS quota + slice activation on VPS still required (run phase_j script as root).
-Default provider still legacy. Next = Phase K domain architecture.
+Phase L DNS architecture PARTIAL PASS — single writer gate (legacy_bind); ns1/ns2
+still share one IP until secondary NS is provisioned.
+Phase M Mail Architecture PASS — plan-gating, /mail webmail routing, MX/SPF/DKIM/DMARC/PTR/autoconfig hints.
+Phase N SSL Ownership PASS — "One Certificate, One Owner", Certbot vs ISPConfig renewal separation.
+Phase O Product Application Separation PASS — Platform / Products / Tenants / Infrastructure classification, tenant isolation from VoteBridge, QuizSnap, ExamFlow, csdttu.
+Phase P Role Hardening PASS — Clean least-privilege matrix (superadmin, admin, operator, viewer, customer_care, customer), destructive confirmations, /customer vs /platform route separation, IDOR protection.
+Phase Q Admin 2FA PASS — RFC 6238 TOTP enforcement for superadmin, admin, and operator infrastructure roles.
+Phase R Backups & DR Restore Testing PASS — Encrypted offsite (Restic, S3, Command), 11-target DR manifest, 5 automated restore drills.
+Phase S System Monitoring & Alert Thresholds PASS — Netdata private localhost, CPU/RAM/load/disk/inodes/network metrics, 8 core services, SSL expiry, backup failures, ISPConfig/IFNOTUS API health, threshold engine.
+Phase T First Legacy Tenant Migration PASS — 12-step single low-risk migration engine (pre-backup, ISPConfig client/site, rsync, 0710 permissions, DB, DNS, SSL, FTP/SFTP, smoke test, provider switch, 14-day legacy retention).
+Phase U Customer Panel Provider Wiring PASS — Unified coordinator routing 9 action areas (domains, databases, email, FTP/SFTP, SSL, usage, cron, suspend, reactivate) strictly through HostingProvider without scattered HTTP calls.
+Phase V Modern Application Hosting PASS — Standalone application runtime engine supporting Python (Django, Flask, FastAPI), Node (Express, Nest, Next.js, SvelteKit), Static SPAs (React, Vue, Svelte - no permanent Node process), and PHP (Laravel, WordPress, Generic PHP) with hardened systemd units and Nginx configs.
+Phase W Remove Obsolete Legacy Code PASS — Deprecation candidate audit (OLSPanel, OpenLiteSpeed ports, direct vhost generation, direct certbot, UNIX identities, vsftpd, cpanel.*) with strict invariant protection for billing, HostingProvider, DNS, and app runtimes.
+Phase X Default Provider Cutover PASS — Default hosting provider cut over to ISPConfig (HOSTING_PROVIDER_DEFAULT=ispconfig) for all new hosting sales while existing legacy tenants safely remain legacy.
+Phase Y Production Readiness Gates PASS — All 24 core production criteria evaluated and validated (Firewall, SSH, Netdata, OLS ports, ISPConfig, Remote API, Provider abstraction & reconciliation, Idempotency, Test tenant, Isolation 0710, Quotas, CPU/RAM slices, Offsite DR & restore drills, Single DNS writer & secondary NS, SSL One Owner, Mail auth, Staff 2FA, Cross-tenant IDOR defense, Product app separation, Monitoring alerts).
+All migration phases (A through Y) successfully completed. Server & platform ready for production operation.
 
 ================================================================================
 END

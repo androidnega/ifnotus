@@ -9,7 +9,7 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import AppException, NotFoundError
 from app.core.logging import get_logger
 from app.models.hosting import Domain
 from app.repositories.domain import DomainRepository
@@ -193,6 +193,20 @@ class SslService:
             details={"exit_code": code, "stdout": stdout, "stderr": stderr},
         )
 
+    def _resolve_owner(self, domain: Domain | None, cert_path: str | None) -> str:
+        """Resolve certificate ownership: certbot vs ispconfig vs external (Phase N)."""
+        if cert_path:
+            p = cert_path.lower()
+            if "/var/www/clients/" in p or ("/var/www/" in p and "/ssl/" in p):
+                return "ispconfig"
+            if "/etc/letsencrypt/" in p:
+                return "certbot"
+        if domain is not None:
+            notes = (domain.notes or "").lower()
+            if "ispconfig" in notes:
+                return "ispconfig"
+        return "certbot"
+
     async def _build_certificate(self, domain: Domain) -> SslCertificateSchema:
         nginx = await asyncio.to_thread(self._nginx.read, None, domain.name)
         cert_path = await self._resolve_cert_path(domain, nginx_cert=nginx.certificate_path)
@@ -200,10 +214,12 @@ class SslService:
         status = await self._reader.read(cert_path, domain.name, light=True) if configured else None
         live_dir = Path(cert_path).parent if cert_path else None
         document_root = await self._resolve_webroot(domain, nginx_root=nginx.root, ensure=False)
+        owner = self._resolve_owner(domain, cert_path)
         return SslCertificateSchema(
             domain_id=domain.id,
             domain=domain.name,
             configured=configured and bool(status and status.configured),
+            owner=owner,
             certificate_path=cert_path if configured else None,
             private_key_path=str(live_dir / "privkey.pem") if live_dir and (live_dir / "privkey.pem").exists() else None,
             chain_path=cert_path if configured else None,
@@ -224,9 +240,11 @@ class SslService:
     @staticmethod
     def _discovered_to_schema(disc: DiscoveredCertificateSchema) -> SslCertificateSchema:
         configured = bool(disc.certificate_path)
+        owner = "ispconfig" if disc.certificate_path and "/clients/" in disc.certificate_path else "certbot"
         return SslCertificateSchema(
             domain=disc.domain,
             configured=configured,
+            owner=owner,
             certificate_path=disc.certificate_path,
             issuer=disc.issuer,
             valid_until=disc.valid_until,
@@ -242,14 +260,23 @@ class SslService:
     async def _run_certbot(
         self, body: SslActionRequest, *, action: str, force: bool = False
     ) -> OperationResult:
-        certbot = resolve_binary("certbot", self._settings.certbot_binary)
-        if not certbot:
-            return OperationResult(success=False, message="certbot not available on this host.")
-
         domain = body.domain.lower().strip()
         entity = await self._domains.get_by_name(domain)
         if entity is None:
             raise NotFoundError(f"Domain '{domain}' not registered in IFNOTUS.")
+
+        # Phase N — One Certificate, One Owner rule
+        owner = self._resolve_owner(entity, entity.ssl_certificate_path)
+        if owner == "ispconfig":
+            raise AppException(
+                f"SSL for {domain} is managed by ISPConfig. Direct Certbot actions are blocked "
+                "to prevent renewal conflicts (Phase N rule: One Certificate, One Owner).",
+                code="ssl_owner_conflict",
+            )
+
+        certbot = resolve_binary("certbot", self._settings.certbot_binary)
+        if not certbot:
+            return OperationResult(success=False, message="certbot not available on this host.")
 
         nginx = await asyncio.to_thread(self._nginx.read, None, domain)
         parent = None

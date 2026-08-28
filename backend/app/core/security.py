@@ -129,3 +129,15 @@ def create_token_pair(
         refresh_token=refresh,
         expires_in=settings.access_token_expire_minutes * 60,
     )
+
+
+def auth_cookie_attributes(settings: Settings, *, max_age_seconds: int = 1800) -> dict[str, Any]:
+    """Standardized secure cookie parameters for HttpOnly session migration."""
+    is_prod = getattr(settings, "environment", "") == "production"
+    return {
+        "httponly": True,
+        "secure": is_prod,
+        "samesite": "lax",
+        "path": "/",
+        "max_age": max_age_seconds,
+    }

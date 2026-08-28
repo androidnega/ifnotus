@@ -48,6 +48,32 @@ def normalize_host(host: str | None) -> str:
     return h
 
 
+def sanitize_panel_hostname(raw: str | None) -> str | None:
+    """Normalize a hostname for /cpanel SSO — reject open-redirect carriers."""
+    h = normalize_host(raw)
+    if h.startswith("www."):
+        h = h[4:]
+    if not h or "." not in h:
+        return None
+    if any(ch in h for ch in ('/', "\\", "@", " ", "\n", "\r", "\0", "?")):
+        return None
+    if h.startswith(".") or h.endswith(".") or ".." in h:
+        return None
+    if h in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+        return None
+    labels = h.split(".")
+    if len(labels) < 2:
+        return None
+    for label in labels:
+        if not label or len(label) > 63:
+            return None
+        if not all(c.isalnum() or c == "-" for c in label):
+            return None
+        if label.startswith("-") or label.endswith("-"):
+            return None
+    return h
+
+
 def classify_host(host: str | None, *, settings: object | None = None) -> HostKind:
     h = normalize_host(host)
     if not h or "." not in h:

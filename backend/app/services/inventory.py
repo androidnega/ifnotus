@@ -17,10 +17,12 @@ from app.schemas.inventory import (
     DomainInventorySchema,
     DomainReconciliationState,
     NginxDiscoveredDomainSchema,
+    ResourceClass,
     SslInventorySchema,
     SslReconciliationState,
     VpsInventoryResponse,
     VpsInventorySummarySchema,
+    classify_resource,
 )
 from app.services.applications.discovery_runtime import RuntimeApplicationDiscovery
 from app.services.hosting.nginx_discovery import NginxDiscoveryService
@@ -141,12 +143,14 @@ class InventoryService:
             else:
                 state = DomainReconciliationState.MANAGED
 
+            doc_root = site.document_root if site else entity.document_root
             item = NginxDiscoveredDomainSchema(
                 server_name=entity.name,
                 site_path=site.site_path if site else "",
                 enabled=site.enabled if site else False,
                 ssl_enabled=site.ssl_enabled if site else False,
-                document_root=site.document_root if site else entity.document_root,
+                resource_class=classify_resource(entity.name, doc_root, [entity.name]),
+                document_root=doc_root,
                 proxy_pass=site.proxy_pass if site else None,
                 certificate_path=site.certificate_path if site else entity.ssl_certificate_path,
                 in_database=True,

@@ -1,0 +1,111 @@
+================================================================================
+PHASE L — DNS ARCHITECTURE
+Date: 2026-08-27
+Server: 80.241.223.82
+Verdict: PARTIAL PASS
+================================================================================
+
+Scope (master prompt):
+  - Single writer for customer DNS (no IFNOTUS DB + manual BIND + ISPConfig all writing)
+  - Managed DNS (NS → IFNOTUS) + External DNS (registrar/Cloudflare guidance only)
+  - ns1/ns2 redundancy plan — must not permanently share one failure domain
+
+--------------------------------------------------------------------------------
+1. ARCHITECTURE
+--------------------------------------------------------------------------------
+
+TODAY (legacy, HOSTING_PROVIDER_DEFAULT=legacy):
+  IFNOTUS UI / API
+      ↓
+  DnsWriterService (single gate)
+      ↓
+  AuthoritativeDnsService → BIND (/etc/bind/zones/db.{domain})
+      ↓
+  Public NS: ns1.ifnotus.space, ns2.ifnotus.space
+
+TARGET (after tenant migration):
+  IFNOTUS UI / API
+      ↓
+  DnsWriterService
+      ↓
+  HostingProvider (ispconfig) → ISPConfig DNS API → BIND
+
+EXTERNAL DNS mode (DNS_WRITER_MODE=external):
+  IFNOTUS shows required A/NS records — does NOT mutate BIND
+
+Customer modes (unchanged):
+  - Managed: point NS to ns1 + ns2
+  - External: keep registrar NS, add @ / www / mail A records
+
+--------------------------------------------------------------------------------
+2. CODE DELIVERED
+--------------------------------------------------------------------------------
+
+NEW:
+  backend/app/services/platform/dns_writer.py
+    - DnsWriterMode: legacy_bind | ispconfig | external
+    - DnsWriterService.publish_zone() / remove_zone() / status()
+    - ns_redundancy_status() — detects ns1/ns2 same A record
+
+  backend/scripts/phase_l_dns_architecture.py
+  backend/tests/unit/test_phase_l_dns.py (7 tests)
+
+UPDATED:
+  backend/app/services/platform/dns.py — all zone publishes via DnsWriterService
+  backend/app/services/platform/authoritative_dns.py — customer zones: @, www, mail (no cpanel A)
+  backend/app/services/platform/orders.py, workers/tasks_platform.py — register → DnsWriterService
+  backend/app/schemas/platform.py — EnvironmentDnsResponse: dns_writer, ns_redundancy
+  backend/app/core/config.py — dns_writer_mode, dns_ns2_target_ip
+  .env.example — DNS_WRITER_MODE, DNS_NS2_TARGET_IP
+  scripts/verify-ifnotus-platform-dns.sh — warns when ns1 IP == ns2 IP
+
+API: GET /customers/environments/{id}/dns now includes:
+  dns_writer, single_writer, managed_dns, external_dns_supported, ns_redundancy
+
+Tests: 13 passed (Phase L + dual-mode DNS + student zone)
+
+--------------------------------------------------------------------------------
+3. VERIFICATION
+--------------------------------------------------------------------------------
+
+| Check                         | Status   | Notes |
+|-------------------------------|----------|-------|
+| Single writer gate in code    | PASS     | DnsWriterService |
+| legacy_bind active on VPS     | PASS     | default |
+| ispconfig writer when migrated| PASS     | auto when provider=ispconfig + API creds |
+| external mode blocks BIND     | PASS     | unit test |
+| Managed + external UI paths   | PASS     | existing dual-mode |
+| Customer zone no cpanel A     | PASS     | Phase K alignment |
+| ns1/ns2 distinct on production| PARTIAL  | both → 80.241.223.82 today |
+| Secondary NS host deployed    | NOT YET  | plan documented |
+
+Production reality (audit):
+  ns1.ifnotus.space A → 80.241.223.82
+  ns2.ifnotus.space A → 80.241.223.82
+  Same failure domain — acceptable for launch, not resilient.
+
+Remediation (ops, not code):
+  1. Provision secondary DNS (VPS #2 or DNS provider slave)
+  2. Point ns2.ifnotus.space A to secondary IP
+  3. Set DNS_NS2_TARGET_IP in .env
+  4. Configure BIND slave or provider AXFR/notify
+
+Run on VPS:
+  cd /srv/apps/ifnotus/backend && .venv/bin/python scripts/phase_l_dns_architecture.py
+  ./scripts/verify-ifnotus-platform-dns.sh
+
+--------------------------------------------------------------------------------
+4. VERDICT
+--------------------------------------------------------------------------------
+
+PARTIAL PASS
+
+Single-writer policy is implemented and wired. Dual customer DNS modes work.
+Nameserver redundancy is documented and probed but NOT yet operational on the
+VPS (ns1/ns2 share one IP). No triple-writer conflict while legacy_bind is default.
+
+STOP — next phase per master prompt: Phase M (mail architecture).
+
+================================================================================
+END
+================================================================================

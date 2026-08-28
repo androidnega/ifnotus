@@ -3952,17 +3952,25 @@ async def resolve_panel_alias(
 ) -> PanelAliasResolveResponse:
     """Map cpanel.<domain> / site hostname to the caller's environment. Never trust Host alone."""
     _require_customer_user(user)
+    from app.core.exceptions import ValidationError
     from app.models.platform import CustomerDomain, CustomerEnvironment
     from app.services.platform.customers import CustomerService
-    from app.services.platform.host_routing import classify_host, panel_alias_apex
+    from app.services.platform.host_routing import (
+        classify_host,
+        panel_alias_apex,
+        sanitize_panel_hostname,
+    )
     from sqlalchemy import func
 
-    kind = classify_host(host, settings=settings)
+    safe = sanitize_panel_hostname(host)
+    if not safe:
+        raise ValidationError("Invalid hostname.")
+    kind = classify_host(safe, settings=settings)
     if kind.kind == "platform":
         raise AppException("That hostname is reserved for IFNOTUS.", code="host_reserved")
     lookup = None
     if kind.kind == "custom_panel":
-        lookup = panel_alias_apex(host)
+        lookup = panel_alias_apex(safe)
     elif kind.kind == "student":
         lookup = kind.hostname
     elif kind.kind == "custom_site":

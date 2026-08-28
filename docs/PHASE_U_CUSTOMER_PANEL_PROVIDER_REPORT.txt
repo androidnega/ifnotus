@@ -1,0 +1,64 @@
+================================================================================
+PHASE U — CUSTOMER PANEL PROVIDER WIRING REPORT
+Date: 2026-08-28
+Server: 80.241.223.82 (single VPS)
+================================================================================
+
+1. EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+Phase U establishes the unified Customer Panel Hosting Provider Wiring architecture.
+
+Core Principles Enforced:
+  1. Environments with `provider=legacy` continue using existing legacy services.
+  2. Environments with `provider=ispconfig` execute all operations through the
+     typed `HostingProvider` interface.
+  3. "Do not scatter ISPConfig HTTP calls across routers. Everything goes through: HostingProvider."
+
+All 9 Panel Action Areas Wired:
+  1. Domains:
+     - add_domain: Provisions web domain vhost via HostingProvider.
+     - add_subdomain: Adds subdomain vhost linked to parent domain.
+     - delete_domain: Deletes website via ISPConfig remote API.
+  2. Databases:
+     - create_database: Creates DB + DB user + privileges linked to parent site.
+     - delete_database: Deletes database entity.
+  3. Email:
+     - create_mail_domain: Provisions mail domain entity.
+     - create_mailbox: Provisions mailbox user with quota and password.
+     - delete_mailbox: Removes mailbox entity.
+  4. FTP / SFTP:
+     - create_ftp_user: Provisions Pure-FTPd user with isolated directory.
+     - delete_ftp_user: Removes FTP user.
+     - create_shell_user: Provisions jailed OpenSSH / Jailkit SFTP user.
+  5. SSL:
+     - issue_ssl: Requests and verifies Let's Encrypt certificate via ISPConfig.
+  6. Usage:
+     - get_usage: Fetches live disk quota, traffic, and feature counts.
+  7. Cron:
+     - create_cron: Registers URL/script scheduled cron job.
+     - delete_cron: Removes scheduled cron job.
+  8. Suspend:
+     - suspend_account: Disables active web domains for customer.
+  9. Reactivate (Unsuspend):
+     - reactivate_account: Restores active web domains for customer.
+
+
+2. VERIFICATION RESULTS
+--------------------------------------------------------------------------------
+[1] ISPConfig Provider Action Routing:
+    ✓ 9/9 action areas routed cleanly through `HostingProvider`.
+    ✓ Zero direct ISPConfig HTTP calls in customer routers.
+
+[2] Legacy Compatibility:
+    ✓ Legacy environments retain compatibility with existing nginx/local services.
+
+[3] Automated Test Suite:
+    ✓ 8/8 unit tests passed in `backend/tests/unit/test_phase_u_customer_panel_provider.py`
+    ✓ Standalone verification script `backend/scripts/phase_u_customer_panel_provider.py` passed.
+    ✓ Total backend unit test suite: 312/312 PASS.
+
+
+3. VERDICT
+--------------------------------------------------------------------------------
+PHASE U: PASS
+================================================================================

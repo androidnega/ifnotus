@@ -44,6 +44,7 @@ async function finishRedirect(home: 'dashboard' | 'portal-dashboard') {
     !candidate.startsWith('//') &&
     candidate !== '/login' &&
     candidate !== '/signup' &&
+    candidate !== '/staff/login' &&
     candidate !== '/admin_1' &&
     candidate !== '/portal/login'
   ) {

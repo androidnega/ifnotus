@@ -633,6 +633,11 @@ class EnvironmentDnsResponse(SchemaBase):
     message: str = (
         "Connect your domain with IFNOTUS nameservers or A records at your registrar — either works."
     )
+    dns_writer: str = "legacy_bind"
+    single_writer: bool = True
+    managed_dns: bool = True
+    external_dns_supported: bool = True
+    ns_redundancy: dict = Field(default_factory=dict)
 
 
 class AttachCustomDomainRequest(SchemaBase):

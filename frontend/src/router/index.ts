@@ -56,7 +56,12 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/login',
     name: 'login',
-    component: () => import('@/views/portal/PortalSignupView.vue'),
+    component: () => {
+      if (typeof window !== 'undefined' && isStaffPanelHost()) {
+        return import('@/views/LoginView.vue')
+      }
+      return import('@/views/portal/PortalSignupView.vue')
+    },
     meta: { guestOnly: true, panel: 'public' },
   },
   {
@@ -67,14 +72,20 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/admin_1',
-    name: 'admin-login',
-    component: () => import('@/views/LoginView.vue'),
-    meta: { guestOnly: true, panel: 'public' },
+    redirect: (to) => {
+      if (typeof window !== 'undefined' && !isStaffPanelHost()) {
+        return { path: '/login', query: to.query }
+      }
+      return { path: '/login', query: to.query }
+    },
   },
-  // Legacy staff login URL → obscure admin path
   {
     path: '/staff-login',
-    redirect: { name: 'admin-login' },
+    redirect: (to) => ({ path: '/login', query: to.query }),
+  },
+  {
+    path: '/staff/login',
+    redirect: (to) => ({ path: '/login', query: to.query }),
   },
   {
     path: '/go/hosting',
@@ -426,7 +437,7 @@ function loginRouteForTarget(toPath: string, panel: unknown) {
     return { name: 'login' as const, query: { redirect: toPath } }
   }
   if (panel === 'staff' || isStaffPath(toPath) || isStaffPanelHost()) {
-    return { name: 'admin-login' as const, query: { redirect: toPath } }
+    return { name: 'login' as const, query: { redirect: toPath } }
   }
   return { name: 'login' as const, query: { redirect: toPath } }
 }
@@ -491,10 +502,10 @@ router.beforeEach(async (to) => {
   }
 
   if (isStaffPanelHost()) {
-    if (to.path === '/' || to.name === 'home' || to.name === 'plans' || to.name === 'login' || to.name === 'portal-signup') {
+    if (to.path === '/' || to.name === 'home' || to.name === 'plans' || to.name === 'portal-signup') {
       if (!token) {
-        if (to.name === 'admin-login') return true
-        return { name: 'admin-login' }
+        if (to.name === 'login') return true
+        return { name: 'login' }
       }
       return { name: 'dashboard' }
     }
@@ -503,7 +514,7 @@ router.beforeEach(async (to) => {
   // Public maintenance gate (staff login and API stay available).
   if (
     to.name !== 'maintenance' &&
-    to.name !== 'admin-login' &&
+    to.name !== 'login' &&
     to.meta.panel === 'public'
   ) {
     try {

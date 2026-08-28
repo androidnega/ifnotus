@@ -60,109 +60,152 @@ class Permission(StrEnum):
     # Tenant environment remediation (suspend, health, stacks, repair) — not plan CRUD
     PLATFORM_OPS = "platform:ops"
 
+    # Billing & Financials
+    BILLING_VIEW = "billing:view"
+    BILLING_MANAGE = "billing:manage"
+
+    # Disaster Recovery & Provider Administration
+    DR_EXECUTE = "disaster_recovery:execute"
+    PROVIDERS_MANAGE = "providers:manage"
+
 
 class Role(StrEnum):
     """Built-in platform roles."""
 
+    # Canonical 7-role capability model
+    PLATFORM_OWNER = "platform_owner"
+    PLATFORM_ADMIN = "platform_admin"
+    HOSTING_OPERATOR = "hosting_operator"
+    BILLING_AGENT = "billing_agent"
+    SUPPORT_AGENT = "support_agent"
+    AUDITOR = "auditor"
+    CUSTOMER = "customer"
+
+    # Legacy aliases (for backward compatibility with existing databases and tests)
     SUPERADMIN = "superadmin"
     ADMIN = "admin"
     OPERATOR = "operator"
     VIEWER = "viewer"
     CUSTOMER_CARE = "customer_care"
-    CUSTOMER = "customer"
 
 
-# Each staff role has a unique primary job:
-# - superadmin: staff accounts, terminal, privilege switch, terminate, everything
-# - admin: product/business (plans, billing confirm, customers) + env remediation; no host shell/files
-# - operator: hands-on hosting (files/mail/dns/db) + env remediation; no plans/billing
-# - customer_care: MoMo confirm + support tickets only
-# - viewer: read-only across panel
+# Base sets for role permissions
+_PLATFORM_ADMIN_PERMISSIONS = frozenset(
+    {
+        Permission.SYSTEM_READ,
+        Permission.SERVERS_READ,
+        Permission.APPS_READ,
+        Permission.APPS_WRITE,
+        Permission.EMAIL_READ,
+        Permission.MONITORING_READ,
+        Permission.DOMAINS_READ,
+        Permission.SSL_READ,
+        Permission.FILES_READ,
+        Permission.MAIL_READ,
+        Permission.DATABASES_READ,
+        Permission.USERS_READ,
+        Permission.SUPPORT_READ,
+        Permission.SUPPORT_WRITE,
+        Permission.CUSTOMERS_MANAGE,
+        Permission.PLATFORM_READ,
+        Permission.PLATFORM_WRITE,
+        Permission.PLATFORM_OPS,
+        Permission.BILLING_VIEW,
+        Permission.BILLING_MANAGE,
+    }
+)
+
+_HOSTING_OPERATOR_PERMISSIONS = frozenset(
+    {
+        Permission.SYSTEM_READ,
+        Permission.SERVERS_READ,
+        Permission.SERVERS_WRITE,
+        Permission.DEPLOYMENTS_READ,
+        Permission.DEPLOYMENTS_WRITE,
+        Permission.DEPLOYMENTS_EXECUTE,
+        Permission.APPS_READ,
+        Permission.APPS_WRITE,
+        Permission.MONITORING_READ,
+        Permission.DOMAINS_READ,
+        Permission.DOMAINS_WRITE,
+        Permission.SSL_READ,
+        Permission.SSL_WRITE,
+        Permission.FILES_READ,
+        Permission.FILES_WRITE,
+        Permission.MAIL_READ,
+        Permission.MAIL_WRITE,
+        Permission.EMAIL_READ,
+        Permission.EMAIL_WRITE,
+        Permission.DATABASES_READ,
+        Permission.DATABASES_WRITE,
+        Permission.SUPPORT_READ,
+        Permission.SUPPORT_WRITE,
+        Permission.PLATFORM_READ,
+        Permission.PLATFORM_OPS,
+    }
+)
+
+_BILLING_AGENT_PERMISSIONS = frozenset(
+    {
+        Permission.PLATFORM_READ,
+        Permission.CUSTOMERS_MANAGE,
+        Permission.SUPPORT_READ,
+        Permission.BILLING_VIEW,
+        Permission.BILLING_MANAGE,
+    }
+)
+
+_SUPPORT_AGENT_PERMISSIONS = frozenset(
+    {
+        Permission.PLATFORM_READ,
+        Permission.CUSTOMERS_MANAGE,
+        Permission.SUPPORT_READ,
+        Permission.SUPPORT_WRITE,
+    }
+)
+
+_AUDITOR_PERMISSIONS = frozenset(
+    {
+        Permission.SYSTEM_READ,
+        Permission.SERVERS_READ,
+        Permission.DEPLOYMENTS_READ,
+        Permission.APPS_READ,
+        Permission.EMAIL_READ,
+        Permission.MONITORING_READ,
+        Permission.DOMAINS_READ,
+        Permission.SSL_READ,
+        Permission.FILES_READ,
+        Permission.MAIL_READ,
+        Permission.DATABASES_READ,
+        Permission.SUPPORT_READ,
+        Permission.PLATFORM_READ,
+        Permission.BILLING_VIEW,
+    }
+)
+
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
+    Role.PLATFORM_OWNER: frozenset(Permission),
     Role.SUPERADMIN: frozenset(Permission),
-    Role.ADMIN: frozenset(
-        {
-            Permission.SYSTEM_READ,
-            Permission.SERVERS_READ,
-            Permission.SERVERS_DELETE,
-            Permission.APPS_READ,
-            Permission.APPS_WRITE,
-            Permission.EMAIL_READ,
-            Permission.MONITORING_READ,
-            Permission.DOMAINS_READ,
-            Permission.SSL_READ,
-            Permission.FILES_READ,
-            Permission.MAIL_READ,
-            Permission.DATABASES_READ,
-            Permission.USERS_READ,
-            Permission.SUPPORT_READ,
-            Permission.SUPPORT_WRITE,
-            Permission.CUSTOMERS_MANAGE,
-            Permission.PLATFORM_READ,
-            Permission.PLATFORM_WRITE,
-            Permission.PLATFORM_OPS,
-        }
-    ),
-    Role.OPERATOR: frozenset(
-        {
-            Permission.SYSTEM_READ,
-            Permission.SERVERS_READ,
-            Permission.SERVERS_WRITE,
-            Permission.DEPLOYMENTS_READ,
-            Permission.DEPLOYMENTS_WRITE,
-            Permission.DEPLOYMENTS_EXECUTE,
-            Permission.APPS_READ,
-            Permission.APPS_WRITE,
-            Permission.MONITORING_READ,
-            Permission.DOMAINS_READ,
-            Permission.DOMAINS_WRITE,
-            Permission.SSL_READ,
-            Permission.SSL_WRITE,
-            Permission.FILES_READ,
-            Permission.FILES_WRITE,
-            Permission.MAIL_READ,
-            Permission.MAIL_WRITE,
-            Permission.EMAIL_READ,
-            Permission.EMAIL_WRITE,
-            Permission.DATABASES_READ,
-            Permission.DATABASES_WRITE,
-            Permission.SUPPORT_READ,
-            Permission.SUPPORT_WRITE,
-            Permission.PLATFORM_READ,
-            Permission.PLATFORM_OPS,
-        }
-    ),
-    Role.VIEWER: frozenset(
-        {
-            Permission.SYSTEM_READ,
-            Permission.SERVERS_READ,
-            Permission.DEPLOYMENTS_READ,
-            Permission.APPS_READ,
-            Permission.EMAIL_READ,
-            Permission.MONITORING_READ,
-            Permission.DOMAINS_READ,
-            Permission.SSL_READ,
-            Permission.FILES_READ,
-            Permission.MAIL_READ,
-            Permission.DATABASES_READ,
-            Permission.SUPPORT_READ,
-            Permission.PLATFORM_READ,
-        }
-    ),
-    Role.CUSTOMER_CARE: frozenset(
-        {
-            Permission.PLATFORM_READ,
-            Permission.CUSTOMERS_MANAGE,
-            Permission.SUPPORT_READ,
-            Permission.SUPPORT_WRITE,
-        }
-    ),
-    # Customer panel — portal APIs only. Host-wide staff routes are blocked.
+    Role.PLATFORM_ADMIN: _PLATFORM_ADMIN_PERMISSIONS,
+    Role.ADMIN: _PLATFORM_ADMIN_PERMISSIONS,
+    Role.HOSTING_OPERATOR: _HOSTING_OPERATOR_PERMISSIONS,
+    Role.OPERATOR: _HOSTING_OPERATOR_PERMISSIONS,
+    Role.BILLING_AGENT: _BILLING_AGENT_PERMISSIONS,
+    Role.SUPPORT_AGENT: _SUPPORT_AGENT_PERMISSIONS,
+    Role.CUSTOMER_CARE: _SUPPORT_AGENT_PERMISSIONS,
+    Role.AUDITOR: _AUDITOR_PERMISSIONS,
+    Role.VIEWER: _AUDITOR_PERMISSIONS,
     Role.CUSTOMER: frozenset(),
 }
 
 STAFF_ROLE_VALUES = frozenset(
     {
+        Role.PLATFORM_OWNER.value,
+        Role.PLATFORM_ADMIN.value,
+        Role.HOSTING_OPERATOR.value,
+        Role.BILLING_AGENT.value,
+        Role.SUPPORT_AGENT.value,
+        Role.AUDITOR.value,
         Role.SUPERADMIN.value,
         Role.ADMIN.value,
         Role.OPERATOR.value,
@@ -171,9 +214,13 @@ STAFF_ROLE_VALUES = frozenset(
     }
 )
 
-# Roles a superadmin may temporarily "work as" (never customer / superadmin).
 PRIVILEGE_SWITCH_ROLES = frozenset(
     {
+        Role.PLATFORM_ADMIN.value,
+        Role.HOSTING_OPERATOR.value,
+        Role.BILLING_AGENT.value,
+        Role.SUPPORT_AGENT.value,
+        Role.AUDITOR.value,
         Role.ADMIN.value,
         Role.OPERATOR.value,
         Role.VIEWER.value,
@@ -181,9 +228,13 @@ PRIVILEGE_SWITCH_ROLES = frozenset(
     }
 )
 
-# Roles that may be assigned when creating/updating staff accounts.
 CREATABLE_STAFF_ROLES = frozenset(
     {
+        Role.PLATFORM_ADMIN.value,
+        Role.HOSTING_OPERATOR.value,
+        Role.BILLING_AGENT.value,
+        Role.SUPPORT_AGENT.value,
+        Role.AUDITOR.value,
         Role.ADMIN.value,
         Role.OPERATOR.value,
         Role.VIEWER.value,
@@ -191,8 +242,13 @@ CREATABLE_STAFF_ROLES = frozenset(
     }
 )
 
-# Human-readable unique job per role (API / settings copy).
 ROLE_SUMMARIES: dict[str, str] = {
+    Role.PLATFORM_OWNER.value: "Platform owner — staff accounts, terminal, disaster recovery, terminate sites",
+    Role.PLATFORM_ADMIN.value: "Platform admin — plans, orders, customers, accounting, business settings",
+    Role.HOSTING_OPERATOR.value: "Hosting operator — domains, mail, files, databases, app runtime, server health",
+    Role.BILLING_AGENT.value: "Billing agent — MoMo confirmations, invoices, refund reviews, revenue ledgers",
+    Role.SUPPORT_AGENT.value: "Support agent — customer support tickets and client contact lookup",
+    Role.AUDITOR.value: "Auditor — read-only observation across all platform and host telemetry",
     Role.SUPERADMIN.value: "Full control — staff accounts, terminal, privilege switch, terminate sites",
     Role.ADMIN.value: "Business admin — plans, orders, customers, env remediation (no host shell/files)",
     Role.OPERATOR.value: "Hosting operator — domains, mail, files, databases, env remediation (no billing/plans)",

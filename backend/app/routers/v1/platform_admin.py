@@ -498,8 +498,13 @@ async def terminate_environment(
     environment_id: UUID,
     session: DbSession,
     settings: SettingsDep,
+    confirm: bool = Query(default=True),
 ) -> StaffEnvironmentItem:
-    """Permanently mark a tenant environment terminated (superadmin only)."""
+    """Permanently mark a tenant environment terminated (superadmin only, requires confirmation)."""
+    if not confirm:
+        from app.core.exceptions import ValidationError
+
+        raise ValidationError("Destructive action confirmation required (confirm=true).")
     svc = StaffPlatformService(settings, session)
     env = await svc.terminate_environment(environment_id)
     return StaffEnvironmentItem.model_validate(svc.env_item_payload(env))

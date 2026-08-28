@@ -13,7 +13,11 @@ from app.services.platform import phone_otp
 
 
 def test_dev_bypass_blocked_in_production_even_with_flag() -> None:
-    settings = MagicMock(environment=Environment.PRODUCTION, dev_auth_bypass=True)
+    settings = MagicMock(
+        environment=Environment.PRODUCTION,
+        dev_auth_bypass=True,
+        sms_debug_mode=False,
+    )
     assert dev_auth_bypass_allowed(settings) is False
     assert dev_show_otp_code(settings) is False
 

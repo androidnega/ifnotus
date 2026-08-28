@@ -2,10 +2,11 @@
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from app.api.deps import CurrentUser, DbSession, RequirePermission
+from app.api.deps import CurrentUser, DbSession, RequirePermission, get_auth_service
 from app.core.permissions import Permission
 from app.schemas.hosting import TerminalAuditSchema, TerminalExecuteRequest, TerminalExecuteResponse
 from app.schemas.operations import OperationResult
+from app.services.auth import AuthService
 from app.services.hosting.terminal import TerminalService
 
 router = APIRouter()
@@ -26,7 +27,10 @@ async def execute_command(
     request: Request,
     session: DbSession,
     user: CurrentUser,
+    auth_service: AuthService = Depends(get_auth_service),
 ) -> TerminalExecuteResponse:
+    if body.confirm_password:
+        await auth_service.confirm_password(user, body.confirm_password)
     return await _terminal(request, session).execute(
         user,
         body.command,

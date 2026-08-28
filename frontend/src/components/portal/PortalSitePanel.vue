@@ -1440,7 +1440,7 @@ function formatBytes(n?: number | null) {
           <ol class="steps-ns">
             <li>Keep your current nameservers (do not change them).</li>
             <li>At your DNS provider, add these A records pointing to our server.</li>
-            <li>Include <strong>cpanel</strong> so the hosting panel URL works.</li>
+            <li>Hosting panel is at <strong>yourdomain/cpanel</strong> — @ and www must point here; mail for webmail.</li>
             <li>Wait for DNS to update, then click Test again.</li>
           </ol>
           <div v-for="(rec, i) in dnsRecords" :key="`${rec.host}-${rec.record_type}`" class="cred-row">

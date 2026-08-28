@@ -103,17 +103,20 @@ def environment_live_stats(
         return False
 
     matched: list[Any] = []
-    for proc in psutil.process_iter(["pid"]):
-        try:
-            if _matches(proc):
-                # Prime cpu counters (first cpu_percent call is usually 0).
-                try:
-                    proc.cpu_percent(interval=None)
-                except (psutil.Error, AttributeError):
-                    pass
-                matched.append(proc)
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            continue
+    try:
+        for proc in psutil.process_iter(["pid"]):
+            try:
+                if _matches(proc):
+                    # Prime cpu counters (first cpu_percent call is usually 0).
+                    try:
+                        proc.cpu_percent(interval=None)
+                    except (psutil.Error, AttributeError):
+                        pass
+                    matched.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception:
+        return {"process_count": 0, "memory_rss_mb": 0.0, "cpu_percent": 0.0, "available": False}
 
     if sample_seconds > 0:
         time.sleep(min(1.0, max(0.05, float(sample_seconds))))

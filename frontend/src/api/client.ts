@@ -59,10 +59,10 @@ function authRedirectPath(): string {
   const next = `${path}${search}`
   const host = (window.location.hostname || '').toLowerCase()
   if (host === 'cpanel.ifnotus.space') {
-    if (next && next !== '/admin_1' && !next.startsWith('/admin_1?')) {
-      return `/admin_1?redirect=${encodeURIComponent(next)}`
+    if (next && next !== '/login' && !next.startsWith('/login?')) {
+      return `/login?redirect=${encodeURIComponent(next)}`
     }
-    return '/admin_1'
+    return '/login'
   }
   // Custom-domain hosting panel — customer login stays on cpanel.<domain>.
   if (host.startsWith('cpanel.') && host !== 'cpanel.ifnotus.space') {
@@ -96,7 +96,7 @@ function authRedirectPath(): string {
     path.startsWith('/domains') ||
     path.startsWith('/terminal')
   if (staffSurface) {
-    return `/admin_1?redirect=${encodeURIComponent(next)}`
+    return `/login?redirect=${encodeURIComponent(next)}`
   }
   if (next && next !== '/login' && next.startsWith('/') && !next.startsWith('//')) {
     return `/login?redirect=${encodeURIComponent(next)}`
@@ -113,6 +113,7 @@ apiClient.interceptors.response.use(
     const onAuthPage =
       path.startsWith('/login') ||
       path.startsWith('/signup') ||
+      path.startsWith('/staff/login') ||
       path.startsWith('/admin_1')
     const isAuthFlow =
       requestUrl.includes('/auth/login') ||

@@ -1,6 +1,18 @@
 import type { User } from '@/types/auth'
 
-const STAFF_ROLES = new Set(['superadmin', 'admin', 'operator', 'viewer', 'customer_care'])
+const STAFF_ROLES = new Set([
+  'platform_owner',
+  'platform_admin',
+  'hosting_operator',
+  'billing_agent',
+  'support_agent',
+  'auditor',
+  'superadmin',
+  'admin',
+  'operator',
+  'viewer',
+  'customer_care',
+])
 
 export function isStaffUser(user: Pick<User, 'roles' | 'is_superuser'> | null | undefined): boolean {
   if (!user) return false
@@ -42,7 +54,9 @@ export function isStaffPath(path: string): boolean {
     bare.startsWith('/go/') ||
     bare.startsWith('/login') ||
     bare.startsWith('/signup') ||
+    bare.startsWith('/staff/login') ||
     bare.startsWith('/admin_1') ||
+    bare.startsWith('/staff-login') ||
     bare.startsWith('/plans') ||
     bare.startsWith('/forgot-password') ||
     bare.startsWith('/reset-password')

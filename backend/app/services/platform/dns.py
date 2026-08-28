@@ -143,18 +143,24 @@ class EnvironmentDnsService:
         limit = self.custom_domain_limit(plan)
         check_name = primary_custom or (custom[0].domain_name if custom else None)
         readiness = self._domain_readiness(env, check_name=check_name, nameservers=ns)
-        from app.services.platform.panel_access import control_panel_hostname, control_panel_url
+        from app.services.platform.panel_access import control_panel_url, site_cpanel_url, site_mail_url
 
-        panel_host = control_panel_hostname(env.domain)
         panel_url = control_panel_url(env.domain, self._settings.customer_portal_url)
         mail_host = None
-        if panel_host and env.domain:
-            apex = env.domain.lower().rstrip(".")
-            if apex.startswith("www."):
-                apex = apex[4:]
-            mail_host = f"mail.{apex}"
+        if env.domain:
+            mail_url = site_mail_url(env.domain)
+            if mail_url:
+                try:
+                    from urllib.parse import urlparse
+
+                    mail_host = urlparse(mail_url).netloc or None
+                except Exception:  # noqa: BLE001
+                    mail_host = None
         ip = (self.recommended_ip(env) or "").strip()
         required_records = self.required_external_records(env.domain, ip) if ip and check_name else []
+        from app.services.platform.dns_writer import DnsWriterService
+
+        writer_status = DnsWriterService(self._settings).status(env)
         return {
             "environment_id": env.id,
             "domain": env.domain,
@@ -169,10 +175,11 @@ class EnvironmentDnsService:
             "recommended_ip": ip,
             "records": required_records,
             "namecheap_pushed": False,
-            "panel_hostname": panel_host,
+            "panel_hostname": site_cpanel_url(env.domain),
             "panel_url": panel_url,
             "mail_hostname": mail_host,
             "message": readiness["message"],
+            **writer_status,
             **{k: v for k, v in readiness.items() if k != "message"},
         }
 
@@ -256,9 +263,11 @@ class EnvironmentDnsService:
         apex_points = self._a_points_here(name)
         www_points = self._a_points_here(f"www.{name}")
         cpanel_host = control_panel_hostname(name) or f"cpanel.{name}"
-        cpanel_points = self._a_points_here(cpanel_host)
+        cpanel_subdomain_points = self._a_points_here(cpanel_host)
+        # Phase K: hosting panel is https://{domain}/cpanel on the apex/www vhost.
+        cpanel_points = apex_points or cpanel_subdomain_points
 
-        a_mode_live = apex_points and cpanel_points
+        a_mode_live = apex_points and www_points
         dns_live = ns_live or a_mode_live
         if ns_live:
             dns_mode = "nameserver"
@@ -369,7 +378,7 @@ class EnvironmentDnsService:
                     "id": "a_records",
                     "label": "Option B: add A records at your DNS",
                     "done": False,
-                    "detail": "Point @, www, cpanel, and mail to the server IP shown below.",
+                    "detail": "Point @, www, and mail to the server IP shown below (panel is /cpanel on your domain).",
                 },
                 {
                     "id": "wait_dns",
@@ -407,8 +416,8 @@ class EnvironmentDnsService:
         resolves = bool(live.get("resolves"))
         dns_live = bool(live.get("dns_live"))
         dns_mode = live.get("dns_mode")
-        a_records_live = bool(live.get("apex_points_here")) and bool(live.get("cpanel_points_here"))
-        cpanel_live = bool(live.get("cpanel_points_here"))
+        a_records_live = bool(live.get("apex_points_here")) and bool(live.get("www_points_here"))
+        cpanel_live = bool(live.get("apex_points_here"))
         found = list(live.get("ns_found") or [])
         checklist = [
             {
@@ -444,9 +453,9 @@ class EnvironmentDnsService:
                 "label": "Option B: A records at your DNS",
                 "done": a_records_live,
                 "detail": (
-                    "Apex and cpanel point to this server."
+                    "Apex and www point to this server."
                     if a_records_live
-                    else "Add A records for @, www, cpanel, and mail to the server IP below."
+                    else "Add A records for @, www, and mail to the server IP below (panel: /cpanel)."
                 ),
             },
             {
@@ -483,7 +492,7 @@ class EnvironmentDnsService:
         else:
             summary = (
                 f"DNS not live yet for {check_name}. Either set nameservers to "
-                f"{nameservers[0]} and {nameservers[1]}, or add A records for @, www, cpanel, and mail "
+                f"{nameservers[0]} and {nameservers[1]}, or add A records for @, www, and mail "
                 "to the server IP shown below."
             )
         return {
@@ -556,9 +565,13 @@ class EnvironmentDnsService:
                 DomainDnsRecordCreate(record_type="A", host="@", value=str(ip), ttl=3600),
             )
 
-    async def publish_on_ifnotus_ns(self, domain_name: str) -> dict:
-        """Host the zone on ns1/ns2 and (when we are registrar) assign those nameservers."""
-        zone = self._auth.ensure_zone(domain_name)
+    async def publish_on_ifnotus_ns(self, domain_name: str, *, env: CustomerEnvironment | None = None) -> dict:
+        """Host the zone on ns1/ns2 via the single DNS writer (BIND today, ISPConfig when migrated)."""
+        from app.services.platform.dns_writer import DnsWriterService
+
+        writer = DnsWriterService(self._settings)
+        published = writer.publish_zone(domain_name, env=env)
+        zone = published.get("zone") or {}
         ns_set = {"ok": False, "skipped": True}
         registrar = DomainRegistrar(self._settings)
         if registrar.enabled and not self.is_included_hostname(domain_name):
@@ -567,7 +580,7 @@ class EnvironmentDnsService:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("set_custom_ns_failed", domain=domain_name, error=str(exc))
                 ns_set = {"ok": False, "message": str(exc)}
-        return {"zone": zone, "nameservers": self.nameservers(), "registrar_ns": ns_set}
+        return {"zone": zone, "nameservers": self.nameservers(), "registrar_ns": ns_set, "dns_writer": published.get("writer")}
 
     async def ensure_custom_domain_panel(
         self,
@@ -576,8 +589,8 @@ class EnvironmentDnsService:
     ) -> dict:
         """Publish cpanel/mail DNS, nginx SPA vhost, and SSL when NS are live.
 
-        Called when a real custom domain is assigned or hosting becomes active so
-        ``https://cpanel.<domain>/`` is ready as soon as nameservers point here.
+        Called when a real custom domain is assigned or hosting becomes active.
+        Phase K: panel entry is ``https://{domain}/cpanel`` on the apex/www vhost.
         """
         from pathlib import Path
 
@@ -593,7 +606,9 @@ class EnvironmentDnsService:
         out: dict = {"ok": True, "domain": name, "cpanel": cpanel}
 
         try:
-            out["zone"] = self._auth.ensure_zone(name)
+            from app.services.platform.dns_writer import DnsWriterService
+
+            out["zone"] = DnsWriterService(self._settings).publish_zone(name, env=env).get("zone")
         except Exception as exc:  # noqa: BLE001
             out["zone_error"] = str(exc)[:400]
             logger.warning("panel_zone_failed", domain=name, error=str(exc))
@@ -664,8 +679,8 @@ class EnvironmentDnsService:
             out["message"] = (
                 f"Panel vhost is ready on this server. Either set {name} nameservers to "
                 f"{self.nameservers()[0]} and {self.nameservers()[1]}, "
-                f"or add A records (@, www, cpanel, mail → {ip or 'this server'}) at your registrar "
-                f"so {cpanel or 'cpanel.' + name} resolves publicly."
+                f"or add A records (@, www, mail → {ip or 'this server'}) at your registrar "
+                f"so {name} resolves publicly (hosting panel: https://{name}/cpanel)."
             )
         else:
             mode = live_lookup.get("dns_mode") or "nameserver"
@@ -704,7 +719,7 @@ class EnvironmentDnsService:
                     )
                 ),
             }
-        published = await self.publish_on_ifnotus_ns(env.domain)
+        published = await self.publish_on_ifnotus_ns(env.domain, env=env)
         ns_ok = bool((published.get("registrar_ns") or {}).get("ok"))
         ip = (self.recommended_ip(env) or "").strip()
         a_push: dict = {"ok": False, "skipped": True}
@@ -733,7 +748,7 @@ class EnvironmentDnsService:
                     else (
                         f"Zone is ready here. Either set nameservers to "
                         f"{self.nameservers()[0]} and {self.nameservers()[1]}, "
-                        f"or add A records (@, www, cpanel, mail → {ip}) at your DNS provider."
+                        f"or add A records (@, www, mail → {ip}) at your DNS provider."
                     )
                 )
             ),
@@ -796,7 +811,7 @@ class EnvironmentDnsService:
             raise AppException("This site has no document root yet.", code="no_docroot")
 
         await self._ensure_addon_vhost(env, name)
-        published = await self.publish_on_ifnotus_ns(name)
+        published = await self.publish_on_ifnotus_ns(name, env=env)
         panel = await self.ensure_custom_domain_panel(env, name)
 
         if other is None:
@@ -841,7 +856,7 @@ class EnvironmentDnsService:
             "panel": panel,
             "message": (
                 f"{name} is assigned to this site. Connect DNS either way: set nameservers to "
-                f"{ns[0]} and {ns[1]}, or add A records for @, www, cpanel, and mail at your registrar."
+                f"{ns[0]} and {ns[1]}, or add A records for @, www, and mail at your registrar."
             ),
         }
 
@@ -1057,7 +1072,7 @@ class EnvironmentSslJobService:
 
                 raise AppException(
                     f"DNS for {domain} is not live yet. "
-                    "Point nameservers to IFNOTUS or add A records (@, www, cpanel, mail) at your registrar, "
+                    "Point nameservers to IFNOTUS or add A records (@, www, mail) at your registrar, "
                     "then issue SSL.",
                     code="dns_not_live",
                 )

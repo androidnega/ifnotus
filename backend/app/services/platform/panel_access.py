@@ -89,10 +89,10 @@ def panel_sso_url(
     tab: str | None = None,
 ) -> str:
     """Portal SSO handoff used by nginx /cpanel → API redirect (no redirect loop)."""
+    from app.services.platform.host_routing import sanitize_panel_hostname
+
     base = (portal_base or "https://ifnotus.space").rstrip("/")
-    host = (hostname or "").strip().lower().rstrip(".")
-    if host.startswith("www."):
-        host = host[4:]
+    host = sanitize_panel_hostname(hostname)
     if not host:
         return f"{base}/account"
     q = f"host={quote(host)}"

@@ -99,7 +99,7 @@ async def test_full_monitoring_includes_process_and_db_totals() -> None:
             },
         ),
         patch(
-            "app.services.platform.environment_monitoring._user_process_stats",
+            "app.services.platform.environment_monitoring.environment_live_stats",
             return_value={
                 "process_count": 3,
                 "memory_rss_mb": 128.0,

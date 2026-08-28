@@ -17,4 +17,4 @@ def test_platform_hostname_covers_control_and_student_zones() -> None:
 def test_control_panel_hostname_skipped_for_student_zones() -> None:
     assert control_panel_hostname("mensah.serverlabsttu.space") is None
     assert control_panel_hostname("mensah.ifnotus.space") is None
-    assert control_panel_hostname("studio.online") == "cpanel.studio.online"
+    assert control_panel_hostname("studio.online") is None

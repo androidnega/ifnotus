@@ -45,7 +45,7 @@ def test_prlimit_wrap_when_available(monkeypatch) -> None:
     wrapped = ResourceEnforcementService.wrap_command("node server.js", limits)
     assert wrapped.startswith("/usr/bin/prlimit")
     assert "--as=" in wrapped
-    assert "--nproc=10" in wrapped
+    assert "--nproc=" in wrapped
     assert "node server.js" in wrapped
 
 

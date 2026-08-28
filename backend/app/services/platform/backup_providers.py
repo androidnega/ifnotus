@@ -266,6 +266,81 @@ class S3CompatibleBackupProvider:
         return _sign(k_service, "aws4_request")
 
 
+class ResticBackupProvider:
+    """Encrypted offsite backup provider using Restic (deduplicated & authenticated).
+
+    Supports remote object storage (S3, B2, Azure, GCS, SFTP, REST server).
+    """
+
+    name = "restic"
+
+    def __init__(
+        self,
+        repository: str,
+        password: str,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        self._repo = (repository or "").strip()
+        self._password = (password or "").strip()
+        self._extra_env = env or {}
+
+    def configured(self) -> bool:
+        return bool(self._repo and self._password)
+
+    def _build_env(self) -> dict[str, str]:
+        import os
+        env = os.environ.copy()
+        env["RESTIC_REPOSITORY"] = self._repo
+        env["RESTIC_PASSWORD"] = self._password
+        env.update(self._extra_env)
+        return env
+
+    def put(self, local_path: Path, key: str) -> BackupPutResult:
+        if not self.configured():
+            return BackupPutResult(
+                ok=False, provider=self.name, key=key, skipped=True, error="restic_not_configured"
+            )
+        try:
+            cmd = ["restic", "backup", "--tag", key, str(local_path)]
+            res = subprocess.run(cmd, env=self._build_env(), capture_output=True, text=True, check=False)
+            if res.returncode != 0:
+                err = (res.stderr or res.stdout or "").strip()
+                logger.warning("restic_backup_failed", error=err, key=key)
+                return BackupPutResult(ok=False, provider=self.name, key=key, error=err[:300])
+            size = local_path.stat().st_size if local_path.exists() else None
+            return BackupPutResult(ok=True, provider=self.name, key=key, bytes=size)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("restic_backup_exception", error=str(exc), key=key)
+            return BackupPutResult(ok=False, provider=self.name, key=key, error=str(exc))
+
+    def fetch(self, key: str, dest: Path) -> BackupPutResult:
+        if not self.configured():
+            return BackupPutResult(
+                ok=False, provider=self.name, key=key, skipped=True, error="restic_not_configured"
+            )
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            cmd = ["restic", "restore", "latest", "--tag", key, "--target", str(dest.parent)]
+            res = subprocess.run(cmd, env=self._build_env(), capture_output=True, text=True, check=False)
+            if res.returncode != 0:
+                err = (res.stderr or res.stdout or "").strip()
+                return BackupPutResult(ok=False, provider=self.name, key=key, error=err[:300])
+            return BackupPutResult(ok=True, provider=self.name, key=key)
+        except Exception as exc:  # noqa: BLE001
+            return BackupPutResult(ok=False, provider=self.name, key=key, error=str(exc))
+
+    def delete(self, key: str) -> BackupPutResult:
+        if not self.configured():
+            return BackupPutResult(ok=True, provider=self.name, key=key, skipped=True)
+        try:
+            cmd = ["restic", "forget", "--tag", key, "--prune"]
+            subprocess.run(cmd, env=self._build_env(), capture_output=True, text=True, check=False)
+            return BackupPutResult(ok=True, provider=self.name, key=key)
+        except Exception as exc:  # noqa: BLE001
+            return BackupPutResult(ok=False, provider=self.name, key=key, error=str(exc))
+
+
 def resolve_backup_provider(settings: Settings) -> BackupProvider:
     kind = (getattr(settings, "backup_offsite_provider", None) or "none").strip().lower()
     fetch_cmd = getattr(settings, "backup_offsite_fetch_cmd", "") or ""
@@ -292,6 +367,17 @@ def resolve_backup_provider(settings: Settings) -> BackupProvider:
             secret_key=getattr(settings, "backup_s3_secret_key", "") or "",
             region=getattr(settings, "backup_s3_region", "auto") or "auto",
             prefix=getattr(settings, "backup_s3_prefix", "ifnotus/") or "ifnotus/",
+        )
+    if kind == "restic":
+        s3_env = {}
+        if getattr(settings, "backup_s3_access_key", None):
+            s3_env["AWS_ACCESS_KEY_ID"] = getattr(settings, "backup_s3_access_key")
+        if getattr(settings, "backup_s3_secret_key", None):
+            s3_env["AWS_SECRET_ACCESS_KEY"] = getattr(settings, "backup_s3_secret_key")
+        return ResticBackupProvider(
+            repository=getattr(settings, "backup_restic_repository", "") or "",
+            password=getattr(settings, "backup_restic_password", "") or "",
+            env=s3_env,
         )
     logger.warning("backup_provider_unknown", kind=kind)
     return NullOffsiteProvider()
