@@ -186,8 +186,19 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/files',
     name: 'cpanel-files',
-    component: () => import('@/views/hosting/HostingPanelView.vue'),
-    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'files' },
+    alias: '/files-portal',
+    component: () => {
+      if (typeof window !== 'undefined' && isCustomerCpanelHost()) {
+        return import('@/views/hosting/HostingPanelView.vue')
+      }
+      return import('@/views/FilesView.vue')
+    },
+    meta: {
+      requiresAuth: true,
+      panel: typeof window !== 'undefined' && isCustomerCpanelHost() ? 'portal' : 'staff',
+      hostingTab: 'files',
+      permission: typeof window !== 'undefined' && isCustomerCpanelHost() ? undefined : 'files:read',
+    },
   },
   {
     path: '/filemanager',
@@ -375,12 +386,6 @@ const routes: RouteRecordRaw[] = [
     path: '/files/edit',
     name: 'file-editor',
     component: () => import('@/views/FileEditorView.vue'),
-    meta: { requiresAuth: true, panel: 'staff', permission: 'files:read' },
-  },
-  {
-    path: '/files',
-    name: 'files',
-    component: () => import('@/views/FilesView.vue'),
     meta: { requiresAuth: true, panel: 'staff', permission: 'files:read' },
   },
   {
@@ -577,7 +582,7 @@ router.beforeEach(async (to) => {
         return '/'
       }
     }
-    // Staff credentials are not allowed on customer cpanel hosts.
+    // Ensure session is valid on customer cpanel hosts.
     if (token && to.meta.requiresAuth) {
       const { useAuthStore } = await import('@/stores/auth')
       const { isPureCustomer, isStaffUser } = await import('@/lib/roles')
@@ -606,7 +611,15 @@ router.beforeEach(async (to) => {
           }
         }
       }
+      return true
     }
+    if (!token && to.meta.requiresAuth) {
+      return {
+        name: 'login',
+        query: { redirect: to.fullPath || '/' },
+      }
+    }
+    return true
   }
 
   if (isStaffPanelHost()) {

@@ -66,8 +66,9 @@ const navGroups = computed<NavGroup[]>(() => {
     return [
       {
         id: 'support',
-        label: 'Support',
+        label: 'Support Desk',
         items: [
+          { to: '/panel', name: 'dashboard', label: 'Support Dashboard', icon: IconDashboard },
           { to: '/support', name: 'support', label: 'Tickets', icon: IconMail, permission: Permission.SUPPORT_READ, badgeKey: 'support' },
         ],
       },

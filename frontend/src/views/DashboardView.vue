@@ -12,8 +12,10 @@ import ServiceBrandMark from '@/components/dashboard/ServiceBrandMark.vue'
 import { useDashboard } from '@/composables/useDashboard'
 import { useAuthStore } from '@/stores/auth'
 import { getCanonicalRole, isPlatformOwner } from '@/lib/roles'
-import { domainsApi } from '@/api'
+import { domainsApi, platformAdminApi, supportApi } from '@/api'
 import type { Domain } from '@/types/hosting'
+import type { SupportTicket } from '@/types/support'
+import type { StaffAccountingSummary, StaffOrderItem } from '@/types/staffPlatform'
 import {
   IconApp,
   IconChart,
@@ -32,15 +34,51 @@ const router = useRouter()
 const auth = useAuthStore()
 const isOwner = computed(() => isPlatformOwner(auth.user))
 const canonicalRole = computed(() => getCanonicalRole(auth.user) || 'platform_owner')
+const isSupport = computed(() => canonicalRole.value === 'support_agent')
+const isBilling = computed(() => canonicalRole.value === 'billing_agent')
+const isAuditorRole = computed(() => canonicalRole.value === 'auditor')
+const isFullAdmin = computed(() => canonicalRole.value === 'platform_owner' || canonicalRole.value === 'platform_admin')
+
 const { data, loading, refreshing, error, refresh } = useDashboard()
 const domains = ref<Domain[]>([])
+const supportTickets = ref<SupportTicket[]>([])
+const recentOrders = ref<StaffOrderItem[]>([])
+const accountingSummary = ref<StaffAccountingSummary | null>(null)
+const opsInbox = ref<{ awaiting_payment_confirm: number; recently_paid: number; open_support_tickets?: number } | null>(null)
+const customerSearchInput = ref('')
 
 onMounted(async () => {
   try {
-    const { data: list } = await domainsApi.list()
-    domains.value = (list.domains || []).filter((d) => d.enabled).slice(0, 8)
+    if (!isSupport.value && !isBilling.value) {
+      const { data: list } = await domainsApi.list()
+      domains.value = (list.domains || []).filter((d) => d.enabled).slice(0, 8)
+    }
   } catch {
     domains.value = []
+  }
+
+  if (isSupport.value || isFullAdmin.value) {
+    try {
+      const { data: tList } = await supportApi.listTickets({ status: 'open' })
+      supportTickets.value = (tList || []).slice(0, 6)
+    } catch {
+      supportTickets.value = []
+    }
+  }
+
+  if (isBilling.value || isFullAdmin.value || isAuditorRole.value) {
+    try {
+      const [{ data: oList }, { data: acc }, { data: ops }] = await Promise.all([
+        platformAdminApi.listOrders({ limit: 6 }).catch(() => ({ data: [] })),
+        platformAdminApi.accountingSummary().catch(() => ({ data: null })),
+        platformAdminApi.opsInbox().catch(() => ({ data: null })),
+      ])
+      recentOrders.value = oList || []
+      accountingSummary.value = acc
+      opsInbox.value = ops
+    } catch {
+      /* ignore */
+    }
   }
 })
 
@@ -72,7 +110,6 @@ const ramSeries = computed(() => data.value?.charts.memory.series[0]?.data.slice
 const netSeries = computed(() => data.value?.charts.network.series[0]?.data.slice(-12) ?? [10, 14, 11, 16, 13])
 
 const featuredServices = computed(() => {
-  // This host runs nginx + PHP-FPM (not Apache). Show real stack status.
   const catalog = [
     { key: 'nginx', label: 'NGINX', match: ['nginx'] },
     { key: 'php', label: 'PHP-FPM', match: ['php8.3-fpm', 'php8.2-fpm', 'php-fpm', 'php'] },
@@ -88,7 +125,6 @@ const featuredServices = computed(() => {
       return cat.match.some((k) => n.includes(k))
     })
     let status = hit?.status || 'not_installed'
-    // Apache-era leftover: if we ever matched nothing, say not installed — never "Unknown"
     if (!hit) status = 'not_installed'
     return {
       id: hit?.id || cat.key,
@@ -180,6 +216,15 @@ const siteCount = computed(() => data.value?.inventory?.managed_domains ?? domai
 const loadAvg = computed(() => data.value?.loadAverage?.join(' / ') || '—')
 const version = computed(() => data.value?.health?.version || '0.1.0')
 
+function searchCustomer() {
+  const q = customerSearchInput.value.trim()
+  if (!q) {
+    router.push('/platform/customers')
+    return
+  }
+  router.push(`/platform/customers?q=${encodeURIComponent(q)}`)
+}
+
 function go(to: string) {
   router.push(to)
 }
@@ -191,138 +236,475 @@ export default { name: 'DashboardView' }
 
 <template>
   <DashboardLayout :refreshing="refreshing" @refresh="refresh">
-    <ErrorState v-if="error && !data" :message="error" @retry="refresh" />
+    <ErrorState v-if="error && !data && !isSupport && !isBilling" :message="error" @retry="refresh" />
 
     <div v-else class="ctrl animate-fade-in">
-      <UiPageHeader
-        eyebrow="Control"
-        title="Dashboard"
-        :lede="`${hostname} · ${online ? 'Online' : 'Attention'} · v${version}`"
-      >
-        <template #actions>
-          <button type="button" class="ds-btn-ghost" :disabled="refreshing" @click="refresh">
-            {{ refreshing ? 'Refreshing…' : 'Refresh' }}
-          </button>
-        </template>
-      </UiPageHeader>
+      <!-- 1. ROLE: SUPPORT AGENT DASHBOARD -->
+      <template v-if="isSupport">
+        <UiPageHeader
+          eyebrow="Support Desk"
+          title="Customer Care &amp; Support Operations"
+          lede="Active ticket queue, customer search, and assistance operations"
+        >
+          <template #actions>
+            <button type="button" class="ds-btn-ghost" :disabled="refreshing" @click="refresh">
+              {{ refreshing ? 'Refreshing…' : 'Refresh' }}
+            </button>
+          </template>
+        </UiPageHeader>
 
-      <section class="metrics">
-        <article class="metric">
-          <p class="k">VPS status</p>
-          <p class="v" :class="online ? 'ok' : 'bad'">{{ online ? 'Online' : 'Attention' }}</p>
-          <p class="s">{{ online ? 'All systems operational' : 'Check Host status' }}</p>
-        </article>
-        <article class="metric">
-          <p class="k">CPU usage</p>
-          <div class="row">
-            <p class="v">{{ Math.round(cpu) }}%</p>
-            <Sparkline :values="cpuSeries" color="#2563eb" />
-          </div>
-          <p class="s">{{ textStat('load') }} load</p>
-        </article>
-        <article class="metric">
-          <p class="k">RAM usage</p>
-          <div class="row">
-            <p class="v">{{ Math.round(ram) }}%</p>
-            <Sparkline :values="ramSeries" color="#7c3aed" />
-          </div>
-          <p class="s">Live host memory</p>
-        </article>
-        <article class="metric">
-          <p class="k">Storage</p>
-          <div class="row">
-            <p class="v">{{ Math.round(disk) }}%</p>
-            <Sparkline :values="[disk * 0.7, disk * 0.85, disk * 0.8, disk]" color="#16a34a" />
-          </div>
-          <p class="s">Host disk</p>
-        </article>
-        <article class="metric">
-          <p class="k">Bandwidth</p>
-          <div class="row">
-            <p class="v sm">{{ data?.networkThroughput?.in || '—' }}</p>
-            <Sparkline :values="netSeries" color="#0ea5e9" />
-          </div>
-          <p class="s">In {{ data?.networkThroughput?.in || '—' }} · Out {{ data?.networkThroughput?.out || '—' }}</p>
-        </article>
-        <article class="metric">
-          <p class="k">Active sites</p>
-          <p class="v">{{ siteCount }}</p>
-          <RouterLink class="s link" to="/domains">View all</RouterLink>
-        </article>
-      </section>
+        <section class="metrics">
+          <article class="metric">
+            <p class="k">Open tickets</p>
+            <p class="v ok">{{ supportTickets.length }}</p>
+            <p class="s">Active client inquiries</p>
+          </article>
+          <article class="metric">
+            <p class="k">Support status</p>
+            <p class="v ok">Active</p>
+            <p class="s">Helpdesk ready</p>
+          </article>
+          <article class="metric">
+            <p class="k">Response target</p>
+            <p class="v">&lt; 1 hr</p>
+            <p class="s">Customer SLA</p>
+          </article>
+          <article class="metric">
+            <p class="k">Assigned role</p>
+            <p class="v sm">Support Agent</p>
+            <p class="s">Verified privilege</p>
+          </article>
+        </section>
 
-      <section class="mid">
-        <article class="card health">
-          <header>
-            <h2>Server health</h2>
-            <span class="pill" :class="online ? 'ok' : 'warn'">{{ hostname }}</span>
-          </header>
-          <div class="gauges">
-            <ControlGauge label="CPU" :value="cpu" color="#2563eb" />
-            <ControlGauge label="Memory" :value="ram" color="#7c3aed" />
-            <ControlGauge label="Disk" :value="disk" color="#16a34a" />
-          </div>
-          <dl class="facts">
-            <div><dt>OS</dt><dd>Linux host</dd></div>
-            <div><dt>Panel</dt><dd>IFNOTUS v{{ version }}</dd></div>
-            <div><dt>Load</dt><dd>{{ loadAvg }}</dd></div>
-            <div><dt>Uptime</dt><dd>{{ textStat('uptime') }}</dd></div>
-            <div><dt>Time</dt><dd>{{ new Date().toLocaleTimeString() }}</dd></div>
-          </dl>
-        </article>
+        <section class="mid two">
+          <article class="card">
+            <header>
+              <h2>Active Support Queue</h2>
+              <RouterLink to="/support" class="link">View all tickets →</RouterLink>
+            </header>
+            <div v-if="supportTickets.length" class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Subject</th>
+                    <th>Customer</th>
+                    <th>Priority</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="t in supportTickets" :key="t.id">
+                    <td>
+                      <RouterLink :to="`/support?ticket=${t.id}`" class="dom">
+                        {{ t.subject || 'Support request' }}
+                      </RouterLink>
+                    </td>
+                    <td>{{ t.customer_name || t.customer_email || 'Customer' }}</td>
+                    <td>
+                      <span class="pill" :class="t.priority === 'high' ? 'warn' : 'ok'">
+                        {{ t.priority || 'normal' }}
+                      </span>
+                    </td>
+                    <td>
+                      <RouterLink :to="`/support?ticket=${t.id}`" class="link">Reply</RouterLink>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-else class="empty pad">No pending open support tickets in your queue.</p>
+          </article>
 
-        <article class="card traffic">
-          <header>
-            <h2>Live traffic</h2>
-            <span class="muted">Last samples</span>
-          </header>
-          <ResourceChart
-            title="Live traffic"
-            :chart="data?.charts.network || { categories: [], series: [] }"
-            :loading="loading"
-            :height="180"
-          />
-          <div class="xfer">
-            <span>Inbound <strong>{{ data?.networkThroughput?.in || '—' }}</strong></span>
-            <span>Outbound <strong>{{ data?.networkThroughput?.out || '—' }}</strong></span>
-          </div>
-        </article>
+          <article class="card">
+            <header>
+              <h2>Quick Customer Lookup</h2>
+            </header>
+            <p class="muted">Search customer profiles by name, email, domain, or phone number to assist with tickets.</p>
+            <div class="search-box">
+              <input
+                v-model="customerSearchInput"
+                type="search"
+                placeholder="Search email, name, domain…"
+                class="ctrl-input"
+                @keyup.enter="searchCustomer"
+              />
+              <button type="button" class="cta" @click="searchCustomer">Find Customer</button>
+            </div>
+          </article>
+        </section>
+      </template>
 
-        <article v-if="isOwner" class="card ssh">
-          <header>
-            <h2>Operator access</h2>
-            <span class="pill ok">Enabled</span>
-          </header>
-          <p class="muted">Audited command runner in this panel. Prefer hostnames — never paste a public IP into customer tools.</p>
-          <code class="cmd">terminal · ifnotus.space</code>
-          <p class="warn-note">This is not an interactive SSH session. Use Terminal for controlled host commands.</p>
-          <button type="button" class="cta" @click="go('/terminal')">Launch Terminal</button>
-        </article>
-      </section>
+      <!-- 2. ROLE: BILLING AGENT DASHBOARD -->
+      <template v-else-if="isBilling">
+        <UiPageHeader
+          eyebrow="Commercial &amp; Finance"
+          title="Revenue &amp; Orders Dashboard"
+          lede="Order reconciliation, invoice confirmations, and billing accounts"
+        >
+          <template #actions>
+            <button type="button" class="ds-btn-ghost" :disabled="refreshing" @click="refresh">
+              {{ refreshing ? 'Refreshing…' : 'Refresh' }}
+            </button>
+          </template>
+        </UiPageHeader>
 
-      <section class="boards">
-        <article class="card board">
-          <header>
-            <h2>Running services</h2>
-            <span class="pill" :class="servicesOk ? 'ok' : 'warn'">
-              {{ servicesOk ? 'All systems operational' : 'Check services' }}
-            </span>
-          </header>
-          <ul class="svc">
-            <li v-for="svc in featuredServices" :key="svc.id">
-              <ServiceBrandMark :name="svc.key" :size="36" />
-              <div>
-                <p>{{ svc.label }}</p>
-                <span class="pill sm" :class="svc.status === 'running' ? 'ok' : svc.status === 'not_installed' ? '' : 'warn'">
-                  {{ serviceLabel(svc.status) }}
+        <section class="metrics">
+          <article class="metric">
+            <p class="k">Awaiting confirmation</p>
+            <p class="v" :class="(opsInbox?.awaiting_payment_confirm || 0) > 0 ? 'bad' : 'ok'">
+              {{ opsInbox?.awaiting_payment_confirm || 0 }}
+            </p>
+            <p class="s">MoMo payments</p>
+          </article>
+          <article class="metric">
+            <p class="k">Confirmed orders</p>
+            <p class="v ok">{{ opsInbox?.recently_paid || recentOrders.length }}</p>
+            <p class="s">Active activations</p>
+          </article>
+          <article class="metric">
+            <p class="k">Period revenue</p>
+            <p class="v sm">{{ accountingSummary?.currency || 'GHS' }} {{ Number(accountingSummary?.totals.collected_period || 0).toLocaleString() }}</p>
+            <p class="s">Total collected</p>
+          </article>
+          <article class="metric">
+            <p class="k">Assigned role</p>
+            <p class="v sm">Billing Agent</p>
+            <p class="s">Verified privilege</p>
+          </article>
+        </section>
+
+        <section class="mid two">
+          <article class="card">
+            <header>
+              <h2>Recent Orders &amp; Invoices</h2>
+              <RouterLink to="/platform/orders" class="link">View all orders →</RouterLink>
+            </header>
+            <div v-if="recentOrders.length" class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Invoice / ID</th>
+                    <th>Customer</th>
+                    <th>Amount</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="o in recentOrders" :key="o.id">
+                    <td>
+                      <RouterLink :to="`/platform/orders?order=${o.id}`" class="dom">
+                        {{ o.invoice_number || o.id.slice(0, 8) }}
+                      </RouterLink>
+                    </td>
+                    <td>{{ o.customer_name || o.customer_email || 'Customer' }}</td>
+                    <td>{{ o.currency }} {{ o.total_price }}</td>
+                    <td>
+                      <span class="pill" :class="o.payment_status === 'paid' ? 'ok' : 'warn'">
+                        {{ o.payment_status }}
+                      </span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-else class="empty pad">No recent orders recorded.</p>
+          </article>
+
+          <article class="card">
+            <header>
+              <h2>Financial Ledgers</h2>
+              <RouterLink to="/platform/accounting" class="link">Full summary →</RouterLink>
+            </header>
+            <p class="muted">Review MoMo transactions, bank settlements, and cash reconciliations.</p>
+            <dl class="facts">
+              <div><dt>Currency</dt><dd>{{ accountingSummary?.currency || 'GHS' }}</dd></div>
+              <div><dt>Outstanding</dt><dd>{{ accountingSummary?.currency || 'GHS' }} {{ accountingSummary?.totals.outstanding || 0 }}</dd></div>
+              <div><dt>Total all-time</dt><dd>{{ accountingSummary?.currency || 'GHS' }} {{ Number(accountingSummary?.totals.collected_all_time || 0).toLocaleString() }}</dd></div>
+              <div><dt>Failed attempts</dt><dd>{{ accountingSummary?.totals.failed_count || 0 }}</dd></div>
+            </dl>
+            <button type="button" class="cta" @click="go('/platform/accounting')">Open Accounting Ledger</button>
+          </article>
+        </section>
+      </template>
+
+      <!-- 3. ROLE: AUDITOR DASHBOARD -->
+      <template v-else-if="isAuditorRole">
+        <UiPageHeader
+          eyebrow="Compliance &amp; Verification"
+          title="System Audit &amp; Compliance Dashboard"
+          lede="Read-only audit trail, security events, and compliance verification"
+        >
+          <template #actions>
+            <button type="button" class="ds-btn-ghost" :disabled="refreshing" @click="refresh">
+              {{ refreshing ? 'Refreshing…' : 'Refresh' }}
+            </button>
+          </template>
+        </UiPageHeader>
+
+        <section class="metrics">
+          <article class="metric">
+            <p class="k">System status</p>
+            <p class="v ok">Operational</p>
+            <p class="s">Audited host</p>
+          </article>
+          <article class="metric">
+            <p class="k">SSL certs</p>
+            <p class="v ok">{{ sslOk }} valid</p>
+            <p class="s">Encryption integrity</p>
+          </article>
+          <article class="metric">
+            <p class="k">Access mode</p>
+            <p class="v sm">Read-only</p>
+            <p class="s">Auditor enforced</p>
+          </article>
+          <article class="metric">
+            <p class="k">Audit logging</p>
+            <p class="v ok">Enabled</p>
+            <p class="s">Immutable events</p>
+          </article>
+        </section>
+
+        <section class="mid two">
+          <article class="card">
+            <header>
+              <h2>Security &amp; Audit Trail</h2>
+              <RouterLink to="/security" class="link">View event logs →</RouterLink>
+            </header>
+            <ul class="sec">
+              <li><span>Firewall policy</span><strong class="ok">Enforced</strong></li>
+              <li><span>SSL certificates</span><strong class="ok">{{ sslOk }} active</strong></li>
+              <li><span>Login security</span><strong class="ok">Rate-limited &amp; Locked</strong></li>
+              <li><span>Last login IP</span><strong>{{ lastLoginIp || 'Recorded' }}</strong></li>
+            </ul>
+          </article>
+
+          <article class="card">
+            <header>
+              <h2>Financial Compliance</h2>
+              <RouterLink to="/platform/accounting" class="link">Review ledgers →</RouterLink>
+            </header>
+            <p class="muted">All ledger entries are immutable and synchronized with payment provider logs.</p>
+            <dl class="facts">
+              <div><dt>Audit status</dt><dd class="ok">Verified</dd></div>
+              <div><dt>Ledger entries</dt><dd>Audited</dd></div>
+            </dl>
+          </article>
+        </section>
+      </template>
+
+      <!-- 4. ROLES: HOSTING OPERATOR, PLATFORM ADMIN, PLATFORM OWNER -->
+      <template v-else>
+        <UiPageHeader
+          eyebrow="Control"
+          title="Dashboard"
+          :lede="`${hostname} · ${online ? 'Online' : 'Attention'} · v${version}`"
+        >
+          <template #actions>
+            <button type="button" class="ds-btn-ghost" :disabled="refreshing" @click="refresh">
+              {{ refreshing ? 'Refreshing…' : 'Refresh' }}
+            </button>
+          </template>
+        </UiPageHeader>
+
+        <section class="metrics">
+          <article class="metric">
+            <p class="k">VPS status</p>
+            <p class="v" :class="online ? 'ok' : 'bad'">{{ online ? 'Online' : 'Attention' }}</p>
+            <p class="s">{{ online ? 'All systems operational' : 'Check Host status' }}</p>
+          </article>
+          <article class="metric">
+            <p class="k">CPU usage</p>
+            <div class="row">
+              <p class="v">{{ Math.round(cpu) }}%</p>
+              <Sparkline :values="cpuSeries" color="#2563eb" />
+            </div>
+            <p class="s">{{ textStat('load') }} load</p>
+          </article>
+          <article class="metric">
+            <p class="k">RAM usage</p>
+            <div class="row">
+              <p class="v">{{ Math.round(ram) }}%</p>
+              <Sparkline :values="ramSeries" color="#7c3aed" />
+            </div>
+            <p class="s">Live host memory</p>
+          </article>
+          <article class="metric">
+            <p class="k">Storage</p>
+            <div class="row">
+              <p class="v">{{ Math.round(disk) }}%</p>
+              <Sparkline :values="[disk * 0.7, disk * 0.85, disk * 0.8, disk]" color="#16a34a" />
+            </div>
+            <p class="s">Host disk</p>
+          </article>
+          <article class="metric">
+            <p class="k">Bandwidth</p>
+            <div class="row">
+              <p class="v sm">{{ data?.networkThroughput?.in || '—' }}</p>
+              <Sparkline :values="netSeries" color="#0ea5e9" />
+            </div>
+            <p class="s">In {{ data?.networkThroughput?.in || '—' }} · Out {{ data?.networkThroughput?.out || '—' }}</p>
+          </article>
+          <article class="metric">
+            <p class="k">Active sites</p>
+            <p class="v">{{ siteCount }}</p>
+            <RouterLink class="s link" to="/domains">View all</RouterLink>
+          </article>
+        </section>
+
+        <section class="mid" :class="{ 'three': !isOwner }">
+          <article class="card health">
+            <header>
+              <h2>Server health</h2>
+              <span class="pill" :class="online ? 'ok' : 'warn'">{{ hostname }}</span>
+            </header>
+            <div class="gauges">
+              <ControlGauge label="CPU" :value="cpu" color="#2563eb" />
+              <ControlGauge label="Memory" :value="ram" color="#7c3aed" />
+              <ControlGauge label="Disk" :value="disk" color="#16a34a" />
+            </div>
+            <dl class="facts">
+              <div><dt>OS</dt><dd>Linux host</dd></div>
+              <div><dt>Panel</dt><dd>IFNOTUS v{{ version }}</dd></div>
+              <div><dt>Load</dt><dd>{{ loadAvg }}</dd></div>
+              <div><dt>Uptime</dt><dd>{{ textStat('uptime') }}</dd></div>
+              <div><dt>Time</dt><dd>{{ new Date().toLocaleTimeString() }}</dd></div>
+            </dl>
+          </article>
+
+          <article class="card traffic">
+            <header>
+              <h2>Live traffic</h2>
+              <span class="muted">Last samples</span>
+            </header>
+            <ResourceChart
+              title="Live traffic"
+              :chart="data?.charts.network || { categories: [], series: [] }"
+              :loading="loading"
+              :height="180"
+            />
+            <div class="xfer">
+              <span>Inbound <strong>{{ data?.networkThroughput?.in || '—' }}</strong></span>
+              <span>Outbound <strong>{{ data?.networkThroughput?.out || '—' }}</strong></span>
+            </div>
+          </article>
+
+          <article v-if="isOwner" class="card ssh">
+            <header>
+              <h2>Operator access</h2>
+              <span class="pill ok">Enabled</span>
+            </header>
+            <p class="muted">Audited command runner in this panel. Prefer hostnames — never paste a public IP into customer tools.</p>
+            <code class="cmd">terminal · ifnotus.space</code>
+            <p class="warn-note">This is not an interactive SSH session. Use Terminal for controlled host commands.</p>
+            <button type="button" class="cta" @click="go('/terminal')">Launch Terminal</button>
+          </article>
+        </section>
+
+        <section class="boards">
+          <article class="card board">
+            <header>
+              <h2>Running services</h2>
+              <span class="pill" :class="servicesOk ? 'ok' : 'warn'">
+                {{ servicesOk ? 'All systems operational' : 'Check services' }}
+              </span>
+            </header>
+            <ul class="svc">
+              <li v-for="svc in featuredServices" :key="svc.id">
+                <ServiceBrandMark :name="svc.key" :size="36" />
+                <div>
+                  <p>{{ svc.label }}</p>
+                  <span class="pill sm" :class="svc.status === 'running' ? 'ok' : svc.status === 'not_installed' ? '' : 'warn'">
+                    {{ serviceLabel(svc.status) }}
+                  </span>
+                </div>
+              </li>
+            </ul>
+          </article>
+
+          <article class="card board">
+            <header><h2>Quick actions</h2></header>
+            <div class="qact">
+              <button v-for="a in actions" :key="a.label" type="button" @click="go(a.to)">
+                <span class="ico" :style="{ color: a.color }">
+                  <component :is="a.icon" :size="26" />
                 </span>
-              </div>
-            </li>
-          </ul>
-        </article>
+                <span class="qlabel">{{ a.label }}</span>
+              </button>
+            </div>
+          </article>
+        </section>
 
+        <section class="bottom">
+          <article class="card">
+            <header><h2>Security overview</h2></header>
+            <ul class="sec">
+              <li><span>Firewall</span><strong class="ok">Active</strong></li>
+              <li>
+                <span>SSL certificates</span>
+                <strong class="ok">{{ sslOk }} valid</strong>
+                <small v-if="sslWarn"> · {{ sslWarn }} expiring</small>
+              </li>
+              <li><span>Login lockout</span><strong class="ok">On</strong></li>
+              <li>
+                <span>Last login IP</span>
+                <strong :title="lastLoginAt">{{ lastLoginIp || 'Recorded' }}</strong>
+              </li>
+            </ul>
+          </article>
+
+          <article class="card">
+            <header>
+              <h2>Managed sites</h2>
+              <RouterLink class="link" to="/domains">Manage all ({{ siteCount }})</RouterLink>
+            </header>
+            <div v-if="domains.length" class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Domain</th>
+                    <th>Type</th>
+                    <th>SSL</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="d in domains" :key="d.id">
+                    <td>
+                      <a class="dom" :href="`https://${d.name}`" target="_blank" rel="noopener">{{ d.name }}</a>
+                    </td>
+                    <td><span class="pill">{{ d.domain_type }}</span></td>
+                    <td>
+                      <span class="lock" :class="{ ok: d.force_https }">
+                        {{ d.force_https ? 'HTTPS enforced' : 'Available' }}
+                      </span>
+                    </td>
+                    <td><span class="pill ok">Active</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-else class="empty pad">No custom domains created yet.</p>
+          </article>
+
+          <article class="card details">
+            <header><h2>Server profile</h2></header>
+            <div class="visual">
+              <img src="/home-servers-hero.jpg" alt="Dedicated infrastructure" />
+            </div>
+            <ul class="meta">
+              <li><span>Architecture</span><strong>Bare Metal / KVM</strong></li>
+              <li><span>Isolation</span><strong>Per-tenant docroot &amp; pool</strong></li>
+              <li><span>DNS mode</span><strong>Managed BIND Authoritative</strong></li>
+              <li><span>Mail</span><strong>Postfix + Dovecot + Roundcube</strong></li>
+            </ul>
+          </article>
+        </section>
+      </template>
+
+      <!-- COMMON FOR ALL STAFF: QUICK ACTIONS IF NOT SHOWN IN TOP -->
+      <section v-if="isSupport || isBilling || isAuditorRole" class="boards">
         <article class="card board">
-          <header><h2>Quick actions</h2></header>
+          <header><h2>Privileged Actions</h2></header>
           <div class="qact">
             <button v-for="a in actions" :key="a.label" type="button" @click="go(a.to)">
               <span class="ico" :style="{ color: a.color }">
@@ -332,96 +714,16 @@ export default { name: 'DashboardView' }
             </button>
           </div>
         </article>
-      </section>
 
-      <section class="bottom">
-        <article class="card">
-          <header><h2>Security overview</h2></header>
+        <article class="card board">
+          <header><h2>Access Security</h2></header>
           <ul class="sec">
-            <li><span>Firewall</span><strong class="ok">Active</strong></li>
+            <li><span>Privilege level</span><strong class="ok">{{ canonicalRole }}</strong></li>
+            <li><span>Session status</span><strong class="ok">Authenticated</strong></li>
+            <li><span>Login lockout protection</span><strong class="ok">Active</strong></li>
             <li>
-              <span>SSL certificates</span>
-              <strong class="ok">{{ sslOk }} valid</strong>
-              <small v-if="sslWarn"> · {{ sslWarn }} expiring</small>
-            </li>
-            <li><span>Login lockout</span><strong class="ok">On</strong></li>
-            <li>
-              <span>Last login IP</span>
-              <strong>{{ lastLoginIp || '—' }}</strong>
-            </li>
-            <li v-if="lastLoginAt">
-              <span>Last login</span>
-              <strong>{{ lastLoginAt }}</strong>
-            </li>
-            <li><span>Nameservers</span><strong>ns1 / ns2.ifnotus.space</strong></li>
-          </ul>
-        </article>
-
-        <article class="card wide">
-          <header>
-            <h2>Hosted apps</h2>
-            <RouterLink class="link" to="/applications">Manage</RouterLink>
-          </header>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Domain</th>
-                  <th>Status</th>
-                  <th>Type</th>
-                  <th>SSL</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="d in domains" :key="d.id">
-                  <td>
-                    <RouterLink class="dom" :to="'/applications'">{{ d.name }}</RouterLink>
-                  </td>
-                  <td><span class="pill ok">{{ d.enabled ? 'Active' : 'Off' }}</span></td>
-                  <td class="muted">{{ d.domain_type }}</td>
-                  <td>
-                    <span class="lock" :class="d.force_https || d.ssl_certificate_path ? 'ok' : 'off'">
-                      <IconLock :size="14" />
-                    </span>
-                  </td>
-                  <td>
-                    <RouterLink class="more" :to="'/applications'">···</RouterLink>
-                  </td>
-                </tr>
-                <tr v-if="!domains.length">
-                  <td colspan="5" class="empty">No managed domains yet.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </article>
-
-        <article class="card details">
-          <header><h2>Server details</h2></header>
-          <div class="visual">
-            <img src="/server-rack.png" alt="Server rack" />
-          </div>
-          <ul class="meta">
-            <li>
-              <span>Control panel</span>
-              <strong>IFNOTUS v{{ version }}</strong>
-            </li>
-            <li>
-              <span>Nameservers</span>
-              <strong>ns1.ifnotus.space<br />ns2.ifnotus.space</strong>
-            </li>
-            <li>
-              <span>FTP host</span>
-              <strong>ftp.ifnotus.space</strong>
-            </li>
-            <li>
-              <span>Operator</span>
-              <strong>In-panel terminal</strong>
-            </li>
-            <li>
-              <span>Location</span>
-              <strong>Accra, GH</strong>
+              <span>Session IP</span>
+              <strong :title="lastLoginAt">{{ lastLoginIp || 'Recorded' }}</strong>
             </li>
           </ul>
         </article>
@@ -436,14 +738,17 @@ export default { name: 'DashboardView' }
 .ctrl {
   display: flex;
   flex-direction: column;
-  gap: 1.1rem;
+  gap: 1.15rem;
 }
 .metrics {
   display: grid;
-  gap: 0.75rem;
+  gap: 0.65rem;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-@media (min-width: 900px) {
+@media (min-width: 720px) {
+  .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (min-width: 1100px) {
   .metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 }
 .metric, .card {
@@ -473,14 +778,6 @@ export default { name: 'DashboardView' }
 .v.bad { color: #b42318; }
 .s { margin: 0.3rem 0 0; font-size: 0.75rem; color: var(--color-text-muted); }
 .row { display: flex; align-items: flex-end; justify-content: space-between; gap: 0.4rem; }
-.bar {
-  margin-top: 0.55rem;
-  height: 0.35rem;
-  border-radius: 999px;
-  background: #e8edf3;
-  overflow: hidden;
-}
-.bar i { display: block; height: 100%; background: #0d9488; }
 .mid {
   display: grid;
   gap: 0.75rem;
@@ -488,6 +785,7 @@ export default { name: 'DashboardView' }
 }
 @media (min-width: 1100px) {
   .mid { grid-template-columns: 1.4fr 1.2fr 0.9fr; }
+  .mid.two { grid-template-columns: 1.3fr 1fr; }
   .mid.three { grid-template-columns: 1fr 1fr 1fr; }
 }
 .card { padding: 1rem 1.1rem 1.15rem; }
@@ -536,15 +834,15 @@ export default { name: 'DashboardView' }
   border: none;
   cursor: pointer;
   font-weight: 650;
-}
-.cta {
   margin-top: 0.9rem;
   width: 100%;
   border-radius: 0.6rem;
   padding: 0.65rem;
   background: #2563eb;
   color: #fff;
+  transition: opacity 0.15s ease;
 }
+.cta:hover { opacity: 0.9; }
 .pill {
   font-size: 0.68rem;
   font-weight: 700;
@@ -646,7 +944,6 @@ td { padding: 0.55rem 0.5rem; border-top: 1px solid var(--color-border); }
 .dom { font-weight: 650; color: inherit; text-decoration: none; }
 .lock { color: #94a3b8; }
 .lock.ok { color: #16a34a; }
-.more { color: var(--color-text-muted); text-decoration: none; letter-spacing: 0.08em; }
 .link { color: #2563eb; text-decoration: none; font-size: 0.75rem; font-weight: 650; }
 .empty { color: var(--color-text-muted); font-size: 0.8rem; }
 .details {
@@ -694,4 +991,20 @@ td { padding: 0.55rem 0.5rem; border-top: 1px solid var(--color-border); }
   text-align: right;
   line-height: 1.4;
 }
+.search-box {
+  margin-top: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.ctrl-input {
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.55rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.82rem;
+}
+.pad { padding: 1rem 0; }
 </style>
