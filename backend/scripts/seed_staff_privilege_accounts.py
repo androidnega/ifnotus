@@ -83,15 +83,17 @@ async def seed_all_staff_roles() -> None:
 
     async with session_factory() as session:
         for acc in STAFF_ACCOUNTS:
-            query = select(User).where((User.username == acc["username"]) | (User.email == acc["email"]))
-            existing = (await session.execute(query)).scalar_one_or_none()
-            if existing:
-                existing.roles = acc["roles"]
-                existing.hashed_password = hash_password(acc["password"])
-                existing.is_active = True
-                existing.is_superuser = acc["is_superuser"]
-                existing.full_name = acc["full_name"]
-                print(f"[UPDATED] {acc['username']:<10} | {acc['email']:<24} | Roles: {acc['roles']}")
+            query = select(User).where((User.username == acc["username"]) | (User.email == acc["email"])).order_by(User.created_at.asc())
+            existing_list = (await session.execute(query)).scalars().all()
+            if existing_list:
+                for existing in existing_list:
+                    existing.email = acc["email"]
+                    existing.roles = acc["roles"]
+                    existing.hashed_password = hash_password(acc["password"])
+                    existing.is_active = True
+                    existing.is_superuser = acc["is_superuser"]
+                    existing.full_name = acc["full_name"]
+                    print(f"[UPDATED] {existing.username:<10} | {existing.email:<24} | Roles: {existing.roles}")
             else:
                 user = User(
                     email=acc["email"],
