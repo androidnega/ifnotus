@@ -113,7 +113,10 @@ export function profileHasField(profile: CustomerProfile, id: ProfileStageId): b
     case 'company':
       return Boolean((profile.company || '').trim())
     case 'password':
-      // Backend does not expose password_set — skip sticks in localStorage.
+      // If user signed up with email & password or has a non-pending email or has_password is true, stage is satisfied.
+      if (profile.has_password ?? !isPendingEmail(profile.email)) {
+        return true
+      }
       return isStageDeferred('password')
     default:
       return true

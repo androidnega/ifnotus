@@ -665,6 +665,7 @@ class CustomerService:
                 "last_name": cls.resolved_last_name(customer),
                 "phone_verified": bool(getattr(customer, "phone_verified", False)),
                 "profile_complete": cls.is_profile_complete(customer),
+                "has_password": not (customer.email and "@phone.pending.ifnotus" in customer.email),
                 "onboarding_stage": getattr(customer, "onboarding_stage", None)
                 or cls.compute_onboarding_stage(customer),
                 "onboarding_completed_at": getattr(customer, "onboarding_completed_at", None),

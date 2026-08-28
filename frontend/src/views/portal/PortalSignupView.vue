@@ -45,8 +45,8 @@ const email = ref('')
 
 const loading = ref(false)
 const error = ref('')
-const step = ref<Step>('phone')
-const authMode = ref<AuthMode>('phone')
+const step = ref<Step>(isSignup.value ? 'phone' : 'password')
+const authMode = ref<AuthMode>(isSignup.value ? 'phone' : 'password')
 
 const planSlug = computed(() => {
   const raw = route.query.plan
@@ -54,9 +54,9 @@ const planSlug = computed(() => {
 })
 
 const titles = computed<Record<Step, string>>(() => ({
-  phone: isSignup.value ? 'Create your account' : 'Log in',
+  phone: isSignup.value ? 'Create your account' : 'Log in with phone',
   otp: 'Check your phone',
-  password: 'Log in with email',
+  password: 'Log in',
   first_name: 'What should we call you?',
   last_name: 'And your family name?',
   email: 'Where should we send updates?',
@@ -67,7 +67,7 @@ const subs = computed<Record<Step, string>>(() => ({
     ? 'Enter your mobile number. We’ll text a one-time code to get you started.'
     : 'Enter your mobile number. We’ll text a one-time code to open your account.',
   otp: 'Enter the code to continue.',
-  password: 'Use the email and password you set in account settings.',
+  password: 'Enter your email and password to access your account.',
   first_name: 'Your first name — shown on invoices and your account.',
   last_name: 'Needed for invoices and student project addresses.',
   email: 'Required before you place a paid order.',
@@ -99,6 +99,9 @@ onMounted(() => {
     step.value = 'password'
     authMode.value = 'password'
     void loadPanelStatus()
+  } else if (!isSignup.value) {
+    step.value = 'password'
+    authMode.value = 'password'
   }
 })
 
@@ -347,15 +350,11 @@ function onSubmit() {
 const submitLabel = computed(() => {
   if (loading.value) return 'Please wait…'
   if (panelLogin.value) return panelNeedsCreate.value ? 'Create password & open panel' : 'Open hosting panel'
-  if (step.value === 'phone') return 'Send code'
+  if (step.value === 'phone') return isSignup.value ? 'Send code' : 'Send login code'
   if (step.value === 'otp') return 'Verify & continue'
   if (step.value === 'password') return 'Log in'
   return 'Continue'
 })
-
-const showAuthToggle = computed(
-  () => !panelLogin.value && !isSignup.value && (step.value === 'phone' || step.value === 'password'),
-)
 
 async function onPanelUsernameBlur() {
   const u = panelUsername.value.trim()
@@ -453,27 +452,6 @@ async function onPanelUsernameBlur() {
         Plan selected: <strong>{{ planSlug }}</strong>
       </p>
 
-      <div v-if="showAuthToggle" class="mode-tabs" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          :aria-selected="authMode === 'phone'"
-          :class="{ on: authMode === 'phone' }"
-          @click="authMode = 'phone'; step = 'phone'; error = ''"
-        >
-          Phone
-        </button>
-        <button
-          type="button"
-          role="tab"
-          :aria-selected="authMode === 'password'"
-          :class="{ on: authMode === 'password' }"
-          @click="authMode = 'password'; step = 'password'; error = ''"
-        >
-          Email
-        </button>
-      </div>
-
       <form class="card" @submit.prevent="onSubmit">
         <div v-if="step === 'phone'" class="fields">
           <label for="phone">Mobile number</label>
@@ -502,9 +480,19 @@ async function onPanelUsernameBlur() {
             placeholder="6-digit code"
             required
           />
-          <button type="button" class="text-btn" :disabled="loading" @click="sendOtp">
-            Resend code
-          </button>
+          <div class="otp-actions">
+            <button type="button" class="text-btn" :disabled="loading" @click="sendOtp">
+              Resend code
+            </button>
+            <button
+              v-if="!isSignup"
+              type="button"
+              class="text-btn muted"
+              @click="step = 'phone'; otp = ''; error = ''"
+            >
+              Change number
+            </button>
+          </div>
         </div>
         <div v-else-if="step === 'password'" class="fields">
           <label for="email-login">Email</label>
@@ -546,6 +534,28 @@ async function onPanelUsernameBlur() {
         <button type="submit" class="submit" :disabled="loading">
           {{ submitLabel }}
         </button>
+
+        <div v-if="!isSignup && step === 'password'" class="alt-auth-section">
+          <div class="alt-divider"><span>or</span></div>
+          <button
+            type="button"
+            class="btn-alt-auth"
+            @click="step = 'phone'; authMode = 'phone'; error = ''"
+          >
+            Log in with phone number
+          </button>
+        </div>
+
+        <div v-if="!isSignup && step === 'phone'" class="alt-auth-section">
+          <div class="alt-divider"><span>or</span></div>
+          <button
+            type="button"
+            class="btn-alt-auth"
+            @click="step = 'password'; authMode = 'password'; error = ''"
+          >
+            Log in with email &amp; password
+          </button>
+        </div>
       </form>
 
       <p v-if="compactAuth && !isSignup" class="switch">
@@ -751,6 +761,57 @@ h1 {
   text-decoration: underline;
   cursor: pointer;
   padding: 0;
+}
+.text-btn.muted {
+  color: var(--if-muted, #7a8490);
+}
+.otp-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.25rem;
+}
+.alt-auth-section {
+  margin-top: 0.85rem;
+  text-align: center;
+}
+.alt-divider {
+  display: flex;
+  align-items: center;
+  text-align: center;
+  margin: 0.65rem 0;
+  color: var(--if-muted, #8a94a0);
+  font-size: 0.78rem;
+}
+.alt-divider::before,
+.alt-divider::after {
+  content: '';
+  flex: 1;
+  border-bottom: 1px solid var(--if-border, #e4e8ec);
+}
+.alt-divider span {
+  padding: 0 0.55rem;
+  text-transform: uppercase;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--if-muted, #8a94a0);
+}
+.btn-alt-auth {
+  width: 100%;
+  border: 1px solid var(--if-border, #d7dde5);
+  border-radius: 0.55rem;
+  background: var(--if-surface, #fff);
+  color: var(--if-ink, #161a1d);
+  font-size: 0.86rem;
+  font-weight: 600;
+  padding: 0.55rem 0.75rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn-alt-auth:hover {
+  background: var(--if-subtle, #f8fafc);
+  border-color: var(--if-border-focus, #cbd5e1);
 }
 .err { margin: 0.55rem 0 0; color: #b42318; font-size: 0.8rem; }
 .submit {

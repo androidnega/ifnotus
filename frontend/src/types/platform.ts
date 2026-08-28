@@ -68,6 +68,7 @@ export type CustomerProfile = {
   email_verified: boolean
   phone_verified?: boolean
   profile_complete?: boolean
+  has_password?: boolean
   onboarding_stage?: string
   onboarding_completed_at?: string | null
   can_order?: boolean

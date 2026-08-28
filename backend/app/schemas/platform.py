@@ -180,6 +180,7 @@ class CustomerResponse(SchemaBase):
     email_verified: bool
     phone_verified: bool = False
     profile_complete: bool = False
+    has_password: bool = True
     onboarding_stage: str = "phone_verified"
     onboarding_completed_at: datetime | None = None
     can_order: bool = False
