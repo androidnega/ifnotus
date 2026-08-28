@@ -94,13 +94,16 @@ function goSupport() {
   router.push({ name: 'portal-support' })
 }
 
-function doLogout() {
+async function doLogout() {
   closeMenu()
   emit('logout')
-  localStorage.removeItem('access_token')
-  localStorage.removeItem('refresh_token')
+  await auth.logout()
   localStorage.removeItem('ifnotus_portal')
-  router.push({ name: 'login' })
+  if (typeof window !== 'undefined') {
+    window.location.href = '/login'
+  } else {
+    router.push({ name: 'login' })
+  }
 }
 
 onMounted(async () => {

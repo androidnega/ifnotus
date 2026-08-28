@@ -51,7 +51,7 @@ async function submit() {
 }
 
 function goLogin() {
-  router.push({ name: 'admin-login' })
+  router.push({ name: 'login' })
 }
 </script>
 

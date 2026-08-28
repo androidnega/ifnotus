@@ -99,6 +99,11 @@ const routes: RouteRecordRaw[] = [
     redirect: (to) => ({ path: '/login', query: to.query }),
   },
   {
+    path: '/admin-login',
+    name: 'admin-login',
+    redirect: (to) => ({ path: '/login', query: to.query }),
+  },
+  {
     path: '/go/hosting',
     name: 'go-hosting',
     component: () => import('@/views/portal/GoHostingView.vue'),

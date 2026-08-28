@@ -61,7 +61,7 @@ async function submit() {
       </template>
 
       <p class="row row--center">
-        <router-link class="link" :to="{ name: 'admin-login' }">Back to login</router-link>
+        <router-link class="link" :to="{ name: 'login' }">Back to login</router-link>
       </p>
     </form>
   </div>

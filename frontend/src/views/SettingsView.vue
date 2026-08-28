@@ -548,7 +548,11 @@ async function setStaffRole(id: string, role: string) {
 
 async function handleLogout() {
   await auth.logout()
-  await router.replace({ name: 'admin-login' })
+  if (typeof window !== 'undefined') {
+    window.location.href = '/login'
+  } else {
+    await router.replace({ name: 'login' })
+  }
 }
 
 function refreshAll() {

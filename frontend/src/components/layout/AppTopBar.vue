@@ -105,7 +105,11 @@ function goSearch(to: string) {
 async function handleLogout() {
   menuOpen.value = false
   await auth.logout()
-  await router.replace({ name: 'admin-login' })
+  if (typeof window !== 'undefined') {
+    window.location.href = '/login'
+  } else {
+    await router.replace({ name: 'login' })
+  }
 }
 
 function onDocClick(event: MouseEvent) {
