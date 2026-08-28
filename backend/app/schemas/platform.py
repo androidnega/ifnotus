@@ -750,6 +750,32 @@ class CustomerFileCompressRequest(SchemaBase):
     destination_dir: str | None = Field(default=None, max_length=1024)
 
 
+class CustomerTrashEntrySchema(SchemaBase):
+    trash_id: str
+    original_path: str
+    display_name: str
+    item_type: str = "file"
+    size_bytes: int | None = None
+    deleted_at: datetime
+    deleted_by: str | None = None
+
+
+class CustomerTrashListResponse(SchemaBase):
+    entries: list[CustomerTrashEntrySchema] = Field(default_factory=list)
+    total_size_bytes: int = 0
+    count: int = 0
+
+
+class CustomerTrashRestoreRequest(SchemaBase):
+    trash_id: str
+    conflict_mode: str = "copy"  # "copy", "replace", "cancel"
+
+
+class CustomerTrashMoveRequest(SchemaBase):
+    paths: list[str] = Field(min_length=1, max_length=200)
+
+
+
 class SubscriptionResponse(SchemaBase):
     id: UUID
     customer_id: UUID
@@ -964,6 +990,36 @@ class PanelAliasResolveResponse(SchemaBase):
     environment_id: UUID
     domain: str
     status: str
+
+
+class HostingSsoHandoffRequest(SchemaBase):
+    environment_id: UUID | None = None
+    domain: str | None = None
+    tab: str | None = None
+
+
+class HostingSsoHandoffResponse(SchemaBase):
+    handoff_url: str
+    token: str
+    target_host: str
+    environment_id: UUID
+    domain: str
+    expires_in: int = 120
+
+
+class HostingSsoConsumeRequest(SchemaBase):
+    token: str
+    host: str | None = None
+
+
+class HostingSsoConsumeResponse(SchemaBase):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    environment_id: UUID
+    domain: str
+    username: str | None = None
 
 
 class PanelStatusResponse(SchemaBase):

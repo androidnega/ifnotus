@@ -1,13 +1,21 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import UiAlert from '@/components/ui/UiAlert.vue'
 import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import { operationsApi } from '@/api'
+import { useAuthStore } from '@/stores/auth'
+import { usePermissions } from '@/composables/usePermissions'
+import { isPlatformOwner, isHostingOperator } from '@/lib/roles'
+import { Permission } from '@/lib/permissions'
 import type { BackupEntry, CronJob, OperationsOverview, StorageVolume } from '@/types/operations'
+
+const auth = useAuthStore()
+const { can } = usePermissions()
+const canMutate = computed(() => isPlatformOwner(auth.user) || isHostingOperator(auth.user) || can(Permission.SYSTEM_ADMIN))
+const canRunBackup = computed(() => isPlatformOwner(auth.user) || can(Permission.DR_EXECUTE) || can(Permission.SYSTEM_ADMIN))
 
 const loading = ref(true)
 const loadError = ref<string | null>(null)
@@ -137,7 +145,7 @@ onMounted(refreshAll)
         </Card>
       </section>
 
-      <Card title="Host controls" subtitle="Refresh inventory, clear caches, restart core services">
+      <Card v-if="canMutate" title="Host controls" subtitle="Refresh inventory, clear caches, restart core services">
         <div class="flex flex-wrap gap-2">
           <button
             type="button"
@@ -180,6 +188,7 @@ onMounted(refreshAll)
             {{ actionLoading === 'worker' ? '…' : 'Restart queue worker' }}
           </button>
           <button
+            v-if="canRunBackup"
             type="button"
             class="action-btn"
             :disabled="!!actionLoading"
@@ -188,12 +197,6 @@ onMounted(refreshAll)
             {{ actionLoading === 'backup' ? '…' : 'Create backup' }}
           </button>
         </div>
-        <p class="mt-3 text-xs text-surface-muted">
-          Files → <RouterLink class="text-brand-600 underline" to="/files">File Manager</RouterLink>
-          · SSL → <RouterLink class="text-brand-600 underline" to="/ssl">SSL</RouterLink>
-          · Databases → <RouterLink class="text-brand-600 underline" to="/databases">Databases</RouterLink>
-          · Sites → <RouterLink class="text-brand-600 underline" to="/applications">Apps</RouterLink>
-        </p>
       </Card>
 
       <div class="dashboard-grid lg:grid-cols-2">

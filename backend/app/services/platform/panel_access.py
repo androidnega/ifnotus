@@ -1,10 +1,12 @@
-"""Customer control-panel shortcut URLs.
+"""Customer control-panel and service access URLs according to IFNOTUS routing standard.
 
-Tenant sites always use path-based entry:
-  https://{domain}/cpanel
-  https://{domain}/mail
-
-Only the IFNOTUS staff/admin surface uses cpanel.ifnotus.space.
+Routing Standard:
+1. Customer cPanel Canonical: https://cpanel.{domain}
+2. Convenience Shortcut: https://{domain}/cpanel -> 302 -> https://cpanel.{domain}
+3. Customer Webmail Canonical: https://webmail.{domain}
+4. Convenience Shortcuts: https://{domain}/webmail & https://{domain}/mail -> 302 -> https://webmail.{domain}
+5. Mail Server: mail.{domain}
+6. Staff Control Plane: https://cpanel.ifnotus.space/login
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from app.services.platform.student_hostname import (
 )
 
 STAFF_PANEL_HOST = "cpanel.ifnotus.space"
+PLATFORM_APEX = "ifnotus.space"
 
 
 def is_platform_hostname(domain: str | None, *, settings: object | None = None) -> bool:
@@ -38,41 +41,127 @@ def is_platform_hostname(domain: str | None, *, settings: object | None = None) 
 
 
 def control_panel_hostname(domain: str | None, *, settings: object | None = None) -> str | None:
-    """Legacy helper — tenant panels no longer use cpanel.<domain>.
-
-    Always returns None so callers fall through to path-based /cpanel.
-    Staff panel remains cpanel.ifnotus.space (handled separately in the SPA).
+    """Canonical customer cPanel hostname: cpanel.<domain> (e.g. cpanel.yalleydadzie.online).
+    Customer subdomains (e.g. blog.yalleydadzie.online) remain managed through cpanel.<primary-domain>.
     """
-    _ = domain, settings
-    return None
-
-
-def site_cpanel_url(domain: str | None) -> str | None:
-    """Public tenant panel entry: https://{domain}/cpanel."""
     host = (domain or "").lower().rstrip(".")
     if host.startswith("www."):
         host = host[4:]
     if not host or "." not in host:
         return None
-    if host in {"ifnotus.space", STAFF_PANEL_HOST, "mail.ifnotus.space"}:
+    if host == STAFF_PANEL_HOST:
+        return STAFF_PANEL_HOST
+    if host in {PLATFORM_APEX, "mail.ifnotus.space", "api.ifnotus.space"}:
+        return STAFF_PANEL_HOST
+    if host.startswith("cpanel."):
+        return host
+    if is_student_hostname(host, settings=settings):
+        # Student hostnames stay on student subdomain
+        return host
+
+    parts = host.split(".")
+    if len(parts) > 2:
+        two_level_tlds = {"co.uk", "org.uk", "me.uk", "com.gh", "org.gh", "edu.gh", "gov.gh", "net.gh", "com.ng", "co.za"}
+        suffix2 = ".".join(parts[-2:])
+        if suffix2 in two_level_tlds and len(parts) > 3:
+            primary = ".".join(parts[-3:])
+            return f"cpanel.{primary}"
+        elif suffix2 not in two_level_tlds:
+            primary = ".".join(parts[-2:])
+            return f"cpanel.{primary}"
+
+    return f"cpanel.{host}"
+
+
+def webmail_hostname(domain: str | None, *, settings: object | None = None) -> str | None:
+    """Canonical webmail hostname: webmail.<domain> (e.g. webmail.yalleydadzie.online).
+    Subdomains use webmail on the primary domain.
+    """
+    host = (domain or "").lower().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    if not host or "." not in host:
         return None
-    if host.startswith("cpanel.") and host != STAFF_PANEL_HOST:
+    if host in {PLATFORM_APEX, STAFF_PANEL_HOST, "mail.ifnotus.space"}:
+        return "mail.ifnotus.space"
+    if host.startswith("webmail."):
+        return host
+    if host.startswith("cpanel."):
+        host = host[len("cpanel.") :]
+
+    parts = host.split(".")
+    if len(parts) > 2:
+        two_level_tlds = {"co.uk", "org.uk", "me.uk", "com.gh", "org.gh", "edu.gh", "gov.gh", "net.gh", "com.ng", "co.za"}
+        suffix2 = ".".join(parts[-2:])
+        if suffix2 in two_level_tlds and len(parts) > 3:
+            primary = ".".join(parts[-3:])
+            return f"webmail.{primary}"
+        elif suffix2 not in two_level_tlds:
+            primary = ".".join(parts[-2:])
+            return f"webmail.{primary}"
+
+    return f"webmail.{host}"
+
+
+def mail_server_hostname(domain: str | None, *, settings: object | None = None) -> str | None:
+    """Mail client incoming/outgoing server hostname: mail.<domain>."""
+    host = (domain or "").lower().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    if not host or "." not in host:
+        return None
+    if host in {PLATFORM_APEX, STAFF_PANEL_HOST, "mail.ifnotus.space"}:
+        return "mail.ifnotus.space"
+    if host.startswith("mail."):
+        return host
+    if host.startswith("cpanel.") or host.startswith("webmail."):
+        host = host.split(".", 1)[1]
+    return f"mail.{host}"
+
+
+def site_cpanel_url(domain: str | None, *, tab: str | None = None) -> str | None:
+    """Canonical customer hosting panel: https://cpanel.{domain}/ (clean paths, no UUID in URL)."""
+    host = (domain or "").lower().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    if not host or "." not in host:
+        return None
+    cpanel_host = control_panel_hostname(host)
+    if not cpanel_host:
+        return None
+    base = f"https://{cpanel_host}"
+    if tab and tab != "overview":
+        clean_tab = tab.lstrip("/")
+        return f"{base}/{clean_tab}"
+    return f"{base}/"
+
+
+def site_cpanel_shortcut_url(domain: str | None) -> str | None:
+    """Convenience shortcut: https://{domain}/cpanel (which 302 redirects to cpanel.{domain})."""
+    host = (domain or "").lower().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    if not host or "." not in host:
+        return None
+    if host.startswith("cpanel."):
         host = host[len("cpanel.") :]
     return f"https://{host}/cpanel"
 
 
-def site_mail_url(domain: str | None) -> str | None:
-    """Public tenant webmail entry: https://{domain}/mail (except mail.ifnotus.space)."""
+def site_webmail_url(domain: str | None) -> str | None:
+    """Canonical webmail entry: https://webmail.{domain}."""
     host = (domain or "").lower().rstrip(".")
     if host.startswith("www."):
         host = host[4:]
     if not host or "." not in host:
         return None
-    if host in {"ifnotus.space", STAFF_PANEL_HOST}:
-        return "https://mail.ifnotus.space/"
-    if host.startswith("cpanel.") and host != STAFF_PANEL_HOST:
-        host = host[len("cpanel.") :]
-    return f"https://{host}/mail"
+    wm_host = webmail_hostname(host)
+    return f"https://{wm_host}" if wm_host else "https://mail.ifnotus.space/"
+
+
+def site_mail_url(domain: str | None) -> str | None:
+    """Webmail shortcut: https://{domain}/webmail or https://{domain}/mail."""
+    return site_webmail_url(domain)
 
 
 def control_panel_url(domain: str | None, portal_base: str = "https://ifnotus.space") -> str:
@@ -88,14 +177,15 @@ def panel_sso_url(
     *,
     tab: str | None = None,
 ) -> str:
-    """Portal SSO handoff used by nginx /cpanel → API redirect (no redirect loop)."""
+    """Portal SSO handoff redirect URL."""
     from app.services.platform.host_routing import sanitize_panel_hostname
 
     base = (portal_base or "https://ifnotus.space").rstrip("/")
     host = sanitize_panel_hostname(hostname)
     if not host:
         return f"{base}/account"
-    q = f"host={quote(host)}"
-    if tab:
-        q = f"{q}&tab={quote(tab)}"
-    return f"{base}/go/hosting?{q}"
+    cpanel = control_panel_hostname(host) or host
+    url = f"https://{cpanel}/"
+    if tab and tab != "overview":
+        url = f"https://{cpanel}/{tab.lstrip('/')}"
+    return url

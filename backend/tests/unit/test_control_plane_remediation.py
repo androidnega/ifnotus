@@ -174,3 +174,29 @@ def test_files_admin_storage_roots_strictly_platform_owner() -> None:
     assert service._admin_storage is False
 
 
+def test_ui_rbac_role_billing_and_support_boundaries() -> None:
+    """Verify backend permission matrix for UI RBAC roles."""
+    # Support agent has no billing view or billing manage permissions
+    assert not role_has_permission(Role.SUPPORT_AGENT, Permission.BILLING_VIEW)
+    assert not role_has_permission(Role.SUPPORT_AGENT, Permission.BILLING_MANAGE)
+    assert not role_has_permission(Role.CUSTOMER_CARE, Permission.BILLING_MANAGE)
+
+    # Hosting operator has no billing permissions
+    assert not role_has_permission(Role.HOSTING_OPERATOR, Permission.BILLING_VIEW)
+    assert not role_has_permission(Role.HOSTING_OPERATOR, Permission.BILLING_MANAGE)
+
+    # Billing agent has billing view and manage, but no host tools
+    assert role_has_permission(Role.BILLING_AGENT, Permission.BILLING_VIEW)
+    assert role_has_permission(Role.BILLING_AGENT, Permission.BILLING_MANAGE)
+    assert not role_has_permission(Role.BILLING_AGENT, Permission.SERVERS_READ)
+    assert not role_has_permission(Role.BILLING_AGENT, Permission.FILES_READ)
+    assert not role_has_permission(Role.BILLING_AGENT, Permission.TERMINAL_EXECUTE)
+
+    # Auditor has billing view for accounting reports, but cannot manage/mutate
+    assert role_has_permission(Role.AUDITOR, Permission.BILLING_VIEW)
+    assert not role_has_permission(Role.AUDITOR, Permission.BILLING_MANAGE)
+    assert not role_has_permission(Role.AUDITOR, Permission.PLATFORM_WRITE)
+    assert not role_has_permission(Role.AUDITOR, Permission.FILES_WRITE)
+
+
+

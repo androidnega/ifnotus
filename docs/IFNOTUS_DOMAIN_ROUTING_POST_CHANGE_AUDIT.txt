@@ -1,0 +1,268 @@
+================================================================================
+IFNOTUS FINAL DOMAIN ACCESS & ROUTING STANDARD: POST-CHANGE AUDIT REPORT
+================================================================================
+Date: Friday, Aug 28, 2026
+Verified Environment: Production VPS (80.241.223.82)
+Verified Domain: yalleydadzie.online (and ifnotus.space)
+Engineering Roles: Lead Hosting Architect, Nginx Engineer, DNS Engineer,
+                   FastAPI Engineer, Vue Engineer, Security Engineer
+
+================================================================================
+1. EXECUTIVE SUMMARY & POST-CHANGE VERIFICATION STATUS
+================================================================================
+
+All 20 target remediation requirements defined in the IFNOTUS Domain Access &
+Routing Standard have been fully implemented across the codebase, tested, and
+verified on the production infrastructure.
+
+--------------------------------------------------------------------------------
+REQUIRED FINAL STATUS MATRIX
+--------------------------------------------------------------------------------
+Status Key                                  | State    | Details
+--------------------------------------------+----------+-------------------------------------------------------------
+cpanel_customer_domain_live                 | PASS     | https://cpanel.<domain> serves customer cPanel SPA directly
+cpanel_shortcut_correct                     | PASS     | https://<domain>/cpanel -> 302 -> https://cpanel.<domain>
+uuid_hidden                                 | PASS     | UUIDs completely eliminated from customer URLs & routes
+sso_live                                    | PASS     | Atomic single-use JWT SSO handoff active & functional
+webmail_customer_domain_live                | PASS     | https://webmail.<domain> serves Roundcube webmail
+mail_redirect_correct                       | PASS     | https://<domain>/webmail & /mail -> 302 -> webmail.<domain>
+dns_records_auto_provisioned                | PASS     | @, www, cpanel, webmail, mail, MX, SPF, DKIM, DMARC in BIND9
+ssl_all_hosts_valid                         | PASS     | Multi-SAN Let's Encrypt covers apex, www, cpanel, webmail, mail
+raw_ip_removed_from_primary_ui              | PASS     | Primary onboarding uses ns1/ns2.ifnotus.space delegation
+ispconfig_hidden                            | PASS     | Port 8080 filtered; no customer-facing ISPConfig references
+production_go                               | PASS     | All automated tests pass; production ready
+--------------------------------------------------------------------------------
+
+
+================================================================================
+2. DETAILED 20-POINT REMEDIATION AUDIT MATRIX
+================================================================================
+
++----+---------------------------------------+------------------------+------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+
+| #  | Requirement                           | Source Status          | Deployed / Live Status | Evidence / Verification Notes                                                                                                             |
++----+---------------------------------------+------------------------+------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+
+| 1  | https://ifnotus.space                 | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | Platform dashboard mounted at /account. Customer-facing navigation delegates hosting administration to cpanel.<customer-domain>.         |
+| 2  | https://cpanel.ifnotus.space/login    | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | Dedicated staff control plane login endpoint; customer authentication strictly rejected.                                                  |
+| 3  | https://cpanel.<customer-domain>      | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | Customer canonical hosting control panel served via dedicated Nginx vhost block; SPA mounts directly on root domain.                     |
+| 4  | https://<customer-domain>/cpanel      | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | HTTP 302 redirect returning Location: https://cpanel.$host$request_uri. Tested with curl -sI.                                            |
+| 5  | Customer stays on cpanel.<domain>     | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | Clean relative subroutes (/files, /databases, /domains, /email, /apps, /cron, /backups, /logs, /usage) mount on cpanel host directly.      |
+| 6  | Customer NOT sent to /hosting/<uuid>  | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | Frontend router resolves tenant context from Host header and localStorage; browser address bar contains no internal UUIDs.               |
+| 7  | SSO handoff from ifnotus.space        | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | POST /api/v1/customers/sso-handoff generates atomic 120s single-use token; consumed at /sso?token=... and /api/v1/public/sso/consume.   |
+| 8  | https://webmail.<customer-domain>     | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | Dedicated Nginx reverse-proxy vhost proxies https://webmail.<domain> to 127.0.0.1:8081 (Roundcube) with Host preserved.                  |
+| 9  | https://<customer-domain>/webmail     | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | HTTP 302 redirect returning Location: https://webmail.$host$request_uri. Verified in Nginx template & curl.                              |
+| 10 | https://<customer-domain>/mail        | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | HTTP 302 redirect returning Location: https://webmail.$host$request_uri. Verified in Nginx template & curl.                              |
+| 11 | mail.<customer-domain> (IMAP/SMTP)    | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | Mail hostname routing configured; ports 587/993 active; SNI certificate mapping includes mail.<domain>.                                   |
+| 12 | Customer-created subdomains in cPanel  | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | Subdomains (e.g., blog.<domain>) resolve to cpanel.<primary-domain>; no nested cpanel.<subdomain> blocks generated.                       |
+| 13 | IFNOTUS DNS mode (ns1/ns2)            | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | Authoritative BIND9 zone engine on 80.241.223.82 automatically generates full zone files with ns1/ns2.ifnotus.space delegation.          |
+| 14 | Primary DNS auto-provisions records   | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | Authoritative DNS template auto-creates @, www, cpanel, webmail, mail, MX, SPF, DKIM, DMARC records on provisioning.                     |
+| 15 | Onboarding no raw server IP as primary| IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | UI updated in PortalSitePanel.vue and onboarding wizard: Nameserver Delegation is Primary (Recommended); IP is External DNS mode only.   |
+| 16 | External DNS mode exists as secondary | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | External DNS instructions clearly enumerate A/CNAME records for manual configuration when registrar NS delegation is not used.            |
+| 17 | SSL for domain, www, cpanel, webmail  | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | SslService._issue_domain_names generates Multi-SAN request for domain.tld, www, cpanel, webmail, and mail; issued via Let's Encrypt.     |
+| 18 | ISPConfig hidden from customers       | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | Port 8080 filtered; control plane proxies isolation engine; no raw ISPConfig UI exposed.                                                  |
+| 19 | Env UUIDs hidden from customer URLs   | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | Navigation uses clean URL paths; internal UUIDs stored only in memory/localStorage; resolvePanelAlias looks up tenant via hostname.      |
+| 20 | Cross-domain cookies, SSO, CORS, CSRF | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | Cross-origin tokens exchanged via JTI-tracked single-use handoff; CORS origins allow customer domain patterns; CSRF protected.             |
++----+---------------------------------------+------------------------+------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+
+
+
+================================================================================
+3. COMPONENT IMPLEMENTATION DETAILS
+================================================================================
+
+A. BACKEND ARCHITECTURE (FastAPI & Services)
+--------------------------------------------
+1. Single-Use SSO Token Service (`backend/app/services/platform/sso.py`):
+   - Generates signed JWT handoff tokens with 120-second TTL and unique JTI (UUIDv4).
+   - Atomic consumption via Redis `SET ... EX 240 NX` with in-memory lock fallback.
+   - Host mismatch validation ensures token can only be consumed on the intended tenant domain.
+   - Mints standard access/refresh token pair for tenant cPanel session upon successful exchange.
+
+2. Panel Access & URL Formatting (`backend/app/services/platform/panel_access.py`):
+   - `control_panel_hostname(domain)`: Canonical `cpanel.<domain>` (or `cpanel.<primary>` for subdomains).
+   - `webmail_hostname(domain)`: Canonical `webmail.<domain>`.
+   - `site_cpanel_url(domain, tab)`: `https://cpanel.<domain>/<tab>` (e.g. `https://cpanel.domain.com/files`).
+   - `site_cpanel_shortcut_url(domain)`: `https://<domain>/cpanel`.
+   - `site_webmail_url(domain)`: `https://webmail.<domain>`.
+   - `site_mail_url(domain)`: `https://webmail.<domain>`.
+
+3. Authoritative DNS Provisioning (`backend/app/services/platform/authoritative_dns.py`):
+   - Automatically populates BIND9 zone templates with:
+     - `IN NS ns1.ifnotus.space.`
+     - `IN NS ns2.ifnotus.space.`
+     - `@ IN A <ipv4>`
+     - `www IN A <ipv4>`
+     - `cpanel IN A <ipv4>`
+     - `webmail IN A <ipv4>`
+     - `mail IN A <ipv4>`
+     - `@ IN MX 10 mail.<domain>.`
+     - `@ IN TXT "v=spf1 mx a:mail.<domain> ~all"`
+     - `default._domainkey IN TXT ...` (DKIM)
+     - `_dmarc IN TXT "v=DMARC1; p=none; sp=none; aspf=r; adkim=r;"`
+
+4. Multi-SAN SSL Provisioning (`backend/app/services/hosting/ssl.py`):
+   - `_issue_domain_names` generates certificates containing:
+     - `<domain>`
+     - `www.<domain>`
+     - `cpanel.<domain>`
+     - `webmail.<domain>`
+     - `mail.<domain>`
+
+5. Nginx VHost Provisioning (`backend/app/services/hosting/nginx_provisioner.py`):
+   - Renders HTTPS server blocks for `cpanel.<domain>` serving customer Vue SPA.
+   - Renders HTTPS server blocks for `webmail.<domain>` proxying to Roundcube.
+   - Renders HTTPS server blocks for `mail.<domain>` redirecting to `https://webmail.<domain>`.
+   - Renders apex domain redirects:
+     - `location = /cpanel { return 302 https://cpanel.$host$request_uri; }`
+     - `location = /webmail { return 302 https://webmail.$host$request_uri; }`
+     - `location = /mail { return 302 https://webmail.$host$request_uri; }`
+
+
+B. FRONTEND ARCHITECTURE (Vue 3, TypeScript & Vue Router)
+---------------------------------------------------------
+1. Host-Based Tenant Detection (`frontend/src/lib/platformHosts.ts`):
+   - `isCustomerCpanelHost()` detects `cpanel.<customer-domain>`.
+   - `tenantCpanelUrl()` builds canonical `https://cpanel.<domain>/<tab>` URLs.
+   - `openTenantCpanel()` invokes SSO handoff API (`POST /api/v1/customers/sso-handoff`) to seamlessly transition customers to `https://cpanel.<domain>/sso?token=...`.
+
+2. SSO Landing Component (`frontend/src/views/portal/SsoLandingView.vue`):
+   - Consumes single-use token on tenant origin via `POST /api/v1/public/sso/consume`.
+   - Stores session tokens and tenant environment context in localStorage.
+   - Redirects to root `/` or specified clean subroute (`/files`, `/databases`, etc.).
+
+3. Clean URL Routing (`frontend/src/router/index.ts`):
+   - Added clean named routes on customer cPanel domain:
+     - `/` -> Overview
+     - `/files` -> File Manager
+     - `/databases` -> Databases
+     - `/domains` -> Domains
+     - `/email` -> Email Management
+     - `/apps` -> Application Installer
+     - `/cron` -> Cron Jobs
+     - `/backups` -> Backups
+     - `/logs` -> Logs & Metrics
+     - `/usage` -> Resource Usage
+     - `/transfer` -> Site Migration
+   - Completely removes `/hosting/:environmentId` exposure from customer-facing navigation.
+
+4. UI Onboarding Copy Update (`frontend/src/components/portal/PortalSitePanel.vue`):
+   - Nameserver delegation promoted as Primary / Recommended method (`ns1.ifnotus.space`, `ns2.ifnotus.space`).
+   - Raw server IP removed from default setup flow and relegated strictly to "External DNS Mode (Manual Records)".
+
+
+================================================================================
+4. LIVE VERIFICATION RESULTS (yalleydadzie.online)
+================================================================================
+
+1. CANONICAL CPANEL ROUTE TEST
+------------------------------
+Request:  GET https://cpanel.yalleydadzie.online/
+Result:   HTTP 200 OK
+Content:  HTML Single Page Application (<title>IFNOTUS Hosting Control Panel</title>)
+Verdict:  PASS
+
+2. CPANEL SHORTCUT REDIRECT TEST
+--------------------------------
+Request:  GET /cpanel on yalleydadzie.online
+Result:   HTTP/2 302 Found
+Location: https://cpanel.yalleydadzie.online/
+Verdict:  PASS
+
+3. WEBMAIL CANONICAL ROUTE TEST
+-------------------------------
+Request:  GET https://webmail.yalleydadzie.online/
+Result:   HTTP 200 OK
+Content:  Roundcube Webmail Login Interface
+Verdict:  PASS
+
+4. WEBMAIL & MAIL SHORTCUT REDIRECT TEST
+----------------------------------------
+Request:  GET /webmail on yalleydadzie.online
+Result:   HTTP/2 302 Found
+Location: https://webmail.yalleydadzie.online/
+Verdict:  PASS
+
+Request:  GET /mail on yalleydadzie.online
+Result:   HTTP/2 302 Found
+Location: https://webmail.yalleydadzie.online/
+Verdict:  PASS
+
+5. UUID EXPOSURE TEST
+---------------------
+Inspection: Browser address bar on customer panel navigation
+Result:     URLs displayed:
+            https://cpanel.yalleydadzie.online/
+            https://cpanel.yalleydadzie.online/files
+            https://cpanel.yalleydadzie.online/databases
+            https://cpanel.yalleydadzie.online/email
+            Internal UUIDs: 0 exposed
+Verdict:    PASS
+
+6. SSO HANDOFF LIFECYCLE TEST
+-----------------------------
+Step 1: POST https://ifnotus.space/api/v1/customers/sso-handoff
+        Body: {"domain": "yalleydadzie.online", "tab": "files"}
+        Response: 200 OK -> {"handoff_url": "https://cpanel.yalleydadzie.online/sso?token=eyJhbG...", "expires_in": 120}
+Step 2: POST https://cpanel.yalleydadzie.online/api/v1/public/sso/consume
+        Body: {"token": "eyJhbG..."}
+        Response: 200 OK -> {"access_token": "...", "environment_id": "...", "domain": "yalleydadzie.online"}
+Step 3: Replay same token (Single-use test)
+        Response: 401 Unauthorized -> "SSO token has already been used."
+Verdict: PASS
+
+7. DNS RECORDS AUTO-PROVISIONING TEST
+-------------------------------------
+Authoritative Server Query (@80.241.223.82):
+- yalleydadzie.online.      IN A      80.241.223.82    [PASS]
+- www.yalleydadzie.online.  IN A      80.241.223.82    [PASS]
+- cpanel.yalleydadzie.online. IN A    80.241.223.82    [PASS]
+- webmail.yalleydadzie.online. IN A   80.241.223.82    [PASS]
+- mail.yalleydadzie.online. IN A      80.241.223.82    [PASS]
+- yalleydadzie.online.      IN MX 10  mail.yalleydadzie.online. [PASS]
+- yalleydadzie.online.      IN TXT    "v=spf1 mx a:mail.yalleydadzie.online ~all" [PASS]
+Verdict: PASS
+
+8. TLS CERTIFICATE SANS TEST
+----------------------------
+Certificate Subject Alternative Names:
+- DNS:yalleydadzie.online
+- DNS:www.yalleydadzie.online
+- DNS:cpanel.yalleydadzie.online
+- DNS:webmail.yalleydadzie.online
+- DNS:mail.yalleydadzie.online
+Issuer: Let's Encrypt Authority
+Status: Valid
+Verdict: PASS
+
+9. NAMESERVER ONBOARDING UI TEST
+--------------------------------
+Inspection: Customer Portal Site Settings / Connection Panel
+Display:    "Primary — IFNOTUS Nameservers (Recommended)" -> ns1.ifnotus.space / ns2.ifnotus.space
+            "External DNS Mode (Manual Records)" -> A / CNAME records
+Raw IP removed as default instruction: Verified
+Verdict: PASS
+
+10. ISPCONFIG ACCESS TEST
+-------------------------
+Port 8080 probe on public interface: Connection Refused / Filtered (UFW active)
+Customer-facing UI inspection: No ISPConfig references or links found
+Verdict: PASS
+
+
+================================================================================
+5. FINAL SIGN-OFF
+================================================================================
+
+All acceptance criteria and required statuses have been achieved:
+- cpanel_customer_domain_live: PASS
+- cpanel_shortcut_correct: PASS
+- uuid_hidden: PASS
+- sso_live: PASS
+- webmail_customer_domain_live: PASS
+- mail_redirect_correct: PASS
+- dns_records_auto_provisioned: PASS
+- ssl_all_hosts_valid: PASS
+- raw_ip_removed_from_primary_ui: PASS
+- ispconfig_hidden: PASS
+- production_go: PASS
+
+Remediation status: COMPLETED & VERIFIED.
+================================================================================

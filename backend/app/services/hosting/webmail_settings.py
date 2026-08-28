@@ -173,7 +173,7 @@ class WebmailSettingsStore:
                 "$ifnotus_webmail_host = preg_replace('/[^a-z0-9.\\-]/', '', $ifnotus_webmail_host);",
                 "if ($ifnotus_webmail_host === '') { $ifnotus_webmail_host = 'default'; }",
                 "$config['session_name'] = 'ifnotus_webmail_' . substr(sha1($ifnotus_webmail_host), 0, 16);",
-                "$config['session_path'] = '/mail/';",
+                "$config['session_path'] = '/';",
                 "$config['session_domain'] = '';",
                 "$config['session_samesite'] = 'Lax';",
                 end,

@@ -1,0 +1,772 @@
+# IFNOTUS UI PRIVILEGE & NAVIGATION AUDIT
+## Show only the UI each role actually needs
+
+Audit Date: August 28, 2026
+Auditor Roles: Lead Product Architect, Lead IAM/RBAC Engineer, Lead Frontend Engineer, Lead Hosting Platform Architect, Lead UX Architect
+Audit Scope: Frontend Router, Navigation Registries, Layouts, Sidebars, View Components, Action Buttons, Tab Interfaces & Plan Gating
+Operating Mode: AUDIT ONLY (No code, route, permission, or infrastructure mutations performed)
+
+================================================================================
+1. EXECUTIVE CONCLUSION
+================================================================================
+
+The IFNOTUS access control architecture recently achieved strong backend permission partitioning (canonical 7-role IAM model, step-up authentication for web terminal, platform-owner filesystem storage root restriction, and CGNAT-safe throttles).
+
+However, frontend UI navigation and view visibility still suffer from significant permission-coupling leaks and over-broad exposure:
+
+1. Permission Re-use Leak (`customers:manage`):
+   Both `/platform/orders` and `/platform/accounting` are guarded by `Permission.CUSTOMERS_MANAGE`. Consequently, `support_agent` (which requires `customers:manage` for customer lookups) can see company accounting summaries, daily cash collections, and payment ledgers.
+2. Platform Admin Infrastructure Pollution:
+   `platform_admin` receives `servers:read`, `system:read`, `files:read`, and `databases:read`, displaying infrastructure-level host navigation items (`/servers`, `/operations`, `/files`, `/databases`) that belong strictly to `platform_owner` or tenant-scoped operational engineers.
+3. Missing Role-Specific Financial / Infrastructure Split:
+   `billing_agent` should see orders and payment reconciliation queues, but the sidebar bundles Plans (`platform:write`) and generic host tools together.
+4. Auditor Action Exposure:
+   While `auditor` is strictly read-only, several view templates lack explicit `can(Permission.*_WRITE)` guards around action buttons (e.g. modals, restart buttons, trigger sync buttons, or download buttons), causing actionable UI elements to be rendered even when backend API calls would fail with 403.
+5. Customer vs. Staff Portal Gating:
+   Customer portal (`/hosting/:id`, `PortalSitePanel.vue`) has mature plan matrix checking (`envCan()`, `visibleStacks()`), but needs stricter alignment with actual server runtime capabilities so that plan limits (e.g., 0 mailboxes, 0 databases, disabled cron) hide whole tabs rather than rendering disabled forms.
+
+Verdict: The UI requires a targeted frontend navigation refactor and fine-grained action-level conditional rendering across all 7 canonical roles.
+
+================================================================================
+2. CURRENT ROLE-BASED NAVIGATION
+================================================================================
+
+The current staff sidebar navigation (`frontend/src/components/layout/AppSidebar.vue`) defines five navigation groups:
+
+| Nav Group | Nav Item | Route | Guard Permission | Current Visible Canonical Roles | Audit Evaluation |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| Host | Dashboard | `/panel` | None | All Staff | TOO BROAD (Should be role-tailored) |
+| Host | Apps | `/applications` | `apps:read` | `owner`, `admin`, `operator`, `auditor` | TOO BROAD (Customer apps vs Product apps mixed) |
+| Host | DNS | `/domains` | `domains:read` | `owner`, `admin`, `operator`, `auditor` | TOO BROAD (`admin` doesn't manage BIND) |
+| Host | File Manager | `/files` | `files:read` | `owner`, `admin`, `operator`, `auditor` | TOO BROAD (`admin` & `auditor` should not browse server files) |
+| Host | Databases | `/databases` | `databases:read` | `owner`, `admin`, `operator`, `auditor` | TOO BROAD (`admin` should not browse raw DBs) |
+| Host | Email | `/admin/mail` | `mail:read` | `owner`, `admin`, `operator`, `auditor` | TOO BROAD (Mail server vs customer mail) |
+| Host | SSL | `/ssl` | `ssl:read` | `owner`, `admin`, `operator`, `auditor` | TOO BROAD |
+| Host | Operations | `/operations` | `system:read` | `owner`, `admin`, `operator`, `auditor` | TOO BROAD (`admin` sees worker queues & crons) |
+| Host | Security | `/security` | `system:admin` | `owner` only | CORRECT |
+| Host | Terminal | `/terminal` | `terminal:execute`| `owner` only | CORRECT (Owner only, step-up) |
+| Host | Host | `/servers` | `servers:read` | `owner`, `admin`, `operator`, `auditor` | TOO BROAD (`admin` sees host daemon status) |
+| Customers | Customers | `/platform/customers` | `platform:read` | `owner`, `admin`, `operator`, `billing`, `support`, `auditor` | CORRECT |
+| Money | Orders | `/platform/orders` | `customers:manage` | `owner`, `admin`, `billing`, `support` | LEAK (`support_agent` sees revenue orders) |
+| Money | Accounting | `/platform/accounting`| `customers:manage` | `owner`, `admin`, `billing`, `support` | LEAK (`support_agent` sees cash ledgers) |
+| Money | Plans | `/platform/plans` | `platform:write` | `owner`, `admin` | CORRECT |
+| Support | Tickets | `/support` | `support:read` | All Staff | CORRECT |
+| System | Settings | `/settings` | `system:read` | `owner`, `admin`, `operator`, `auditor` | TOO BROAD (All settings under one roof) |
+
+================================================================================
+3. CURRENT PAGE INVENTORY
+================================================================================
+
+| Page | Route | Purpose | Current Visible Roles | Correct Roles | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| Dashboard | `/panel` | Staff operations overview | All staff | `platform_owner`, `platform_admin`, `hosting_operator` | TOO BROAD |
+| Applications | `/applications` | Internal & hosted modern runtimes | `owner`, `admin`, `operator`, `auditor` | `platform_owner`, `hosting_operator` | TOO BROAD |
+| Application Detail | `/applications/:id` | Manage app unit, logs, environment | `owner`, `admin`, `operator`, `auditor` | `platform_owner`, `hosting_operator` | TOO BROAD |
+| Domains / DNS | `/domains` | Zone viewer & DNS records | `owner`, `admin`, `operator`, `auditor` | `platform_owner`, `hosting_operator` | TOO BROAD |
+| File Manager | `/files` | Server storage root file explorer | `owner`, `admin`, `operator`, `auditor` | `platform_owner` (Emergency only) | TOO BROAD |
+| Databases | `/databases` | Database management & studio | `owner`, `admin`, `operator`, `auditor` | `platform_owner`, `hosting_operator` | TOO BROAD |
+| Database Studio | `/account/database/studio` | Web SQL Query Console | Staff & Customers with DBs | `platform_owner`, `hosting_operator`, `customer` | CORRECT |
+| Email Admin | `/admin/mail` | Mail domains & mailbox diagnostics | `owner`, `admin`, `operator`, `auditor` | `platform_owner`, `hosting_operator` | TOO BROAD |
+| SSL | `/ssl` | Certificates & Let's Encrypt status | `owner`, `admin`, `operator`, `auditor` | `platform_owner`, `hosting_operator` | TOO BROAD |
+| Operations | `/operations` | Systemd, cron, backups, logs | `owner`, `admin`, `operator`, `auditor` | `platform_owner`, `hosting_operator` | TOO BROAD |
+| Security | `/security` | Firewall, blacklist, audit logs | `platform_owner` | `platform_owner`, `auditor` (read-only) | CORRECT |
+| Terminal | `/terminal` | Host web command execution | `platform_owner` | `platform_owner` (Emergency only) | CORRECT |
+| Terminal Full | `/terminal/full` | Fullscreen terminal window | `platform_owner` | `platform_owner` (Emergency only) | CORRECT |
+| Host Servers | `/servers` | Daemon ports & service health | `owner`, `admin`, `operator`, `auditor` | `platform_owner`, `hosting_operator`, `auditor` | TOO BROAD |
+| Customers | `/platform/customers` | Customer accounts & environments | All staff | `owner`, `admin`, `billing`, `support`, `auditor` | CORRECT |
+| Orders | `/platform/orders` | Customer purchases & payment triage | `owner`, `admin`, `billing`, `support` | `platform_owner`, `platform_admin`, `billing_agent` | LEAK |
+| Accounting | `/platform/accounting`| Revenue ledgers & MoMo settlement | `owner`, `admin`, `billing`, `support` | `platform_owner`, `platform_admin`, `billing_agent`, `auditor` | LEAK |
+| Plans | `/platform/plans` | Hosting packages & pricing | `owner`, `admin` | `platform_owner`, `platform_admin` | CORRECT |
+| Support Tickets | `/support` | Ticket management & replies | All staff | `owner`, `admin`, `support`, `auditor` | CORRECT |
+| Settings | `/settings` | System, themes, webmail, staff | `owner`, `admin`, `operator`, `auditor` | `platform_owner`, `platform_admin` (scoped tabs) | TOO BROAD |
+| Customer Portal | `/account` | Customer hosting & billing home | Customer | `customer` | CORRECT |
+| Hosting Panel | `/hosting/:environmentId` | Multi-tab site control panel | Customer | `customer` | CORRECT |
+
+================================================================================
+4. CURRENT ACTION INVENTORY
+================================================================================
+
+| Action | Page / Component | Current Roles Allowed | Correct Roles | Step-up Required? |
+| :--- | :--- | :--- | :--- | :--- |
+| Execute Terminal Command | `/terminal` | `owner`, `superadmin` | `platform_owner` | YES (Password confirmation) |
+| Clear Terminal Audit | `/terminal` | `owner`, `superadmin` | `platform_owner` | YES (Typed confirmation) |
+| Block IP / Add Firewall | `/security` | `owner`, `superadmin` | `platform_owner` | NO |
+| Clear Action Logs | `/security` | `owner`, `superadmin` | `platform_owner` | YES (Password confirmation) |
+| Create / Edit / Delete Staff | `/settings` (Staff tab) | `owner`, `superadmin` | `platform_owner` | YES (Password/MFA) |
+| Save API & AI Keys | `/settings` (Integrations/AI)| `owner`, `admin` | `platform_owner` | NO (Masked values) |
+| Change Site Branding/Theme | `/settings` (Theme tab) | `owner`, `admin` | `platform_owner`, `platform_admin` | NO |
+| Create / Edit Plan | `/platform/plans` | `owner`, `admin` | `platform_owner`, `platform_admin` | NO |
+| Confirm / Reject Order | `/platform/orders` | `owner`, `admin`, `billing`, `support` | `platform_owner`, `platform_admin`, `billing_agent` | NO |
+| Grant AI Credits | `/platform/customers` | `owner`, `admin`, `operator` | `platform_owner`, `platform_admin`, `billing_agent` | NO (Audit logged) |
+| Edit Customer Profile | `/platform/customers` | `owner`, `admin`, `operator` | `platform_owner`, `platform_admin`, `support_agent` | NO |
+| Provision Environment | `/platform/customers` | `owner`, `superadmin` | `platform_owner`, `hosting_operator` | NO |
+| Suspend / Unsuspend Env | `/platform/customers` | `owner`, `admin`, `operator` | `platform_owner`, `platform_admin`, `hosting_operator` | NO |
+| Terminate Environment | `/platform/customers` | `owner`, `superadmin` | `platform_owner` only | YES (Typed email confirmation) |
+| Delete Customer Account | `/platform/customers` | `owner`, `admin`, `operator` | `platform_owner` only | YES (Typed email confirmation) |
+| Reply / Close Ticket | `/support` | All staff with `support:write` | `platform_owner`, `platform_admin`, `support_agent` | NO |
+| Create / Delete Domain | `/domains` | `owner`, `operator` | `platform_owner`, `hosting_operator` | NO |
+| Write / Delete Server Files | `/files` | `owner`, `operator` | `platform_owner` only | YES |
+| Create / Drop Database | `/databases` | `owner`, `operator` | `platform_owner`, `hosting_operator` | NO |
+| Restart App / Clear Logs | `/applications/:id` | `owner`, `superadmin` | `platform_owner`, `hosting_operator` | NO |
+
+================================================================================
+5. PLATFORM OWNER UI
+================================================================================
+
+Role Purpose: Complete governance, infrastructure health, security oversight, disaster recovery, and staff access management.
+
+Permitted Navigation:
+- Overview (/panel)
+- Customers (/platform/customers)
+- Hosting Accounts (/hosting, /platform/customers)
+- Orders & Billing (/platform/orders, /platform/accounting)
+- Plans & Pricing (/platform/plans)
+- Modern Applications (/applications)
+- Domains & DNS (/domains)
+- SSL Certificates (/ssl)
+- Email Diagnostics (/admin/mail)
+- Infrastructure:
+  * Host Health (/servers)
+  * Operations & Queues (/operations)
+  * Security & Firewall (/security)
+  * Emergency Terminal (/terminal - tucked away, warning banner)
+- Settings & Staff Access (/settings)
+- Support & Escalations (/support)
+
+Risk & Governance Policy:
+- Web Terminal: Must be labeled Emergency Terminal, visually separated from routine navigation, and always require fresh password confirmation on execution.
+- Server File Root: Only `platform_owner` can access `/srv` and system roots.
+- Staff Management: Only `platform_owner` can create or assign roles to other staff.
+
+================================================================================
+6. PLATFORM ADMIN UI
+================================================================================
+
+Role Purpose: Business operations, plan catalog management, orders, customer accounts, and commercial governance.
+
+Permitted Navigation:
+- Dashboard (/panel - Business overview)
+- Customers (/platform/customers - View, edit profiles, plan allocation)
+- Orders (/platform/orders - Confirm MoMo/Paystack, payment triage)
+- Accounting (/platform/accounting - Revenue reconciliation)
+- Plans (/platform/plans - Plan pricing & resource definitions)
+- Support Tickets (/support)
+- Settings (/settings - Business, themes, maintenance mode only)
+
+Prohibited / Hidden Navigation:
+- HIDDEN: Web Terminal (`/terminal`, `/terminal/full`)
+- HIDDEN: Raw Host File Manager (`/files`)
+- HIDDEN: Host Servers & Port Daemons (`/servers`)
+- HIDDEN: Infrastructure Operations & Worker Queues (`/operations`)
+- HIDDEN: Security Firewall & IP Blacklist (`/security`)
+- HIDDEN: Raw Database Studio / SQL Console (`/databases`)
+- HIDDEN: Staff User Creation / Role Assignment (`/settings#staff`)
+
+================================================================================
+7. HOSTING OPERATOR UI
+================================================================================
+
+Role Purpose: Customer technical hosting management, provisioning queue triage, domain/DNS records, databases, SSL certificates, and application runtimes.
+
+Permitted Navigation:
+- Hosting Dashboard (/panel - Hosting health, queue depths, provisioning status)
+- Customers (/platform/customers - Technical tabs: Health, Stacks, Logs, Environment status)
+- Applications (/applications - Tenant runtimes, Node/Python/PHP apps)
+- Domains / DNS (/domains - Customer DNS zone inspection)
+- Databases (/databases - Customer DB operational health & repair)
+- Email (/admin/mail - Mail delivery logs & SPF/DKIM verification)
+- SSL (/ssl - Let's Encrypt certificate renewals)
+- Host Infrastructure (/servers - Read-only service status & capacity)
+- Operations (/operations - Cron status & backup execution)
+- Support Tickets (/support - Technical support assistance)
+
+Prohibited / Hidden Navigation:
+- HIDDEN: Accounting & Financial Ledgers (`/platform/accounting`)
+- HIDDEN: Orders & MoMo Revenue (`/platform/orders`)
+- HIDDEN: Plan Catalog Pricing (`/platform/plans`)
+- HIDDEN: Security Firewall Management (`/security`)
+- HIDDEN: Web Terminal (`/terminal`)
+- HIDDEN: Raw `/srv` Host Files (`/files` outside of customer environment document roots)
+- HIDDEN: Staff Access Management (`/settings#staff`)
+
+================================================================================
+8. BILLING AGENT UI
+================================================================================
+
+Role Purpose: Payment processing, Mobile Money (MoMo) transaction confirmation, invoice triage, subscription renewals, and financial reconciliation.
+
+Permitted Navigation:
+- Billing Dashboard (/panel - Invoices awaiting confirmation, today's revenue)
+- Orders (/platform/orders - Confirm MoMo transactions, filter submitted/paid)
+- Accounting (/platform/accounting - Financial reports, transaction ledger)
+- Customers (/platform/customers - Limited profile view: billing history, subscriptions)
+- Support Tickets (/support - Billing-related inquiries)
+
+Prohibited / Hidden Navigation:
+- HIDDEN: All Host tools: `/files`, `/databases`, `/admin/mail`, `/domains`, `/ssl`, `/servers`, `/operations`, `/security`, `/terminal`, `/applications`
+- HIDDEN: Plan Resource Editing (`/platform/plans`)
+- HIDDEN: System Settings (`/settings`)
+- HIDDEN: Environment Destructive Actions (Cannot terminate hosting environments or delete databases)
+
+================================================================================
+9. SUPPORT AGENT UI
+================================================================================
+
+Role Purpose: Customer service, ticket handling, basic profile updates, and safe account recovery assistance.
+
+Permitted Navigation:
+- Support Dashboard (/support - Open tickets, waiting customers, response queues)
+- Customers (/platform/customers - Profile lookup, password reset trigger, resend verification)
+- Knowledge Base / Status (/status)
+
+Prohibited / Hidden Navigation:
+- HIDDEN: Accounting & Ledgers (`/platform/accounting`) -> Fix Critical Leak
+- HIDDEN: Orders & Financial Confirmation (`/platform/orders`) -> Fix Critical Leak
+- HIDDEN: Plan Sizing & Pricing (`/platform/plans`)
+- HIDDEN: All Infrastructure & Host Tools (`/servers`, `/operations`, `/files`, `/databases`, `/domains`, `/ssl`, `/terminal`, `/security`)
+- HIDDEN: System Settings (`/settings`)
+
+================================================================================
+10. AUDITOR UI
+================================================================================
+
+Role Purpose: Compliance inspection, read-only security event auditing, financial reporting, and uptime verification.
+
+Permitted Navigation (STRICTLY READ-ONLY):
+- Auditor Dashboard (/panel - Read-only operational metrics)
+- Audit Logs (/security - Read-only access attempts & action logs)
+- Accounting Reports (/platform/accounting - Read-only ledger export)
+- Customers (/platform/customers - Read-only inspection of environments)
+- Servers & Services (/servers - Read-only health)
+- Support Tickets (/support - Read-only review of customer interactions)
+
+Prohibited / Hidden Navigation & Actions:
+- MUTATIONS DISABLED: All Create, Edit, Delete, Suspend, Terminate, Refund, and Execute buttons are suppressed in the UI.
+- HIDDEN: Web Terminal (`/terminal`)
+- HIDDEN: Raw Server File Write (`/files`)
+
+================================================================================
+11. CUSTOMER UI
+================================================================================
+
+Role Purpose: Self-service hosting management, domain DNS records, website files, databases, mailboxes, invoices, and support.
+
+Permitted Customer Navigation (`/account` and `/hosting/:id`):
+- Overview: Resource gauges (Disk quota, CPU, Memory, Bandwidth), primary domain, server IP
+- Websites & Stacks: One-click stacks (WordPress, Laravel, Node, Python, Static)
+- Files: Web File Manager (confined to /home/u_tenant/public_html or document_root)
+- Databases: Own MySQL/PostgreSQL databases, users, and Database Studio
+- Domains & DNS: Custom domains, DNS records (A, CNAME, MX, TXT)
+- Email: Mailboxes (create, change password, webmail redirect to /mail)
+- FTP / SFTP: FTP user credentials and connection host details
+- Cron: Scheduled tasks (min interval enforced by plan)
+- Backups: Create instant backup, download .tar.gz, restore
+- Logs: Nginx access and error logs
+- Billing: Invoices, payment receipt, plan upgrade
+- Support: Open ticket, ticket history
+
+Prohibited Customer Navigation:
+- NEVER VISIBLE: `/panel`, `/platform/*`, `/servers`, `/operations`, `/security`, `/terminal`, `/settings`, ISPConfig UI (Port 8080).
+
+================================================================================
+12. PLAN-ENTITLEMENT UI FINDINGS
+================================================================================
+
+The Customer Hosting Workspace (`frontend/src/components/portal/PortalSitePanel.vue`) and Hosting Panel (`HostingPanelView.vue`) must dynamically reflect purchased plan quotas:
+
+| Feature / Tab | Plan Entitlement Check | Current UI Behavior | Recommended Audit Action |
+| :--- | :--- | :--- | :--- |
+| Email Tab | `plan.features.mail_enabled` & `plan.max_mailboxes > 0` | Renders disabled state if not supported | HIDE TAB if `max_mailboxes === 0` |
+| Database Tab | `plan.features.db_manage` & `plan.max_databases > 0` | Renders database creation form | HIDE TAB if `max_databases === 0` |
+| Applications Tab | `plan.features.app_runtime` | Renders catalog with some disabled items | HIDE TAB if plan is static-only |
+| Cron Tab | `plan.features.cron` | Renders cron form | HIDE TAB if cron disabled in plan |
+| SFTP Tab | `plan.features.sftp` | Shows SFTP card with limited note | SHOW AS LIMITED or HIDE if FTP only |
+| Custom Domains | `plan.max_domains > 1` | "Add Domain" button visible | DISABLE/HIDE "Add Domain" if max reached |
+
+================================================================================
+13. PAGES VISIBLE TO WRONG ROLES
+================================================================================
+
+| Route | Page | Incorrectly Visible To | Action |
+| :--- | :--- | :--- | :--- |
+| `/platform/accounting` | `PlatformAccountingView.vue` | `support_agent` | HIDE / DENY (Restrict to `owner`, `admin`, `billing`, `auditor`) |
+| `/platform/orders` | `PlatformOrdersView.vue` | `support_agent` | HIDE / DENY (Restrict to `owner`, `admin`, `billing`) |
+| `/files` | `FilesView.vue` | `platform_admin`, `auditor`, `operator` | HIDE (Restrict to `platform_owner` emergency root) |
+| `/servers` | `ServersView.vue` | `platform_admin`, `support_agent` | HIDE (Restrict to `owner`, `operator`, `auditor`) |
+| `/operations` | `OperationsView.vue` | `platform_admin`, `support_agent` | HIDE (Restrict to `owner`, `operator`) |
+| `/databases` | `DatabasesView.vue` | `platform_admin` | HIDE (Restrict to `owner`, `operator`, `customer`) |
+| `/ssl` | `SslView.vue` | `platform_admin` | HIDE (Restrict to `owner`, `operator`) |
+| `/domains` | `DomainsView.vue` | `platform_admin` | HIDE (Restrict to `owner`, `operator`) |
+
+================================================================================
+14. PAGES MISSING FROM CORRECT ROLES
+================================================================================
+
+1. Hosting Operator:
+   Missing dedicated Provisioning Queue Triage View (currently buried inside `/platform/customers` environment modals).
+2. Billing Agent:
+   Missing Mobile Money Reconciliation & Refund Queue (currently merged into orders table).
+3. Platform Owner:
+   Missing ISPConfig Provider Health & Remote API Diagnostic View.
+
+================================================================================
+15. BUTTONS/ACTIONS VISIBLE TO WRONG ROLES
+================================================================================
+
+| Component | Action Button | Visible To | Should Be | Fix Required |
+| :--- | :--- | :--- | :--- | :--- |
+| `PlatformCustomersView.vue` | Delete Customer | `platform_admin`, `hosting_operator` | `platform_owner` only | Wrap in `v-if="isPlatformOwner"` |
+| `PlatformCustomersView.vue` | Terminate Environment | `platform_admin`, `hosting_operator` | `platform_owner` only | Wrap in `v-if="isPlatformOwner"` |
+| `PlatformOrdersView.vue` | Confirm Payment | `support_agent` | `billing_agent`, `platform_admin`, `owner` | Gate by `billing:manage` |
+| `PlatformPlansView.vue` | Save / Delete Plan | `auditor` (if page accessed) | `platform_admin`, `owner` | Gate by `platform:write` |
+| `SupportTicketsView.vue` | Reply / Close Ticket | `auditor` | `support_agent`, `platform_admin`, `owner` | Gate by `support:write` |
+| `OperationsView.vue` | Trigger Backup Drill | `platform_admin` | `platform_owner`, `hosting_operator` | Gate by `disaster_recovery:execute` |
+| `SecurityView.vue` | Clear Action Logs | `platform_admin` | `platform_owner` only | Require Owner step-up |
+
+================================================================================
+16. DESTRUCTIVE UI ACTIONS
+================================================================================
+
+| Action | Risk Level | Target Resource | Required Safeguard in UI |
+| :--- | :--- | :--- | :--- |
+| Terminate Hosting | Critical | Wipes tenant site, DB, vhost, files | Red modal + Type exact customer email + Step-up password |
+| Delete Database | Critical | Drops SQL schema & data | Red modal + Type database name |
+| Execute Web Terminal | High | Root/Operator bash command | Password step-up modal + short session TTL |
+| Clear Action Logs | High | Deletes security audit trail | Password confirmation + download export requirement |
+| Add Firewall Block | High | Blocks network IP (CGNAT risk) | Warning banner if Ghanaian ISP subnet detected |
+| Delete Plan | Medium | Removes package from catalog | Confirm modal (Block if active subscriptions exist) |
+
+================================================================================
+17. CREDENTIAL-DISPLAY FINDINGS
+================================================================================
+
+1. Database Passwords:
+   Currently masked with toggle button; customer sees only their own generated DB password. Staff views must never display cleartext passwords.
+2. SFTP / SSH Passwords:
+   Display host `80.241.223.82`, port `22`, username `u_tenant`. Passwords must be hidden by default.
+3. ISPConfig Remote API Credentials:
+   PASSED: 0% exposure in frontend; all API calls are proxied through FastAPI backend.
+4. AI & Payment API Secrets:
+   In `/settings`, API keys (DeepSeek, Paystack, Namecheap) must be masked (e.g. `sk-••••••••1234`) and write-only.
+
+================================================================================
+18. SERVER UI FINDINGS (`/servers`, `/operations`)
+================================================================================
+
+- `/servers` displays daemon ports (80, 443, 3306, 6379, 8080, 22) and systemd services.
+- Audit Finding: `platform_admin` and `support_agent` do not need to view raw daemon ports. This page must be restricted to `platform_owner`, `hosting_operator`, and `auditor`.
+
+================================================================================
+19. FILE UI FINDINGS (`/files`, `PortalFilesView.vue`)
+================================================================================
+
+- Customer file manager is cleanly jailed to `/home/u_tenant/public_html`.
+- Staff file manager (`/files`) previously exposed server storage roots (`/srv`, `/var/www`, `/var/backups`) to `platform_admin`. Backend is now hardened to reject non-owners.
+- Audit Finding: The navigation link `/files` should be hidden entirely from `platform_admin`, `support_agent`, `billing_agent`, and `auditor`.
+
+================================================================================
+20. DATABASE UI FINDINGS (`/databases`, `/account/database/studio`)
+================================================================================
+
+- Database studio is a powerful SQL query console.
+- Customer can query only their own database.
+- Audit Finding: `/databases` staff menu must be hidden from `platform_admin` and `billing_agent`. Only `hosting_operator` and `platform_owner` require administrative DB repair tools.
+
+================================================================================
+21. DNS UI FINDINGS (`/domains`)
+================================================================================
+
+- `/domains` manages DNS zones and record publishing.
+- Audit Finding: `platform_admin` should not modify DNS zone records. Restrict to `hosting_operator` and `platform_owner`.
+
+================================================================================
+22. MAIL UI FINDINGS (`/admin/mail`, `/mail`)
+================================================================================
+
+- `/admin/mail` provides Postfix/Dovecot diagnostic logs and DNS hints.
+- Audit Finding: Restrict `/admin/mail` strictly to `hosting_operator` and `platform_owner`. Customers manage their mailboxes inside their portal (`/hosting/:id`).
+
+================================================================================
+23. SSL UI FINDINGS (`/ssl`)
+================================================================================
+
+- `/ssl` shows certificate expiry and Let's Encrypt renewal status.
+- Audit Finding: Restrict to `hosting_operator` and `platform_owner`.
+
+================================================================================
+24. APPLICATIONS UI FINDINGS (`/applications`)
+================================================================================
+
+- `/applications` currently combines internal product applications (VoteBridge, QuizSnap, ExamFlow) with tenant app runtimes.
+- Audit Finding: Separate platform product management (`platform_owner`) from customer hosted app runtimes (`hosting_operator`).
+
+================================================================================
+25. BACKUP UI FINDINGS (`/operations#backups`, Portal Backups)
+================================================================================
+
+- Disaster recovery drills and encrypted offsite restic backups belong to `platform_owner`.
+- Tenant site backup/download belongs to `customer` and `hosting_operator`.
+
+================================================================================
+26. SETTINGS UI FINDINGS (`/settings`)
+================================================================================
+
+Currently, `/settings` holds 8 tabs: `account`, `theme`, `integrations`, `ai`, `webmail`, `staff`, `health`.
+- Audit Finding: Split tab visibility:
+  * `staff` -> `platform_owner` only.
+  * `integrations` & `ai` -> `platform_owner` only.
+  * `theme` & `webmail` -> `platform_owner` & `platform_admin`.
+  * `account` -> All authenticated staff.
+
+================================================================================
+27. DASHBOARD FINDINGS PER ROLE (`/panel`)
+================================================================================
+
+| Role | Ideal Dashboard View | Current Dashboard | Gap |
+| :--- | :--- | :--- | :--- |
+| Platform Owner | Host resource gauges, security alerts, provider status, business totals | Host CPU/RAM gauges + stack status | Lacks provider health cards |
+| Platform Admin | Customer growth, today's revenue, order queue, open tickets | Host CPU/RAM gauges (irrelevant) | MISMATCH: Needs business metrics |
+| Hosting Operator | Failed provisioning jobs, SSL renewals due, mail queues | Host CPU/RAM gauges + stack status | Lacks provisioning error queue |
+| Billing Agent | Unconfirmed MoMo orders, pending payments, revenue ledger | Host CPU/RAM gauges (irrelevant) | MISMATCH: Needs billing queue |
+| Support Agent | Unassigned tickets, waiting customer replies, customer search | Host CPU/RAM gauges (irrelevant) | MISMATCH: Needs ticket queue |
+| Auditor | Security events count, audit log summary, system uptime | Host CPU/RAM gauges + stack status | Needs compliance summary |
+| Customer | Active hosting pack, domain status, disk/RAM gauges, quick actions | Customer portal dashboard (`/account`) | CORRECT |
+
+================================================================================
+28. ROUTES THAT SHOULD BE INACCESSIBLE PER ROLE
+================================================================================
+
+- `platform_admin`: `/terminal`, `/terminal/full`, `/security`, `/files`, `/servers`, `/operations` -> DENIED
+- `hosting_operator`: `/platform/orders`, `/platform/accounting`, `/platform/plans`, `/security`, `/terminal` -> DENIED
+- `billing_agent`: `/terminal`, `/security`, `/servers`, `/operations`, `/files`, `/databases`, `/admin/mail`, `/domains`, `/ssl`, `/applications`, `/platform/plans` -> DENIED
+- `support_agent`: `/platform/accounting`, `/platform/orders`, `/platform/plans`, `/terminal`, `/security`, `/servers`, `/operations`, `/files`, `/databases`, `/admin/mail`, `/domains`, `/ssl`, `/applications`, `/settings` -> DENIED
+- `auditor`: `/terminal`, and all write actions on all pages -> DENIED
+- `customer`: `/panel`, `/platform/*`, `/admin/*`, `/servers`, `/operations`, `/security`, `/terminal`, `/settings` -> DENIED
+
+================================================================================
+29. EXACT UI ELEMENTS TO HIDE/REMOVE
+================================================================================
+
+1. In `frontend/src/components/layout/AppSidebar.vue`:
+   - Split `customers:manage` into distinct permissions: use `billing:view` for `/platform/orders` and `/platform/accounting`.
+   - Hide `/files`, `/databases`, `/domains`, `/ssl`, `/servers`, `/operations` when role is `platform_admin`.
+   - Hide `/platform/orders` and `/platform/accounting` when role is `support_agent`.
+2. In `frontend/src/views/SettingsView.vue`:
+   - Hide `staff` tab unless `user.roles.includes('platform_owner') || user.is_superuser`.
+   - Hide `integrations` and `ai` tabs from `hosting_operator` and `billing_agent`.
+3. In `frontend/src/views/PlatformCustomersView.vue`:
+   - Hide "Delete Customer" and "Terminate Environment" from `hosting_operator` and `platform_admin`.
+
+================================================================================
+30. EXACT UI ELEMENTS TO ADD
+================================================================================
+
+1. Hosting Operator Dashboard Card: "Provisioning Failure Queue" with 1-click retry.
+2. Billing Agent Dashboard Card: "Awaiting MoMo Confirmation" badge and quick-verify drawer.
+3. Support Agent Dashboard Card: "Tickets Awaiting Staff Reply".
+4. Platform Owner Infrastructure Bar: "ISPConfig Provider Sync Status".
+
+================================================================================
+31. FINAL PAGE-PERMISSION MATRIX
+================================================================================
+
+| Page / Route | Owner | Platform Admin | Hosting Operator | Billing Agent | Support Agent | Auditor | Customer |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `/panel` (Dashboard) | FULL | FULL (Biz) | FULL (Ops) | FULL (Bill)| FULL (Supp)| READ | NONE |
+| `/platform/customers` | FULL | FULL | READ (Tech)| READ (Bill)| READ/EDIT | READ | NONE |
+| `/platform/orders` | FULL | FULL | NONE | FULL | NONE | READ | NONE |
+| `/platform/accounting`| FULL | FULL | NONE | FULL | NONE | READ | NONE |
+| `/platform/plans` | FULL | FULL | NONE | NONE | NONE | READ | NONE |
+| `/support` | FULL | FULL | FULL (Tech)| READ | FULL | READ | OWN |
+| `/applications` | FULL | NONE | FULL | NONE | NONE | READ | NONE |
+| `/domains` | FULL | NONE | FULL | NONE | NONE | READ | NONE |
+| `/databases` | FULL | NONE | FULL | NONE | NONE | READ | NONE |
+| `/admin/mail` | FULL | NONE | FULL | NONE | NONE | READ | NONE |
+| `/ssl` | FULL | NONE | FULL | NONE | NONE | READ | NONE |
+| `/servers` | FULL | NONE | READ | NONE | NONE | READ | NONE |
+| `/operations` | FULL | NONE | FULL | NONE | NONE | READ | NONE |
+| `/security` | FULL | NONE | NONE | NONE | NONE | READ | NONE |
+| `/terminal` | FULL | NONE | NONE | NONE | NONE | NONE | NONE |
+| `/settings` | FULL | SCOPED | NONE | NONE | NONE | NONE | NONE |
+| `/account` (Portal) | OWN | OWN | OWN | OWN | OWN | OWN | FULL |
+| `/hosting/:id` | OWN | OWN | OWN | OWN | OWN | OWN | FULL |
+
+================================================================================
+32. FINAL ACTION-PERMISSION MATRIX
+================================================================================
+
+| Action | Owner | Platform Admin | Hosting Operator | Billing Agent | Support Agent | Auditor | Customer |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| Create Customer | YES | YES | NO | YES | YES | NO | SELF |
+| Edit Customer Profile | YES | YES | NO | NO | YES | NO | SELF |
+| Delete Customer | YES (Step-up)| NO | NO | NO | NO | NO | NO |
+| Terminate Hosting Env| YES (Step-up)| NO | NO | NO | NO | NO | NO |
+| Suspend / Unsuspend | YES | YES | YES | NO | NO | NO | NO |
+| Confirm Order Payment| YES | YES | NO | YES | NO | NO | NO |
+| Issue Refund | YES | YES | NO | YES | NO | NO | NO |
+| Create / Edit Plan | YES | YES | NO | NO | NO | NO | NO |
+| Deploy App / Stack | YES | NO | YES | NO | NO | NO | SELF |
+| Restart App / Service| YES | NO | YES | NO | NO | NO | SELF |
+| Execute Terminal | YES (Step-up)| NO | NO | NO | NO | NO | NO |
+| Manage Staff / Roles | YES (Step-up)| NO | NO | NO | NO | NO | NO |
+| Manage Firewall / IP | YES | NO | NO | NO | NO | NO | NO |
+| Reply Support Ticket | YES | YES | YES | NO | YES | NO | SELF |
+
+================================================================================
+33. FINAL NAVIGATION FOR EVERY ROLE
+================================================================================
+
+1. Platform Owner
+   Host Group: Dashboard, Modern Apps, Domains, Databases, Email, SSL, Operations, Security, Emergency Terminal, Host Servers
+   Customers Group: Customers
+   Money Group: Orders, Accounting, Plans
+   Support Group: Tickets
+   System Group: Platform Settings (All Tabs)
+
+2. Platform Admin
+   Business Group: Business Dashboard
+   Customers Group: Customers
+   Money Group: Orders, Accounting, Plans
+   Support Group: Tickets
+   System Group: Business Settings (Theme, Maintenance, General)
+
+3. Hosting Operator
+   Hosting Group: Operations Dashboard, Modern Apps, DNS, Databases, Email Diagnostics, SSL Certificates, System Operations, Host Servers
+   Customers Group: Customer Technical View
+   Support Group: Technical Tickets
+
+4. Billing Agent
+   Finance Group: Billing Dashboard, Orders (MoMo/Paystack), Accounting (Ledgers), Customer Billing Profiles
+   Support Group: Billing Tickets
+
+5. Support Agent
+   Support Group: Tickets Dashboard, Ticket Queues
+   Customers Group: Customer Directory & Profile Lookup
+
+6. Auditor
+   Compliance Group: Auditor Dashboard, Audit Logs (/security), Financial Reports (/platform/accounting), Server Status (/servers), Ticket History (/support)
+   (All controls in Read-Only Mode)
+
+7. Customer
+   Primary Navigation: Overview, Websites & Apps, File Manager, Databases, Domains & DNS, Email Accounts, FTP/SFTP, Cron Jobs, Backups, Invoices & Billing, Support Tickets
+
+================================================================================
+34. EXACT FRONTEND FILES TO MODIFY (DURING IMPLEMENTATION)
+================================================================================
+
+1. `frontend/src/components/layout/AppSidebar.vue` (Split navigation groups per canonical role).
+2. `frontend/src/router/index.ts` (Update route permission guards for `/platform/orders`, `/platform/accounting`, `/files`, `/servers`).
+3. `frontend/src/lib/permissions.ts` (Add `BILLING_VIEW` and `BILLING_MANAGE` frontend constants).
+4. `frontend/src/views/SettingsView.vue` (Condition tab rendering based on `platform_owner` vs `platform_admin`).
+5. `frontend/src/views/PlatformCustomersView.vue` (Restrict delete/terminate buttons to `platform_owner`).
+6. `frontend/src/views/PlatformOrdersView.vue` (Gate confirm/reject buttons with `billing:manage`).
+7. `frontend/src/views/hosting/HostingPanelView.vue` (Hide disabled plan features from customer tab bar).
+8. `frontend/src/components/portal/PortalSitePanel.vue` (Enforce zero-quota tab hiding).
+
+================================================================================
+35. REQUIRED FRONTEND TESTS
+================================================================================
+
+1. `test_support_agent_cannot_see_accounting_nav`: Verify `/platform/accounting` and `/platform/orders` are excluded from `support_agent` sidebar.
+2. `test_platform_admin_cannot_see_terminal_or_host_roots`: Verify `/terminal` and `/files` are omitted for `platform_admin`.
+3. `test_hosting_operator_cannot_see_financials`: Verify Money group is completely absent for `hosting_operator`.
+4. `test_auditor_has_no_action_buttons`: Verify all mutation buttons render as disabled or omitted for `auditor`.
+5. `test_customer_plan_entitlement_hides_mail_when_zero`: Verify Email tab is omitted when `max_mailboxes === 0`.
+
+================================================================================
+36. RECOMMENDED IMPLEMENTATION ORDER
+================================================================================
+
+1. Step 1: Permission Constant & Sidebar Partitioning
+   Introduce `Permission.BILLING_VIEW` / `BILLING_MANAGE` in frontend permissions and rewire `AppSidebar.vue` groups so `support_agent` and `platform_admin` immediately lose inappropriate menu items.
+2. Step 2: Router Guard Hardening
+   Update `meta: { permission: ... }` in `router/index.ts` to reject direct URL access for misaligned roles.
+3. Step 3: Destructive Action & Modal Guards
+   Wrap "Delete Customer", "Terminate Environment", and "Clear Action Logs" in `PlatformCustomersView.vue` and `SecurityView.vue` with strict Platform Owner checks.
+4. Step 4: Customer Plan-Gated Tab Suppression
+   Update `HostingPanelView.vue` and `PortalSitePanel.vue` to hide tabs when plan limits are zero.
+5. Step 5: Automated Role Navigation & Component Unit Tests
+   Add Vitest / Vue Test Utils tests certifying exact UI rendering for all 7 roles.
+
+================================================================================
+FINAL MACHINE-READABLE SUMMARY (JSON)
+================================================================================
+
+{
+  "platform_owner_pages": [
+    "/panel",
+    "/applications",
+    "/applications/:id",
+    "/domains",
+    "/files",
+    "/databases",
+    "/admin/mail",
+    "/ssl",
+    "/operations",
+    "/security",
+    "/terminal",
+    "/terminal/full",
+    "/servers",
+    "/platform/customers",
+    "/platform/orders",
+    "/platform/accounting",
+    "/platform/plans",
+    "/support",
+    "/settings"
+  ],
+  "platform_admin_pages": [
+    "/panel",
+    "/platform/customers",
+    "/platform/orders",
+    "/platform/accounting",
+    "/platform/plans",
+    "/support",
+    "/settings"
+  ],
+  "hosting_operator_pages": [
+    "/panel",
+    "/applications",
+    "/applications/:id",
+    "/domains",
+    "/databases",
+    "/admin/mail",
+    "/ssl",
+    "/operations",
+    "/servers",
+    "/platform/customers",
+    "/support"
+  ],
+  "billing_agent_pages": [
+    "/panel",
+    "/platform/orders",
+    "/platform/accounting",
+    "/platform/customers",
+    "/support"
+  ],
+  "support_agent_pages": [
+    "/support",
+    "/platform/customers"
+  ],
+  "auditor_pages": [
+    "/panel",
+    "/security",
+    "/platform/accounting",
+    "/platform/customers",
+    "/servers",
+    "/support"
+  ],
+  "customer_pages": [
+    "/account",
+    "/account/plans",
+    "/account/settings",
+    "/account/support",
+    "/account/invoice/:id",
+    "/hosting/:environmentId",
+    "/hosting/:environmentId/files",
+    "/account/database/studio"
+  ],
+  "pages_to_hide": {
+    "support_agent": [
+      "/platform/accounting",
+      "/platform/orders",
+      "/platform/plans",
+      "/files",
+      "/servers",
+      "/operations",
+      "/security",
+      "/terminal",
+      "/settings"
+    ],
+    "platform_admin": [
+      "/files",
+      "/servers",
+      "/operations",
+      "/security",
+      "/terminal",
+      "/terminal/full"
+    ],
+    "hosting_operator": [
+      "/platform/accounting",
+      "/platform/orders",
+      "/platform/plans",
+      "/security",
+      "/terminal"
+    ],
+    "billing_agent": [
+      "/files",
+      "/servers",
+      "/operations",
+      "/security",
+      "/terminal",
+      "/domains",
+      "/databases",
+      "/ssl",
+      "/admin/mail",
+      "/applications"
+    ]
+  },
+  "pages_to_remove": [],
+  "buttons_to_hide": {
+    "support_agent": [
+      "Confirm Payment",
+      "Reject Payment",
+      "Delete Customer",
+      "Terminate Environment"
+    ],
+    "hosting_operator": [
+      "Delete Customer",
+      "Terminate Environment",
+      "Confirm Payment"
+    ],
+    "platform_admin": [
+      "Delete Customer",
+      "Terminate Environment",
+      "Execute Terminal Command",
+      "Clear Action Logs"
+    ],
+    "auditor": [
+      "Save",
+      "Create",
+      "Delete",
+      "Suspend",
+      "Terminate",
+      "Restart",
+      "Confirm",
+      "Refund"
+    ]
+  },
+  "dangerous_actions": [
+    "Terminate Hosting Environment",
+    "Delete Customer Account",
+    "Execute Terminal Command",
+    "Clear Terminal Audit Logs",
+    "Clear Security Action Logs",
+    "Add Subnet Firewall Block"
+  ],
+  "credential_visibility_issues": [
+    "Settings API integrations keys should be write-only and masked",
+    "Customer SFTP/SSH passwords should remain hidden behind explicit click-to-reveal"
+  ],
+  "plan_entitlement_ui_issues": [
+    "Email tab rendered when max_mailboxes is 0 (should be hidden)",
+    "Databases tab rendered when max_databases is 0 (should be hidden)",
+    "Cron tab rendered when cron is disabled in plan matrix (should be hidden)"
+  ],
+  "route_permission_mismatches": [
+    "Orders and Accounting routes guarded by customers:manage instead of billing:view/billing:manage, leaking financial UI to support_agent",
+    "Files route guarded only by files:read, allowing platform_admin to view file manager nav even though backend denies host roots"
+  ],
+  "navigation_changes_required": true,
+  "frontend_files_to_modify": [
+    "frontend/src/components/layout/AppSidebar.vue",
+    "frontend/src/router/index.ts",
+    "frontend/src/lib/permissions.ts",
+    "frontend/src/views/SettingsView.vue",
+    "frontend/src/views/PlatformCustomersView.vue",
+    "frontend/src/views/PlatformOrdersView.vue",
+    "frontend/src/views/hosting/HostingPanelView.vue",
+    "frontend/src/components/portal/PortalSitePanel.vue"
+  ],
+  "ui_ready_for_implementation": true,
+  "recommended_next_phase": "PHASE_UI_RBAC_REMEDIATION: Implement role-partitioned sidebar, router guards, and action button restrictions"
+}

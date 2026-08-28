@@ -172,7 +172,7 @@ async def grant_customer_credits(
 @router.get(
     "/orders",
     response_model=list[StaffOrderItem],
-    dependencies=[Depends(RequirePermission(Permission.CUSTOMERS_MANAGE))],
+    dependencies=[Depends(RequirePermission(Permission.BILLING_VIEW))],
 )
 async def list_orders(
     session: DbSession,
@@ -203,7 +203,7 @@ async def ops_inbox(
 @router.get(
     "/accounting/summary",
     response_model=StaffAccountingSummaryResponse,
-    dependencies=[Depends(RequirePermission(Permission.CUSTOMERS_MANAGE))],
+    dependencies=[Depends(RequirePermission(Permission.BILLING_VIEW))],
 )
 async def accounting_summary(
     session: DbSession,
@@ -222,7 +222,7 @@ async def accounting_summary(
 @router.get(
     "/accounting/ledger",
     response_model=list[StaffAccountingLedgerItem],
-    dependencies=[Depends(RequirePermission(Permission.CUSTOMERS_MANAGE))],
+    dependencies=[Depends(RequirePermission(Permission.BILLING_VIEW))],
 )
 async def accounting_ledger(
     session: DbSession,
@@ -248,7 +248,7 @@ async def accounting_ledger(
 @router.get(
     "/orders/{order_id}/invoice",
     response_model=InvoiceViewResponse,
-    dependencies=[Depends(RequirePermission(Permission.CUSTOMERS_MANAGE))],
+    dependencies=[Depends(RequirePermission(Permission.BILLING_VIEW))],
 )
 async def get_order_invoice(
     order_id: UUID,
@@ -264,7 +264,7 @@ async def get_order_invoice(
 @router.post(
     "/orders/{order_id}/confirm-payment",
     response_model=OrderResponse,
-    dependencies=[Depends(RequirePermission(Permission.CUSTOMERS_MANAGE))],
+    dependencies=[Depends(RequirePermission(Permission.BILLING_MANAGE))],
 )
 async def confirm_order_payment(
     order_id: UUID,
@@ -287,7 +287,7 @@ async def confirm_order_payment(
 @router.post(
     "/orders/{order_id}/retry-provision",
     response_model=OrderResponse,
-    dependencies=[Depends(RequirePermission(Permission.CUSTOMERS_MANAGE))],
+    dependencies=[Depends(RequirePermission(Permission.BILLING_MANAGE))],
 )
 async def retry_order_provision(
     order_id: UUID,
@@ -302,7 +302,7 @@ async def retry_order_provision(
 @router.post(
     "/orders/{order_id}/reject-payment",
     response_model=OrderResponse,
-    dependencies=[Depends(RequirePermission(Permission.CUSTOMERS_MANAGE))],
+    dependencies=[Depends(RequirePermission(Permission.BILLING_MANAGE))],
 )
 async def reject_order_payment(
     order_id: UUID,

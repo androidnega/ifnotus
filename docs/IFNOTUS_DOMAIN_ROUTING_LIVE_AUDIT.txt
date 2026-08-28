@@ -1,0 +1,89 @@
+================================================================================
+IFNOTUS FINAL DOMAIN ACCESS & ROUTING STANDARD: LIVE IMPLEMENTATION AUDIT
+================================================================================
+Date: Friday, Aug 28, 2026
+Verified Environment: Production VPS (80.241.223.82)
+Verified Domain: yalleydadzie.online (and ifnotus.space)
+
+================================================================================
+1. SYSTEM AUDIT MATRIX
+================================================================================
+
++----+---------------------------------------+------------------------+------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------+
+| #  | Requirement                           | Source Status          | Live Status            | Evidence                                                                                                                                  | Fix Needed                                                                                                                    |
++----+---------------------------------------+------------------------+------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------+
+| 1  | https://ifnotus.space                 | PARTIALLY IMPLEMENTED  | PARTIALLY IMPLEMENTED  | HTTP 200 OK. Account, plans, invoices, profile under /account. But /hosting/:envId is still directly mounted and exposed on ifnotus.space.| Remove hosting control panel views from customer-facing nav on ifnotus.space; delegate entirely to cpanel.<domain>.           |
+| 2  | https://cpanel.ifnotus.space/login    | IMPLEMENTED IN SOURCE  | IMPLEMENTED AND LIVE   | HTTP 200 OK. Serves staff console. isStaffPanelHost() guards staff routes.                                                                | None for staff login. Keep customer accounts prohibited from logging into cpanel.ifnotus.space.                                |
+| 3  | https://cpanel.<customer-domain>      | PARTIALLY IMPLEMENTED  | IMPLEMENTED BUT WRONG  | Nginx on VPS has SPA server block for cpanel.yalleydadzie.online. Public DNS has NXDOMAIN; SSL cert only has apex and www.               | Issue multi-SAN / wildcard SSL for cpanel.<domain>; provision DNS A/CNAME record; enable dedicated customer cPanel routing.   |
+| 4  | https://<customer-domain>/cpanel      | IMPLEMENTED BUT WRONG  | IMPLEMENTED BUT WRONG  | Live curl -sI https://yalleydadzie.online/cpanel returns 302 -> Location: https://ifnotus.space/go/hosting?host=yalleydadzie.online.     | Update Nginx vhost template from https://ifnotus.space/go/hosting... to return 302 https://cpanel.$host$request_uri;.        |
+| 5  | Customer stays on cpanel.<domain>     | NOT IMPLEMENTED        | NOT IMPLEMENTED        | Vue router maps all hosting tabs to /hosting/:envId/... Loading cpanel.yalleydadzie.online immediately forces /hosting/<uuid>.           | Add clean root and relative sub-routes (/files, /databases, etc.) on tenant domain origins without requiring /hosting/:envId. |
+| 6  | Customer NOT sent to /hosting/<uuid>  | IMPLEMENTED BUT WRONG  | IMPLEMENTED BUT WRONG  | GoHostingView.vue resolves alias and runs router.replace('/hosting/' + envId) on ifnotus.space.                                           | Route customer to https://cpanel.<domain>/ instead of internal UUID routes on ifnotus.space.                                 |
+| 7  | SSO handoff from ifnotus.space        | NOT IMPLEMENTED        | NOT IMPLEMENTED        | openTenantCpanel() opens https://<domain>/cpanel directly. No SSO token API (POST /sso-token) or exchange route (/sso?token=...) exists. | Build short-lived SSO handoff token service in FastAPI backend and token exchange landing route in frontend Vue router.       |
+| 8  | https://webmail.<customer-domain>     | PARTIALLY IMPLEMENTED  | PARTIALLY IMPLEMENTED  | Nginx reverse-proxies Host: webmail.yalleydadzie.online to Roundcube (200 OK). Public DNS is NXDOMAIN; SSL cert falls back to default.   | Provision webmail DNS record and include webmail.<domain> in tenant Let's Encrypt SSL certificate.                           |
+| 9  | https://<customer-domain>/webmail     | NOT IMPLEMENTED        | NOT IMPLEMENTED        | Live curl -sI https://yalleydadzie.online/webmail returns 200 serving root static HTML page (no Nginx redirect rule).                     | Add location = /webmail { return 302 https://webmail.$host; } to tenant Nginx template.                                      |
+| 10 | https://<customer-domain>/mail        | IMPLEMENTED BUT WRONG  | IMPLEMENTED BUT WRONG  | Live curl -sI https://yalleydadzie.online/mail returns 302 -> Location: https://mail.ifnotus.space/.                                     | Update Nginx redirect rule from https://mail.ifnotus.space/ to https://webmail.$host.                                         |
+| 11 | mail.<customer-domain> (IMAP/SMTP)    | PARTIALLY IMPLEMENTED  | PARTIALLY IMPLEMENTED  | Ports 587/993/143 open on VPS. Public DNS for mail.yalleydadzie.online missing at registrar; Dovecot/Postfix cert is not domain-specific.  | Provision mail DNS record and configure Dovecot/Postfix SNI SSL certificate mapping for tenant hostnames.                     |
+| 12 | Customer-created subdomains in cPanel  | IMPLEMENTED AND LIVE   | IMPLEMENTED AND LIVE   | nginx_provisioner.py and host_routing.py exclude subdomains from generating separate cpanel.<subdomain> blocks.                           | None. Working as specified.                                                                                                    |
+| 13 | IFNOTUS DNS mode (ns1/ns2)            | IMPLEMENTED IN SOURCE  | PARTIALLY IMPLEMENTED  | ns1/ns2.ifnotus.space resolve to 80.241.223.82 and BIND9 responds. yalleydadzie.online uses external NS (solar/lunar.dns-parking.com).     | Switch registrar NS delegation to ns1.ifnotus.space / ns2.ifnotus.space or manage external records.                            |
+| 14 | Primary DNS auto-provisions records   | PARTIALLY IMPLEMENTED  | PARTIALLY IMPLEMENTED  | BIND zone has @, www, cpanel, mail. webmail is missing from template (returns NXDOMAIN on local BIND query).                             | Add webmail IN A/CNAME and default DMARC records to standard zone template in backend/app/services/dns.py.                    |
+| 15 | Onboarding no raw server IP as primary| PARTIALLY IMPLEMENTED  | PARTIALLY IMPLEMENTED  | PortalSitePanel.vue and GoHostingView.vue still display instructions asking customers to copy A record 80.241.223.82.                      | Update UI copy to prioritize nameserver delegation (ns1/ns2.ifnotus.space) with secondary CNAME/A fallback.                   |
+| 16 | External DNS mode exists as secondary | IMPLEMENTED AND LIVE   | IMPLEMENTED AND LIVE   | Custom A/CNAME setup is supported and functioning for custom registrar DNS.                                                               | None.                                                                                                                          |
+| 17 | SSL for domain, www, cpanel, webmail  | PARTIALLY IMPLEMENTED  | IMPLEMENTED BUT WRONG  | Live cert on 80.241.223.82 for yalleydadzie.online only covers DNS:www.yalleydadzie.online, DNS:yalleydadzie.online.                      | Update Certbot / Let's Encrypt automation to issue SAN certificates for domain.tld, www, cpanel, webmail, and mail.            |
+| 18 | ISPConfig hidden from customers       | IMPLEMENTED AND LIVE   | IMPLEMENTED AND LIVE   | Port 8080 is blocked/filtered. No customer-facing pages reference ISPConfig.                                                               | None.                                                                                                                          |
+| 19 | Env UUIDs hidden from customer URLs   | NOT IMPLEMENTED        | NOT IMPLEMENTED        | Frontend routes expose /hosting/d7ba8cf4-f3a4-4a25-9df0-... in address bar.                                                                | Refactor Vue Router to mount clean / and subpaths when hostname is cpanel.<domain>.                                            |
+| 20 | Cross-domain cookies, SSO, CORS, CSRF | NOT IMPLEMENTED        | NOT IMPLEMENTED        | localStorage tokens on ifnotus.space isolated by browser SOP; cross-origin navigation to cpanel.<domain> loses authentication.              | Implement one-time token SSO exchange (/sso?token=...) to mint a tenant session cookie/token on customer domain origin.        |
++----+---------------------------------------+------------------------+------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------+
+
+
+================================================================================
+2. IMPLEMENTED & LIVE
+================================================================================
+- #2: https://cpanel.ifnotus.space/login (Staff control plane isolated and active)
+- #12: Subdomain management consolidated in parent account without nested cpanel.<subdomain> URLs
+- #16: External DNS manual option operational
+- #18: ISPConfig control panel completely shielded and hidden from customer access
+
+
+================================================================================
+3. PARTIAL
+================================================================================
+- #1: https://ifnotus.space functions as main platform, but still renders /hosting/<uuid> views
+- #8: Webmail reverse proxy live on VPS, but blocked by missing public DNS and SSL cert SAN
+- #11: Mail ports (587/993/143) active, but missing public DNS and per-domain TLS SNI
+- #13 & #14: BIND9 authoritative server live on 80.241.223.82, but webmail missing from template and registrar delegation inactive on test domain
+- #15: Customer onboarding still shows raw server IP as primary instruction
+
+
+================================================================================
+4. NOT IMPLEMENTED
+================================================================================
+- #5: Customer staying on cpanel.<customer-domain> across relative paths (/files, /databases, /domains, /email, /apps, /cron, /backups, /logs, /usage)
+- #7: One-time SSO handoff token creation (ifnotus.space -> cpanel.<customer-domain>/sso?token=...)
+- #9: https://<customer-domain>/webmail 302 redirect to https://webmail.<customer-domain>
+- #19: Hiding internal Environment UUIDs from customer URLs
+- #20: Cross-origin SSO token authentication and session minting on customer domain origins
+
+
+================================================================================
+5. IMPLEMENTED BUT WRONG
+================================================================================
+- #3: https://cpanel.<customer-domain> exists in Nginx config, but has no valid DNS or SSL certificate
+- #4: https://<customer-domain>/cpanel redirects to https://ifnotus.space/go/hosting?host=... instead of https://cpanel.<customer-domain>
+- #6: "Manage Hosting" pushes user to https://ifnotus.space/hosting/<uuid>
+- #10: https://<customer-domain>/mail redirects to https://mail.ifnotus.space/ instead of https://webmail.<customer-domain>
+- #17: Let's Encrypt SSL certificate only covers apex and www, breaking HTTPS for cpanel, webmail, and mail
+
+
+================================================================================
+6. BLOCKERS
+================================================================================
+1. Missing Cross-Origin SSO Mechanism: Without a signed, one-time handoff token API (POST /api/v1/hosting/{env_id}/sso-token and frontend /sso?token=...), users clicking "Manage Hosting" on ifnotus.space cannot authenticate into cpanel.<customer-domain>.
+2. Missing Multi-SAN SSL Certificates: Let's Encrypt issuance only includes yalleydadzie.online and www.yalleydadzie.online. Browsing to https://cpanel.yalleydadzie.online or https://webmail.yalleydadzie.online produces an SSL TLS mismatch warning.
+3. Hardcoded Legacy Nginx Redirects: Nginx is currently configured to redirect /cpanel to ifnotus.space/go/hosting and /mail to mail.ifnotus.space.
+4. Vue Router Coupled to /hosting/:environmentId: The SPA routing architecture requires a path parameter environmentId instead of detecting the tenant from window.location.hostname (e.g., cpanel.<domain>).
+
+
+================================================================================
+7. FINAL VERDICT
+================================================================================
+PARTIALLY IMPLEMENTED

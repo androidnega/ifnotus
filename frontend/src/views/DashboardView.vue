@@ -11,20 +11,27 @@ import ResourceChart from '@/components/dashboard/ResourceChart.vue'
 import ServiceBrandMark from '@/components/dashboard/ServiceBrandMark.vue'
 import { useDashboard } from '@/composables/useDashboard'
 import { useAuthStore } from '@/stores/auth'
+import { getCanonicalRole, isPlatformOwner } from '@/lib/roles'
 import { domainsApi } from '@/api'
 import type { Domain } from '@/types/hosting'
 import {
+  IconApp,
+  IconChart,
   IconDatabase,
-  IconFolder,
+  IconDeploy,
   IconGlobe,
   IconLock,
+  IconMail,
   IconRefresh,
+  IconServer,
+  IconSettings,
   IconShield,
-  IconTerminal,
 } from '@/components/icons'
 
 const router = useRouter()
 const auth = useAuthStore()
+const isOwner = computed(() => isPlatformOwner(auth.user))
+const canonicalRole = computed(() => getCanonicalRole(auth.user) || 'platform_owner')
 const { data, loading, refreshing, error, refresh } = useDashboard()
 const domains = ref<Domain[]>([])
 
@@ -105,14 +112,60 @@ const servicesOk = computed(
   () => featuredServices.value.filter((s) => s.status === 'running').length >= 3,
 )
 
-const actions = [
-  { label: 'Host operations', to: '/operations', icon: IconRefresh, color: '#2563eb' },
-  { label: 'Open Terminal', to: '/terminal', icon: IconTerminal, color: '#0f172a' },
-  { label: 'File Manager', to: '/files', icon: IconFolder, color: '#16a34a' },
-  { label: 'Add Domain', to: '/domains', icon: IconGlobe, color: '#7c3aed' },
-  { label: 'Create Database', to: '/databases', icon: IconDatabase, color: '#ea580c' },
-  { label: 'Security', to: '/security', icon: IconShield, color: '#dc2626' },
-]
+const actions = computed(() => {
+  const role = canonicalRole.value
+  if (role === 'support_agent') {
+    return [
+      { label: 'Support Queue', to: '/support', icon: IconMail, color: '#dc2626' },
+      { label: 'Customer Lookup', to: '/platform/customers', icon: IconApp, color: '#2563eb' },
+    ]
+  }
+  if (role === 'billing_agent') {
+    return [
+      { label: 'Review Orders', to: '/platform/orders', icon: IconGlobe, color: '#f59e0b' },
+      { label: 'Accounting Ledger', to: '/platform/accounting', icon: IconChart, color: '#16a34a' },
+      { label: 'Customer Profiles', to: '/platform/customers', icon: IconApp, color: '#2563eb' },
+      { label: 'Billing Tickets', to: '/support', icon: IconMail, color: '#7c3aed' },
+    ]
+  }
+  if (role === 'platform_admin') {
+    return [
+      { label: 'Customer Accounts', to: '/platform/customers', icon: IconApp, color: '#2563eb' },
+      { label: 'Pending Orders', to: '/platform/orders', icon: IconGlobe, color: '#f59e0b' },
+      { label: 'Financial Accounting', to: '/platform/accounting', icon: IconChart, color: '#16a34a' },
+      { label: 'Hosting Plans', to: '/platform/plans', icon: IconDeploy, color: '#7c3aed' },
+      { label: 'Support Tickets', to: '/support', icon: IconMail, color: '#dc2626' },
+      { label: 'Settings', to: '/settings', icon: IconSettings, color: '#0f172a' },
+    ]
+  }
+  if (role === 'hosting_operator') {
+    return [
+      { label: 'Operations & Jobs', to: '/operations', icon: IconRefresh, color: '#2563eb' },
+      { label: 'Domains & DNS', to: '/domains', icon: IconGlobe, color: '#7c3aed' },
+      { label: 'Databases', to: '/databases', icon: IconDatabase, color: '#ea580c' },
+      { label: 'SSL Certificates', to: '/ssl', icon: IconLock, color: '#16a34a' },
+      { label: 'Host Capacity', to: '/servers', icon: IconServer, color: '#0f172a' },
+      { label: 'Tenants', to: '/platform/customers', icon: IconApp, color: '#0284c7' },
+    ]
+  }
+  if (role === 'auditor') {
+    return [
+      { label: 'Audit Logs & Events', to: '/security', icon: IconShield, color: '#dc2626' },
+      { label: 'Financial Ledgers', to: '/platform/accounting', icon: IconChart, color: '#16a34a' },
+      { label: 'System Health', to: '/servers', icon: IconServer, color: '#2563eb' },
+      { label: 'Customer Records', to: '/platform/customers', icon: IconApp, color: '#0f172a' },
+    ]
+  }
+  // Platform Owner
+  return [
+    { label: 'Host operations', to: '/operations', icon: IconRefresh, color: '#2563eb' },
+    { label: 'Customers', to: '/platform/customers', icon: IconApp, color: '#0284c7' },
+    { label: 'Orders & Money', to: '/platform/orders', icon: IconGlobe, color: '#f59e0b' },
+    { label: 'Domains & DNS', to: '/domains', icon: IconGlobe, color: '#7c3aed' },
+    { label: 'Databases', to: '/databases', icon: IconDatabase, color: '#ea580c' },
+    { label: 'Security & Access', to: '/security', icon: IconShield, color: '#dc2626' },
+  ]
+})
 
 const lastLoginIp = computed(() => auth.user?.last_login_ip?.trim() || '')
 const lastLoginAt = computed(() => {
@@ -235,7 +288,7 @@ export default { name: 'DashboardView' }
           </div>
         </article>
 
-        <article class="card ssh">
+        <article v-if="isOwner" class="card ssh">
           <header>
             <h2>Operator access</h2>
             <span class="pill ok">Enabled</span>

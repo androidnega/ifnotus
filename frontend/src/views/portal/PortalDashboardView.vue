@@ -287,7 +287,7 @@ function goToHosting(tab?: string) {
     void router.replace({ name: 'portal-dashboard', query: { panel: 'billing' } })
     return
   }
-  openHostingFromAccount(domain, tab)
+  openHostingFromAccount(domain, tab, activeEnv.value?.id)
 }
 
 function goNav(next: 'home' | 'billing' | 'ai' | 'support' | 'site', tab?: string) {

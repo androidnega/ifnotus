@@ -482,12 +482,15 @@ class SslService:
             from app.services.platform.panel_access import (
                 control_panel_hostname,
                 is_platform_hostname,
+                mail_server_hostname,
+                webmail_hostname,
             )
 
             if (
                 not is_platform_hostname(base)
                 and not base.startswith("www.")
                 and not base.startswith("cpanel.")
+                and not base.startswith("webmail.")
                 and not base.startswith("mail.")
             ):
                 if f"www.{base}" not in names:
@@ -495,11 +498,15 @@ class SslService:
                 cpanel = control_panel_hostname(base)
                 if cpanel and cpanel not in names:
                     names.append(cpanel)
+                webmail = webmail_hostname(base)
+                if webmail and webmail not in names:
+                    names.append(webmail)
+                mail = mail_server_hostname(base)
+                if mail and mail not in names:
+                    names.append(mail)
         seen: set[str] = set()
         out: list[str] = []
         for name in names:
-            if name.startswith("mail."):
-                continue
             if name not in seen:
                 seen.add(name)
                 out.append(name)

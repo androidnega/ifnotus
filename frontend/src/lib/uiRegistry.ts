@@ -72,8 +72,8 @@ export const STAFF_NAV = {
     { to: '/platform/customers', name: 'platform-customers', label: 'Customers', permission: 'platform:read' },
   ],
   money: [
-    { to: '/platform/orders', name: 'platform-orders', label: 'Orders', permission: 'customers:manage' },
-    { to: '/platform/accounting', name: 'platform-accounting', label: 'Accounting', permission: 'customers:manage' },
+    { to: '/platform/orders', name: 'platform-orders', label: 'Orders', permission: 'billing:view' },
+    { to: '/platform/accounting', name: 'platform-accounting', label: 'Accounting', permission: 'billing:view' },
     { to: '/platform/plans', name: 'platform-plans', label: 'Plans', permission: 'platform:write' },
   ],
   support: [{ to: '/support', name: 'support', label: 'Tickets', permission: 'support:read' }],

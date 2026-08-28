@@ -49,7 +49,7 @@ function go(next: string) {
     return
   }
   if (next === 'hosting') {
-    if (props.domain && openHostingFromAccount(props.domain)) return
+    if (props.domain && openHostingFromAccount(props.domain, null, props.environmentId)) return
     void router.push({ name: 'portal-dashboard', query: { panel: 'billing' } })
     return
   }

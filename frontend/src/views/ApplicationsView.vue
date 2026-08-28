@@ -8,19 +8,30 @@ import Skeleton from '@/components/ui/Skeleton.vue'
 import UiAlert from '@/components/ui/UiAlert.vue'
 import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import UiTabBar from '@/components/ui/UiTabBar.vue'
+import { useAuthStore } from '@/stores/auth'
+import { isPlatformOwner } from '@/lib/roles'
 import { applicationsApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
 import type { ApplicationSummary, ClearablePath } from '@/types/dashboard'
 import type { DiscoveredApplication } from '@/types/inventory'
+
+const auth = useAuthStore()
+const isOwner = computed(() => isPlatformOwner(auth.user))
 
 const apps = ref<ApplicationSummary[]>([])
 const discovered = ref<DiscoveredApplication[]>([])
 const issuesCount = ref(0)
 const loading = ref(true)
 const loadError = ref<string | null>(null)
-const filter = ref<'all' | 'registered' | 'discovered' | 'issues'>('all')
+const filter = ref<'all' | 'hosted' | 'products' | 'discovered' | 'issues'>('all')
 const actionBusy = ref<string | null>(null)
 const actionMessage = ref<{ ok: boolean; text: string } | null>(null)
+
+const platformProducts = [
+  { id: 'votebridge', name: 'VoteBridge', tag: 'Election & Voting System', status: 'active', route: 'https://votebridge.ifnotus.space' },
+  { id: 'quizsnap', name: 'QuizSnap', tag: 'Realtime Assessment & Quiz Engine', status: 'active', route: 'https://quizsnap.ifnotus.space' },
+  { id: 'examflow', name: 'ExamFlow', tag: 'Proctored Examination Platform', status: 'active', route: 'https://examflow.ifnotus.space' },
+]
 
 const reconciliationVariant = (state: string) => {
   if (state === 'registered') return 'success'
@@ -31,21 +42,27 @@ const reconciliationVariant = (state: string) => {
 
 const registryIssueApps = computed(() => apps.value.filter((app) => app.registry_valid === false))
 
-const filterTabs = computed(() => [
-  { id: 'all', label: 'All' },
-  { id: 'registered', label: 'Registered' },
-  { id: 'discovered', label: 'Discovered' },
-  { id: 'issues', label: `Issues (${issuesCount.value})` },
-])
+const filterTabs = computed(() => {
+  const tabs = [
+    { id: 'all', label: 'All' },
+    { id: 'hosted', label: 'Hosted Apps' },
+  ]
+  if (isOwner.value) {
+    tabs.push({ id: 'products', label: 'Platform Products' })
+  }
+  tabs.push({ id: 'discovered', label: 'Discovered' })
+  tabs.push({ id: 'issues', label: `Issues (${issuesCount.value})` })
+  return tabs
+})
 
 const filteredRegistered = computed(() => {
-  if (filter.value === 'discovered') return []
+  if (filter.value === 'discovered' || filter.value === 'products') return []
   if (filter.value === 'issues') return registryIssueApps.value
   return apps.value
 })
 
 const filteredDiscovered = computed(() => {
-  if (filter.value === 'registered') return []
+  if (filter.value === 'hosted') return []
   if (filter.value === 'issues') {
     return discovered.value.filter(
       (d) => d.reconciliation_state !== 'registered' && d.reconciliation_state !== 'discovered_unregistered',
@@ -188,9 +205,31 @@ onMounted(load)
       </div>
 
       <template v-else>
-        <section v-if="filter === 'all' || filter === 'registered' || filter === 'issues'" class="space-y-3">
+        <!-- Platform Products (Platform Owner scope) -->
+        <section v-if="isOwner && (filter === 'all' || filter === 'products')" class="space-y-3">
+          <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+            <span>Platform Products</span>
+            <Badge variant="info">Internal Services</Badge>
+          </h2>
+          <div class="grid gap-3 sm:grid-cols-3">
+            <Card v-for="prod in platformProducts" :key="prod.id" padding="md" class="space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="font-bold text-slate-900 dark:text-white">{{ prod.name }}</span>
+                <Badge variant="success">{{ prod.status }}</Badge>
+              </div>
+              <p class="text-xs text-surface-muted">{{ prod.tag }}</p>
+              <div class="pt-1">
+                <a :href="prod.route" target="_blank" rel="noopener" class="text-xs text-blue-600 dark:text-blue-400 hover:underline">
+                  {{ prod.route }} ↗
+                </a>
+              </div>
+            </Card>
+          </div>
+        </section>
+
+        <section v-if="filter === 'all' || filter === 'hosted' || filter === 'issues'" class="space-y-3">
           <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">
-            {{ filter === 'issues' ? 'Registered with registry issues' : 'Resource usage' }}
+            {{ filter === 'issues' ? 'Registered with registry issues' : 'Hosted Tenant Applications' }}
           </h2>
 
           <div class="overflow-x-auto rounded-xl border border-surface-border bg-surface-raised shadow-card">
@@ -274,7 +313,7 @@ onMounted(load)
           </div>
         </section>
 
-        <section v-if="filter !== 'registered'" class="space-y-3">
+        <section v-if="filter !== 'hosted'" class="space-y-3">
           <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">
             {{ filter === 'issues' ? 'Reconciliation issues' : 'Still discovering' }}
           </h2>

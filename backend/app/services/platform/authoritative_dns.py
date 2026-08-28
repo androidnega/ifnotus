@@ -90,10 +90,12 @@ class AuthoritativeDnsService:
             f"\n"
             f"www IN A    {ipv4}\n"
             f"{aaaa_www}"
+            f"cpanel IN A {ipv4}\n"
+            f"webmail IN A {ipv4}\n"
             f"mail IN A   {ipv4}\n"
             f"autoconfig IN CNAME mail.{name}.\n"
             f"autodiscover IN CNAME mail.{name}.\n"
-            f"_dmarc IN TXT \"v=DMARC1; p=none; rua=mailto:postmaster@{name}\"\n"
+            f'_dmarc IN TXT "v=DMARC1; p=none; rua=mailto:postmaster@{name}"\n'
         )
         zone_path.write_text(body, encoding="utf-8")
         try:

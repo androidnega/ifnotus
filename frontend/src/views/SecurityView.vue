@@ -9,6 +9,8 @@ import ConfirmPasswordModal from '@/components/databases/ConfirmPasswordModal.vu
 import { securityApi, terminalApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
 import { usePermissions } from '@/composables/usePermissions'
+import { useAuthStore } from '@/stores/auth'
+import { isPlatformOwner } from '@/lib/roles'
 import { Permission } from '@/lib/permissions'
 import type {
   AccessAttemptEntry,
@@ -19,8 +21,10 @@ import type {
 } from '@/types/security'
 import type { TerminalAuditEntry } from '@/types/hosting'
 
+const auth = useAuthStore()
 const { can } = usePermissions()
-const allowed = computed(() => can(Permission.SYSTEM_ADMIN))
+const allowed = computed(() => can(Permission.SYSTEM_ADMIN) || can(Permission.SYSTEM_READ) || isPlatformOwner(auth.user))
+const canMutate = computed(() => isPlatformOwner(auth.user))
 
 const loading = ref(false)
 const message = ref<{ ok: boolean; text: string } | null>(null)
@@ -245,6 +249,7 @@ onMounted(loadAll)
               Download logs
             </button>
             <button
+              v-if="canMutate"
               type="button"
               class="rounded-lg border border-red-300 bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
               :disabled="loading || clearBusy"
@@ -261,7 +266,7 @@ onMounted(loadAll)
 
       <UiAlert v-if="message" :tone="message.ok ? 'ok' : 'err'">{{ message.text }}</UiAlert>
 
-      <Card title="Block actions" subtitle="Kill-switch sensitive capabilities for everyone">
+      <Card v-if="canMutate" title="Block actions" subtitle="Kill-switch sensitive capabilities for everyone">
         <div class="mb-3 flex flex-wrap gap-2">
           <select v-model="blockActionKey" class="input">
             <option value="" disabled>Select action…</option>
@@ -288,7 +293,7 @@ onMounted(loadAll)
         </div>
       </Card>
 
-      <div class="grid gap-5 xl:grid-cols-2">
+      <div v-if="canMutate" class="grid gap-5 xl:grid-cols-2">
         <Card title="Panel CIDR rules" subtitle="Allow trusted ranges · deny hostile ranges for panel access">
           <p class="mb-3 text-xs text-surface-muted">
             If any <strong>allow</strong> rule exists, only matching networks can reach the panel (health checks exempt).

@@ -3,9 +3,11 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import FileTransferQueue from '@/components/files/FileTransferQueue.vue'
 import IconFolder from '@/components/icons/IconFolder.vue'
+import IconTrash from '@/components/icons/IconTrash.vue'
 import { customersApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
 import { useFileTransferStore } from '@/stores/fileTransfers'
+import { hostnameNow, isCustomerCpanelHost } from '@/lib/platformHosts'
 import '@/assets/portal.css'
 
 type Entry = {
@@ -17,21 +19,49 @@ type Entry = {
   mode?: string | null
 }
 
+type TrashEntry = {
+  trash_id: string
+  original_path: string
+  display_name: string
+  item_type: string
+  size_bytes?: number | null
+  deleted_at: string
+  deleted_by?: string | null
+}
+
 type ClipboardMode = 'copy' | 'cut' | null
 
 const route = useRoute()
 const router = useRouter()
 const transfers = useFileTransferStore()
 
-const envId = computed(
-  () => String(route.params.environmentId || route.query.env || ''),
-)
+const resolvedEnvId = ref('')
+const envId = computed(() => {
+  if (route.params.environmentId) return String(route.params.environmentId)
+  if (route.query.env) return String(route.query.env)
+  if (resolvedEnvId.value) return resolvedEnvId.value
+  const stored = typeof window !== 'undefined' ? localStorage.getItem('tenant_env_id') : ''
+  return stored || ''
+})
+
+function normalizeVirtualPath(pathStr: string): string {
+  if (!pathStr) return '.'
+  if (pathStr === '__trash__') return '__trash__'
+  let clean = pathStr.replace(/^[./\\]+/, '').replace(/[/\\]+$/, '')
+  if (!clean || clean === 'public' || clean === 'public_html' || clean === 'web') return '.'
+  return clean
+}
+
 const loading = ref(true)
 const entries = ref<Entry[]>([])
-const currentPath = ref(String(route.query.path || '.') || '.')
+const trashEntries = ref<TrashEntry[]>([])
+const trashTotalBytes = ref(0)
+const currentPath = ref(normalizeVirtualPath(String(route.query.path || '.')))
+const isTrashMode = computed(() => currentPath.value === '__trash__')
 const parentPath = ref<string | null>(null)
 const msg = ref('')
 const err = ref('')
+const lastMovedTrash = ref<{ name: string; paths: string[] } | null>(null)
 const usageLabel = ref('')
 const usagePct = ref(0)
 const newFolder = ref('')
@@ -46,24 +76,36 @@ const stackLabel = ref('')
 const search = ref('')
 const selectedPaths = ref<Set<string>>(new Set())
 const anchorPath = ref<string | null>(null)
-const folderTree = ref<string[]>(['.', 'public'])
+const folderTree = ref<string[]>(['.'])
 const clipboard = ref<{ mode: ClipboardMode; paths: string[] }>({ mode: null, paths: [] })
 const ctx = ref<{
   open: boolean
   x: number
   y: number
   entry: Entry | null
-}>({ open: false, x: 0, y: 0, entry: null })
+  trashEntry: TrashEntry | null
+}>({ open: false, x: 0, y: 0, entry: null, trashEntry: null })
+
 const movePromptOpen = ref(false)
-const moveDestination = ref('')
+const moveDestination = ref('.')
 const moveBrowsePath = ref('.')
 const moveBrowseEntries = ref<Entry[]>([])
 const moveBrowseLoading = ref(false)
 const moveBrowseParent = ref<string | null>(null)
 const moveBusy = ref(false)
 
+const conflictModal = ref<{
+  open: boolean
+  trashEntry: TrashEntry | null
+  busy: boolean
+}>({ open: false, trashEntry: null, busy: false })
+
 const breadcrumbs = computed(() => {
-  const parts = currentPath.value === '.' ? [] : currentPath.value.split('/').filter(Boolean)
+  if (isTrashMode.value) {
+    return [{ label: 'Trash', path: '__trash__' }]
+  }
+  const p = currentPath.value === '.' ? '' : currentPath.value
+  const parts = p ? p.split('/').filter(Boolean) : []
   const crumbs: Array<{ label: string; path: string }> = [{ label: 'Home', path: '.' }]
   let acc = ''
   for (const part of parts) {
@@ -75,6 +117,16 @@ const breadcrumbs = computed(() => {
 
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
+  if (isTrashMode.value) {
+    let list = [...trashEntries.value]
+    if (q) {
+      list = list.filter(
+        (e) =>
+          e.display_name.toLowerCase().includes(q) || e.original_path.toLowerCase().includes(q),
+      )
+    }
+    return list
+  }
   let list = [...entries.value]
   if (q) list = list.filter((e) => e.name.toLowerCase().includes(q))
   list.sort((a, b) => {
@@ -84,24 +136,34 @@ const filtered = computed(() => {
   return list
 })
 
-const selectedEntries = computed(() =>
-  filtered.value.filter((e) => selectedPaths.value.has(e.path)),
-)
+const selectedEntries = computed(() => {
+  if (isTrashMode.value) return []
+  return (filtered.value as Entry[]).filter((e) => selectedPaths.value.has(e.path))
+})
+
+const selectedTrashEntries = computed(() => {
+  if (!isTrashMode.value) return []
+  return (filtered.value as TrashEntry[]).filter((e) => selectedPaths.value.has(e.trash_id))
+})
 
 const selectionCount = computed(() => selectedPaths.value.size)
 
-const allVisibleSelected = computed(
-  () => filtered.value.length > 0 && filtered.value.every((e) => selectedPaths.value.has(e.path)),
-)
+const allVisibleSelected = computed(() => {
+  if (filtered.value.length === 0) return false
+  if (isTrashMode.value) {
+    return (filtered.value as TrashEntry[]).every((e) => selectedPaths.value.has(e.trash_id))
+  }
+  return (filtered.value as Entry[]).every((e) => selectedPaths.value.has(e.path))
+})
 
 const sidebarFolders = computed(() => {
-  const set = new Set<string>(['.', 'public', ...folderTree.value])
-  if (currentPath.value && currentPath.value !== '.') set.add(currentPath.value)
-  return [...set].sort((a, b) => {
-    if (a === '.') return -1
-    if (b === '.') return 1
-    return a.localeCompare(b)
-  })
+  const set = new Set<string>(folderTree.value)
+  if (currentPath.value && currentPath.value !== '.' && currentPath.value !== '__trash__') {
+    set.add(currentPath.value)
+  }
+  return [...set]
+    .filter((f) => f && f !== '.' && f !== '__trash__' && f !== 'public' && f !== 'public_html')
+    .sort((a, b) => a.localeCompare(b))
 })
 
 const ctxTargets = computed(() => {
@@ -110,6 +172,14 @@ const ctxTargets = computed(() => {
   }
   if (ctx.value.entry) return [ctx.value.entry]
   return selectedEntries.value
+})
+
+const ctxTrashTargets = computed(() => {
+  if (ctx.value.trashEntry && selectedPaths.value.has(ctx.value.trashEntry.trash_id) && selectedPaths.value.size > 1) {
+    return selectedTrashEntries.value
+  }
+  if (ctx.value.trashEntry) return [ctx.value.trashEntry]
+  return selectedTrashEntries.value
 })
 
 const ctxIsArchive = computed(() => {
@@ -188,40 +258,91 @@ async function loadStack() {
   }
 }
 
+async function loadTrash() {
+  if (!envId.value) return
+  loading.value = true
+  err.value = ''
+  closeContext()
+  try {
+    const { data } = await customersApi.listEnvTrash(envId.value)
+    trashEntries.value = data.entries || []
+    trashTotalBytes.value = data.total_size_bytes || 0
+    selectedPaths.value = new Set()
+    anchorPath.value = null
+    document.title = `Trash · ${domain.value || 'Files'} · IFNOTUS`
+    if (route.name === 'hosting-files') {
+      void router.replace({
+        name: 'hosting-files',
+        params: { environmentId: envId.value },
+        query: { path: '__trash__' },
+      })
+    } else {
+      void router.replace({
+        name: 'portal-files',
+        query: { env: envId.value, path: '__trash__' },
+      })
+    }
+  } catch (e) {
+    err.value = getApiErrorMessage(e, 'Could not load Trash.')
+    trashEntries.value = []
+  } finally {
+    loading.value = false
+  }
+}
+
 async function load() {
   if (!envId.value) {
     err.value = 'Missing environment. Open Files from Hosting Panel or your account.'
     loading.value = false
     return
   }
+  if (isTrashMode.value) {
+    await loadTrash()
+    return
+  }
   loading.value = true
   err.value = ''
   closeContext()
   try {
-    const { data } = await customersApi.listEnvFiles(envId.value, currentPath.value)
+    const reqPath = currentPath.value || '.'
+    const { data } = await customersApi.listEnvFiles(envId.value, reqPath)
     entries.value = (data.entries || []) as Entry[]
     parentPath.value = data.parent
-    currentPath.value = data.path || currentPath.value
+    currentPath.value = data.path || reqPath
     selectedPaths.value = new Set()
     anchorPath.value = null
     for (const e of entries.value) {
       if (e.is_dir) folderTree.value = [...new Set([...folderTree.value, e.path])].slice(0, 40)
     }
-    document.title = `Files · ${domain.value || currentPath.value} · IFNOTUS`
+    document.title = `Files · ${domain.value || 'Home'} · IFNOTUS`
     if (route.name === 'hosting-files') {
       void router.replace({
         name: 'hosting-files',
         params: { environmentId: envId.value },
-        query: { path: currentPath.value },
+        query: currentPath.value === '.' ? {} : { path: currentPath.value },
       })
     } else {
       void router.replace({
         name: 'portal-files',
-        query: { env: envId.value, path: currentPath.value },
+        query: { env: envId.value, ...(currentPath.value === '.' ? {} : { path: currentPath.value }) },
       })
     }
   } catch (e) {
-    err.value = getApiErrorMessage(e, 'Could not load files.')
+    if (currentPath.value !== '.') {
+      err.value = 'This folder no longer exists. Returned to Home.'
+      currentPath.value = '.'
+      try {
+        const { data } = await customersApi.listEnvFiles(envId.value, '.')
+        entries.value = (data.entries || []) as Entry[]
+        parentPath.value = data.parent
+        currentPath.value = '.'
+      } catch {
+        entries.value = []
+      }
+    } else {
+      entries.value = []
+      err.value = getApiErrorMessage(e, 'Could not load files.')
+    }
   } finally {
     loading.value = false
   }
@@ -242,11 +363,29 @@ async function hydrateEnv() {
 async function ensureEnvironment(): Promise<boolean> {
   if (envId.value) return true
   const list = await hydrateEnv()
+  if (isCustomerCpanelHost()) {
+    const host = hostnameNow()
+    try {
+      const { data: aliasData } = await customersApi.resolvePanelAlias(host)
+      if (aliasData.environment_id) {
+        resolvedEnvId.value = aliasData.environment_id
+        localStorage.setItem('tenant_env_id', aliasData.environment_id)
+        return true
+      }
+    } catch {
+      // fallback
+    }
+  }
   const first = list[0]
   if (!first?.id) {
     err.value = 'No hosting site found yet. Open your account and finish setup first.'
     loading.value = false
     return false
+  }
+  resolvedEnvId.value = first.id
+  localStorage.setItem('tenant_env_id', first.id)
+  if (isCustomerCpanelHost()) {
+    return true
   }
   await router.replace({
     name: 'hosting-files',
@@ -257,44 +396,56 @@ async function ensureEnvironment(): Promise<boolean> {
 }
 
 function openDir(path: string) {
-  currentPath.value = path || '.'
+  const norm = normalizeVirtualPath(path)
+  currentPath.value = norm
   showMobileNav.value = false
   closeMenus()
   void load()
 }
 
-function selectRow(entry: Entry, ev?: MouseEvent) {
+function openTrash() {
+  currentPath.value = '__trash__'
+  showMobileNav.value = false
   closeMenus()
-  const list = filtered.value
+  void load()
+}
+
+function selectRow(item: Entry | TrashEntry, ev?: MouseEvent) {
+  closeMenus()
+  const key = 'trash_id' in item ? item.trash_id : item.path
   if (ev?.shiftKey && anchorPath.value) {
-    const a = list.findIndex((e) => e.path === anchorPath.value)
-    const b = list.findIndex((e) => e.path === entry.path)
+    const list = filtered.value
+    const a = list.findIndex((e) => ('trash_id' in e ? e.trash_id : e.path) === anchorPath.value)
+    const b = list.findIndex((e) => ('trash_id' in e ? e.trash_id : e.path) === key)
     if (a >= 0 && b >= 0) {
       const [lo, hi] = a < b ? [a, b] : [b, a]
       const next = new Set(selectedPaths.value)
-      for (let i = lo; i <= hi; i++) next.add(list[i].path)
+      for (let i = lo; i <= hi; i++) {
+        const itemKey = 'trash_id' in list[i] ? (list[i] as TrashEntry).trash_id : (list[i] as Entry).path
+        next.add(itemKey)
+      }
       selectedPaths.value = next
       return
     }
   }
   if (ev?.metaKey || ev?.ctrlKey) {
     const next = new Set(selectedPaths.value)
-    if (next.has(entry.path)) next.delete(entry.path)
-    else next.add(entry.path)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
     selectedPaths.value = next
-    anchorPath.value = entry.path
+    anchorPath.value = key
     return
   }
-  selectedPaths.value = new Set([entry.path])
-  anchorPath.value = entry.path
+  selectedPaths.value = new Set([key])
+  anchorPath.value = key
 }
 
-function togglePath(entry: Entry) {
+function togglePath(key: string) {
   const next = new Set(selectedPaths.value)
-  if (next.has(entry.path)) next.delete(entry.path)
-  else next.add(entry.path)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
   selectedPaths.value = next
-  anchorPath.value = entry.path
+  anchorPath.value = key
 }
 
 function toggleSelectAll() {
@@ -303,7 +454,8 @@ function toggleSelectAll() {
     anchorPath.value = null
     return
   }
-  selectedPaths.value = new Set(filtered.value.map((e) => e.path))
+  const keys = filtered.value.map((e) => ('trash_id' in e ? e.trash_id : e.path))
+  selectedPaths.value = new Set(keys)
 }
 
 function openEntry(entry: Entry) {
@@ -330,14 +482,33 @@ function onContextMenu(entry: Entry, ev: MouseEvent) {
   let y = ev.clientY
   if (x + menuW > window.innerWidth - pad) x = window.innerWidth - menuW - pad
   if (y + menuH > window.innerHeight - pad) y = window.innerHeight - menuH - pad
-  ctx.value = { open: true, x, y, entry }
+  ctx.value = { open: true, x, y, entry, trashEntry: null }
+  showNewMenu.value = false
+  showOverflow.value = false
+}
+
+function onTrashContextMenu(entry: TrashEntry, ev: MouseEvent) {
+  ev.preventDefault()
+  ev.stopPropagation()
+  if (!selectedPaths.value.has(entry.trash_id)) {
+    selectedPaths.value = new Set([entry.trash_id])
+    anchorPath.value = entry.trash_id
+  }
+  const pad = 8
+  const menuW = 220
+  const menuH = 200
+  let x = ev.clientX
+  let y = ev.clientY
+  if (x + menuW > window.innerWidth - pad) x = window.innerWidth - menuW - pad
+  if (y + menuH > window.innerHeight - pad) y = window.innerHeight - menuH - pad
+  ctx.value = { open: true, x, y, entry: null, trashEntry: entry }
   showNewMenu.value = false
   showOverflow.value = false
 }
 
 function onBlankContext(ev: MouseEvent) {
   ev.preventDefault()
-  ctx.value = { open: true, x: ev.clientX, y: ev.clientY, entry: null }
+  ctx.value = { open: true, x: ev.clientX, y: ev.clientY, entry: null, trashEntry: null }
 }
 
 function setClipboard(mode: 'copy' | 'cut') {
@@ -426,16 +597,12 @@ async function confirmMove() {
   const dest = destRaw || '.'
   const targets = selectedEntries.value.length ? selectedEntries.value : ctxTargets.value
   if (!targets.length) return
-  // Don't move a folder into itself or a descendant.
   for (const entry of targets) {
     if (entry.is_dir) {
       if (dest === entry.path || dest.startsWith(`${entry.path}/`)) {
         err.value = `Cannot move “${entry.name}” into itself.`
         return
       }
-    }
-    if (dest === (entry.path.includes('/') ? entry.path.slice(0, entry.path.lastIndexOf('/')) || '.' : '.')) {
-      // Same folder — skip quietly for that item later
     }
   }
   moveBusy.value = true
@@ -502,16 +669,112 @@ async function createFile() {
 
 async function removeTargets(targets: Entry[]) {
   if (!targets.length) return
-  const label = targets.length === 1 ? targets[0].name : `${targets.length} items`
-  if (!confirm(`Delete ${label}?`)) return
+  const label = targets.length === 1 ? `"${targets[0].name}"` : `${targets.length} items`
+  if (!confirm(`Move ${label} to Trash?`)) return
   try {
-    for (const entry of targets) await customersApi.deleteEnvFile(envId.value, entry.path)
-    msg.value = `Deleted ${targets.length} item(s)`
+    const paths = targets.map((t) => t.path)
+    await customersApi.moveToTrash(envId.value, paths)
+    lastMovedTrash.value = { name: label, paths }
+    msg.value = `Moved ${label} to Trash`
     closeContext()
     await load()
     await loadUsage()
   } catch (e) {
-    err.value = getApiErrorMessage(e, 'Delete failed.')
+    err.value = getApiErrorMessage(e, 'Could not move to Trash.')
+  }
+}
+
+async function undoLastTrash() {
+  if (!lastMovedTrash.value) return
+  try {
+    const { data } = await customersApi.listEnvTrash(envId.value)
+    const matching = data.entries.filter((e) =>
+      lastMovedTrash.value?.paths.includes(e.original_path),
+    )
+    for (const item of matching) {
+      await customersApi.restoreTrash(envId.value, item.trash_id, 'copy')
+    }
+    msg.value = `Restored ${lastMovedTrash.value.name}`
+    lastMovedTrash.value = null
+    await load()
+    await loadUsage()
+  } catch (e) {
+    err.value = getApiErrorMessage(e, 'Undo restore failed.')
+  }
+}
+
+async function restoreTrashTargets(targets: TrashEntry[]) {
+  if (!targets.length) return
+  try {
+    for (const item of targets) {
+      await customersApi.restoreTrash(envId.value, item.trash_id, 'copy')
+    }
+    msg.value =
+      targets.length === 1
+        ? `Restored "${targets[0].display_name}"`
+        : `Restored ${targets.length} items`
+    closeContext()
+    await load()
+    await loadUsage()
+  } catch (e) {
+    const errText = getApiErrorMessage(e, 'Restore failed.')
+    if (errText.includes('already exists') && targets.length === 1) {
+      conflictModal.value = { open: true, trashEntry: targets[0], busy: false }
+    } else {
+      err.value = errText
+    }
+  }
+}
+
+async function resolveConflict(conflictMode: 'copy' | 'replace') {
+  if (!conflictModal.value.trashEntry) return
+  conflictModal.value.busy = true
+  try {
+    await customersApi.restoreTrash(
+      envId.value,
+      conflictModal.value.trashEntry.trash_id,
+      conflictMode,
+    )
+    msg.value = `Restored "${conflictModal.value.trashEntry.display_name}" (${conflictMode === 'copy' ? 'as copy' : 'replaced'})`
+    conflictModal.value = { open: false, trashEntry: null, busy: false }
+    await load()
+    await loadUsage()
+  } catch (e) {
+    err.value = getApiErrorMessage(e, 'Restore failed.')
+    conflictModal.value.busy = false
+  }
+}
+
+async function permanentDeleteTargets(targets: TrashEntry[]) {
+  if (!targets.length) return
+  const label =
+    targets.length === 1
+      ? `"${targets[0].display_name}"`
+      : `${targets.length} items`
+  if (!confirm(`Permanently delete ${label}? This cannot be undone.`)) return
+  try {
+    for (const item of targets) {
+      await customersApi.deleteTrashItem(envId.value, item.trash_id)
+    }
+    msg.value = `Permanently deleted ${label}`
+    closeContext()
+    await load()
+    await loadUsage()
+  } catch (e) {
+    err.value = getApiErrorMessage(e, 'Permanent delete failed.')
+  }
+}
+
+async function emptyTrash() {
+  if (!confirm('Permanently delete all items in Trash? This cannot be undone.')) return
+  try {
+    await customersApi.emptyTrash(envId.value)
+    msg.value = 'Trash emptied.'
+    closeContext()
+    await load()
+    await loadUsage()
+  } catch (e) {
+    err.value = getApiErrorMessage(e, 'Empty trash failed.')
   }
 }
 
@@ -578,6 +841,10 @@ function pickUpload() {
 }
 
 function backToHosting() {
+  if (isCustomerCpanelHost()) {
+    void router.push('/')
+    return
+  }
   if (!envId.value) {
     void router.push({ name: 'portal-dashboard' })
     return
@@ -590,34 +857,41 @@ function onKeydown(ev: KeyboardEvent) {
   if (tag === 'INPUT' || tag === 'TEXTAREA') return
   if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'a') {
     ev.preventDefault()
-    selectedPaths.value = new Set(filtered.value.map((e) => e.path))
+    if (isTrashMode.value) {
+      selectedPaths.value = new Set((filtered.value as TrashEntry[]).map((e) => e.trash_id))
+    } else {
+      selectedPaths.value = new Set((filtered.value as Entry[]).map((e) => e.path))
+    }
   }
-  if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'c') {
+  if (!isTrashMode.value && (ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'c') {
     ev.preventDefault()
     if (selectedEntries.value.length) {
       clipboard.value = { mode: 'copy', paths: selectedEntries.value.map((e) => e.path) }
       msg.value = `Copied ${selectedEntries.value.length} item(s)`
     }
   }
-  if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'x') {
+  if (!isTrashMode.value && (ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'x') {
     ev.preventDefault()
     if (selectedEntries.value.length) {
       clipboard.value = { mode: 'cut', paths: selectedEntries.value.map((e) => e.path) }
       msg.value = `Cut ${selectedEntries.value.length} item(s)`
     }
   }
-  if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'v') {
+  if (!isTrashMode.value && (ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'v') {
     ev.preventDefault()
     void pasteClipboard()
   }
   if (ev.key === 'Delete' || ev.key === 'Backspace') {
-    if (selectedEntries.value.length) {
+    if (isTrashMode.value && selectedTrashEntries.value.length) {
+      ev.preventDefault()
+      void permanentDeleteTargets(selectedTrashEntries.value)
+    } else if (!isTrashMode.value && selectedEntries.value.length) {
       ev.preventDefault()
       void removeTargets(selectedEntries.value)
     }
   }
   if (ev.key === 'Escape') closeMenus()
-  if (ev.key === 'Enter' && selectedEntries.value.length === 1) {
+  if (ev.key === 'Enter' && !isTrashMode.value && selectedEntries.value.length === 1) {
     openEntry(selectedEntries.value[0])
   }
 }
@@ -658,7 +932,7 @@ onUnmounted(() => {
         <button type="button" class="nav-toggle" aria-label="Folders" @click="showMobileNav = !showMobileNav">
           ☰
         </button>
-        <button type="button" class="mark" @click="backToHosting">IF</button>
+        <button type="button" class="mark" title="Back to hosting dashboard" @click="backToHosting">IF</button>
         <div class="id-text">
           <strong>File manager</strong>
           <p>{{ domain || 'Your site' }}<span v-if="stackLabel"> · {{ stackLabel }}</span></p>
@@ -667,10 +941,21 @@ onUnmounted(() => {
 
       <nav class="crumbs" aria-label="Path">
         <button
+          v-if="!isTrashMode && currentPath !== '.'"
+          type="button"
+          class="crumb-btn back-crumb"
+          title="Go to parent folder"
+          @click="openDir(parentPath || '.')"
+        >
+          ↑
+        </button>
+        <button
           v-for="(c, i) in breadcrumbs"
           :key="c.path"
           type="button"
-          @click="openDir(c.path)"
+          class="crumb-btn"
+          :class="{ active: i === breadcrumbs.length - 1 }"
+          @click="isTrashMode ? openTrash() : openDir(c.path)"
         >
           <span v-if="i" class="sep">/</span>{{ c.label }}
         </button>
@@ -679,37 +964,72 @@ onUnmounted(() => {
       <div class="tools">
         <label class="search">
           <span class="sr">Search</span>
-          <input v-model="search" type="search" placeholder="Search this folder" />
+          <input
+            v-model="search"
+            type="search"
+            :placeholder="isTrashMode ? 'Search Trash' : 'Search this folder'"
+          />
         </label>
         <div v-if="usageLabel" class="usage" :title="usageLabel">
           <div class="usage-bar"><i :style="{ width: `${usagePct}%` }" /></div>
           <span>{{ usageLabel }}</span>
         </div>
         <span v-if="selectionCount" class="sel-pill">{{ selectionCount }} selected</span>
-        <button type="button" class="btn" @click="load">Refresh</button>
-        <div class="new-wrap">
-          <button type="button" class="btn" @click.stop="showNewMenu = !showNewMenu; showOverflow = false">
-            New
+
+        <template v-if="isTrashMode">
+          <button type="button" class="btn" title="Refresh Trash" @click="loadTrash">Refresh</button>
+          <button
+            v-if="selectionCount"
+            type="button"
+            class="btn primary"
+            @click="restoreTrashTargets(selectedTrashEntries)"
+          >
+            Restore
           </button>
-          <div v-if="showNewMenu" class="menu" @click.stop>
-            <button type="button" @click="showMkdir = true; showNewFile = false; showNewMenu = false">Folder</button>
-            <button type="button" @click="showNewFile = true; showMkdir = false; showNewMenu = false">File</button>
+          <button
+            v-if="selectionCount"
+            type="button"
+            class="btn danger-btn"
+            @click="permanentDeleteTargets(selectedTrashEntries)"
+          >
+            Delete permanently
+          </button>
+          <button
+            v-if="trashEntries.length"
+            type="button"
+            class="btn danger-btn"
+            title="Empty all items in Trash"
+            @click="emptyTrash"
+          >
+            Empty Trash
+          </button>
+        </template>
+        <template v-else>
+          <button type="button" class="btn" title="Refresh current folder" @click="load">Refresh</button>
+          <div class="new-wrap">
+            <button type="button" class="btn" @click.stop="showNewMenu = !showNewMenu; showOverflow = false">
+              New
+            </button>
+            <div v-if="showNewMenu" class="menu" @click.stop>
+              <button type="button" @click="showMkdir = true; showNewFile = false; showNewMenu = false">Folder</button>
+              <button type="button" @click="showNewFile = true; showMkdir = false; showNewMenu = false">File</button>
+            </div>
           </div>
-        </div>
-        <button type="button" class="btn primary" :disabled="!envId" @click="pickUpload">Upload</button>
-        <button type="button" class="btn more" aria-label="More" @click.stop="showOverflow = !showOverflow">⋯</button>
-        <div v-if="showOverflow" class="menu overflow" @click.stop>
-          <button type="button" :disabled="!selectionCount" @click="compressTargets(selectedEntries); showOverflow = false">
-            Compress selected
-          </button>
-          <button type="button" :disabled="!clipboard.mode" @click="pasteClipboard(); showOverflow = false">
-            Paste here
-          </button>
-          <button type="button" :disabled="!selectionCount" @click="removeTargets(selectedEntries); showOverflow = false">
-            Delete selected
-          </button>
-          <button type="button" @click="backToHosting(); showOverflow = false">Hosting panel</button>
-        </div>
+          <button type="button" class="btn primary" :disabled="!envId" @click="pickUpload">Upload</button>
+          <button type="button" class="btn more" aria-label="More" @click.stop="showOverflow = !showOverflow">⋯</button>
+          <div v-if="showOverflow" class="menu overflow" @click.stop>
+            <button type="button" :disabled="!selectionCount" @click="compressTargets(selectedEntries); showOverflow = false">
+              Compress selected
+            </button>
+            <button type="button" :disabled="!clipboard.mode" @click="pasteClipboard(); showOverflow = false">
+              Paste here
+            </button>
+            <button type="button" :disabled="!selectionCount" @click="removeTargets(selectedEntries); showOverflow = false">
+              Move to Trash
+            </button>
+            <button type="button" @click="backToHosting(); showOverflow = false">Hosting panel</button>
+          </div>
+        </template>
       </div>
     </header>
 
@@ -723,6 +1043,50 @@ onUnmounted(() => {
       <button type="button" class="btn primary" @click="createFile">Create</button>
       <button type="button" class="btn" @click="showNewFile = false">Cancel</button>
     </div>
+
+    <!-- Conflict Resolution Modal -->
+    <div v-if="conflictModal.open" class="move-modal" @click.self="conflictModal.open = false">
+      <div class="move-dialog" @click.stop>
+        <header class="move-head">
+          <h3>File Already Exists</h3>
+          <button type="button" class="btn" @click="conflictModal.open = false">Close</button>
+        </header>
+        <div class="pad">
+          <p>
+            An item named <strong>“{{ conflictModal.trashEntry?.display_name }}”</strong> already exists at
+            <strong>{{ conflictModal.trashEntry?.original_path || 'Home' }}</strong>.
+          </p>
+          <p class="muted">How would you like to restore this item?</p>
+        </div>
+        <footer class="move-foot">
+          <button
+            type="button"
+            class="btn primary"
+            :disabled="conflictModal.busy"
+            @click="resolveConflict('copy')"
+          >
+            Restore as copy
+          </button>
+          <button
+            type="button"
+            class="btn danger-btn"
+            :disabled="conflictModal.busy"
+            @click="resolveConflict('replace')"
+          >
+            Replace existing
+          </button>
+          <button
+            type="button"
+            class="btn"
+            :disabled="conflictModal.busy"
+            @click="conflictModal.open = false"
+          >
+            Cancel
+          </button>
+        </footer>
+      </div>
+    </div>
+
     <div v-if="movePromptOpen" class="move-modal" @click.self="closeMovePrompt">
       <div class="move-dialog" @click.stop>
         <header class="move-head">
@@ -780,26 +1144,36 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <p v-if="msg" class="flash ok">{{ msg }}</p>
+    <p v-if="msg" class="flash ok">
+      <span>{{ msg }}</span>
+      <button v-if="lastMovedTrash" type="button" class="undo-btn" @click="undoLastTrash">Undo</button>
+    </p>
     <p v-if="err" class="flash bad">{{ err }}</p>
 
     <div class="fm-body">
       <aside class="nav" :class="{ open: showMobileNav }" @click.stop>
         <p class="nav-label">Places</p>
-        <button type="button" class="nav-item" :class="{ on: currentPath === '.' }" @click="openDir('.')">
+        <button
+          type="button"
+          class="nav-item"
+          :class="{ on: currentPath === '.' }"
+          @click="openDir('.')"
+        >
           <IconFolder :size="18" variant="windows" /> Home
         </button>
         <button
           type="button"
           class="nav-item"
-          :class="{ on: currentPath === 'public' }"
-          @click="openDir('public')"
+          :class="{ on: isTrashMode }"
+          @click="openTrash"
         >
-          <IconFolder :size="18" variant="windows" /> public
+          <IconTrash :size="18" /> Trash
+          <span v-if="trashTotalBytes > 0" class="trash-badge">{{ formatSize(trashTotalBytes) }}</span>
         </button>
-        <p class="nav-label">Folders</p>
+
+        <p v-if="sidebarFolders.length" class="nav-label">Folders</p>
         <button
-          v-for="folder in sidebarFolders.filter((f) => f !== '.' && f !== 'public')"
+          v-for="folder in sidebarFolders"
           :key="folder"
           type="button"
           class="nav-item"
@@ -807,7 +1181,7 @@ onUnmounted(() => {
           @click="openDir(folder)"
         >
           <IconFolder :size="18" variant="windows" />
-          <span class="truncate">{{ folder }}</span>
+          <span class="truncate">{{ folder.includes('/') ? folder.slice(folder.lastIndexOf('/') + 1) : folder }}</span>
         </button>
       </aside>
       <div v-if="showMobileNav" class="nav-backdrop" @click="showMobileNav = false" />
@@ -815,11 +1189,73 @@ onUnmounted(() => {
       <main class="pane" @contextmenu="onBlankContext">
         <FileTransferQueue class="queue" />
         <p class="hint pad">
-          Click to select · Ctrl/Cmd+click multi-select · Shift+click range · Double-click to open · Right-click for actions
+          {{ isTrashMode ? 'Click items to select · Right-click for Restore / Permanent Delete' : 'Click to select · Ctrl/Cmd+click multi-select · Shift+click range · Double-click to open · Right-click for actions' }}
         </p>
         <p v-if="loading" class="muted pad">Loading…</p>
         <div v-else class="table-wrap">
-          <table class="table">
+          <!-- TRASH TABLE -->
+          <table v-if="isTrashMode" class="table">
+            <thead>
+              <tr>
+                <th class="check">
+                  <input
+                    type="checkbox"
+                    :checked="allVisibleSelected"
+                    :indeterminate="selectionCount > 0 && !allVisibleSelected"
+                    aria-label="Select all"
+                    @change="toggleSelectAll"
+                    @click.stop
+                  />
+                </th>
+                <th class="name">Name</th>
+                <th class="orig hide-sm">Original location</th>
+                <th class="mod">Deleted</th>
+                <th class="size">Size</th>
+                <th class="type hide-md">Type</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="item in (filtered as TrashEntry[])"
+                :key="item.trash_id"
+                :class="{ selected: selectedPaths.has(item.trash_id) }"
+                @click.stop="selectRow(item, $event)"
+                @contextmenu="onTrashContextMenu(item, $event)"
+              >
+                <td class="check" @click.stop>
+                  <input
+                    type="checkbox"
+                    :checked="selectedPaths.has(item.trash_id)"
+                    :aria-label="`Select ${item.display_name}`"
+                    @change="togglePath(item.trash_id)"
+                  />
+                </td>
+                <td class="name">
+                  <span class="row-label">
+                    <IconFolder v-if="item.item_type === 'dir'" :size="20" variant="windows" />
+                    <span v-else class="file-badge">FILE</span>
+                    <span>{{ item.display_name }}</span>
+                  </span>
+                </td>
+                <td class="orig hide-sm mono">{{ item.original_path === '.' ? 'Home' : item.original_path }}</td>
+                <td class="mod mono">{{ formatDate(item.deleted_at) }}</td>
+                <td class="size mono">{{ item.item_type === 'dir' ? '—' : formatSize(item.size_bytes) }}</td>
+                <td class="type hide-md">{{ item.item_type === 'dir' ? 'Folder' : 'File' }}</td>
+              </tr>
+              <tr v-if="!filtered.length && !loading">
+                <td colspan="6" class="empty-cell">
+                  <div class="empty-state-box">
+                    <IconTrash :size="36" class="empty-icon" />
+                    <p class="empty-title">Trash is empty</p>
+                    <p class="empty-subtitle">Deleted files and folders will appear here.</p>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- NORMAL DIRECTORY TABLE -->
+          <table v-else class="table">
             <thead>
               <tr>
                 <th class="check">
@@ -840,7 +1276,7 @@ onUnmounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-if="parentPath != null" class="parent">
+              <tr v-if="parentPath != null && currentPath !== '.'" class="parent">
                 <td colspan="6">
                   <button type="button" class="row-open" @click="openDir(parentPath || '.')">
                     ↑ Parent folder
@@ -848,7 +1284,7 @@ onUnmounted(() => {
                 </td>
               </tr>
               <tr
-                v-for="entry in filtered"
+                v-for="entry in (filtered as Entry[])"
                 :key="entry.path"
                 :class="{ selected: selectedPaths.has(entry.path) }"
                 @click.stop="selectRow(entry, $event)"
@@ -860,7 +1296,7 @@ onUnmounted(() => {
                     type="checkbox"
                     :checked="selectedPaths.has(entry.path)"
                     :aria-label="`Select ${entry.name}`"
-                    @change="togglePath(entry)"
+                    @change="togglePath(entry.path)"
                   />
                 </td>
                 <td class="name">
@@ -875,8 +1311,18 @@ onUnmounted(() => {
                 <td class="mod hide-sm mono">{{ formatDate(entry.modified) }}</td>
                 <td class="mode hide-md mono">{{ entry.mode || '—' }}</td>
               </tr>
-              <tr v-if="!filtered.length">
-                <td colspan="6" class="muted pad">This folder is empty. Upload files or create a folder.</td>
+              <tr v-if="!filtered.length && !loading">
+                <td colspan="6" class="empty-cell">
+                  <div class="empty-state-box">
+                    <IconFolder :size="32" variant="windows" class="empty-icon" />
+                    <p class="empty-title">This folder is empty</p>
+                    <p class="empty-subtitle">Upload files or create a subfolder to get started.</p>
+                    <div class="empty-actions">
+                      <button type="button" class="btn primary" @click="pickUpload">Upload files</button>
+                      <button type="button" class="btn" @click="showMkdir = true">New folder</button>
+                    </div>
+                  </div>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -884,6 +1330,7 @@ onUnmounted(() => {
       </main>
     </div>
 
+    <!-- Context Menus -->
     <div
       v-if="ctx.open"
       class="ctx-menu"
@@ -891,52 +1338,70 @@ onUnmounted(() => {
       @click.stop
       @contextmenu.prevent
     >
-      <template v-if="ctxTargets.length">
-        <button
-          v-if="ctxTargets.length === 1"
-          type="button"
-          @click="openEntry(ctxTargets[0])"
-        >
-          {{ ctxTargets[0].is_dir ? 'Open folder' : 'Open / edit' }}
-        </button>
-        <button v-if="ctxCanEdit" type="button" @click="downloadEntry(ctxTargets[0])">Download</button>
-        <hr />
-        <button type="button" @click="setClipboard('copy')">Copy</button>
-        <button type="button" @click="setClipboard('cut')">Cut</button>
-        <button type="button" :disabled="!clipboard.mode" @click="pasteClipboard">Paste</button>
-        <button type="button" @click="beginMove">Move to…</button>
-        <button
-          v-if="ctxTargets.length === 1"
-          type="button"
-          @click="renameEntry(ctxTargets[0])"
-        >
-          Rename
-        </button>
-        <hr />
-        <button type="button" @click="compressTargets(ctxTargets)">Compress</button>
-        <button
-          v-if="ctxIsArchive"
-          type="button"
-          @click="unzipEntry(ctxTargets[0], false)"
-        >
-          Extract
-        </button>
-        <button
-          v-if="ctxIsArchive"
-          type="button"
-          @click="unzipEntry(ctxTargets[0], true)"
-        >
-          Extract here
-        </button>
-        <hr />
-        <button type="button" class="danger" @click="removeTargets(ctxTargets)">Delete</button>
+      <template v-if="isTrashMode">
+        <template v-if="ctxTrashTargets.length">
+          <button type="button" @click="restoreTrashTargets(ctxTrashTargets)">Restore</button>
+          <hr />
+          <button type="button" class="danger" @click="permanentDeleteTargets(ctxTrashTargets)">
+            Delete permanently
+          </button>
+        </template>
+        <template v-else>
+          <button type="button" @click="loadTrash">Refresh</button>
+          <button v-if="trashEntries.length" type="button" class="danger" @click="emptyTrash">
+            Empty Trash
+          </button>
+        </template>
       </template>
       <template v-else>
-        <button type="button" :disabled="!clipboard.mode" @click="pasteClipboard">Paste</button>
-        <button type="button" @click="showMkdir = true; closeContext()">New folder</button>
-        <button type="button" @click="showNewFile = true; closeContext()">New file</button>
-        <button type="button" @click="pickUpload(); closeContext()">Upload</button>
-        <button type="button" @click="load(); closeContext()">Refresh</button>
+        <template v-if="ctxTargets.length">
+          <button
+            v-if="ctxTargets.length === 1"
+            type="button"
+            @click="openEntry(ctxTargets[0])"
+          >
+            {{ ctxTargets[0].is_dir ? 'Open folder' : 'Open / edit' }}
+          </button>
+          <button v-if="ctxCanEdit" type="button" @click="downloadEntry(ctxTargets[0])">Download</button>
+          <hr />
+          <button type="button" @click="setClipboard('copy')">Copy</button>
+          <button type="button" @click="setClipboard('cut')">Cut</button>
+          <button type="button" :disabled="!clipboard.mode" @click="pasteClipboard">Paste</button>
+          <button type="button" @click="beginMove">Move to…</button>
+          <button
+            v-if="ctxTargets.length === 1"
+            type="button"
+            @click="renameEntry(ctxTargets[0])"
+          >
+            Rename
+          </button>
+          <hr />
+          <button type="button" @click="compressTargets(ctxTargets)">Compress</button>
+          <button
+            v-if="ctxIsArchive"
+            type="button"
+            @click="unzipEntry(ctxTargets[0], false)"
+          >
+            Extract archive…
+          </button>
+          <button
+            v-if="ctxIsArchive"
+            type="button"
+            @click="unzipEntry(ctxTargets[0], true)"
+          >
+            Extract here
+          </button>
+          <hr />
+          <button type="button" class="danger" @click="removeTargets(ctxTargets)">Move to Trash</button>
+        </template>
+        <template v-else>
+          <button type="button" @click="showMkdir = true">New folder</button>
+          <button type="button" @click="showNewFile = true">New file</button>
+          <button type="button" :disabled="!clipboard.mode" @click="pasteClipboard">Paste</button>
+          <hr />
+          <button type="button" @click="pickUpload">Upload</button>
+          <button type="button" @click="load">Refresh</button>
+        </template>
       </template>
     </div>
   </div>
@@ -944,7 +1409,7 @@ onUnmounted(() => {
 
 <style scoped>
 .fm {
-  --fm-bg: #e8eef4;
+  --fm-bg: #f1f5f9;
   --fm-panel: #ffffff;
   --fm-ink: #0f172a;
   --fm-muted: #64748b;
@@ -1008,7 +1473,8 @@ onUnmounted(() => {
 .crumbs {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.1rem;
+  gap: 0.15rem;
+  align-items: center;
   min-width: 0;
 }
 .crumbs button {
@@ -1018,7 +1484,20 @@ onUnmounted(() => {
   font-weight: 650;
   font-size: 0.82rem;
   cursor: pointer;
-  padding: 0.15rem 0.2rem;
+  padding: 0.15rem 0.25rem;
+  border-radius: 0.25rem;
+}
+.crumbs button:hover {
+  background: #e2e8f0;
+}
+.crumbs button.active {
+  color: var(--fm-ink);
+  cursor: default;
+}
+.crumbs button.back-crumb {
+  font-weight: bold;
+  padding: 0.15rem 0.4rem;
+  background: #e2e8f0;
 }
 .sep { color: #94a3b8; margin-right: 0.15rem; }
 .tools {
@@ -1080,6 +1559,8 @@ onUnmounted(() => {
   cursor: pointer;
 }
 .btn.primary { background: var(--fm-accent); color: #fff; border-color: transparent; }
+.btn.danger-btn { background: #fee2e2; color: #b91c1c; border-color: #fca5a5; }
+.btn.danger-btn:hover { background: #fecaca; }
 .btn.more { padding-inline: 0.5rem; }
 .new-wrap { position: relative; }
 .menu {
@@ -1119,9 +1600,28 @@ onUnmounted(() => {
   border-radius: 0.4rem;
   padding: 0.45rem 0.6rem;
 }
-.flash { margin: 0; padding: 0.45rem 0.85rem; font-size: 0.82rem; }
+.flash {
+  margin: 0;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.82rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
 .flash.ok { color: #047857; background: #ecfdf5; }
 .flash.bad { color: #b91c1c; background: #fef2f2; }
+.undo-btn {
+  border: 1px solid #059669;
+  background: #ffffff;
+  color: #047857;
+  font-weight: 700;
+  border-radius: 0.3rem;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  margin-left: 0.5rem;
+}
+.undo-btn:hover { background: #f0fdf4; }
 .fm-body {
   flex: 1;
   display: grid;
@@ -1158,6 +1658,15 @@ onUnmounted(() => {
   cursor: pointer;
 }
 .nav-item:hover, .nav-item.on { background: #dfe8f2; }
+.trash-badge {
+  margin-left: auto;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--fm-muted);
+  background: #e2e8f0;
+  padding: 0.1rem 0.35rem;
+  border-radius: 999px;
+}
 .nav-backdrop { display: none; }
 .pane { min-width: 0; display: flex; flex-direction: column; overflow: auto; }
 .queue { margin: 0.65rem 0.85rem 0; }
@@ -1188,181 +1697,178 @@ onUnmounted(() => {
   color: var(--fm-muted);
   background: #f8fafc;
 }
-.table tr.selected { background: #e8f1fb; }
-.table tbody tr { cursor: default; }
-.table tbody tr:hover { background: #f4f8fc; }
-.table tbody tr.selected:hover { background: #dde9f8; }
-.check { width: 2.2rem; }
-.row-open, .row-label {
+.table tr.selected { background: #eaf2fc !important; }
+.table tr:hover:not(.selected) { background: #f8fafc; }
+.table tr.parent { background: #fafbfc; }
+.row-open {
   border: none;
   background: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  font: inherit;
-  color: inherit;
-  padding: 0;
-  max-width: 100%;
+  font-weight: 700;
+  color: var(--fm-accent);
+  cursor: pointer;
+  padding: 0.2rem 0;
 }
-.row-open { cursor: pointer; }
+.row-label { display: inline-flex; align-items: center; gap: 0.45rem; font-weight: 600; }
 .file-badge {
-  display: inline-flex;
-  min-width: 2rem;
-  justify-content: center;
   font-size: 0.62rem;
   font-weight: 800;
-  color: var(--fm-accent);
-  background: #e8eef5;
-  border-radius: 0.3rem;
-  padding: 0.15rem 0.3rem;
+  color: #475569;
+  background: #e2e8f0;
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.25rem;
 }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; color: var(--fm-muted); }
+.mono { font-family: ui-monospace, monospace; font-size: 0.78rem; color: var(--fm-muted); }
+.empty-cell {
+  padding: 3rem 1.5rem !important;
+  text-align: center !important;
+}
+.empty-state-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+}
+.empty-icon {
+  opacity: 0.4;
+  margin-bottom: 0.25rem;
+}
+.empty-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--fm-ink);
+  margin: 0;
+}
+.empty-subtitle {
+  font-size: 0.8rem;
+  color: var(--fm-muted);
+  margin: 0 0 0.5rem;
+}
+.empty-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.pad { padding: 0.85rem; margin: 0; }
 .muted { color: var(--fm-muted); }
-.pad { padding: 1rem; }
-.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ctx-menu {
   position: fixed;
-  z-index: 80;
-  min-width: 12rem;
+  z-index: 50;
+  min-width: 12.5rem;
   background: var(--fm-panel);
   border: 1px solid var(--fm-line);
   border-radius: 0.55rem;
-  box-shadow: 0 14px 40px rgb(15 23 42 / 0.16);
-  padding: 0.3rem;
+  box-shadow: 0 16px 40px rgb(15 23 42 / 0.16);
+  padding: 0.35rem;
   display: grid;
 }
 .ctx-menu button {
   border: none;
   background: none;
   text-align: left;
-  padding: 0.48rem 0.65rem;
+  padding: 0.45rem 0.6rem;
   border-radius: 0.35rem;
   font-size: 0.82rem;
-  font-weight: 600;
-  color: inherit;
   cursor: pointer;
 }
-.ctx-menu button:hover { background: #eef3f8; }
-.ctx-menu button:disabled { opacity: 0.4; cursor: not-allowed; }
+.ctx-menu button:hover { background: #f1f5f9; }
 .ctx-menu button.danger { color: #b91c1c; }
-.ctx-menu hr {
-  border: none;
-  border-top: 1px solid var(--fm-line);
-  margin: 0.25rem 0.35rem;
-}
-
+.ctx-menu button:disabled { opacity: 0.4; cursor: not-allowed; }
+.ctx-menu hr { border: none; border-top: 1px solid #eef2f6; margin: 0.25rem 0; }
 .move-modal {
   position: fixed;
   inset: 0;
-  z-index: 80;
+  z-index: 45;
+  background: rgb(15 23 42 / 0.4);
   display: grid;
   place-items: center;
   padding: 1rem;
-  background: rgb(15 23 42 / 0.45);
 }
 .move-dialog {
-  width: min(28rem, 100%);
-  max-height: min(34rem, 88vh);
-  display: flex;
-  flex-direction: column;
-  gap: 0.55rem;
+  width: min(28rem, 94vw);
   background: var(--fm-panel);
   border: 1px solid var(--fm-line);
   border-radius: 0.75rem;
-  box-shadow: 0 18px 50px rgb(15 23 42 / 0.25);
-  padding: 0.85rem;
+  box-shadow: 0 20px 50px rgb(15 23 42 / 0.2);
+  display: flex;
+  flex-direction: column;
+  max-height: 80vh;
 }
 .move-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
+  padding: 0.75rem 0.95rem;
+  border-bottom: 1px solid var(--fm-line);
 }
-.move-head h3 {
-  margin: 0;
-  font-size: 1rem;
-}
+.move-head h3 { margin: 0; font-size: 0.95rem; }
 .move-crumbs {
+  padding: 0.45rem 0.95rem;
+  border-bottom: 1px solid #eef2f6;
+  font-size: 0.78rem;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.25rem;
+  gap: 0.3rem;
 }
 .move-crumbs .crumb {
   border: none;
-  background: #eef3f8;
+  background: none;
   color: var(--fm-accent);
-  border-radius: 0.35rem;
-  padding: 0.25rem 0.5rem;
-  font-size: 0.78rem;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
+  padding: 0;
 }
-.move-crumbs .crumb:hover { background: #dfe8f2; }
-.move-dest {
-  margin: 0;
-  font-size: 0.82rem;
-}
-.move-list {
-  flex: 1;
-  min-height: 10rem;
-  max-height: 18rem;
-  overflow: auto;
-  border: 1px solid var(--fm-line);
-  border-radius: 0.5rem;
-  background: #f8fafc;
-}
+.move-dest { margin: 0; padding: 0.45rem 0.95rem; font-size: 0.75rem; }
+.move-list { flex: 1; overflow-y: auto; padding: 0.45rem 0.6rem; max-height: 14rem; }
 .move-row {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 0.55rem;
-  padding: 0.55rem 0.7rem;
+  gap: 0.45rem;
   border: none;
-  border-bottom: 1px solid var(--fm-line);
-  background: transparent;
+  background: none;
   text-align: left;
+  padding: 0.4rem 0.45rem;
+  border-radius: 0.4rem;
+  font-size: 0.82rem;
   cursor: pointer;
-  font-size: 0.88rem;
-  color: inherit;
 }
-.move-row:hover { background: #eef3f8; }
-.move-row .move-open {
-  margin-left: auto;
-  font-size: 0.72rem;
-  color: var(--fm-muted);
-}
+.move-row:hover { background: #f1f5f9; }
+.move-open { margin-left: auto; font-size: 0.7rem; color: var(--fm-accent); font-weight: 700; }
 .move-foot {
   display: flex;
-  gap: 0.45rem;
   justify-content: flex-end;
+  gap: 0.45rem;
+  padding: 0.65rem 0.95rem;
+  border-top: 1px solid var(--fm-line);
 }
-
-@media (max-width: 1100px) {
-  .fm-bar { grid-template-columns: 1fr; }
-  .tools { justify-content: flex-start; }
-  .hide-md { display: none; }
-}
-@media (max-width: 860px) {
-  .nav-toggle { display: inline-flex; align-items: center; justify-content: center; }
+@media (max-width: 900px) {
+  .fm-bar { grid-template-columns: 1fr; gap: 0.45rem; }
   .fm-body { grid-template-columns: 1fr; }
+  .nav-toggle { display: inline-flex; align-items: center; justify-content: center; }
   .nav {
     position: fixed;
-    inset: 0 auto 0 0;
-    width: min(16rem, 86vw);
-    z-index: 40;
-    transform: translateX(-105%);
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 15rem;
+    z-index: 35;
+    transform: translateX(-100%);
     transition: transform 0.2s ease;
-    box-shadow: 8px 0 30px rgb(15 23 42 / 0.15);
+    box-shadow: 0 0 30px rgb(0 0 0 / 0.15);
   }
   .nav.open { transform: translateX(0); }
   .nav-backdrop {
     display: block;
     position: fixed;
     inset: 0;
-    background: rgb(15 23 42 / 0.35);
-    z-index: 35;
+    background: rgb(0 0 0 / 0.35);
+    z-index: 30;
   }
+}
+@media (max-width: 640px) {
   .hide-sm { display: none; }
-  .search input { width: 100%; min-width: 8rem; }
+}
+@media (max-width: 800px) {
+  .hide-md { display: none; }
 }
 </style>

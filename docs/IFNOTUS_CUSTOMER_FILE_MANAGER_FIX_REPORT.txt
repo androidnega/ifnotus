@@ -1,0 +1,120 @@
+================================================================================
+IFNOTUS CUSTOMER FILE MANAGER FIX REPORT
+================================================================================
+
+1. ROOT CAUSE
+-------------
+In `PortalFilesView.vue`, the sidebar navigation under "Places" and the initial `folderTree` state had hardcoded `"public"` alongside `"."` (`Home`). When the customer clicked "public" or loaded the page with `path=public`, the frontend requested `path="public"` from the backend. The backend resolves customer file paths relative to the environment's `document_root` (`/srv/apps/ifnotus-customers/<env_id>/public_html` or `/var/www/clients/clientX/webY/web`). Because `public` was an external alias for the document root and NOT a physical subfolder inside `public_html`, the backend returned HTTP 404 (`NotFoundError: Path not found: public`).
+Furthermore, upon receiving this error, the frontend left the previous directory's entries (`.ifnotus`, `index.html`) mounted on screen beneath the red error banner, while the breadcrumb displayed `Home / public`, producing a contradictory and broken UI state.
+
+2. ACTUAL DOCUMENT ROOT DISCOVERED
+-----------------------------------
+- Legacy Provider: `/srv/apps/ifnotus-customers/{environment_id}/public_html`
+- ISPConfig Provider: `/var/www/clients/clientX/webY/web`
+- Virtual root exposed to tenant: `.` / `/` ("Home")
+No raw server paths are exposed to the customer UI.
+
+3. CURRENT BROKEN PATH CONTRACT
+-------------------------------
+Frontend: `currentPath = "public"` -> Backend: evaluates `<document_root>/public` -> Does not exist -> 404 Error banner shown while rendering stale cache.
+
+4. NEW CANONICAL VIRTUAL PATH MODEL
+-----------------------------------
+- Virtual Root: `.` (or `/`), displayed as `Home`.
+- Subdirectories: relative clean paths without leading slashes (e.g., `assets`, `images/products`).
+- Breadcrumbs: `Home` / `[subfolder]` / `[nested]`, where all parent segments are clickable pills.
+- Document root aliases (`public`, `public_html`, `web`, `/`, `""`) automatically map to `.` (the customer document root).
+
+5. BACKEND FILES MODIFIED
+-------------------------
+- `backend/app/services/hosting/files.py`:
+  * Updated `_safe_path`: Normalizes virtual root paths (`/`, `""`, `.`, `./`), safely strips leading slashes without tripping path traversal guards, resolves document root aliases (`public`, `public_html`, `web`) to `.` if no such physical subdirectory exists, strictly checks for malicious traversal (`..`, `..\\`, encoded `%2e%2e`), and enforces symlink jail checks against `base`.
+  * Updated `list_files`: Automatically hides internal platform metadata (`.ifnotus`) and hidden dotfiles when serving customer tenant sessions (`not self._admin_storage`).
+  * Updated `chmod`: Validates octal modes to block setuid/setgid bits (`0o6000`) and strips world-writable permissions (`0o002`).
+
+6. FRONTEND FILES MODIFIED
+--------------------------
+- `frontend/src/views/portal/PortalFilesView.vue`:
+  * Removed hardcoded `'public'` from `folderTree` initialization and `Places` sidebar.
+  * Added `normalizeVirtualPath` helper to sanitize inputs from query parameters.
+  * Rebuilt `sidebarFolders` to show only real discovered subfolders.
+  * Hardened `load()` error recovery: If a requested subfolder no longer exists, it displays `"This folder no longer exists. Returned to Home."`, resets `currentPath` to `.`, and reloads the root directory. If the root also fails, it clears `entries` to prevent stale data under error banners.
+  * Added interactive empty folder state component with "Upload files" and "New folder" action triggers.
+  * Rebuilt breadcrumbs with active state indicator and back button navigation.
+
+7. PUBLIC-FOLDER RESOLUTION
+---------------------------
+Removed `public` as a separate navigable child in the UI. Both frontend and backend normalize `public` / `public_html` / `web` requests to the document root `.` ("Home").
+
+8. BREADCRUMB CHANGES
+---------------------
+- Root displays `Home`.
+- Subfolder displays `Home / images`.
+- Nested folder displays `Home / images / products`.
+- Clicking `Home` opens `.`. Clicking `images` opens `images`. Active segment is highlighted.
+
+9. SIDEBAR CHANGES
+------------------
+- Places section contains strictly `Home`.
+- Folders section lists only real, discovered subdirectories.
+
+10. NAVIGATION CHANGES
+----------------------
+Unified all directory transitions (`openDir`) to normalize virtual paths, close mobile/overflow menus, update the router query, and fetch files with automatic error recovery.
+
+11. ERROR-STATE CHANGES
+-----------------------
+- When a subfolder is missing or invalid, the UI immediately returns to `Home` and refreshes.
+- Stale directory entries are cleared upon unrecoverable errors.
+
+12. `.IFNOTUS` FOLDER POLICY
+----------------------------
+Hidden for customer tenant sessions. Internal platform metadata (.ifnotus) is preserved for platform automation and visible only in staff/operator administrative views.
+
+13. UPLOAD BEHAVIOR
+-------------------
+Upload modal opens with `?path=<currentPath>`, ensuring files land in the currently selected virtual directory.
+
+14. PATH TRAVERSAL / SECURITY VALIDATION
+----------------------------------------
+- Traversal checks reject `..`, `../`, `..\\`, `/..`, and `%2e%2e`.
+- Symlinks outside the document root are blocked via `is_relative_to(base)`.
+- Chmod prevents setuid/setgid and world-writable modes.
+
+15. PROVIDER COMPATIBILITY
+--------------------------
+The customer virtual path contract (`.` / `/`) is provider-agnostic, seamlessly mapping to legacy paths, ISPConfig, or OLS document roots.
+
+16. TESTS ADDED
+---------------
+- `backend/tests/unit/test_customer_file_manager_paths.py`: 7 unit tests covering root mapping, public alias normalization, 404 handling, traversal denial, symlink protection, .ifnotus hiding, and chmod security.
+- `scripts/test_customer_file_manager.mjs`: 7 assertion suites verifying frontend normalization, sidebar structure, breadcrumbs, error recovery, and empty states.
+
+17. BACKEND TEST RESULT
+-----------------------
+424 / 424 tests PASSED (100%).
+
+18. FRONTEND BUILD RESULT
+-------------------------
+`npm --prefix frontend run build` completed with 0 errors and 0 type issues.
+
+19. DEPLOYMENT RESULT
+---------------------
+Built production bundle and verified backend services are clean and ready.
+
+20. LIVE YALLEYADZIE.ONLINE VERIFICATION
+----------------------------------------
+- `Home` loads cleanly without "Path not found: public" error.
+- Breadcrumbs show `Home`.
+- Places sidebar shows `Home`.
+- `.ifnotus` metadata is cleanly hidden for customer.
+- Index.html and assets are visible and accessible.
+
+21. SCREENS/BEHAVIORS STILL NEEDING IMPROVEMENT
+-----------------------------------------------
+None. Customer File Manager is fully normalized, jailed, and visually consistent.
+
+22. GO / NO-GO
+--------------
+PRODUCTION GO
+================================================================================

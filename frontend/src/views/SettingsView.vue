@@ -10,6 +10,7 @@ import { useAuthStore } from '@/stores/auth'
 import { usePolling } from '@/composables/usePolling'
 import { Permission } from '@/lib/permissions'
 import { usePermissions } from '@/composables/usePermissions'
+import { isPlatformOwner, isPlatformAdmin } from '@/lib/roles'
 import Skeleton from '@/components/ui/Skeleton.vue'
 import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import UiTabBar from '@/components/ui/UiTabBar.vue'
@@ -31,7 +32,10 @@ interface WebmailSettings {
 const router = useRouter()
 const auth = useAuthStore()
 const { can } = usePermissions()
-const canManageSecurity = computed(() => can(Permission.SYSTEM_ADMIN))
+const isOwner = computed(() => isPlatformOwner(auth.user))
+const isAdmin = computed(() => isPlatformAdmin(auth.user))
+
+const canManageSecurity = computed(() => isOwner.value || can(Permission.SYSTEM_ADMIN))
 
 const { data: readiness, refresh: refreshReadiness } = usePolling<ReadinessResponse>(
   async () => (await healthApi.readiness()).data,
@@ -46,7 +50,7 @@ const aiModel = ref('deepseek-chat')
 const aiAgentName = ref('SNR Dev')
 const aiMessage = ref<{ ok: boolean; text: string } | null>(null)
 const settingsTab = ref('account')
-const canManageAi = computed(() => can(Permission.SYSTEM_ADMIN))
+const canManageAi = computed(() => isOwner.value)
 
 const webmailSettings = ref<WebmailSettings | null>(null)
 const webmailLoading = ref(false)
@@ -55,9 +59,11 @@ const webmailWhatsapp = ref('+233541069241')
 const webmailProduct = ref('IFNOTUS Webmail')
 const webmailAutoDetect = ref(true)
 const webmailMessage = ref<{ ok: boolean; text: string } | null>(null)
-const canManageWebmail = computed(() => can(Permission.SYSTEM_ADMIN))
-const canManageIntegrations = computed(
-  () => can(Permission.PLATFORM_WRITE) || can(Permission.SYSTEM_ADMIN),
+const canManageWebmail = computed(() => isOwner.value || isAdmin.value || can(Permission.SYSTEM_ADMIN))
+const canManageIntegrations = computed(() => isOwner.value)
+const canManageTheme = computed(() => isOwner.value || isAdmin.value)
+const canManageStaff = computed(
+  () => isOwner.value && !auth.user?.privilege_viewing_as,
 )
 
 const siteTheme = ref('studio-light')
@@ -122,9 +128,6 @@ const staffList = ref<
   }>
 >([])
 const staffLoading = ref(false)
-const canManageStaff = computed(
-  () => can(Permission.SYSTEM_ADMIN) && !auth.user?.privilege_viewing_as,
-)
 
 const roleLabels: Record<string, string> = {
   admin: 'Business admin — plans, orders, customers, env remediation',
@@ -136,15 +139,13 @@ const roleLabels: Record<string, string> = {
 
 
 const settingsTabs = computed(() => {
-  const tabs = [
-    { id: 'account', label: 'Account' },
-    { id: 'theme', label: 'Theme' },
-    { id: 'integrations', label: 'Integrations' },
-    { id: 'ai', label: 'AI agent' },
-    { id: 'webmail', label: 'Webmail' },
-  ]
+  const tabs = [{ id: 'account', label: 'Account' }]
+  if (canManageTheme.value) tabs.push({ id: 'theme', label: 'Theme' })
+  if (canManageIntegrations.value) tabs.push({ id: 'integrations', label: 'Integrations' })
+  if (canManageAi.value) tabs.push({ id: 'ai', label: 'AI agent' })
+  if (canManageWebmail.value) tabs.push({ id: 'webmail', label: 'Webmail' })
   if (canManageStaff.value) tabs.push({ id: 'staff', label: 'Staff' })
-  tabs.push({ id: 'health', label: 'Health' })
+  if (isOwner.value) tabs.push({ id: 'health', label: 'Health' })
   return tabs
 })
 

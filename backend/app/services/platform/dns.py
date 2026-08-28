@@ -183,21 +183,24 @@ class EnvironmentDnsService:
             **{k: v for k, v in readiness.items() if k != "message"},
         }
 
-    def required_external_records(self, domain: str | None, ip: str) -> list[dict]:
-        """A/CNAME rows for customers who keep DNS at their registrar."""
-        from app.services.platform.panel_access import control_panel_hostname
+    def required_external_records(self, domain: str | None, ip: str, *, cname_target: str = "ifnotus.space") -> list[dict]:
+        """CNAME records for customers who keep DNS at their registrar (no raw IP exposed)."""
+        from app.services.platform.panel_access import control_panel_hostname, webmail_hostname
 
         name = (domain or "").strip().lower().rstrip(".")
-        if not name or not ip or self.is_included_hostname(name):
+        if not name or self.is_included_hostname(name):
             return []
         cpanel = control_panel_hostname(name)
+        webmail = webmail_hostname(name)
+        target = cname_target or "ifnotus.space"
         rows: list[dict] = [
-            {"record_type": "A", "host": "@", "value": ip, "ttl": 3600},
-            {"record_type": "A", "host": "www", "value": ip, "ttl": 3600},
+            {"record_type": "CNAME", "host": "www", "value": f"{name}.", "ttl": 3600},
         ]
         if cpanel and cpanel.startswith("cpanel."):
-            rows.append({"record_type": "A", "host": "cpanel", "value": ip, "ttl": 3600})
-        rows.append({"record_type": "A", "host": "mail", "value": ip, "ttl": 3600})
+            rows.append({"record_type": "CNAME", "host": "cpanel", "value": f"{target}.", "ttl": 3600})
+        if webmail and webmail.startswith("webmail."):
+            rows.append({"record_type": "CNAME", "host": "webmail", "value": f"{target}.", "ttl": 3600})
+        rows.append({"record_type": "CNAME", "host": "mail", "value": f"{target}.", "ttl": 3600})
         return rows
 
     def _server_ips(self) -> set[str]:

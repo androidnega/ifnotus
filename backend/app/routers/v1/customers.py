@@ -12,7 +12,7 @@ from app.api.deps import AccessControlDep, CurrentUser, DbSession, SettingsDep
 from app.core.exceptions import AppException, AuthenticationError, AuthorizationError, NotFoundError
 from app.core.permissions import Permission, Role
 from app.core.security import create_token_pair
-from app.models.platform import HostingPlan, Subscription
+from app.models.platform import HostingPlan, PlatformAuditLog, Subscription
 from app.schemas.ai import (
     AiApplyActionRequest,
     AiChatRequest,
@@ -74,6 +74,10 @@ from app.schemas.platform import (
     CustomerFileCopyRequest,
     CustomerFileExtractRequest,
     CustomerFileCompressRequest,
+    CustomerTrashEntrySchema,
+    CustomerTrashListResponse,
+    CustomerTrashRestoreRequest,
+    CustomerTrashMoveRequest,
     CustomerPasswordChangeRequest,
     CustomerPhoneOtpRequest,
     CustomerPhoneOtpRequestResponse,
@@ -88,6 +92,8 @@ from app.schemas.platform import (
     StudentHostnameRequest,
     StudentHostnameResponse,
     PanelAliasResolveResponse,
+    HostingSsoHandoffRequest,
+    HostingSsoHandoffResponse,
     PanelLoginRequest,
     PanelPasswordCreateRequest,
     PanelStatusResponse,
@@ -865,13 +871,190 @@ async def delete_env_file(
     session: DbSession,
     settings: SettingsDep,
     path: str = Query(...),
+    permanent: bool = Query(default=False),
 ) -> OperationResult:
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     await TenantService(session).require_capability(env, "file_manager", label="File manager")
     roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
-    return await _tenant_files(settings, env, roots).delete(path)
+    res = await _tenant_files(settings, env, roots).delete(path, permanent=permanent, deleted_by=str(user.id))
+    session.add(
+        PlatformAuditLog(
+            customer_id=customer.id,
+            actor_id=user.id,
+            action="file_permanently_deleted" if permanent else "file_moved_to_trash",
+            target_type="environment_file",
+            target_id=str(environment_id),
+            result="success" if res.success else "failure",
+            metadata_json={"path": path, "permanent": permanent},
+        )
+    )
+    await session.commit()
+    return res
+
+
+@router.get(
+    "/environments/{environment_id}/files/trash",
+    response_model=CustomerTrashListResponse,
+)
+async def list_env_trash(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> CustomerTrashListResponse:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "file_manager", label="File manager")
+    roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
+    res = await _tenant_files(settings, env, roots).list_trash()
+    return CustomerTrashListResponse(
+        entries=[
+            CustomerTrashEntrySchema(
+                trash_id=e.trash_id,
+                original_path=e.original_path,
+                display_name=e.display_name,
+                item_type=e.item_type,
+                size_bytes=e.size_bytes,
+                deleted_at=e.deleted_at,
+                deleted_by=e.deleted_by,
+            )
+            for e in res.entries
+        ],
+        total_size_bytes=res.total_size_bytes,
+        count=res.count,
+    )
+
+
+@router.post(
+    "/environments/{environment_id}/files/trash",
+    response_model=OperationResult,
+)
+async def move_env_trash(
+    environment_id: UUID,
+    body: CustomerTrashMoveRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> OperationResult:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "file_manager", label="File manager")
+    roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
+    res = await _tenant_files(settings, env, roots).move_to_trash(body.paths, deleted_by=str(user.id))
+    session.add(
+        PlatformAuditLog(
+            customer_id=customer.id,
+            actor_id=user.id,
+            action="file_moved_to_trash",
+            target_type="environment_file",
+            target_id=str(environment_id),
+            result="success" if res.get("success") else "failure",
+            metadata_json={"paths": body.paths, "moved": res.get("moved", 0), "failed": res.get("failed", 0)},
+        )
+    )
+    await session.commit()
+    return OperationResult(success=res.get("success", True), message=res.get("message", "Moved to Trash"))
+
+
+@router.post(
+    "/environments/{environment_id}/files/trash/restore",
+    response_model=OperationResult,
+)
+async def restore_env_trash(
+    environment_id: UUID,
+    body: CustomerTrashRestoreRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> OperationResult:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "file_manager", label="File manager")
+    roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
+    res = await _tenant_files(settings, env, roots).restore_from_trash(
+        body.trash_id, conflict_mode=body.conflict_mode
+    )
+    session.add(
+        PlatformAuditLog(
+            customer_id=customer.id,
+            actor_id=user.id,
+            action="file_restored",
+            target_type="environment_file",
+            target_id=str(environment_id),
+            result="success" if res.success else "failure",
+            metadata_json={"trash_id": body.trash_id, "conflict_mode": body.conflict_mode},
+        )
+    )
+    await session.commit()
+    return res
+
+
+@router.delete(
+    "/environments/{environment_id}/files/trash/{trash_id}",
+    response_model=OperationResult,
+)
+async def delete_env_trash_item(
+    environment_id: UUID,
+    trash_id: str,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> OperationResult:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "file_manager", label="File manager")
+    roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
+    res = await _tenant_files(settings, env, roots).permanent_delete_trash(trash_id)
+    session.add(
+        PlatformAuditLog(
+            customer_id=customer.id,
+            actor_id=user.id,
+            action="file_permanently_deleted",
+            target_type="environment_file",
+            target_id=str(environment_id),
+            result="success" if res.success else "failure",
+            metadata_json={"trash_id": trash_id},
+        )
+    )
+    await session.commit()
+    return res
+
+
+@router.delete(
+    "/environments/{environment_id}/files/trash",
+    response_model=OperationResult,
+)
+async def empty_env_trash(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> OperationResult:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "file_manager", label="File manager")
+    roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
+    res = await _tenant_files(settings, env, roots).empty_trash()
+    session.add(
+        PlatformAuditLog(
+            customer_id=customer.id,
+            actor_id=user.id,
+            action="trash_emptied",
+            target_type="environment_file",
+            target_id=str(environment_id),
+            result="success" if res.success else "failure",
+            metadata_json={},
+        )
+    )
+    await session.commit()
+    return res
 
 
 def _tenant_files(settings, env, roots) -> FileManagerService:
@@ -4028,6 +4211,33 @@ async def resolve_panel_alias(
         environment_id=env.id,
         domain=env.domain or lookup,
         status=env.status,
+    )
+
+
+@router.post("/sso-handoff", response_model=HostingSsoHandoffResponse)
+async def create_hosting_sso_handoff(
+    body: HostingSsoHandoffRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> HostingSsoHandoffResponse:
+    """Create a short-lived, single-use SSO token for cross-origin customer cPanel navigation."""
+    from app.services.platform.sso import HostingSsoService
+
+    service = HostingSsoService(settings, session)
+    result = await service.create_handoff(
+        user,
+        environment_id=body.environment_id,
+        domain=body.domain,
+        tab=body.tab,
+    )
+    return HostingSsoHandoffResponse(
+        handoff_url=result["handoff_url"],
+        token=result["token"],
+        target_host=result["target_host"],
+        environment_id=result["environment_id"],
+        domain=result["domain"],
+        expires_in=result["expires_in"],
     )
 
 

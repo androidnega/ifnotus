@@ -1,0 +1,216 @@
+# IFNOTUS FILE MANAGER AUDIT & UNIFICATION SPECIFICATION
+## Aligning the Tenant File Manager with the Main Hosting Leader File Manager
+
+Audit Date: August 28, 2026
+Auditor Roles: Lead Frontend Architect, Lead Hosting Platform Architect, Lead UX/UI Systems Engineer
+Focus: Comparative Audit of Staff/Admin File Manager vs. Tenant/Customer File Manager
+Goal: Identify all inconsistencies, behavioral discrepancies, and structural gaps to unify the file manager experience across all roles while maintaining strict tenant sandboxing.
+
+================================================================================
+1. EXECUTIVE SUMMARY & CORE PRINCIPLE
+================================================================================
+
+Currently in IFNOTUS, there are THREE disparate file manager experiences across the codebase:
+1. The "Bigger" Staff / Hosting Leader File Manager:
+   - Primary Views: `frontend/src/views/FilesView.vue`, `FileEditorView.vue`, `FileUploadView.vue`
+   - Supporting Components: `CodeEditor.vue`, `DiffEditor.vue`, `FileTransferQueue.vue`, `AiAgentPanel.vue`
+   - Backend Router: `backend/app/routers/v1/files.py` -> `FileManagerService`
+
+2. The Dedicated Tenant / Customer File Manager:
+   - Primary Views: `frontend/src/views/portal/PortalFilesView.vue`, `PortalFileEditorView.vue`, `PortalFileUploadView.vue`
+   - Supporting Components: `PortalAiPanel.vue`, `FileTransferQueue.vue`
+   - Backend Router: `backend/app/routers/v1/customers.py` -> `_tenant_files` -> `FileManagerService`
+
+3. The Embedded Site Workspace Files Tab:
+   - Component: `frontend/src/components/portal/PortalSitePanel.vue` (Files subtab)
+   - Composable: `frontend/src/composables/usePortalSiteTools.ts`
+   - Ad-hoc, simplified file list and inline textarea editing.
+
+CRITICAL PROBLEM:
+The file management experience is fragmented. The Staff File Manager has powerful features (list/grid view, 4 layout styles, search filtering, show/hide hidden dotfiles, right-hand metadata drawer with octal chmod, diff comparisons), while the Tenant File Manager has custom desktop-like paradigms (left folder tree, multi-select with shift/cmd, floating context menu) and the embedded hosting panel files tab has a rudimentary 3rd implementation with missing capabilities.
+
+CORE PRINCIPLE:
+"The behavior, reactions, controls, and editor capabilities of the Tenant File Manager MUST mirror the main Hosting Leader File Manager identically. The ONLY difference between the two is the scope of storage roots:
+- Platform Owner / Hosting Leader: Can inspect authorized server storage roots or specific tenant roots.
+- Tenant / Customer: Strictly jailed to their own environment's document root (`public_html` / `web`).
+Every other UX behavior—listing, grid/list toggle, sorting, search, breadcrumbs, selection drawer, file editor, diff comparison, chunked upload queue, archive extraction, and error handling—MUST BE UNIFIED."
+
+================================================================================
+2. COMPREHENSIVE FEATURE & UX COMPARISON MATRIX
+================================================================================
+
+| Capability / Feature | Staff / Main File Manager (`FilesView.vue`) | Dedicated Customer FM (`PortalFilesView.vue`) | Embedded Site FM (`PortalSitePanel.vue`) | Consistency Verdict |
+| :--- | :--- | :--- | :--- | :--- |
+| **Storage Root Scoping** | Multi-root selector (`root:`, `app:`, `storage:`) | Implicit to single Environment ID | Implicit to single Environment ID | CORRECT (Proper sandbox separation) |
+| **View Modes** | List View + Grid View (`list` / `grid`) | List View Only | List View Only | **INCONSISTENT** (Customer lacks Grid) |
+| **Look & Density Styles**| 4 Styles: `default`, `windows`, `unix`, `compact` | Single hardcoded layout | Single hardcoded table | **INCONSISTENT** (Missing in Customer) |
+| **Sorting** | Sort by Name, Size, Modified, Type (Asc/Desc) | Sort by Name (Folder first) | Sort by Name only | **INCONSISTENT** (Customer lacks multi-sort) |
+| **Search & Filtering** | Real-time text search + Show/Hide dotfiles toggle | Text search filter only | No search filter | **INCONSISTENT** (Customer lacks dotfile toggle) |
+| **Breadcrumb Navigation**| Interactive root-to-folder breadcrumbs | Interactive Home-to-folder breadcrumbs | Simple ".." back navigation | **INCONSISTENT** (Embedded lacks crumbs) |
+| **Sidebar Tree** | Not present (uses root dropdown) | Left directory tree with expansion | Not present | **INCONSISTENT** (Fragmented paradigms) |
+| **Selection Model** | Single file click opens Inspector Drawer | Multi-select (Shift+Click, Cmd+Click, Select All) | Single row action buttons | **INCONSISTENT** (Divergent selection UX) |
+| **Context Menu** | Inline action menu (ellipsis dropdown) | Desktop-style right-click custom context menu | Row-level buttons | **INCONSISTENT** (Divergent interaction model)|
+| **File Inspector / Drawer**| Right drawer: Size, MIME, Modified, Octal Chmod | No Inspector Drawer (Only modal prompts) | No Inspector | **INCONSISTENT** (Customer missing Inspector) |
+| **Permissions (chmod)** | Full octal chmod modal (644, 755, etc.) | Not exposed to Customer | Not exposed to Customer | **INCONSISTENT** (Tenants cannot fix file modes)|
+| **Archive Compression** | Tar.gz & Zip compression | Tar.gz & Zip compression | Not available in embedded view | **INCONSISTENT** |
+| **Archive Extraction** | 1-click Unzip / Tar extract | 1-click Unzip / Tar extract | Basic extract button | Minor difference |
+| **Upload Architecture** | Drag & drop + `FileTransferQueue` store | Drag & drop + `FileTransferQueue` store | Native single-file `<input>` bypass | **INCONSISTENT** (Embedded bypasses queue store)|
+| **Chunked Large Uploads**| Supported via `/files/upload/chunk` | Supported via `/environments/.../upload/chunk` | Not supported (fails on >50MB files)| **INCONSISTENT** |
+| **Code Editor** | Full `CodeEditor.vue` + `DiffEditor.vue` (Monaco) | Full `CodeEditor.vue` + `DiffEditor.vue` (Monaco) | Primitive `<textarea>` in modal | **INCONSISTENT** (Embedded has crude editor) |
+| **Editor Customization** | Dark/Light theme, Font 10-36px, Word-wrap | Dark/Light theme, Font 10-36px, Word-wrap | None (fixed textarea) | **INCONSISTENT** |
+| **AI Coding Assistant** | Integrated `AiAgentPanel.vue` with Diff Review | Integrated `PortalAiPanel.vue` with Undo | Not available | **INCONSISTENT** (Dual AI component maintenance)|
+
+================================================================================
+3. DETAILED INCONSISTENCIES & BEHAVIORAL GAPS
+================================================================================
+
+### A. Navigation & Breadcrumb Behavior
+* **Main FM:** Renders high-visibility interactive breadcrumb pills: `[Root: public_html] / [wp-content] / [plugins]`. Clicking any segment navigates instantly with full state preservation.
+* **Tenant FM (`PortalFilesView.vue`):** Uses breadcrumbs starting with a static `Home` crumb. 
+* **Embedded FM (`PortalSitePanel.vue`):** Has no breadcrumbs at all; only displays the raw string path and a `..` up-arrow button. Users cannot jump back multiple folder levels.
+
+### B. View Density, Grid/List Modes & Look Styles
+* **Main FM:** Provides persistent user preferences (`ifnotus.files.view`, `ifnotus.files.sort`, `ifnotus.files.look` in `localStorage`). Operators can switch between a high-density Linux tabular view, a Windows Explorer-like view, and a responsive image/file thumbnail grid.
+* **Tenant FM:** Completely lacks Grid view and density options. For customers uploading media, images, or themes, the lack of a Grid Thumbnail mode is a severe UX deficit.
+
+### C. File Metadata & Inspector Panel
+* **Main FM:** Clicking an entry highlights it and opens a polished slide-over File Inspector drawer displaying:
+  - Exact file size in bytes and formatted human-readable units.
+  - MIME type (e.g. `application/x-httpd-php`, `image/webp`).
+  - Full modification timestamp and raw Unix permission mode (`0644`, `-rw-r--r--`).
+  - Interactive octal chmod controls to fix permission issues with WordPress or PHP scripts.
+  - Direct Action triggers: Edit, Download, Rename, Move, Duplicate, Delete.
+* **Tenant FM:** Has no Inspector drawer. Clicking a folder navigates, clicking a file opens it in editor or downloads it immediately. To see file details, customers have no recourse.
+
+### D. Multi-Selection vs Context Menu Fragmentation
+* **Main FM:** Uses a unified top toolbar with contextual action buttons that enable when an item is focused, accompanied by an action menu dropdown per row.
+* **Tenant FM:** Implemented a separate desktop-like selection system (holding Shift/Ctrl to select multiple files) and an intercepting HTML5 right-click context menu (`@contextmenu.prevent="onContextMenu"`). While flexible, this diverges completely from the rest of IFNOTUS's design system and causes mobile/tablet touch interaction failures.
+
+### E. The Triple Editor Redundancy
+* There are currently THREE editor surfaces:
+  1. `FileEditorView.vue` (Staff): Uses `CodeEditor.vue` (Monaco engine), handles `app_id` and `root_id` query parameters, connects to `AiAgentPanel.vue`, and offers split Diff comparison.
+  2. `PortalFileEditorView.vue` (Tenant standalone): Uses `CodeEditor.vue`, handles `env` and `path` query parameters, connects to `PortalAiPanel.vue`.
+  3. `PortalSitePanel.vue` (Embedded hosting tab): Embeds an ad-hoc inline `<textarea>` with zero syntax highlighting, zero line numbers, and no auto-save or diff review.
+* **Issue:** Customers who open a file from the hosting panel get a broken, unstyled textarea, whereas customers who navigate to the standalone editor get Monaco. This creates massive user confusion.
+
+### F. File Upload & Queue Processing
+* **Main FM & Standalone Tenant FM:** Use `FileTransferQueue.vue` powered by Pinia store (`stores/fileTransfers.ts`), handling chunked multipart streaming, pause/resume, and background uploads.
+* **Embedded Hosting Panel FM:** Uses direct Axios `multipart/form-data` single-shot POST. If a customer uploads a 100MB WordPress plugin or theme .zip from the hosting panel, it bypasses chunking and fails with Nginx 413 or timeout errors.
+
+================================================================================
+4. TECHNICAL & ARCHITECTURAL DISCREPANCIES (BACKEND / API)
+================================================================================
+
+1. **Endpoint Symmetry:**
+   - Staff Endpoints: `/api/v1/files/*` (e.g. `/content`, `/mkdir`, `/move`, `/copy`, `/unzip`, `/compress`, `/chmod`, `/upload`, `/upload/chunk`)
+   - Tenant Endpoints: `/api/v1/customers/environments/{id}/files/*` (mirroring the exact same operations)
+   - **Discrepancy:** The backend service `FileManagerService` already implements all operations for both. However, the tenant router (`customers.py`) omitted the `/chmod` endpoint, preventing customers from fixing standard file permission bugs (e.g. `chmod 755 wp-content/uploads`).
+
+2. **Query Parameter Conventions:**
+   - Staff uses `?root=root_id&path=sub/path`
+   - Tenant uses `?env=environment_id&path=sub/path`
+   - **Discrepancy:** When standardizing components (`CodeEditor.vue`, `DiffEditor.vue`), components must accept a unified prop adapter (e.g., `scope: { type: 'staff' | 'tenant', id: string, path: string }`).
+
+================================================================================
+5. UNIFIED TARGET ARCHITECTURE (STANDARD MODEL)
+================================================================================
+
+To ensure that the Tenant File Manager and the Hosting Leader File Manager behave identically and react with the same high-level quality:
+
+### Phase 1: Shared Core File Manager Component (`FileManagerWorkspace.vue`)
+Extract the complete UI logic from `FilesView.vue` into a reusable, highly polished base component:
+```text
+frontend/src/components/files/FileManagerWorkspace.vue
+```
+This component will accept:
+- `scopeType`: `'staff'` | `'tenant'`
+- `scopeId`: `string` (Root ID for staff, Environment ID for tenant)
+- `allowedRoots`: `Array<FileRoot>` (Multiple for staff, single Jail Root for tenant)
+- `canChmod`: `boolean`
+- `canWrite`: `boolean`
+
+Features delivered identically to both Staff and Tenant:
+- [x] Dual View: List View & Grid Thumbnail View.
+- [x] 4 Density Styles: Default, Windows Explorer, Unix Console, Compact.
+- [x] Multi-sort: Name, Size, Modified, Type (Ascending/Descending).
+- [x] Real-time search filter + "Show Hidden Files" toggle.
+- [x] Interactive breadcrumb bar with 1-click folder jumping.
+- [x] Slide-over File Inspector Drawer with metadata, MIME type, and action triggers.
+- [x] Chmod modal (safe user-mode permissions for tenant).
+- [x] Integrated `FileTransferQueue` with chunked upload stream.
+- [x] 1-click Archive creation (.zip / .tar.gz) and Extract.
+
+### Phase 2: Deprecate the Crude Embedded `<textarea>`
+- Eliminate the inline text editor and custom file listing inside `PortalSitePanel.vue` and `usePortalSiteTools.ts`.
+- Embed the unified `FileManagerWorkspace.vue` directly inside the Hosting Panel's "Files" tab.
+- When editing a file, always route to the unified Monaco-powered `FileEditorView` (or open the shared `CodeEditor.vue` modal).
+
+### Phase 3: Unified Code & Diff Editor
+- Merge `FileEditorView.vue` and `PortalFileEditorView.vue` into a single unified `UniversalFileEditor.vue`.
+- Unify AI assist panels (`AiAgentPanel.vue` / `PortalAiPanel.vue`) into a single adaptive AI Code Review drawer.
+
+================================================================================
+6. ACTIONABLE REMEDIATION & IMPLEMENTATION ROADMAP
+================================================================================
+
+1. **Step 1: Backend Chmod & Quota Alignment**
+   - Add `/environments/{environment_id}/files/chmod` to `backend/app/routers/v1/customers.py`, restricted to customer-safe masks (0644 for files, 0755 for directories; disallowing setuid/setgid).
+
+2. **Step 2: Component Extraction (`FileManagerWorkspace.vue`)**
+   - Extract toolbar, view-toggles, look-styles, breadcrumbs, search, file table/grid, and inspector drawer from `FilesView.vue` into `components/files/FileManagerWorkspace.vue`.
+
+3. **Step 3: Update `FilesView.vue` (Staff)**
+   - Wire `FilesView.vue` to use `FileManagerWorkspace.vue` with `scopeType="staff"`.
+
+4. **Step 4: Update `PortalFilesView.vue` (Tenant Standalone)**
+   - Wire `PortalFilesView.vue` to use `FileManagerWorkspace.vue` with `scopeType="tenant"`.
+
+5. **Step 5: Refactor `PortalSitePanel.vue` (Hosting Panel Files Tab)**
+   - Replace the legacy ad-hoc file table in `PortalSitePanel.vue` with `<FileManagerWorkspace scope-type="tenant" :scope-id="activeEnv.id" />`.
+   - Remove dead helper code from `usePortalSiteTools.ts`.
+
+6. **Step 6: Unify File Editor & Upload Views**
+   - Standardize editor routing and diff comparison across both staff and customer portals.
+
+================================================================================
+7. MACHINE-READABLE AUDIT FINDINGS (JSON)
+================================================================================
+
+{
+  "audit_target": "IFNOTUS File Manager Architecture (Staff vs Tenant)",
+  "status": "INCONSISTENT_FRAGMENTATION_IDENTIFIED",
+  "discrepancies_found": [
+    {
+      "id": "FM-01",
+      "area": "View Modes & Look Styles",
+      "severity": "HIGH",
+      "description": "Staff FM has Grid mode and 4 density styles; Tenant FM is locked to a single list view with no grid thumbnail support."
+    },
+    {
+      "id": "FM-02",
+      "area": "Metadata & Inspector Drawer",
+      "severity": "HIGH",
+      "description": "Staff FM has an interactive metadata inspector drawer with octal permissions; Tenant FM has no file details panel."
+    },
+    {
+      "id": "FM-03",
+      "area": "Embedded Hosting Panel Files Tab",
+      "severity": "CRITICAL",
+      "description": "PortalSitePanel.vue implements a 3rd ad-hoc file manager with a primitive textarea editor, bypassing chunked uploads and Monaco code editing."
+    },
+    {
+      "id": "FM-04",
+      "area": "Hidden Dotfiles Toggle",
+      "severity": "MEDIUM",
+      "description": "Staff can toggle dotfiles (.htaccess, .env); Tenant cannot toggle dotfile visibility, causing difficulty editing .htaccess."
+    },
+    {
+      "id": "FM-05",
+      "area": "Dual AI Editor Component Maintenance",
+      "severity": "MEDIUM",
+      "description": "AiAgentPanel.vue and PortalAiPanel.vue duplicate AI code generation and diff review logic across two separate files."
+    }
+  ],
+  "unification_solution": "Extract frontend/src/components/files/FileManagerWorkspace.vue as the universal file manager engine for both Staff and Customer roles, enforcing identical UI/UX while sandboxing Customer to their own document root.",
+  "ready_for_remediation": true
+}

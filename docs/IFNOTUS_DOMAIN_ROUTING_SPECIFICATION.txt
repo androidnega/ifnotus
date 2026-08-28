@@ -1,0 +1,310 @@
+================================================================================
+IFNOTUS FINAL DOMAIN ACCESS & ROUTING STANDARD
+================================================================================
+
+1. CUSTOMER HOSTING CONTROL PANEL
+--------------------------------------------------------------------------------
+
+CANONICAL URL:
+
+https://cpanel.yalleydadzie.online
+
+CONVENIENCE URL:
+
+https://yalleydadzie.online/cpanel
+    ↓
+302 redirect
+    ↓
+https://cpanel.yalleydadzie.online
+
+
+PURPOSE:
+
+Tenant-specific hosting control panel for:
+
+yalleydadzie.online
+
+
+CUSTOMER SHOULD REMAIN ON:
+
+cpanel.yalleydadzie.online
+
+while navigating the hosting panel.
+
+
+EXAMPLES:
+
+https://cpanel.yalleydadzie.online/
+https://cpanel.yalleydadzie.online/files
+https://cpanel.yalleydadzie.online/databases
+https://cpanel.yalleydadzie.online/domains
+https://cpanel.yalleydadzie.online/email
+https://cpanel.yalleydadzie.online/apps
+https://cpanel.yalleydadzie.online/cron
+https://cpanel.yalleydadzie.online/backups
+https://cpanel.yalleydadzie.online/logs
+https://cpanel.yalleydadzie.online/usage
+
+
+DO NOT expose normal customer navigation as:
+
+https://ifnotus.space/hosting/<uuid>
+
+The environment UUID may remain internally in the database/API,
+but it should not be the normal customer-facing URL.
+
+
+2. OPEN HOSTING FROM IFNOTUS ACCOUNT
+--------------------------------------------------------------------------------
+
+Customer logs into:
+
+https://ifnotus.space/login
+
+Customer selects:
+
+Manage Hosting
+
+Flow:
+
+IFNOTUS authenticated customer
+        ↓
+verify customer owns hosting environment
+        ↓
+create short-lived one-time SSO handoff
+        ↓
+redirect to:
+https://cpanel.yalleydadzie.online/sso?token=...
+        ↓
+customer-domain control plane validates token
+        ↓
+token consumed once
+        ↓
+tenant panel session created
+        ↓
+redirect to:
+https://cpanel.yalleydadzie.online/
+
+The user must NOT end up at:
+
+https://ifnotus.space/hosting/<uuid>
+
+
+3. TENANT WEBMAIL
+--------------------------------------------------------------------------------
+
+CANONICAL URL:
+
+https://webmail.yalleydadzie.online
+
+CONVENIENCE URLS:
+
+https://yalleydadzie.online/webmail
+        ↓
+https://webmail.yalleydadzie.online
+
+https://yalleydadzie.online/mail
+        ↓
+https://webmail.yalleydadzie.online
+
+
+WEBMAIL AUTHENTICATION:
+
+user@yalleydadzie.online
++
+mailbox password
+
+
+The browser should remain on:
+
+webmail.yalleydadzie.online
+
+It should NOT visibly redirect customers to:
+
+mail.ifnotus.space
+
+even if the same central Roundcube instance serves the request internally.
+
+
+4. MAIL CLIENT HOSTNAME
+--------------------------------------------------------------------------------
+
+For IMAP / SMTP:
+
+mail.yalleydadzie.online
+
+Example:
+
+Incoming:
+mail.yalleydadzie.online
+
+Outgoing:
+mail.yalleydadzie.online
+
+Username:
+user@yalleydadzie.online
+
+This is separate from:
+
+webmail.yalleydadzie.online
+
+
+5. MAIN IFNOTUS CUSTOMER PLATFORM
+--------------------------------------------------------------------------------
+
+CANONICAL:
+
+https://ifnotus.space
+
+PURPOSE:
+
+Customer business/account portal only:
+
+- Account overview
+- Profile
+- Hosting subscriptions
+- Plan purchases
+- Upgrades
+- Renewals
+- Invoices
+- Receipts
+- MoMo / payments
+- AI credits
+- Domain purchases
+- Support tickets
+- Account security
+
+Do NOT use ifnotus.space as the normal hosting-control-panel origin.
+
+
+6. IFNOTUS STAFF CONTROL PLANE
+--------------------------------------------------------------------------------
+
+CANONICAL:
+
+https://cpanel.ifnotus.space/login
+
+PURPOSE:
+
+IFNOTUS staff only:
+
+- Platform Owner
+- Platform Admin
+- Hosting Operator
+- Billing Agent
+- Support Agent
+- Auditor
+
+This hostname must NOT be treated as the ordinary customer hosting portal.
+
+
+7. CUSTOMER DNS — PRIMARY MODE
+--------------------------------------------------------------------------------
+
+Preferred setup:
+
+Customer changes the authoritative nameservers at their registrar to:
+
+ns1.ifnotus.space
+ns2.ifnotus.space
+
+Once delegated, IFNOTUS automatically manages the DNS zone.
+
+Customer should NOT normally be instructed to copy:
+
+80.241.223.82
+
+into several A records.
+
+
+IFNOTUS should automatically create/manage:
+
+@          Website
+www        Website
+cpanel     Tenant control panel
+webmail    Tenant webmail
+mail       Mail services
+
+MX         Mail exchanger
+SPF        Sender policy
+DKIM       Mail signing
+DMARC      Mail policy
+
+
+8. EXTERNAL DNS MODE
+--------------------------------------------------------------------------------
+
+Only when the customer deliberately keeps:
+
+Cloudflare
+Registrar DNS
+Other DNS provider
+
+show the required DNS records.
+
+This is the secondary/manual mode.
+
+Do not expose the server IP unnecessarily if a stable hostname/CNAME can safely be used.
+
+Where apex-domain DNS technically requires A/AAAA records, explain that clearly.
+
+
+9. CUSTOMER-CREATED SUBDOMAINS
+--------------------------------------------------------------------------------
+
+If customer creates:
+
+blog.yalleydadzie.online
+shop.yalleydadzie.online
+api.yalleydadzie.online
+
+they remain resources inside the hosting account:
+
+yalleydadzie.online
+
+
+They are managed through:
+
+https://cpanel.yalleydadzie.online
+
+
+DO NOT create:
+
+cpanel.blog.yalleydadzie.online
+cpanel.shop.yalleydadzie.online
+cpanel.api.yalleydadzie.online
+
+unless IFNOTUS later introduces deliberately separate hosting environments.
+
+
+10. FINAL ROUTING MATRIX
+--------------------------------------------------------------------------------
+
+CUSTOMER ACCOUNT / BILLING
+https://ifnotus.space
+
+STAFF CONTROL PLANE
+https://cpanel.ifnotus.space/login
+
+CUSTOMER WEBSITE
+https://yalleydadzie.online
+
+CUSTOMER HOSTING PANEL
+https://cpanel.yalleydadzie.online
+
+HOSTING SHORTCUT
+https://yalleydadzie.online/cpanel
+→ https://cpanel.yalleydadzie.online
+
+CUSTOMER WEBMAIL
+https://webmail.yalleydadzie.online
+
+WEBMAIL SHORTCUT
+https://yalleydadzie.online/webmail
+→ https://webmail.yalleydadzie.online
+
+MAIL SERVER
+mail.yalleydadzie.online
+
+CUSTOMER SUBDOMAINS
+managed inside cpanel.yalleydadzie.online

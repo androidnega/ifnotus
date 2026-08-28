@@ -27,6 +27,10 @@ export const Permission = {
   PLATFORM_WRITE: 'platform:write',
   PLATFORM_OPS: 'platform:ops',
   CUSTOMERS_MANAGE: 'customers:manage',
+  BILLING_VIEW: 'billing:view',
+  BILLING_MANAGE: 'billing:manage',
+  DR_EXECUTE: 'disaster_recovery:execute',
+  PROVIDERS_MANAGE: 'providers:manage',
 } as const
 
 export type PermissionKey = (typeof Permission)[keyof typeof Permission]

@@ -4,6 +4,7 @@ import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import { domainsApi, mailApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
+import { tenantMailUrl } from '@/lib/platformHosts'
 import { usePermissions } from '@/composables/usePermissions'
 import { Permission } from '@/lib/permissions'
 import { IconApp, IconDatabase, IconGlobe, IconLock, IconMail, IconRefresh, IconSettings } from '@/components/icons'
@@ -64,9 +65,15 @@ const mailHost = computed(
     clients.value?.mail_a_host ||
     DEFAULT_MAIL_HOST,
 )
-const webmailUrl = computed(
-  () => clients.value?.webmail_url || mailData.value?.webmail_url || DEFAULT_WEBMAIL,
-)
+const webmailUrl = computed(() => {
+  if (clients.value?.webmail_url) return clients.value.webmail_url
+  if (mailData.value?.webmail_url) return mailData.value.webmail_url
+  if (selectedDomain.value?.name) {
+    const canonical = tenantMailUrl(selectedDomain.value.name)
+    if (canonical) return canonical
+  }
+  return DEFAULT_WEBMAIL
+})
 const imapEndpoint = computed(
   () => `${clients.value?.imap_host || mailHost.value}:${clients.value?.imap_port || 993}`,
 )

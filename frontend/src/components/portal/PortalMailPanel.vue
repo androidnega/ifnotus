@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { customersApi } from '@/api'
+import { tenantMailUrl } from '@/lib/platformHosts'
 
 const props = defineProps<{
   environmentId: string
@@ -65,7 +66,8 @@ async function load() {
     mailboxes.value = data.mailboxes || []
     aliases.value = data.aliases || []
     domainName.value = data.domain?.name || props.domain || ''
-    webmail.value = data.webmail_url || data.clients?.webmail_url || 'https://mail.ifnotus.space/'
+    const fallbackWebmail = domainName.value ? tenantMailUrl(domainName.value) : 'https://mail.ifnotus.space/'
+    webmail.value = data.webmail_url || data.clients?.webmail_url || fallbackWebmail || 'https://mail.ifnotus.space/'
     clients.value = data.clients || null
   } catch (e: unknown) {
     const x = e as { response?: { data?: { error?: { message?: string } } } }

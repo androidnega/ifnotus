@@ -364,6 +364,31 @@ class FileUploadCompleteRequest(SchemaBase):
     upload_id: str
 
 
+class TrashEntrySchema(SchemaBase):
+    trash_id: str
+    original_path: str
+    display_name: str
+    item_type: str = "file"  # "file" or "dir"
+    size_bytes: int | None = None
+    deleted_at: datetime
+    deleted_by: str | None = None
+
+
+class TrashListResponse(SchemaBase):
+    entries: list[TrashEntrySchema] = Field(default_factory=list)
+    total_size_bytes: int = 0
+    count: int = 0
+
+
+class TrashRestoreRequest(SchemaBase):
+    trash_id: str
+    conflict_mode: str = "copy"  # "copy", "replace", "cancel"
+
+
+class TrashMoveRequest(SchemaBase):
+    paths: list[str] = Field(default_factory=list)
+
+
 class TerminalScope(StrEnum):
     """Terminal execution scope."""
 

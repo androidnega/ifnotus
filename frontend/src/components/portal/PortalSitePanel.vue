@@ -371,15 +371,14 @@ const canMail = computed(() => envCan(props.activeEnv, 'mail'))
 const canFtp = computed(() => envCan(props.activeEnv, 'sftp'))
 
 const siteTabItems = computed(() =>
-  SITE_WORKSPACE_TABS.map((t) => {
-    let disabled = false
-    if (t.id === 'files') disabled = !canFiles.value
-    else if (t.id === 'cron') disabled = !canCron.value
-    else if (t.id === 'database') disabled = !canDb.value
-    else if (t.id === 'ftp') disabled = !canFtp.value
-    else if (t.id === 'mail') disabled = !canMail.value
-    return { id: t.id, label: t.label, disabled }
-  }),
+  SITE_WORKSPACE_TABS.filter((t) => {
+    if (t.id === 'files') return canFiles.value
+    if (t.id === 'cron') return canCron.value
+    if (t.id === 'database') return canDb.value
+    if (t.id === 'ftp') return canFtp.value
+    if (t.id === 'mail') return canMail.value
+    return true
+  }).map((t) => ({ id: t.id, label: t.label, disabled: false })),
 )
 
 type SiteTabId = (typeof SITE_WORKSPACE_TABS)[number]['id']
@@ -1364,7 +1363,7 @@ function formatBytes(n?: number | null) {
             :class="{ active: dnsConnectMode === 'nameserver' }"
             @click="dnsConnectMode = 'nameserver'"
           >
-            Option A — IFNOTUS nameservers
+            Primary — IFNOTUS Nameservers (Recommended)
           </button>
           <button
             type="button"
@@ -1372,7 +1371,7 @@ function formatBytes(n?: number | null) {
             :class="{ active: dnsConnectMode === 'a_record' }"
             @click="dnsConnectMode = 'a_record'"
           >
-            Option B — A records at your DNS
+            External DNS Mode (Manual Records)
           </button>
         </div>
 
@@ -1438,9 +1437,9 @@ function formatBytes(n?: number | null) {
 
         <div v-else-if="dnsData && !dnsData.error && dnsConnectMode === 'a_record'" class="cred-list mt">
           <ol class="steps-ns">
-            <li>Keep your current nameservers (do not change them).</li>
-            <li>At your DNS provider, add these A records pointing to our server.</li>
-            <li>Hosting panel is at <strong>yourdomain/cpanel</strong> — @ and www must point here; mail for webmail.</li>
+            <li>Keep your current external nameservers (Cloudflare / Registrar).</li>
+            <li>At your DNS provider, add these CNAME records pointing to IFNOTUS.</li>
+            <li>Once configured, your hosting panel is canonical at <strong>cpanel.yourdomain</strong>, webmail at <strong>webmail.yourdomain</strong>.</li>
             <li>Wait for DNS to update, then click Test again.</li>
           </ol>
           <div v-for="(rec, i) in dnsRecords" :key="`${rec.host}-${rec.record_type}`" class="cred-row">
@@ -1452,7 +1451,7 @@ function formatBytes(n?: number | null) {
               {{ copiedKey === `dns-rec-${i}` ? 'Copied' : 'Copy' }}
             </button>
           </div>
-          <p v-if="!dnsRecords.length" class="hint mt">Server IP not available — use Option A (nameservers) instead.</p>
+          <p v-if="!dnsRecords.length" class="hint mt">Use Primary Nameservers (Recommended) above.</p>
         </div>
 
         <div class="toolbar mt">

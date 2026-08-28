@@ -23,6 +23,8 @@ from app.schemas.hosting import (
     FileRootSchema,
     FileRootsResponse,
     FileUploadInitResponse,
+    TrashEntrySchema,
+    TrashListResponse,
 )
 from app.schemas.operations import FileEntry, FileListResponse, OperationResult
 from app.services.applications.path_scanner import ApplicationPathScanner
@@ -218,8 +220,12 @@ class FileManagerService:
         entries: list[FileEntry] = []
         if target.is_dir():
             for child in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
-                if child.name.startswith(".") and child.name not in {".ifnotus"}:
-                    continue
+                if child.name.startswith("."):
+                    # For customer tenant views, hide internal platform metadata .ifnotus and hidden dotfiles
+                    if not self._admin_storage:
+                        continue
+                    if child.name not in {".ifnotus"}:
+                        continue
                 detail = self._file_detail(child, base)
                 entries.append(
                     FileEntry(
@@ -323,11 +329,16 @@ class FileManagerService:
         self._apply_owner_tree(dst)
         return OperationResult(success=True, message=f"Copied to {destination}")
 
-    async def delete(self, path: str, *, app_id: str | None = None, root_id: str | None = None) -> OperationResult:
+    async def delete(self, path: str, *, permanent: bool = False, deleted_by: str | None = None, app_id: str | None = None, root_id: str | None = None) -> OperationResult:
         base = self._resolve_base(app_id, root_id)
         target = self._safe_path(base, path)
         if not target.exists():
             raise NotFoundError("Path not found.")
+        if not permanent:
+            res = await self.move_to_trash([path], deleted_by=deleted_by, app_id=app_id, root_id=root_id)
+            if res.get("moved", 0) > 0:
+                return OperationResult(success=True, message=f"Moved {path} to Trash")
+            raise AppException("Could not move item to Trash.", code="trash_failed")
         try:
             self._unlink_path(target)
         except PermissionError as exc:
@@ -351,6 +362,249 @@ class FileManagerService:
                 code="delete_failed",
             ) from exc
         return OperationResult(success=True, message=f"Deleted {path}")
+
+    def _trash_root(self, base: Path) -> Path:
+        base = base.resolve()
+        if base.name in {"public_html", "web", "httpdocs"} and base.parent.exists() and base.parent.is_dir():
+            trash_root = (base.parent / ".ifnotus-trash").resolve()
+        else:
+            trash_root = (base / ".ifnotus" / "trash").resolve()
+        trash_root.mkdir(parents=True, exist_ok=True)
+        try:
+            trash_root.chmod(0o700)
+            if self._owner_uid is not None:
+                self._apply_owner(trash_root)
+        except OSError:
+            pass
+        return trash_root
+
+    def _read_trash_manifest(self, trash_root: Path) -> dict[str, dict]:
+        manifest_file = trash_root / "manifest.json"
+        if not manifest_file.exists():
+            return {}
+        try:
+            return json.loads(manifest_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _write_trash_manifest(self, trash_root: Path, manifest: dict[str, dict]) -> None:
+        manifest_file = trash_root / "manifest.json"
+        manifest_file.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        try:
+            manifest_file.chmod(0o600)
+            if self._owner_uid is not None:
+                self._apply_owner(manifest_file)
+        except OSError:
+            pass
+
+    async def move_to_trash(
+        self,
+        paths: list[str] | str,
+        *,
+        deleted_by: str | None = None,
+        app_id: str | None = None,
+        root_id: str | None = None,
+    ) -> dict:
+        base = self._resolve_base(app_id, root_id)
+        trash_root = self._trash_root(base)
+        manifest = self._read_trash_manifest(trash_root)
+
+        path_list = [paths] if isinstance(paths, str) else paths
+        moved = 0
+        failed = 0
+        moved_items: list[dict] = []
+
+        for p in path_list:
+            if not p:
+                continue
+            try:
+                target = self._safe_path(base, p)
+                if not target.exists():
+                    failed += 1
+                    continue
+                rel_path = str(target.relative_to(base)) if target != base else "."
+                if rel_path in {".", ""}:
+                    failed += 1
+                    continue
+                trash_id = str(uuid.uuid4())
+                is_dir = target.is_dir()
+                size_bytes = self._path_size_bytes(target) if is_dir else target.stat().st_size
+                stored_name = f"{trash_id}__{target.name}"
+                dest = trash_root / stored_name
+
+                shutil.move(str(target), str(dest))
+                manifest[trash_id] = {
+                    "trash_id": trash_id,
+                    "stored_name": stored_name,
+                    "original_path": rel_path,
+                    "display_name": target.name,
+                    "item_type": "dir" if is_dir else "file",
+                    "size_bytes": size_bytes,
+                    "deleted_at": datetime.now(UTC).isoformat(),
+                    "deleted_by": deleted_by,
+                }
+                moved_items.append(manifest[trash_id])
+                moved += 1
+            except Exception:
+                failed += 1
+
+        self._write_trash_manifest(trash_root, manifest)
+        return {
+            "success": moved > 0 or failed == 0,
+            "moved": moved,
+            "failed": failed,
+            "items": moved_items,
+            "message": f"Moved {moved} item(s) to Trash",
+        }
+
+    async def list_trash(
+        self,
+        *,
+        app_id: str | None = None,
+        root_id: str | None = None,
+    ) -> TrashListResponse:
+        base = self._resolve_base(app_id, root_id)
+        trash_root = self._trash_root(base)
+        manifest = self._read_trash_manifest(trash_root)
+
+        entries: list[TrashEntrySchema] = []
+        total_size = 0
+        prune_needed = False
+
+        for trash_id, item in list(manifest.items()):
+            stored_path = trash_root / item.get("stored_name", "")
+            if not stored_path.exists():
+                manifest.pop(trash_id, None)
+                prune_needed = True
+                continue
+            size = item.get("size_bytes")
+            if size is None:
+                try:
+                    size = self._path_size_bytes(stored_path) if stored_path.is_dir() else stored_path.stat().st_size
+                except OSError:
+                    size = 0
+            total_size += size or 0
+            try:
+                deleted_at = datetime.fromisoformat(item["deleted_at"])
+            except Exception:
+                deleted_at = datetime.now(UTC)
+
+            entries.append(
+                TrashEntrySchema(
+                    trash_id=trash_id,
+                    original_path=item.get("original_path", ""),
+                    display_name=item.get("display_name", stored_path.name),
+                    item_type=item.get("item_type", "dir" if stored_path.is_dir() else "file"),
+                    size_bytes=size,
+                    deleted_at=deleted_at,
+                    deleted_by=item.get("deleted_by"),
+                )
+            )
+
+        if prune_needed:
+            self._write_trash_manifest(trash_root, manifest)
+
+        entries.sort(key=lambda e: e.deleted_at, reverse=True)
+        return TrashListResponse(entries=entries, total_size_bytes=total_size, count=len(entries))
+
+    async def restore_from_trash(
+        self,
+        trash_id: str,
+        *,
+        conflict_mode: str = "copy",
+        app_id: str | None = None,
+        root_id: str | None = None,
+    ) -> OperationResult:
+        base = self._resolve_base(app_id, root_id)
+        trash_root = self._trash_root(base)
+        manifest = self._read_trash_manifest(trash_root)
+
+        if trash_id not in manifest:
+            raise NotFoundError("Trash item not found.")
+
+        item = manifest[trash_id]
+        stored_path = (trash_root / item["stored_name"]).resolve()
+        if not stored_path.exists() or not stored_path.is_relative_to(trash_root):
+            manifest.pop(trash_id, None)
+            self._write_trash_manifest(trash_root, manifest)
+            raise NotFoundError("Stored trash item file is missing.")
+
+        target = self._safe_path(base, item["original_path"])
+        if target.exists():
+            if conflict_mode == "cancel":
+                raise ValidationError(
+                    f"A file or directory named '{item['display_name']}' already exists in target destination.",
+                    code="conflict",
+                )
+            elif conflict_mode == "replace":
+                self._unlink_path(target)
+            elif conflict_mode == "copy":
+                parent = target.parent
+                is_file = item.get("item_type") != "dir" and not stored_path.is_dir()
+                stem = target.stem if is_file else target.name
+                suffix = target.suffix if is_file else ""
+                idx = 1
+                while True:
+                    suffix_part = f" (restored{f' {idx}' if idx > 1 else ''})"
+                    candidate_name = f"{stem}{suffix_part}{suffix}"
+                    candidate_path = parent / candidate_name
+                    if not candidate_path.exists():
+                        target = candidate_path
+                        break
+                    idx += 1
+            else:
+                raise ValidationError("Invalid conflict mode.", code="invalid_conflict_mode")
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(stored_path), str(target))
+        self._apply_owner_tree(target)
+
+        manifest.pop(trash_id, None)
+        self._write_trash_manifest(trash_root, manifest)
+
+        rel_dest = str(target.relative_to(base)) if target != base else "."
+        return OperationResult(
+            success=True,
+            message=f"Restored {item['display_name']} to {rel_dest}",
+        )
+
+    async def permanent_delete_trash(
+        self,
+        trash_id: str,
+        *,
+        app_id: str | None = None,
+        root_id: str | None = None,
+    ) -> OperationResult:
+        base = self._resolve_base(app_id, root_id)
+        trash_root = self._trash_root(base)
+        manifest = self._read_trash_manifest(trash_root)
+
+        if trash_id not in manifest:
+            raise NotFoundError("Trash item not found.")
+
+        item = manifest[trash_id]
+        stored_path = (trash_root / item["stored_name"]).resolve()
+        if stored_path.exists() and stored_path.is_relative_to(trash_root):
+            self._unlink_path(stored_path)
+
+        manifest.pop(trash_id, None)
+        self._write_trash_manifest(trash_root, manifest)
+        return OperationResult(success=True, message=f"Permanently deleted {item.get('display_name', 'item')}")
+
+    async def empty_trash(
+        self,
+        *,
+        app_id: str | None = None,
+        root_id: str | None = None,
+    ) -> OperationResult:
+        base = self._resolve_base(app_id, root_id)
+        trash_root = self._trash_root(base)
+        if trash_root.exists():
+            for child in list(trash_root.iterdir()):
+                if child.name != "manifest.json":
+                    self._unlink_path(child)
+        self._write_trash_manifest(trash_root, {})
+        return OperationResult(success=True, message="Trash emptied.")
 
     def _unlink_path(self, target: Path) -> None:
         if target.is_dir():
@@ -382,8 +636,16 @@ class FileManagerService:
         target = self._safe_path(base, path)
         if not target.exists():
             raise NotFoundError("Path not found.")
-        os.chmod(target, int(mode, 8))
-        return OperationResult(success=True, message=f"chmod {mode} {path}")
+        try:
+            mode_val = int(mode, 8) & 0o7777
+        except ValueError:
+            raise ValidationError("Invalid octal mode string.", code="invalid_mode")
+        if mode_val & 0o6000:
+            raise ValidationError("Setuid/setgid permissions are not permitted.", code="forbidden")
+        if mode_val & 0o002:
+            mode_val = mode_val & ~0o002
+        os.chmod(target, mode_val)
+        return OperationResult(success=True, message=f"chmod {oct(mode_val)[-3:]} {path}")
 
     async def upload(
         self, path: str, file: UploadFile, *, app_id: str | None = None, root_id: str | None = None
@@ -786,11 +1048,36 @@ class FileManagerService:
         allowed = [root.resolve() for root in self.allowed_roots()]
         if not any(base == root or base.is_relative_to(root) for root in allowed):
             raise AppException("Path not in allowed roots.", code="forbidden")
-        raw = (path or ".").replace("\x00", "").strip() or "."
-        # Never allow absolute inputs to escape the jail.
-        if raw.startswith(("/", "\\")) or (len(raw) >= 2 and raw[1] == ":"):
+
+        # 1. Clean raw string
+        raw = (path or ".").replace("\x00", "").strip()
+        raw = raw.replace("\\", "/")
+
+        # 2. Check for malicious traversal
+        if "%2e" in raw.lower() or "/.." in raw or "../" in raw or raw == "..":
             raise AppException("Path traversal denied.", code="forbidden")
-        target = (base / raw).resolve()
+        if len(raw) >= 2 and raw[1] == ":":
+            raise AppException("Path traversal denied.", code="forbidden")
+
+        # Strip leading slashes to convert virtual root "/folder" into relative "folder"
+        clean = raw.lstrip("/")
+        if not clean or clean in {".", "./"}:
+            clean = "."
+
+        # Check Path parts for ..
+        p_obj = Path(clean)
+        if any(part == ".." for part in p_obj.parts):
+            raise AppException("Path traversal denied.", code="forbidden")
+
+        # 3. Handle document root alias (e.g. if requested 'public' or 'public_html' when base IS public_html)
+        if clean in {"public", "public_html", "web"} and not (base / clean).exists():
+            clean = "."
+
+        target = (base / clean).resolve()
+
+        # 4. Strict tenant jail: target must be inside base (and within allowed roots)
+        if not (target == base or target.is_relative_to(base)):
+            raise AppException("Path traversal denied.", code="forbidden")
         if not any(target == root or target.is_relative_to(root) for root in allowed):
             raise AppException("Path traversal denied.", code="forbidden")
         return target

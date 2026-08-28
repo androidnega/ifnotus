@@ -50,10 +50,18 @@ export function hostingLocation(
   }
 }
 
-/** Open the tenant hosting panel from the account (new tab → site /cpanel). */
-export function openHostingFromAccount(domain: string | null | undefined, tab?: string | null): boolean {
-  if (!domain) return false
-  openTenantCpanel(domain, tab && tab !== 'overview' ? siteTabToHostingTab(tab) : null)
+/** Open the tenant hosting panel from the account (via single-use SSO handoff to cpanel.<domain>). */
+export function openHostingFromAccount(
+  domain: string | null | undefined,
+  tab?: string | null,
+  environmentId?: string | null,
+): boolean {
+  if (!domain && !environmentId) return false
+  void openTenantCpanel(
+    domain || '',
+    tab && tab !== 'overview' ? siteTabToHostingTab(tab) : null,
+    environmentId,
+  )
   return true
 }
 

@@ -83,7 +83,7 @@ def test_unix_username_stable_across_retries() -> None:
     second = UnixIdentityService.username_for(svc, env)
     assert first == second
     assert first.startswith("ifn_")
-    assert "_2" not in first
+    assert not first.endswith("_2")
     assert first.count("_") == 1
 
 

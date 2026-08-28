@@ -12,7 +12,7 @@ import type { StaffOrderItem } from '@/types/staffPlatform'
 const route = useRoute()
 const router = useRouter()
 const { can } = usePermissions()
-const canConfirm = computed(() => can(Permission.CUSTOMERS_MANAGE))
+const canConfirm = computed(() => can(Permission.BILLING_MANAGE))
 const orders = ref<StaffOrderItem[]>([])
 const paymentFilter = ref('submitted')
 const confirmNotes = ref('')

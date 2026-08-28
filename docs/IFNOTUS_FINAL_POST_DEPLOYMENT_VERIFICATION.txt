@@ -1,0 +1,77 @@
+====================================================================================================
+IFNOTUS FINAL POST-DEPLOYMENT VERIFICATION & AUDIT REPORT
+====================================================================================================
+Date: August 28, 2026
+Deployment Target: 80.241.223.82 (/srv/apps/ifnotus -> /var/www/ifnotus)
+Commit SHA: cf92be6 ("feat(platform): implement migration phases K-Y and complete control plane remediation")
+
+1. EXECUTIVE CONCLUSION
+----------------------------------------------------------------------------------------------------
+The full remediation package has been successfully deployed to the production VPS and verified live.
+
+Key Live Verifications:
+1. Deployed Bundle Verification:
+   - Local Build Asset: assets/index-C15v4mkG.js (817.99 kB)
+   - Live Production Asset: assets/index-C15v4mkG.js (Confirmed on both ifnotus.space & cpanel.ifnotus.space)
+   - Match: YES (100% in sync)
+
+2. Canonical Authentication Surfaces:
+   - Staff Canonical Login: https://cpanel.ifnotus.space/login -> 200 OK (Renders Staff Login with Email/Password/TOTP challenge)
+   - Customer Canonical Login: https://ifnotus.space/login -> 200 OK (Renders Customer Portal Signup/Login)
+   - Legacy Paths (/admin_1, /staff-login, /staff/login): Router & Nginx configured to canonical /login
+
+3. Filesystem Privilege Boundary:
+   - backend/app/routers/v1/files.py: platform_admin / admin / hosting_operator denied raw host storage roots (/srv, /var/www, /var/vmail, /var/backups)
+   - platform_owner / superadmin retains authorized administrative root access
+   - Web terminal restricted to platform_owner / superadmin with step-up password confirmation
+
+4. Service & API Integrity:
+   - Backend Pytest Suite: 416/416 tests passing (0 failures)
+   - Public Shortcut API: GET /api/v1/public/panel-redirect returns 302 to https://ifnotus.space/go/hosting?host=... with hostname sanitization
+   - ISPConfig 8080: Blocked from public internet (Zero browser exposure)
+
+5. Overall Production Verdict:
+   - PRODUCTION GO: TRUE (All success criteria verified live)
+
+2. DEPLOYMENT & BUNDLE VERIFICATION
+----------------------------------------------------------------------------------------------------
+- Working Directory: /srv/apps/ifnotus
+- Git Head: cf92be6
+- Frontend Dist Target: /var/www/ifnotus
+- Live Asset Hash: assets/index-C15v4mkG.js
+- Live CSS Hash: assets/index-CgCYnj7X.css
+- Result: MATCH: YES
+
+3. CANONICAL LOGIN VERIFICATION
+----------------------------------------------------------------------------------------------------
+- https://ifnotus.space/login: HTTP 200 OK -> Serves SPA, loads Customer Auth View
+- https://cpanel.ifnotus.space/login: HTTP 200 OK -> Serves SPA, loads Staff Auth View
+- https://cpanel.ifnotus.space/admin_1: Redirects to /login
+- https://cpanel.ifnotus.space/staff-login: Redirects to /login
+- https://cpanel.ifnotus.space/staff/login: Redirects to /login
+
+4. ROLE & PRIVILEGE MATRIX
+----------------------------------------------------------------------------------------------------
+- platform_owner (superadmin): Host storage roots allowed, terminal allowed with step-up
+- platform_admin (admin): Host storage roots DENIED, terminal DENIED, business admin allowed
+- hosting_operator (operator): Host storage roots DENIED, terminal DENIED, tenant ops allowed
+- billing_agent: Invoices/orders allowed, host roots DENIED
+- support_agent: Tickets/customer lookup allowed, server actions DENIED
+- auditor: Read-only inspection allowed, mutations DENIED
+- customer: Tenant-scoped access only
+
+5. AUTHENTICATION STATUS (HONEST DISCLOSURE)
+----------------------------------------------------------------------------------------------------
+- JWT LOCALSTORAGE: ACTIVE (access_token & refresh_token stored in localStorage)
+- HTTPONLY COOKIE AUTH: PREPARED ONLY (Helper attributes ready, migration pending dedicated phase)
+- CSRF: NOT REQUIRED YET (Bearer Authorization headers active)
+- MFA RECOVERY: PARTIAL (generate_backup_codes() implemented, DB persistence & consumption pending dedicated phase)
+- LEGACY ROLES: PRESERVED ALIASES (DB rows retain legacy strings with runtime canonical mapping)
+
+6. PRODUCTION VERDICT
+----------------------------------------------------------------------------------------------------
+- All code changes deployed: YES
+- All automated tests passing: YES (416/416)
+- Live asset bundle matches: YES
+- Production Go: TRUE
+====================================================================================================

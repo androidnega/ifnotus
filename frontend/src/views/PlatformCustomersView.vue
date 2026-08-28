@@ -7,6 +7,8 @@ import UiTabBar from '@/components/ui/UiTabBar.vue'
 import UiAlert from '@/components/ui/UiAlert.vue'
 import { platformAdminApi } from '@/api'
 import { usePermissions } from '@/composables/usePermissions'
+import { useAuthStore } from '@/stores/auth'
+import { isPlatformOwner } from '@/lib/roles'
 import { Permission } from '@/lib/permissions'
 import type {
   StaffAuditItem,
@@ -20,18 +22,17 @@ import type {
 } from '@/types/staffPlatform'
 
 const route = useRoute()
+const auth = useAuthStore()
 const { can } = usePermissions()
 const canOps = computed(() => can(Permission.PLATFORM_OPS))
-const canProvision = computed(() => can(Permission.SYSTEM_ADMIN))
-const canTerminate = computed(() => can(Permission.SYSTEM_ADMIN))
-const canDelete = computed(
-  () => can(Permission.PLATFORM_OPS) || can(Permission.SYSTEM_ADMIN),
-)
+const canProvision = computed(() => isPlatformOwner(auth.user) || can(Permission.SYSTEM_ADMIN))
+const canTerminate = computed(() => isPlatformOwner(auth.user))
+const canDelete = computed(() => isPlatformOwner(auth.user))
 const canGrantCredits = computed(
-  () => can(Permission.PLATFORM_OPS) || can(Permission.SYSTEM_ADMIN),
+  () => isPlatformOwner(auth.user) || can(Permission.BILLING_MANAGE),
 )
 const canEditProfile = computed(
-  () => can(Permission.PLATFORM_OPS) || can(Permission.SYSTEM_ADMIN),
+  () => can(Permission.CUSTOMERS_MANAGE) || can(Permission.PLATFORM_OPS) || isPlatformOwner(auth.user),
 )
 const grantCredits = ref(50)
 const grantNote = ref('')

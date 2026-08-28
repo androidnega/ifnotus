@@ -167,6 +167,72 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true, panel: 'portal', hostingTab: 'files' },
   },
   {
+    path: '/sso',
+    name: 'sso-landing',
+    component: () => import('@/views/portal/SsoLandingView.vue'),
+    meta: { panel: 'portal' },
+  },
+  {
+    path: '/files',
+    name: 'cpanel-files',
+    component: () => import('@/views/portal/PortalFilesView.vue'),
+    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'files' },
+  },
+  {
+    path: '/databases',
+    name: 'cpanel-databases',
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'databases' },
+  },
+  {
+    path: '/domains',
+    name: 'cpanel-domains',
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'domains' },
+  },
+  {
+    path: '/email',
+    name: 'cpanel-email',
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'email' },
+  },
+  {
+    path: '/apps',
+    name: 'cpanel-apps',
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'apps' },
+  },
+  {
+    path: '/cron',
+    name: 'cpanel-cron',
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'cron' },
+  },
+  {
+    path: '/backups',
+    name: 'cpanel-backups',
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'backups' },
+  },
+  {
+    path: '/logs',
+    name: 'cpanel-logs',
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'logs' },
+  },
+  {
+    path: '/usage',
+    name: 'cpanel-usage',
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'usage' },
+  },
+  {
+    path: '/transfer',
+    name: 'cpanel-transfer',
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'transfer' },
+  },
+  {
     path: '/forgot-password',
     name: 'forgot-password',
     component: () => import('@/views/ForgotPasswordView.vue'),
@@ -220,19 +286,19 @@ const routes: RouteRecordRaw[] = [
     path: '/platform/orders',
     name: 'platform-orders',
     component: () => import('@/views/PlatformOrdersView.vue'),
-    meta: { requiresAuth: true, panel: 'staff', permission: 'customers:manage' },
+    meta: { requiresAuth: true, panel: 'staff', permission: 'billing:view' },
   },
   {
     path: '/platform/orders/:id/receipt',
     name: 'platform-order-receipt',
     component: () => import('@/views/PlatformOrderReceiptView.vue'),
-    meta: { requiresAuth: true, panel: 'staff', permission: 'customers:manage' },
+    meta: { requiresAuth: true, panel: 'staff', permission: 'billing:view' },
   },
   {
     path: '/platform/accounting',
     name: 'platform-accounting',
     component: () => import('@/views/PlatformAccountingView.vue'),
-    meta: { requiresAuth: true, panel: 'staff', permission: 'customers:manage' },
+    meta: { requiresAuth: true, panel: 'staff', permission: 'billing:view' },
   },
   {
     path: '/platform/plans',
@@ -448,9 +514,8 @@ router.beforeEach(async (to) => {
   // Custom-domain panel host (cpanel.customer.com): stay on this origin — never bounce to ifnotus.space.
   if (isCustomerCpanelHost()) {
     const panelHost = hostnameNow()
-    const goHosting = {
-      name: 'go-hosting' as const,
-      query: { host: panelHost, ...(typeof to.query.tab === 'string' ? { tab: to.query.tab } : {}) },
+    if (to.name === 'sso-landing' || to.path === '/sso') {
+      return true
     }
     if (
       to.path === '/' ||
@@ -464,10 +529,13 @@ router.beforeEach(async (to) => {
         if (to.name === 'login') return true
         return {
           name: 'login',
-          query: { redirect: `/go/hosting?host=${encodeURIComponent(panelHost)}` },
+          query: { redirect: '/' },
         }
       }
-      return goHosting
+      // Stays on clean root hosting panel on cpanel.<domain>
+      if (to.path !== '/') {
+        return '/'
+      }
     }
     // Staff credentials are not allowed on customer cpanel hosts.
     if (token && to.meta.requiresAuth) {
@@ -481,7 +549,7 @@ router.beforeEach(async (to) => {
           auth.clearSession()
           return {
             name: 'login',
-            query: { redirect: `/go/hosting?host=${encodeURIComponent(panelHost)}` },
+            query: { redirect: to.fullPath || '/' },
           }
         }
       }
@@ -492,7 +560,7 @@ router.beforeEach(async (to) => {
           return {
             name: 'login',
             query: {
-              redirect: `/go/hosting?host=${encodeURIComponent(panelHost)}`,
+              redirect: to.fullPath || '/',
               reason: 'customer_panel',
             },
           }
@@ -600,6 +668,43 @@ router.beforeEach(async (to) => {
       const perms = auth.user?.permissions ?? []
       const fullSuper = Boolean(auth.user?.is_superuser && !auth.user?.privilege_viewing_as)
       if (!fullSuper && !perms.includes(requiredPermission)) {
+        return { name: homeRouteNameForUser(auth.user) }
+      }
+    }
+
+    // Role-boundary enforcement (prevents platform_admin infrastructure pollution and support_agent financial leaks)
+    const { getCanonicalRole } = await import('@/lib/roles')
+    const role = getCanonicalRole(auth.user)
+    const targetPath = to.path || ''
+
+    if (role === 'platform_admin') {
+      const infraRoutes = ['/files', '/servers', '/operations', '/databases', '/domains', '/admin/mail', '/mail', '/ssl', '/applications', '/security', '/terminal']
+      if (infraRoutes.some((prefix) => targetPath === prefix || targetPath.startsWith(`${prefix}/`))) {
+        return { name: 'dashboard' }
+      }
+    } else if (role === 'hosting_operator') {
+      const bizRoutes = ['/platform/orders', '/platform/accounting', '/platform/plans', '/security', '/terminal', '/settings']
+      if (bizRoutes.some((prefix) => targetPath === prefix || targetPath.startsWith(`${prefix}/`))) {
+        return { name: 'dashboard' }
+      }
+    } else if (role === 'billing_agent') {
+      const techRoutes = ['/files', '/servers', '/operations', '/databases', '/domains', '/admin/mail', '/mail', '/ssl', '/applications', '/security', '/terminal', '/platform/plans', '/settings']
+      if (techRoutes.some((prefix) => targetPath === prefix || targetPath.startsWith(`${prefix}/`))) {
+        return { name: 'dashboard' }
+      }
+    } else if (role === 'support_agent') {
+      const restrictedRoutes = ['/platform/orders', '/platform/accounting', '/platform/plans', '/files', '/servers', '/operations', '/databases', '/domains', '/admin/mail', '/mail', '/ssl', '/applications', '/security', '/terminal', '/settings']
+      if (restrictedRoutes.some((prefix) => targetPath === prefix || targetPath.startsWith(`${prefix}/`))) {
+        return { name: 'support' }
+      }
+    } else if (role === 'auditor') {
+      const forbiddenRoutes = ['/terminal', '/files']
+      if (forbiddenRoutes.some((prefix) => targetPath === prefix || targetPath.startsWith(`${prefix}/`))) {
+        return { name: 'dashboard' }
+      }
+    } else if (role !== 'platform_owner') {
+      // General non-owner barrier for emergency terminal and raw storage roots
+      if (targetPath.startsWith('/terminal') || targetPath.startsWith('/files')) {
         return { name: homeRouteNameForUser(auth.user) }
       }
     }

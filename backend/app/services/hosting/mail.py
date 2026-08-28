@@ -32,6 +32,7 @@ from app.schemas.hosting import (
 )
 from app.services.hosting.domains import DomainService
 from app.services.hosting.mail_auth import MAIL_HOSTNAME, MailAuthService
+from app.services.platform.panel_access import mail_server_hostname, site_webmail_url
 
 logger = get_logger(__name__)
 
@@ -58,8 +59,8 @@ class MailService:
         domain_schema = await self._domain_service.get_domain(domain_id)
         mailboxes = await self._mailboxes.list_for_domain(domain_id)
         aliases = await self._aliases.list_for_domain(domain_id)
-        webmail = (self._settings.webmail_url or "https://mail.ifnotus.space").rstrip("/") + "/"
-        client_host = MAIL_HOSTNAME
+        webmail = site_webmail_url(domain.name) or (self._settings.webmail_url or "https://mail.ifnotus.space").rstrip("/") + "/"
+        client_host = mail_server_hostname(domain.name) or MAIL_HOSTNAME
         return MailDomainResponse(
             timestamp=datetime.now(UTC),
             domain=domain_schema,
@@ -73,9 +74,9 @@ class MailService:
                 smtp_host=client_host,
                 pop_host=client_host,
                 webmail_url=webmail,
-                mail_a_host=MAIL_HOSTNAME,
+                mail_a_host=client_host,
             ),
-            )
+        )
 
     async def list_mailboxes_for_domain(self, domain_id: UUID) -> list:
         return await self._mailboxes.list_for_domain(domain_id)

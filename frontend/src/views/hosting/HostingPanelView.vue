@@ -11,8 +11,9 @@ import {
   resourceStatusClass,
   resourceStatusLabel,
 } from '@/lib/resourceUsage'
+import { envCan } from '@/lib/planMatrix'
 import { HOSTING_PANEL_TABS } from '@/lib/uiRegistry'
-import { tenantCpanelUrl, tenantMailUrl } from '@/lib/platformHosts'
+import { hostnameNow, isCustomerCpanelHost, tenantCpanelUrl, tenantMailUrl } from '@/lib/platformHosts'
 import type { CustomerDashboard, CustomerEnvironment, HostingPlan } from '@/types/platform'
 
 type HostingTab =
@@ -28,7 +29,19 @@ type HostingTab =
   | 'backups'
   | 'logs'
 
-const TABS = HOSTING_PANEL_TABS.map((t) => ({ id: t.id as HostingTab, label: t.label }))
+const ALL_TABS = HOSTING_PANEL_TABS.map((t) => ({ id: t.id as HostingTab, label: t.label }))
+
+const TABS = computed(() => {
+  return ALL_TABS.filter((t) => {
+    if (!env.value) return true
+    if (t.id === 'files') return envCan(env.value, 'file_manager')
+    if (t.id === 'databases') return envCan(env.value, 'db_manage')
+    if (t.id === 'email') return envCan(env.value, 'mail')
+    if (t.id === 'transfer') return envCan(env.value, 'sftp')
+    if (t.id === 'cron') return envCan(env.value, 'cron')
+    return true
+  })
+})
 
 const HOSTING_TO_SITE: Record<Exclude<HostingTab, 'overview' | 'backups'>, PortalSiteTab> = {
   files: 'files',
@@ -67,7 +80,13 @@ const panelTheme = ref<{
 const themeBusy = ref(false)
 const themeMsg = ref('')
 
-const environmentId = computed(() => String(route.params.environmentId || ''))
+const resolvedEnvId = ref('')
+const environmentId = computed(() => {
+  if (route.params.environmentId) return String(route.params.environmentId)
+  if (resolvedEnvId.value) return resolvedEnvId.value
+  const stored = typeof window !== 'undefined' ? localStorage.getItem('tenant_env_id') : ''
+  return stored || ''
+})
 
 const hostingThemeStyle = computed(() => {
   const colors = panelTheme.value?.theme?.colors
@@ -313,7 +332,7 @@ const statusLabel = computed(() => {
 
 const shortEnvId = computed(() => (environmentId.value || '').replace(/-/g, '').slice(0, 8))
 
-const navManage = [
+const allNavManage = [
   { id: 'files' as HostingTab, label: 'File Manager', icon: 'fa-folder-open' },
   { id: 'databases' as HostingTab, label: 'Databases', icon: 'fa-database' },
   { id: 'domains' as HostingTab, label: 'Domains', icon: 'fa-globe' },
@@ -326,7 +345,19 @@ const navManage = [
   { id: 'logs' as HostingTab, label: 'Logs', icon: 'fa-scroll' },
 ]
 
-const quickTools = [
+const navManage = computed(() => {
+  return allNavManage.filter((t) => {
+    if (!env.value) return true
+    if (t.id === 'files') return envCan(env.value, 'file_manager')
+    if (t.id === 'databases') return envCan(env.value, 'db_manage')
+    if (t.id === 'email') return envCan(env.value, 'mail')
+    if (t.id === 'transfer') return envCan(env.value, 'sftp')
+    if (t.id === 'cron') return envCan(env.value, 'cron')
+    return true
+  })
+})
+
+const allQuickTools = [
   { id: 'files' as HostingTab, label: 'File Manager', tone: 'blue', icon: 'fa-folder-open' },
   { id: 'databases' as HostingTab, label: 'Databases', tone: 'purple', icon: 'fa-database' },
   { id: 'domains' as HostingTab, label: 'Domains', tone: 'green', icon: 'fa-globe' },
@@ -338,6 +369,18 @@ const quickTools = [
   { id: 'transfer' as HostingTab, label: 'FTP / SFTP', tone: 'blue', icon: 'fa-exchange-alt' },
   { id: 'logs' as HostingTab, label: 'Logs', tone: 'red', icon: 'fa-scroll' },
 ]
+
+const quickTools = computed(() => {
+  return allQuickTools.filter((t) => {
+    if (!env.value) return true
+    if (t.id === 'files') return envCan(env.value, 'file_manager')
+    if (t.id === 'databases') return envCan(env.value, 'db_manage')
+    if (t.id === 'email') return envCan(env.value, 'mail')
+    if (t.id === 'transfer') return envCan(env.value, 'sftp')
+    if (t.id === 'cron') return envCan(env.value, 'cron')
+    return true
+  })
+})
 
 
 const cpuPct = computed(() => {
@@ -360,14 +403,26 @@ const siteInitialTab = computed<PortalSiteTab>(() => {
 const showSitePanel = computed(() => tab.value !== 'overview' && tab.value !== 'backups')
 
 function resolveTabFromRoute(): HostingTab {
-  if (route.name === 'hosting-files' || route.meta.hostingTab === 'files') return 'files'
+  if (route.name === 'hosting-files' || route.name === 'cpanel-files' || route.meta.hostingTab === 'files' || route.path === '/files') return 'files'
+  const pathPart = route.path.replace(/^\//, '').split('/')[0] as HostingTab
+  if (TABS.value.some((t) => t.id === pathPart)) return pathPart
+  const metaTab = route.meta.hostingTab as HostingTab | undefined
+  if (metaTab && TABS.value.some((t) => t.id === metaTab)) return metaTab
   const raw = typeof route.query.tab === 'string' ? route.query.tab : ''
-  if (TABS.some((t) => t.id === raw)) return raw as HostingTab
+  if (TABS.value.some((t) => t.id === raw)) return raw as HostingTab
   return 'overview'
 }
 
 function goTab(next: HostingTab) {
   tab.value = next
+  if (isCustomerCpanelHost()) {
+    if (next === 'overview') {
+      void router.replace('/')
+    } else {
+      void router.replace(`/${next}`)
+    }
+    return
+  }
   if (next === 'files') {
     void router.push({ name: 'hosting-files', params: { environmentId: environmentId.value } })
     return
@@ -390,12 +445,34 @@ async function load() {
     const { data } = await customersApi.dashboard()
     dash.value = data
     plans.value = data.plans?.length ? data.plans : []
-    const owned = data.environments.some((e) => e.id === environmentId.value)
+
+    let targetEnvId = environmentId.value
+    if (!targetEnvId && isCustomerCpanelHost()) {
+      const host = hostnameNow()
+      try {
+        const { data: aliasData } = await customersApi.resolvePanelAlias(host)
+        if (aliasData.environment_id) {
+          targetEnvId = aliasData.environment_id
+          resolvedEnvId.value = aliasData.environment_id
+          localStorage.setItem('tenant_env_id', aliasData.environment_id)
+        }
+      } catch {
+        // Fallback below
+      }
+    }
+    if (!targetEnvId && data.environments.length >= 1) {
+      targetEnvId = data.environments[0].id
+      resolvedEnvId.value = targetEnvId
+      localStorage.setItem('tenant_env_id', targetEnvId)
+    }
+
+    const owned = data.environments.find((e) => e.id === targetEnvId)
     if (!owned) {
       error.value = 'This hosting service is not on your account.'
       return
     }
-    setActiveEnvId(environmentId.value)
+    resolvedEnvId.value = owned.id
+    setActiveEnvId(owned.id)
     await hydrateActiveEnv()
     await loadPanelTheme()
   } catch (e: unknown) {

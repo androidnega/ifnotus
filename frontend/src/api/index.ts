@@ -1110,6 +1110,27 @@ export const customersApi = {
       status: string
     }>('/customers/panel-alias', { params: { host } }),
 
+  createSsoHandoff: (body: { environment_id?: string; domain?: string; tab?: string }) =>
+    apiClient.post<{
+      handoff_url: string
+      token: string
+      target_host: string
+      environment_id: string
+      domain: string
+      expires_in: number
+    }>('/customers/sso-handoff', body),
+
+  consumeSsoToken: (token: string, host?: string) =>
+    apiClient.post<{
+      access_token: string
+      refresh_token: string
+      token_type: string
+      expires_in: number
+      environment_id: string
+      domain: string
+      username?: string
+    }>('/public/sso/consume', { token, host }),
+
   renewSubscription: (subscriptionId: string, body?: { billing_term_months?: number }) =>
     apiClient.post<{
       reference: string
@@ -1238,8 +1259,45 @@ export const customersApi = {
   mkdirEnv: (environmentId: string, path: string) =>
     apiClient.post(`/customers/environments/${environmentId}/files/mkdir`, { path }),
 
-  deleteEnvFile: (environmentId: string, path: string) =>
-    apiClient.delete(`/customers/environments/${environmentId}/files`, { params: { path } }),
+  deleteEnvFile: (environmentId: string, path: string, permanent = false) =>
+    apiClient.delete(`/customers/environments/${environmentId}/files`, { params: { path, permanent } }),
+
+  listEnvTrash: (environmentId: string) =>
+    apiClient.get<{
+      entries: Array<{
+        trash_id: string
+        original_path: string
+        display_name: string
+        item_type: string
+        size_bytes?: number | null
+        deleted_at: string
+        deleted_by?: string | null
+      }>
+      total_size_bytes: number
+      count: number
+    }>(`/customers/environments/${environmentId}/files/trash`),
+
+  moveToTrash: (environmentId: string, paths: string[]) =>
+    apiClient.post<{ success: boolean; message: string }>(
+      `/customers/environments/${environmentId}/files/trash`,
+      { paths },
+    ),
+
+  restoreTrash: (environmentId: string, trashId: string, conflictMode: 'copy' | 'replace' | 'cancel' = 'copy') =>
+    apiClient.post<{ success: boolean; message: string }>(
+      `/customers/environments/${environmentId}/files/trash/restore`,
+      { trash_id: trashId, conflict_mode: conflictMode },
+    ),
+
+  deleteTrashItem: (environmentId: string, trashId: string) =>
+    apiClient.delete<{ success: boolean; message: string }>(
+      `/customers/environments/${environmentId}/files/trash/${encodeURIComponent(trashId)}`,
+    ),
+
+  emptyTrash: (environmentId: string) =>
+    apiClient.delete<{ success: boolean; message: string }>(
+      `/customers/environments/${environmentId}/files/trash`,
+    ),
 
   moveEnvFile: (environmentId: string, source: string, destination: string) =>
     apiClient.post(`/customers/environments/${environmentId}/files/move`, { source, destination }),

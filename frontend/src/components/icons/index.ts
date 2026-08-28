@@ -21,3 +21,5 @@ export { default as IconServer } from './IconServer.vue'
 export { default as IconSettings } from './IconSettings.vue'
 export { default as IconShield } from './IconShield.vue'
 export { default as IconSun } from './IconSun.vue'
+export { default as IconTrash } from './IconTrash.vue'
+

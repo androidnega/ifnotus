@@ -86,7 +86,7 @@ function openHostingPanel() {
     emit('openPanel', 'billing')
     return
   }
-  openHostingFromAccount(env.value.domain)
+  openHostingFromAccount(env.value.domain, 'overview', env.value.id)
 }
 
 const spec = computed(() => {
