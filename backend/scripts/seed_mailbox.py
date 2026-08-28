@@ -43,7 +43,7 @@ async def create_domain_mailbox(
         email_address = f"{local_part}@{domain_name.strip().lower()}"
         print(f"Provisioning mailbox '{email_address}'...")
 
-        mail_svc = MailService(session, settings)
+        mail_svc = MailService(settings, session)
         try:
             body = MailboxCreate(
                 email=email_address,

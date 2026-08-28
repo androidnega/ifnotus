@@ -8,7 +8,7 @@ import {
   isStaffUser,
   syncPanelFlag,
 } from '@/lib/roles'
-import { isCustomerCpanelHost, isStaffPanelHost, hostnameNow } from '@/lib/platformHosts'
+import { isCustomerCpanelHost, isStaffPanelHost } from '@/lib/platformHosts'
 
 declare module 'vue-router' {
   interface RouteMeta {
