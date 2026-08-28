@@ -35,8 +35,26 @@ const route = useRoute()
 const router = useRouter()
 const transfers = useFileTransferStore()
 
+const props = withDefaults(
+  defineProps<{
+    environmentId?: string
+    embedded?: boolean
+  }>(),
+  {
+    environmentId: '',
+    embedded: false,
+  },
+)
+
+const emit = defineEmits<{
+  (e: 'back'): void
+}>()
+
+const fileInputRef = ref<HTMLInputElement | null>(null)
+
 const resolvedEnvId = ref('')
 const envId = computed(() => {
+  if (props.environmentId) return props.environmentId
   if (route.params.environmentId) return String(route.params.environmentId)
   if (route.query.env) return String(route.query.env)
   if (resolvedEnvId.value) return resolvedEnvId.value
@@ -270,17 +288,24 @@ async function loadTrash() {
     selectedPaths.value = new Set()
     anchorPath.value = null
     document.title = `Trash · ${domain.value || 'Files'} · IFNOTUS`
-    if (route.name === 'hosting-files') {
-      void router.replace({
-        name: 'hosting-files',
-        params: { environmentId: envId.value },
-        query: { path: '__trash__' },
-      })
-    } else {
-      void router.replace({
-        name: 'portal-files',
-        query: { env: envId.value, path: '__trash__' },
-      })
+    if (!props.embedded) {
+      if (isCustomerCpanelHost() || route.name === 'cpanel-files' || route.path === '/files') {
+        void router.replace({
+          path: '/files',
+          query: { path: '__trash__' },
+        })
+      } else if (route.name === 'hosting-files') {
+        void router.replace({
+          name: 'hosting-files',
+          params: { environmentId: envId.value },
+          query: { path: '__trash__' },
+        })
+      } else {
+        void router.replace({
+          name: 'portal-files',
+          query: { env: envId.value, path: '__trash__' },
+        })
+      }
     }
   } catch (e) {
     err.value = getApiErrorMessage(e, 'Could not load Trash.')
@@ -315,17 +340,24 @@ async function load() {
       if (e.is_dir) folderTree.value = [...new Set([...folderTree.value, e.path])].slice(0, 40)
     }
     document.title = `Files · ${domain.value || 'Home'} · IFNOTUS`
-    if (route.name === 'hosting-files') {
-      void router.replace({
-        name: 'hosting-files',
-        params: { environmentId: envId.value },
-        query: currentPath.value === '.' ? {} : { path: currentPath.value },
-      })
-    } else {
-      void router.replace({
-        name: 'portal-files',
-        query: { env: envId.value, ...(currentPath.value === '.' ? {} : { path: currentPath.value }) },
-      })
+    if (!props.embedded) {
+      if (isCustomerCpanelHost() || route.name === 'cpanel-files' || route.path === '/files') {
+        void router.replace({
+          path: '/files',
+          query: currentPath.value === '.' ? {} : { path: currentPath.value },
+        })
+      } else if (route.name === 'hosting-files') {
+        void router.replace({
+          name: 'hosting-files',
+          params: { environmentId: envId.value },
+          query: currentPath.value === '.' ? {} : { path: currentPath.value },
+        })
+      } else {
+        void router.replace({
+          name: 'portal-files',
+          query: { env: envId.value, ...(currentPath.value === '.' ? {} : { path: currentPath.value }) },
+        })
+      }
     }
   } catch (e) {
     if (currentPath.value !== '.') {
@@ -464,7 +496,7 @@ function openEntry(entry: Entry) {
     openDir(entry.path)
     return
   }
-  const href = `/account/files/edit?env=${encodeURIComponent(envId.value)}&path=${encodeURIComponent(entry.path)}`
+  const href = `https://ifnotus.space/account/files/edit?env=${encodeURIComponent(envId.value)}&path=${encodeURIComponent(entry.path)}`
   window.open(href, `ifnotus-editor-${entry.path}`)
 }
 
@@ -835,18 +867,38 @@ function downloadEntry(entry: Entry) {
 }
 
 function pickUpload() {
+  if (fileInputRef.value) {
+    fileInputRef.value.click()
+    return
+  }
   if (!envId.value) return
-  const href = `/account/files/upload?env=${encodeURIComponent(envId.value)}&path=${encodeURIComponent(currentPath.value || '.')}`
+  const href = `https://ifnotus.space/account/files/upload?env=${encodeURIComponent(envId.value)}&path=${encodeURIComponent(currentPath.value || '.')}`
   window.open(href, `ifnotus-upload-${envId.value}`)
 }
 
+function onFileInputChange(event: Event) {
+  const target = event.target as HTMLInputElement
+  const files = target.files
+  if (!files || !files.length || !envId.value) return
+  const fileArray = Array.from(files)
+  transfers.enqueueUploadMany(fileArray, currentPath.value || '.', {
+    environmentId: envId.value,
+  })
+  msg.value = `Queued ${fileArray.length} file(s) for upload.`
+  target.value = ''
+}
+
 function backToHosting() {
+  if (props.embedded) {
+    emit('back')
+    return
+  }
   if (isCustomerCpanelHost()) {
     void router.push('/')
     return
   }
   if (!envId.value) {
-    void router.push({ name: 'portal-dashboard' })
+    window.location.href = 'https://ifnotus.space/account'
     return
   }
   void router.push({ name: 'hosting-panel', params: { environmentId: envId.value } })
@@ -926,13 +978,20 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="fm" @click="closeMenus">
+  <div class="fm" :class="{ embedded }" @click="closeMenus">
+    <input
+      ref="fileInputRef"
+      type="file"
+      multiple
+      style="display: none"
+      @change="onFileInputChange"
+    />
     <header class="fm-bar" @click.stop>
       <div class="identity">
         <button type="button" class="nav-toggle" aria-label="Folders" @click="showMobileNav = !showMobileNav">
           ☰
         </button>
-        <button type="button" class="mark" title="Back to hosting dashboard" @click="backToHosting">IF</button>
+        <button v-if="!embedded" type="button" class="mark" title="Back to hosting dashboard" @click="backToHosting">IF</button>
         <div class="id-text">
           <strong>File manager</strong>
           <p>{{ domain || 'Your site' }}<span v-if="stackLabel"> · {{ stackLabel }}</span></p>
@@ -1424,6 +1483,12 @@ onUnmounted(() => {
   font-family: Figtree, "Segoe UI", sans-serif;
   overflow-x: hidden;
   user-select: none;
+}
+.fm.embedded {
+  min-height: calc(100vh - 3rem);
+  border-radius: 0.75rem;
+  border: 1px solid var(--fm-line);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 .fm-bar {
   display: grid;

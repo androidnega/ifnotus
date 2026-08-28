@@ -174,7 +174,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/hosting/:environmentId/files',
     name: 'hosting-files',
-    component: () => import('@/views/portal/PortalFilesView.vue'),
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
     meta: { requiresAuth: true, panel: 'portal', hostingTab: 'files' },
   },
   {
@@ -186,8 +186,16 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/files',
     name: 'cpanel-files',
-    component: () => import('@/views/portal/PortalFilesView.vue'),
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
     meta: { requiresAuth: true, panel: 'portal', hostingTab: 'files' },
+  },
+  {
+    path: '/filemanager',
+    redirect: '/files',
+  },
+  {
+    path: '/file-manager',
+    redirect: '/files',
   },
   {
     path: '/databases',
@@ -526,6 +534,28 @@ router.beforeEach(async (to) => {
   if (isCustomerCpanelHost()) {
     if (to.name === 'sso-landing' || to.path === '/sso') {
       return true
+    }
+    // Account, billing, settings, support, and invoices NEVER exist on customer domains.
+    if (
+      to.path === '/account' ||
+      to.path.startsWith('/account/') ||
+      to.path === '/billing' ||
+      to.path === '/invoices' ||
+      to.path.startsWith('/invoice/') ||
+      to.path === '/support' ||
+      to.path === '/settings' ||
+      to.path === '/profile'
+    ) {
+      if (typeof window !== 'undefined') {
+        window.location.href = `https://ifnotus.space${to.fullPath}`
+        return false
+      }
+    }
+    if (to.path.startsWith('/hosting/')) {
+      if (to.path.endsWith('/files')) {
+        return '/files'
+      }
+      return '/'
     }
     if (
       to.path === '/' ||

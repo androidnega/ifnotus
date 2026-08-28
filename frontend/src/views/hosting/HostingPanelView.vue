@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { customersApi } from '@/api'
 import PortalSitePanel from '@/components/portal/PortalSitePanel.vue'
+import PortalFilesView from '@/views/portal/PortalFilesView.vue'
 import { usePortalSiteTools, type PortalSiteTab } from '@/composables/usePortalSiteTools'
 import { getApiErrorMessage } from '@/lib/apiError'
 import { formatCpu, formatRamGb } from '@/lib/planResources'
@@ -396,11 +397,11 @@ const procsPct = computed(() => processPct(usageSnapshot.value))
 const rs = computed(() => usageSnapshot.value?.resource_statuses || null)
 
 const siteInitialTab = computed<PortalSiteTab>(() => {
-  if (tab.value === 'overview' || tab.value === 'backups') return ''
+  if (tab.value === 'overview' || tab.value === 'backups' || tab.value === 'files') return ''
   return HOSTING_TO_SITE[tab.value] || 'stack'
 })
 
-const showSitePanel = computed(() => tab.value !== 'overview' && tab.value !== 'backups')
+const showSitePanel = computed(() => tab.value !== 'overview' && tab.value !== 'backups' && tab.value !== 'files')
 
 function resolveTabFromRoute(): HostingTab {
   if (route.name === 'hosting-files' || route.name === 'cpanel-files' || route.meta.hostingTab === 'files' || route.path === '/files') return 'files'
@@ -421,10 +422,6 @@ function goTab(next: HostingTab) {
     } else {
       void router.replace(`/${next}`)
     }
-    return
-  }
-  if (next === 'files') {
-    void router.push({ name: 'hosting-files', params: { environmentId: environmentId.value } })
     return
   }
   const query = next === 'overview' ? {} : { tab: next }
@@ -483,7 +480,7 @@ async function load() {
 }
 
 watch(
-  () => [route.name, route.query.tab, route.meta.hostingTab] as const,
+  () => [route.name, route.path, route.query.tab, route.meta.hostingTab] as const,
   () => {
     tab.value = resolveTabFromRoute()
   },
@@ -549,20 +546,20 @@ onMounted(() => {
           {{ item.label }}
         </button>
         <p class="hp-nav-label">Account</p>
-        <RouterLink class="hp-nav-item" :to="{ name: 'portal-dashboard', query: { tab: 'billing' } }">
+        <a class="hp-nav-item" href="https://ifnotus.space/account?tab=billing" target="_blank" rel="noopener">
           <i class="fas fa-file-invoice-dollar" aria-hidden="true" />
           Billing &amp; Invoices
-        </RouterLink>
-        <RouterLink class="hp-nav-item" :to="{ name: 'portal-account-settings' }">
+        </a>
+        <a class="hp-nav-item" href="https://ifnotus.space/account/settings" target="_blank" rel="noopener">
           <i class="fas fa-user" aria-hidden="true" />
           Profile
-        </RouterLink>
-        <RouterLink class="hp-nav-item" :to="{ name: 'portal-support' }">
+        </a>
+        <a class="hp-nav-item" href="https://ifnotus.space/account/support" target="_blank" rel="noopener">
           <i class="fas fa-life-ring" aria-hidden="true" />
           Support
-        </RouterLink>
+        </a>
       </nav>
-      <RouterLink class="hp-side-foot" :to="{ name: 'portal-dashboard' }">← Account portal</RouterLink>
+      <a class="hp-side-foot" href="https://ifnotus.space/account">← Account portal</a>
     </aside>
 
     <div class="hp-main">
@@ -570,7 +567,7 @@ onMounted(() => {
       <div v-else-if="error" class="hp-card pad">
         <h2>Unavailable</h2>
         <p class="muted">{{ error }}</p>
-        <RouterLink class="hp-btn primary" :to="{ name: 'portal-dashboard' }">Back to account</RouterLink>
+        <a class="hp-btn primary" href="https://ifnotus.space/account">Back to account</a>
       </div>
 
       <template v-else-if="env">
@@ -744,6 +741,15 @@ onMounted(() => {
               </button>
             </li>
           </ul>
+        </section>
+
+        <section v-else-if="tab === 'files'" class="hp-files-embed">
+          <PortalFilesView
+            v-if="env"
+            :environment-id="env.id"
+            :embedded="true"
+            @back="goTab('overview')"
+          />
         </section>
 
         <div v-else-if="showSitePanel" class="hp-embed">

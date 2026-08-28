@@ -9,6 +9,7 @@ import PortalDomainTools from '@/components/portal/PortalDomainTools.vue'
 import UiTabBar from '@/components/ui/UiTabBar.vue'
 import { envCan, visibleStacks } from '@/lib/planMatrix'
 import { SITE_WORKSPACE_TABS } from '@/lib/uiRegistry'
+import { isCustomerCpanelHost, tenantCpanelUrl } from '@/lib/platformHosts'
 
 const props = defineProps<{
   environments: CustomerEnvironment[]
@@ -312,6 +313,15 @@ function openFileManager(path = '.') {
   const id = props.activeEnv?.id
   if (!id) return
   const q = path && path !== '.' ? `?path=${encodeURIComponent(path)}` : ''
+  if (isCustomerCpanelHost()) {
+    window.location.href = `/files${q}`
+    return
+  }
+  const customUrl = props.activeEnv?.domain ? tenantCpanelUrl(props.activeEnv.domain, 'files') : null
+  if (customUrl) {
+    window.open(`${customUrl}${q}`, `ifnotus-files-${id}`)
+    return
+  }
   window.open(`/hosting/${encodeURIComponent(id)}/files${q}`, `ifnotus-files-${id}`)
 }
 const showPassword = ref(false)
@@ -420,7 +430,7 @@ async function openSqlStudio() {
       /* fall through to built-in studio */
     }
   }
-  const href = `/account/database/studio?env=${encodeURIComponent(id)}`
+  const href = `https://ifnotus.space/account/database/studio?env=${encodeURIComponent(id)}`
   window.open(href, `ifnotus-sql-${id}`)
 }
 
