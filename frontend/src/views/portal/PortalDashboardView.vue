@@ -5,6 +5,7 @@ import { catalogApi, customersApi } from '@/api'
 import PortalAccountNav from '@/components/portal/PortalAccountNav.vue'
 import PortalBillingPanel from '@/components/portal/PortalBillingPanel.vue'
 import PortalOverviewPanel from '@/components/portal/PortalOverviewPanel.vue'
+import PortalHostingServicesPanel from '@/components/portal/PortalHostingServicesPanel.vue'
 import PortalProfileStageGate from '@/components/portal/PortalProfileStageGate.vue'
 import PortalShell from '@/components/portal/PortalShell.vue'
 import PortalSupportView from '@/views/portal/PortalSupportView.vue'
@@ -41,7 +42,7 @@ const selectedPlanId = ref(localStorage.getItem('ifnotus_selected_plan') || '')
 const billingMsg = ref('')
 const changePlanId = ref('')
 const topUpCredits = ref(20)
-const panel = ref<'home' | 'billing' | 'support'>('home')
+const panel = ref<'home' | 'hosting' | 'billing' | 'support'>('home')
 
 const {
   activeEnv,
@@ -290,7 +291,7 @@ function goToHosting(tab?: string) {
   openHostingFromAccount(domain, tab, activeEnv.value?.id)
 }
 
-function goNav(next: 'home' | 'billing' | 'ai' | 'support' | 'site', tab?: string) {
+function goNav(next: 'home' | 'hosting' | 'billing' | 'ai' | 'support' | 'site', tab?: string) {
   if (next === 'ai' || next === 'site') {
     goToHosting(tab || (next === 'ai' ? 'apps' : 'overview'))
     return
@@ -317,7 +318,7 @@ watch(
       goToHosting(tab)
       return
     }
-    if (p === 'billing' || p === 'support' || p === 'home') {
+    if (p === 'billing' || p === 'support' || p === 'home' || p === 'hosting') {
       panel.value = p
     }
   },
@@ -386,6 +387,14 @@ watch(
         @open-panel="onOpenPanel"
         @select-env="selectEnv"
         @open-site-tab="onOpenSiteTab"
+      />
+
+      <PortalHostingServicesPanel
+        v-else-if="panel === 'hosting'"
+        :dash="dash"
+        :plans="plans"
+        @open-panel="onOpenPanel"
+        @refresh="refreshDash"
       />
 
       <PortalBillingPanel

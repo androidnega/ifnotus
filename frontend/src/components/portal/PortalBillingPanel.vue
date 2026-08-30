@@ -87,6 +87,27 @@ function priceLabel(plan: HostingPlan) {
   return Number.isInteger(n) ? String(n) : n.toFixed(2)
 }
 
+function formatInvoiceItem(inv: any) {
+  const kind = (inv.order_kind || '').toLowerCase()
+  if (kind === 'panel_theme' || kind === 'theme' || Number(inv.total_price || 0) <= 5) {
+    const themeName = inv.meta_json?.theme_name || 'Ember Panel'
+    return `Hosting Panel Theme (${themeName})`
+  }
+  if (kind === 'credits') {
+    return 'AI Developer Credits'
+  }
+  if (kind === 'renewal') {
+    return `Hosting Renewal — ${inv.domain_name || 'Service'}`
+  }
+  if (kind === 'upgrade') {
+    return `Plan Upgrade — ${inv.domain_name || 'Service'}`
+  }
+  if (inv.domain_name) {
+    return `Hosting — ${inv.domain_name}`
+  }
+  return 'Hosting Package'
+}
+
 function planHighlights(plan: HostingPlan) {
   return packItems(plan).slice(0, 4)
 }
@@ -331,7 +352,7 @@ function goNewOrder(planSlug?: string) {
             <tbody>
               <tr v-for="inv in invoices" :key="inv.id">
                 <td class="cell-mono font-bold">{{ inv.invoice_number || inv.id.slice(0, 8) }}</td>
-                <td>{{ inv.domain_name || 'Hosting Package' }}</td>
+                <td>{{ formatInvoiceItem(inv) }}</td>
                 <td class="cell-price">{{ inv.currency }} {{ Number(inv.total_price).toFixed(2) }}</td>
                 <td>
                   <span class="status-pill" :class="inv.payment_status">

@@ -19,6 +19,7 @@ export type UiRouteEntry = {
 /** Customer account primary tabs (/account) */
 export const PORTAL_ACCOUNT_TABS = [
   { id: 'home', label: 'Overview' },
+  { id: 'hosting', label: 'Hosting' },
   { id: 'billing', label: 'Billing' },
   { id: 'support', label: 'Support' },
   { id: 'settings', label: 'Settings' },

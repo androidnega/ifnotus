@@ -1163,6 +1163,20 @@ export const customersApi = {
       { enabled },
     ),
 
+  setHostingPassword: (environmentId: string, password: string) =>
+    apiClient.post<{
+      success: boolean
+      message: string
+      username: string
+    }>(`/customers/environments/${environmentId}/hosting-password`, { password }),
+
+  requestCancelSubscription: (subscriptionId: string, reason: string) =>
+    apiClient.post<{
+      success: boolean
+      message: string
+      subscription_id: string
+    }>(`/customers/subscriptions/${subscriptionId}/cancel-request`, { reason }),
+
   topUpCredits: (credits: number) =>
     apiClient.post<{
       reference: string

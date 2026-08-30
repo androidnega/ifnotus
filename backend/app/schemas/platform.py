@@ -1152,3 +1152,23 @@ class PhpMyAdminOpenResponse(SchemaBase):
     engine: str = "mysql"
     database: str | None = None
     expires_in: int = 120
+
+
+class HostingPasswordSetRequest(SchemaBase):
+    password: str = Field(min_length=8, max_length=128)
+
+
+class HostingPasswordSetResponse(SchemaBase):
+    success: bool = True
+    message: str
+    username: str
+
+
+class SubscriptionCancelRequest(SchemaBase):
+    reason: str = Field(default="Customer requested cancellation", max_length=500)
+
+
+class SubscriptionCancelResponse(SchemaBase):
+    success: bool = True
+    message: str
+    subscription_id: UUID

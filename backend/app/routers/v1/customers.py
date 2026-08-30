@@ -106,6 +106,10 @@ from app.schemas.platform import (
     EnvironmentDatabaseImportResponse,
     EnvironmentDatabaseRevealResponse,
     PhpMyAdminOpenResponse,
+    HostingPasswordSetRequest,
+    HostingPasswordSetResponse,
+    SubscriptionCancelRequest,
+    SubscriptionCancelResponse,
     EnvironmentDatabaseV2Response,
     ApplicationInstanceCreateRequest,
     ApplicationInstanceResponse,
@@ -4501,6 +4505,85 @@ async def set_auto_renew(
         customer.id, subscription_id, body.enabled
     )
     return SubscriptionResponse.model_validate(sub)
+
+
+@router.post("/environments/{environment_id}/hosting-password", response_model=HostingPasswordSetResponse)
+async def set_hosting_password(
+    environment_id: UUID,
+    body: HostingPasswordSetRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> HostingPasswordSetResponse:
+    """Set or change the hosting panel password for an environment from the customer account."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await session.get(CustomerEnvironment, environment_id)
+    if env is None or env.customer_id != customer.id:
+        raise NotFoundError("Hosting environment not found.")
+
+    pwd = (body.password or "").strip()
+    if len(pwd) < 8:
+        raise ValidationError("Password must be at least 8 characters.", code="password_too_short")
+
+    env.panel_password_hash = hash_password(pwd)
+    session.add(
+        PlatformAuditLog(
+            customer_id=customer.id,
+            actor_id=user.id,
+            action="hosting_panel_password_updated",
+            target_type="environment",
+            target_id=str(env.id),
+            result="success",
+            metadata_json={"hosting_name": env.hosting_name, "domain": env.domain},
+        )
+    )
+    await session.flush()
+    return HostingPasswordSetResponse(
+        success=True,
+        message="Hosting cPanel password updated successfully.",
+        username=env.hosting_name or "cpanel_user",
+    )
+
+
+@router.post("/subscriptions/{subscription_id}/cancel-request", response_model=SubscriptionCancelResponse)
+async def request_cancel_subscription(
+    subscription_id: UUID,
+    body: SubscriptionCancelRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> SubscriptionCancelResponse:
+    """Submit a cancellation request for a hosting subscription."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    sub = await SubscriptionBillingService(settings, session).get_owned(customer.id, subscription_id)
+
+    sub.auto_renew = False
+    session.add(
+        PlatformAuditLog(
+            customer_id=customer.id,
+            actor_id=user.id,
+            action="subscription_cancellation_requested",
+            target_type="subscription",
+            target_id=str(sub.id),
+            result="success",
+            metadata_json={"reason": body.reason},
+        )
+    )
+    await NotificationService(session, settings).notify(
+        customer.id,
+        title="Cancellation Request Received",
+        body=f"Your cancellation request for subscription {str(sub.id)[:8]} has been recorded. Auto-renewal has been turned off.",
+        kind="billing",
+        deliver=False,
+    )
+    await session.flush()
+    return SubscriptionCancelResponse(
+        success=True,
+        message="Cancellation request received. Auto-renew has been turned off.",
+        subscription_id=sub.id,
+    )
 
 
 @router.post("/billing/tick")

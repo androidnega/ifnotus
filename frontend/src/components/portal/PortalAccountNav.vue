@@ -36,6 +36,7 @@ const panel = computed(() => {
 
 const tabIconMap: Record<string, any> = {
   home: IconDashboard,
+  hosting: IconServer,
   billing: IconChart,
   support: IconActivity,
   settings: IconSettings,

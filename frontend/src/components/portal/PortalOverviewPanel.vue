@@ -145,8 +145,7 @@ const expiresLabel = computed(() => {
 const isComplimentaryPlan = computed(() => {
   const price = Number(plan.value?.price_monthly ?? 0)
   const isFreeName = (plan.value?.name || '').toLowerCase().includes('free') || (plan.value?.name || '').toLowerCase().includes('trial')
-  const isZeroSub = activeSub.value && (Number(activeSub.value.amount || 0) === 0)
-  return Boolean((price === 0 || isFreeName || isZeroSub) && !pendingOrder.value && env.value)
+  return Boolean(price === 0 && isFreeName && !pendingOrder.value && env.value)
 })
 
 </script>

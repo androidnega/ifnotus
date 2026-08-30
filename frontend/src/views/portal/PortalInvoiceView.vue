@@ -100,6 +100,10 @@ const lineDescription = computed(() => {
   if (kind === 'renewal') return `${label} subscription renewal`
   if (kind === 'upgrade') return `Plan upgrade — ${label}`
   if (kind === 'credits') return 'AI Engineer credits top-up'
+  if (kind === 'panel_theme' || kind === 'theme' || Number(order.value?.total_price || 0) <= 5) {
+    const themeName = order.value?.meta_json?.theme_name || 'Ember Panel'
+    return `Hosting Panel Theme License (${themeName})`
+  }
   return `${label} managed hosting subscription`
 })
 
