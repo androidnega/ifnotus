@@ -173,7 +173,7 @@ function priceLabel() {
   color: var(--if-muted, #64748b);
   padding: 0.4rem 0.5rem;
   border-radius: 0.5rem;
-  background: color-mix(in srgb, var(--if-paper, #f4f1ec) 70%, var(--if-surface, #fff));
+  background: color-mix(in srgb, var(--if-paper, #f8fafc) 70%, var(--if-surface, #fff));
 }
 .metric i {
   color: var(--plan-accent, var(--if-primary, #ff6c2c));

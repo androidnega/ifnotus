@@ -168,7 +168,6 @@ function clearAndRetry() {
       <div class="atmosphere" aria-hidden="true">
         <div class="mesh" />
         <div class="wash" />
-        <div class="rail" />
       </div>
 
       <div class="stage-inset">
@@ -360,20 +359,6 @@ body.home-lock {
   background-size: 48px 48px;
   mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, #000 20%, transparent 75%);
   opacity: 0.7;
-}
-.rail {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: clamp(1.15rem, 3vw, 2rem);
-  width: 1px;
-  background: linear-gradient(180deg, transparent, rgba(255, 108, 44, 0.45), transparent);
-  opacity: 0.5;
-}
-@media (min-width: 900px) {
-  .rail {
-    left: max(calc((100% - 76rem) / 2 + 0.35rem), clamp(1.15rem, 3vw, 2rem));
-  }
 }
 
 .stage-inset {

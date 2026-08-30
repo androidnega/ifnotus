@@ -59,7 +59,19 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
       aria-label="Notifications"
     >
       <div class="flex items-center justify-between border-b border-surface-border px-4 py-3">
-        <h2 class="text-sm font-semibold text-slate-900 dark:text-white">Notifications</h2>
+        <div class="flex items-center gap-2">
+          <h2 class="text-sm font-semibold text-slate-900 dark:text-white">Notifications</h2>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium transition"
+            :class="notifications.soundMuted ? 'text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'"
+            :title="notifications.soundMuted ? 'Order sound bell is muted. Click to enable.' : 'Order sound bell is active. Click to mute.'"
+            @click="notifications.toggleSound()"
+          >
+            <i class="fa-solid" :class="notifications.soundMuted ? 'fa-bell-slash' : 'fa-bell'" aria-hidden="true" />
+            <span>{{ notifications.soundMuted ? 'Muted' : 'Bell on' }}</span>
+          </button>
+        </div>
         <div class="flex items-center gap-2">
           <button
             type="button"

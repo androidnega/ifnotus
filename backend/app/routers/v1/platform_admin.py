@@ -34,6 +34,7 @@ from app.schemas.platform_admin import (
     StaffCustomerDetailResponse,
     StaffCustomerListItem,
     StaffCustomerUpdateRequest,
+    StaffCustomerCreateRequest,
     StaffDeleteCustomerRequest,
     StaffEnvironmentItem,
     StaffGrantCreditsRequest,
@@ -41,6 +42,7 @@ from app.schemas.platform_admin import (
     StaffOpsInboxResponse,
     StaffOrderItem,
     StaffProvisionHostingRequest,
+    StaffUpdateSubdomainRequest,
     StaffUserCreateRequest,
     StaffUserItem,
     StaffUserUpdateRequest,
@@ -65,6 +67,66 @@ async def list_customers(
 ) -> list[StaffCustomerListItem]:
     rows = await StaffPlatformService(settings, session).list_customers(q=q, limit=limit)
     return [StaffCustomerListItem.model_validate(r) for r in rows]
+
+
+@router.post(
+    "/customers",
+    response_model=CustomerResponse,
+    dependencies=[Depends(RequirePermission(Permission.PLATFORM_OPS))],
+)
+async def create_customer(
+    body: StaffCustomerCreateRequest,
+    session: DbSession,
+    settings: SettingsDep,
+    user: CurrentUser,
+) -> CustomerResponse:
+    """Create customer account directly by staff and optionally provision hosting."""
+    from sqlalchemy import func, select
+    from app.core.exceptions import ConflictError
+    from app.services.platform.customers import CustomerService
+    from app.services.platform.orders import OrderService
+    from app.schemas.platform_admin import StaffProvisionHostingRequest
+
+    email = body.email.strip().lower()
+    existing = (
+        await session.execute(
+            select(Customer).where(func.lower(Customer.email) == email)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise ConflictError("A customer with this email already exists.")
+
+    svc = CustomerService(settings, session)
+    customer = await svc.register_email(
+        email=email,
+        password=body.password or "WelcomePass2026!",
+        full_name=body.full_name,
+        company=body.company,
+        phone=body.phone,
+    )
+    if body.phone:
+        customer.phone = body.phone
+        customer.phone_verified = True
+    customer.email_verified = True
+    await session.commit()
+    await session.refresh(customer)
+
+    if body.plan_id:
+        try:
+            plan_uuid = UUID(body.plan_id) if isinstance(body.plan_id, str) else body.plan_id
+            await OrderService(settings, session).provision_for_customer(
+                customer.id,
+                StaffProvisionHostingRequest(
+                    plan_id=plan_uuid,
+                    domain=body.domain or None,
+                ),
+                actor_id=user.id,
+            )
+            await session.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+    return CustomerService.to_response(customer)
 
 
 @router.get(
@@ -169,19 +231,34 @@ async def grant_customer_credits(
     )
 
 
+def _can_view_billing(user: CurrentUser) -> bool:
+    if getattr(user, "is_superuser", False):
+        return True
+    roles = set(getattr(user, "roles", []) or [])
+    priv = getattr(user, "privilege_viewing_as", None)
+    if priv:
+        roles.add(priv)
+    perms = set(getattr(user, "permissions", []) or [])
+    if Permission.BILLING_VIEW in perms or Permission.BILLING_MANAGE in perms:
+        return True
+    return bool(roles & {"platform_owner", "platform_admin", "billing_agent", "superadmin", "admin"})
+
+
 @router.get(
     "/orders",
     response_model=list[StaffOrderItem],
-    dependencies=[Depends(RequirePermission(Permission.BILLING_VIEW))],
+    dependencies=[Depends(RequirePermission(Permission.PLATFORM_READ))],
 )
 async def list_orders(
     session: DbSession,
     settings: SettingsDep,
+    user: CurrentUser,
     payment_status: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> list[StaffOrderItem]:
+    can_view = _can_view_billing(user)
     rows = await StaffPlatformService(settings, session).list_orders(
-        payment_status=payment_status, limit=limit
+        payment_status=payment_status, limit=limit, mask_financials=not can_view
     )
     return [StaffOrderItem.model_validate(r) for r in rows]
 
@@ -194,9 +271,11 @@ async def list_orders(
 async def ops_inbox(
     session: DbSession,
     settings: SettingsDep,
+    user: CurrentUser,
 ) -> StaffOpsInboxResponse:
     """Bell + Orders badge: new MoMo submissions and recently paid hosting invoices."""
-    data = await StaffPlatformService(settings, session).ops_inbox()
+    can_view = _can_view_billing(user)
+    data = await StaffPlatformService(settings, session).ops_inbox(mask_financials=not can_view)
     return StaffOpsInboxResponse.model_validate(data)
 
 
@@ -281,13 +360,35 @@ async def confirm_order_payment(
         actor_id=user.id,
         amount_received=payload.amount_received,
         notes=payload.notes,
+        domain_name=payload.domain_name,
+        payment_method=payload.payment_method,
+    )
+
+
+
+@router.post(
+    "/orders/{order_id}/activate-hosting",
+    response_model=OrderResponse,
+    dependencies=[Depends(RequirePermission(Permission.PLATFORM_OPS))],
+)
+async def activate_order_hosting(
+    order_id: UUID,
+    session: DbSession,
+    settings: SettingsDep,
+    user: CurrentUser,
+) -> OrderResponse:
+    """Hosting operator: activate and provision server infrastructure for paid order."""
+    from app.services.platform.orders import OrderService
+
+    return await OrderService(settings, session).activate_hosting_by_operator(
+        order_id, actor_id=user.id
     )
 
 
 @router.post(
     "/orders/{order_id}/retry-provision",
     response_model=OrderResponse,
-    dependencies=[Depends(RequirePermission(Permission.BILLING_MANAGE))],
+    dependencies=[Depends(RequirePermission(Permission.PLATFORM_OPS))],
 )
 async def retry_order_provision(
     order_id: UUID,
@@ -682,6 +783,26 @@ async def staff_repair_env_filesystem(
             unix.apply_ownership(env, prepare_sftp_jail=False)
     await session.flush()
     return MessageResponse(message="Site folder DAC repaired (tenant ownership).")
+
+
+@router.patch(
+    "/environments/{environment_id}/subdomain",
+    response_model=StaffEnvironmentItem,
+    dependencies=[Depends(RequirePermission(Permission.DOMAINS_WRITE))],
+)
+async def update_environment_subdomain(
+    environment_id: UUID,
+    body: StaffUpdateSubdomainRequest,
+    session: DbSession,
+    settings: SettingsDep,
+    user: CurrentUser,
+) -> StaffEnvironmentItem:
+    """Hosting operator only: edit/change subdomain of personal hostings."""
+    svc = StaffPlatformService(settings, session)
+    env = await svc.update_environment_subdomain(
+        environment_id, body.domain, actor_id=user.id
+    )
+    return StaffEnvironmentItem.model_validate(svc.env_item_payload(env))
 
 
 @router.post(

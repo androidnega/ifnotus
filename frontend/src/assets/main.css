@@ -10,10 +10,10 @@
     --if-primary-ring: rgba(255, 108, 44, 0.22);
     --if-glow: rgba(255, 108, 44, 0.1);
     --if-ink: #161a1d;
-    --if-paper: #f4f1ec;
+    --if-paper: #f8fafc;
     --if-surface: #ffffff;
-    --if-muted: #6b7280;
-    --if-border: #e7e2db;
+    --if-muted: #64748b;
+    --if-border: #e2e8f0;
     --if-plan: #0f766e;
 
     --brand-rgb-500: 255 108 44;
@@ -45,13 +45,13 @@
 
   body {
     @apply bg-surface font-sans text-slate-900 antialiased transition-colors duration-300 dark:text-slate-100;
-    background: var(--if-paper, #f4f1ec);
+    background: var(--if-paper, #f8fafc);
   }
 
   #app {
     min-height: 100vh;
     min-height: 100dvh;
-    background: var(--if-paper, #f4f1ec);
+    background: var(--if-paper, #f8fafc);
   }
 
   *:focus-visible {

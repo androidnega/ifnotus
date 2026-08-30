@@ -10,12 +10,14 @@ import {
   IconDeploy,
   IconGlobe,
   IconLock,
+  IconLogout,
   IconMail,
   IconServer,
   IconSettings,
   IconShield,
   IconTerminal,
 } from '@/components/icons'
+import IconFolder from '@/components/icons/IconFolder.vue'
 import UiBrandMark from '@/components/ui/UiBrandMark.vue'
 import { useAuthStore } from '@/stores/auth'
 import { usePermissions } from '@/composables/usePermissions'
@@ -119,6 +121,7 @@ const navGroups = computed<NavGroup[]>(() => {
         label: 'Hosting Operations',
         items: [
           { to: '/panel', name: 'dashboard', label: 'Operations Dashboard', icon: IconDashboard },
+          { to: '/files', name: 'files', label: 'File Manager', icon: IconFolder, permission: Permission.FILES_READ },
           { to: '/applications', name: 'applications', label: 'Modern Apps', icon: IconApp, permission: Permission.APPS_READ },
           { to: '/domains', name: 'domains', label: 'Domains & DNS', icon: IconGlobe, permission: Permission.DOMAINS_READ },
           { to: '/databases', name: 'databases', label: 'Databases', icon: IconDatabase, permission: Permission.DATABASES_READ },
@@ -238,6 +241,7 @@ const navGroups = computed<NavGroup[]>(() => {
       id: 'hosting',
       label: 'Hosting & Services',
       items: [
+        { to: '/files', name: 'files', label: 'File Manager', icon: IconFolder, permission: Permission.FILES_READ },
         { to: '/applications', name: 'applications', label: 'Apps', icon: IconApp, permission: Permission.APPS_READ },
         { to: '/domains', name: 'domains', label: 'DNS Zones', icon: IconGlobe, permission: Permission.DOMAINS_READ },
         { to: '/databases', name: 'databases', label: 'Databases', icon: IconDatabase, permission: Permission.DATABASES_READ },
@@ -295,6 +299,18 @@ const showEmergencyTerminal = computed(() => {
 })
 
 const activeName = computed(() => route.name)
+
+async function handleLogout() {
+  auth.clearSession()
+  try {
+    await auth.logout()
+  } catch {
+    /* ignore */
+  }
+  if (typeof window !== 'undefined') {
+    window.location.replace('/login')
+  }
+}
 </script>
 
 <template>
@@ -445,18 +461,28 @@ const activeName = computed(() => route.name)
           </p>
         </div>
       </div>
-      <button
-        type="button"
-        class="hidden rounded-lg p-2 hover:bg-slate-100 dark:hover:bg-slate-800 lg:block"
-        :title="collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
-        @click="$emit('toggleCollapse')"
-      >
-        <IconChevron
-          :size="16"
-          :class="[collapsed ? 'rotate-180' : '']"
-          class="transition-transform"
-        />
-      </button>
+      <div class="flex items-center gap-1">
+        <button
+          type="button"
+          class="rounded-lg p-2 text-rose-500 hover:bg-rose-50 hover:text-rose-700 dark:text-rose-400 dark:hover:bg-rose-500/10"
+          :title="collapsed ? 'Sign out' : 'Sign out of staff portal'"
+          @click="handleLogout"
+        >
+          <IconLogout :size="16" />
+        </button>
+        <button
+          type="button"
+          class="hidden rounded-lg p-2 hover:bg-slate-100 dark:hover:bg-slate-800 lg:block"
+          :title="collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+          @click="$emit('toggleCollapse')"
+        >
+          <IconChevron
+            :size="16"
+            :class="[collapsed ? 'rotate-180' : '']"
+            class="transition-transform"
+          />
+        </button>
+      </div>
     </div>
   </aside>
 </template>

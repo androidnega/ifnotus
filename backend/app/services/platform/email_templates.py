@@ -277,96 +277,99 @@ def invoice_placed(
 
 
 def payment_received(*, name: str, invoice: str) -> tuple[str, str, str]:
-    title = "We have your payment details"
+    title = "Payment Details Received"
     text = wrap_plain(
         title,
-        f"Hi {name},\n\nWe have your Mobile Money transaction for invoice {invoice}. "
-        f"We'll confirm it and activate your hosting. You'll get another message when it's live.",
+        f"Hi {name},\n\nWe have received your payment reference for invoice {invoice}. "
+        f"Our billing desk is verifying the transaction. Your hosting environment will be activated immediately once confirmed.",
     )
     html = wrap(
         title,
         f"""
         <p style="margin:0 0 14px;">Hi {_esc(name)},</p>
-        <p style="margin:0;">We have your Mobile Money transaction for invoice <strong>{_esc(invoice)}</strong>.
-        We'll confirm it and activate your hosting — you'll hear from us as soon as it's live.</p>
+        <p style="margin:0 0 14px;">We have received your payment reference for invoice <strong>{_esc(invoice)}</strong>.</p>
+        <p style="margin:0;">Our billing desk is verifying the transaction. Your hosting environment will be activated and provisioned immediately once confirmed.</p>
         """,
-        preheader=f"Transaction received for invoice {invoice}. Confirmation next.",
+        preheader=f"Payment details received for invoice {invoice}. Verification in progress.",
         tone="info",
         cta_href=ACCOUNT_URL,
-        cta_label="Open your account",
+        cta_label="View account status",
     )
     return title, text, html
 
 
 def payment_confirmed(*, name: str, invoice: str, detail: str | None = None) -> tuple[str, str, str]:
-    title = "Payment confirmed"
-    detail_line = detail or "We're activating your hosting now. Watch for a message when it's ready."
+    title = "Payment Verified & Accepted"
+    detail_line = detail or "Your payment is verified and accepted. Hosting infrastructure and server provisioning are in progress."
     text = wrap_plain(
         title,
-        f"Hi {name},\n\nPayment for invoice {invoice} is confirmed.\n{detail_line}",
+        f"Hi {name},\n\nPayment for invoice {invoice} is verified and accepted.\n{detail_line}",
     )
     html = wrap(
         title,
         f"""
         <p style="margin:0 0 14px;">Hi {_esc(name)},</p>
-        <p style="margin:0 0 14px;">Payment for invoice <strong>{_esc(invoice)}</strong> is confirmed.</p>
+        <p style="margin:0 0 14px;">Payment for invoice <strong>{_esc(invoice)}</strong> has been verified and accepted by billing.</p>
         <p style="margin:0;">{_esc(detail_line)}</p>
         """,
-        preheader=f"Payment confirmed for invoice {invoice}.",
+        preheader=f"Payment verified for invoice {invoice}.",
         tone="ok",
         cta_href=ACCOUNT_URL,
-        cta_label="Open your account",
+        cta_label="Open control panel",
     )
     return title, text, html
 
 
 def payment_rejected(*, name: str, invoice: str, notes: str | None = None) -> tuple[str, str, str, str]:
-    title = "Payment not confirmed"
-    reason = f" Note: {notes}" if notes else ""
+    title = "Payment Verification Unsuccessful"
+    reason = f" Details: {notes}" if notes else ""
     text = wrap_plain(
         title,
-        f"Hi {name},\n\nWe could not confirm payment for invoice {invoice}.{reason}\n"
-        f"Open your account to try again or contact support.\n{ACCOUNT_URL}",
+        f"Hi {name},\n\nWe could not verify the payment transaction for invoice {invoice}.{reason}\n"
+        f"Please verify your reference number or transaction ID, or contact billing support.\n{ACCOUNT_URL}",
     )
-    note_html = f" {_esc(notes)}" if notes else ""
+    note_html = f" <p style='margin:10px 0 0; color:#b42318;'><strong>Note:</strong> {_esc(notes)}</p>" if notes else ""
     html = wrap(
         title,
         f"""
         <p style="margin:0 0 14px;">Hi {_esc(name)},</p>
-        <p style="margin:0;">We could not confirm payment for invoice <strong>{_esc(invoice)}</strong>.{note_html}</p>
+        <p style="margin:0 0 10px;">We were unable to verify the transaction details for invoice <strong>{_esc(invoice)}</strong>.</p>
+        {note_html}
+        <p style="margin:14px 0 0;">Please check your Mobile Money reference code and resubmit, or reach out to our billing desk for assistance.</p>
         """,
-        preheader=f"Invoice {invoice} payment was not confirmed.",
+        preheader=f"Payment verification required for invoice {invoice}.",
         tone="warn",
         cta_href=ACCOUNT_URL,
-        cta_label="Open your account",
+        cta_label="Review invoice & retry",
     )
     sms = (
-        f"Payment for invoice {invoice} was not confirmed. "
-        f"Open ifnotus.space/account or contact support."
+        f"Payment verification for invoice {invoice} was unsuccessful. "
+        f"Please check your transaction reference at ifnotus.space/account or contact support."
     )
     return title, text, html, sms
 
 
 def hosting_ready(*, name: str, hostname: str) -> tuple[str, str, str]:
-    title = "Your hosting is live"
+    title = "Hosting Environment Active & Live"
     url = f"https://{hostname}" if hostname else ACCOUNT_URL
     text = wrap_plain(
         title,
-        f"Hi {name},\n\nYour IFNOTUS hosting is ready. Sign in to manage files, domains, and support.\n"
-        f"Site: {url}\nAccount: {ACCOUNT_URL}",
+        f"Hi {name},\n\nYour hosting environment is fully provisioned and live. You can now manage files, databases, mail, and SSL.\n"
+        f"Website: {url}\nControl Panel: {ACCOUNT_URL}",
         footer_url=url,
     )
     html = wrap(
         title,
         f"""
         <p style="margin:0 0 14px;">Hi {_esc(name)},</p>
-        <p style="margin:0 0 14px;">Your hosting is live. Everything you need is in your IFNOTUS account.</p>
-        <p style="margin:0;font-size:13px;color:#6b7280;">Site: <a href="{_esc(url)}" style="color:#ff6c2c;">{_esc(url)}</a></p>
+        <p style="margin:0 0 14px;">Your hosting environment is fully provisioned, DNS is configured, and your site is live.</p>
+        <p style="margin:0 0 14px;font-size:14px;"><strong>Site URL:</strong> <a href="{_esc(url)}" style="color:#2563eb;">{_esc(url)}</a></p>
+        <p style="margin:0;color:#64748b;font-size:13px;">Manage your web files, databases, mailboxes, and domains directly from your control panel.</p>
         """,
-        preheader="Hosting is live — open your site and account.",
+        preheader=f"Hosting environment is live at {hostname or 'your domain'}.",
         tone="ok",
-        cta_href=url,
-        cta_label="Open your site",
+        cta_href=ACCOUNT_URL,
+        cta_label="Open hosting control panel",
     )
     return title, text, html
 
@@ -374,10 +377,10 @@ def hosting_ready(*, name: str, hostname: str) -> tuple[str, str, str]:
 def hosting_ready_sms(*, hostname: str) -> str:
     if hostname:
         return (
-            f"Your hosting is live at {hostname}. "
-            f"Manage it: ifnotus.space/account"
+            f"Your hosting on {hostname} is active and live! "
+            f"Access control panel: ifnotus.space/account"
         )
-    return "Your hosting is live. Open ifnotus.space/account"
+    return "Your hosting is active and live! Access control panel: ifnotus.space/account"
 
 
 def hosting_failed(*, name: str, invoice: str | None = None) -> tuple[str, str, str, str]:

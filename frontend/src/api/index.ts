@@ -1305,6 +1305,9 @@ export const customersApi = {
   copyEnvFile: (environmentId: string, source: string, destination: string) =>
     apiClient.post(`/customers/environments/${environmentId}/files/copy`, { source, destination }),
 
+  chmodEnvFile: (environmentId: string, path: string, mode: string) =>
+    apiClient.post(`/customers/environments/${environmentId}/files/chmod`, { path, mode }),
+
   unzipEnvFile: (
     environmentId: string,
     path: string,
@@ -1760,6 +1763,29 @@ export const customersApi = {
 
   backupEnvDatabase: (environmentId: string, databaseId: string) =>
     apiClient.post(`/customers/environments/${environmentId}/databases/${encodeURIComponent(databaseId)}/backup`),
+
+  importEnvDatabaseSql: (environmentId: string, databaseId?: string | null, sql?: string) =>
+    databaseId
+      ? apiClient.post<{
+          success: boolean
+          message: string
+          database: string
+          engine: string
+          statements_executed?: number
+          imported_bytes?: number
+        }>(`/customers/environments/${environmentId}/databases/${encodeURIComponent(databaseId)}/import`, {
+          sql: sql || '',
+        })
+      : apiClient.post<{
+          success: boolean
+          message: string
+          database: string
+          engine: string
+          statements_executed?: number
+          imported_bytes?: number
+        }>(`/customers/environments/${environmentId}/database/import`, {
+          sql: sql || '',
+        }),
 
   getEnvMail: (environmentId: string) =>
     apiClient.get<{
@@ -2396,14 +2422,30 @@ export const platformAdminApi = {
       note?: string
     }>('/platform/capacity'),
 
-  confirmOrderPayment: (orderId: string, body?: { amount_received?: number; notes?: string }) =>
+  confirmOrderPayment: (orderId: string, body?: { amount_received?: number; notes?: string; domain_name?: string; payment_method?: string }) =>
     apiClient.post(`/platform/orders/${orderId}/confirm-payment`, body || {}),
+
+  activateOrderHosting: (orderId: string) =>
+    apiClient.post(`/platform/orders/${orderId}/activate-hosting`, {}),
 
   retryOrderProvision: (orderId: string) =>
     apiClient.post(`/platform/orders/${orderId}/retry-provision`, {}),
 
   rejectOrderPayment: (orderId: string, body?: { notes?: string }) =>
     apiClient.post(`/platform/orders/${orderId}/reject-payment`, body || {}),
+
+  updateEnvironmentSubdomain: (environmentId: string, domain: string) =>
+    apiClient.patch(`/platform/environments/${environmentId}/subdomain`, { domain }),
+
+  createCustomer: (body: {
+    email: string
+    full_name: string
+    password?: string
+    phone?: string
+    company?: string
+    plan_id?: string
+    domain?: string
+  }) => apiClient.post<import('@/types/platform').CustomerProfile>('/platform/customers', body),
 
   provisionCustomerHosting: (
     customerId: string,

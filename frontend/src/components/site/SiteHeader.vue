@@ -298,7 +298,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 .drawer-link.on,
 .drawer-link:hover {
-  background: color-mix(in srgb, var(--if-primary, #ff6c2c) 10%, var(--if-paper, #f4f1ec));
+  background: color-mix(in srgb, var(--if-primary, #ff6c2c) 10%, var(--if-paper, #f8fafc));
   color: var(--if-ink, #161a1d);
 }
 .drawer-link.on {

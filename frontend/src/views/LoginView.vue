@@ -3,6 +3,7 @@ import { nextTick, onMounted, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import UiBrandMark from '@/components/ui/UiBrandMark.vue'
 import UiAlert from '@/components/ui/UiAlert.vue'
+import { IconEye, IconEyeOff } from '@/components/icons'
 import { useAuthStore } from '@/stores/auth'
 import { authApi } from '@/api'
 import { ensureDeviceFingerprint } from '@/api/client'
@@ -14,6 +15,7 @@ const auth = useAuthStore()
 
 const email = ref('')
 const password = ref('')
+const showPassword = ref(false)
 const approvalCode = ref('')
 const emailInput = ref<HTMLInputElement | null>(null)
 const codeInput = ref<HTMLInputElement | null>(null)
@@ -122,117 +124,293 @@ function backToCredentials() {
 </script>
 
 <template>
-  <div class="login-page ds-auth-shell">
-    <form
-      v-if="step === 'credentials'"
-      class="card ds-auth-card"
-      @submit.prevent="handleLogin"
-    >
-      <UiBrandMark class="auth-brand" />
-      <h1 class="ds-page-title">Staff log in</h1>
-
-      <UiAlert v-if="route.query.verified === '1'" tone="ok">Email verified. You can log in.</UiAlert>
-
-      <label>
-        <span>Email</span>
-        <input
-          ref="emailInput"
-          v-model="email"
-          type="email"
-          autocomplete="username"
-          required
-          placeholder="you@example.com"
-        />
-      </label>
-
-      <label>
-        <span>Password</span>
-        <input
-          v-model="password"
-          type="password"
-          required
-          autocomplete="current-password"
-          placeholder="Password"
-        />
-      </label>
-
-      <div class="row">
-        <router-link class="link" :to="{ name: 'forgot-password' }">Forgot password?</router-link>
+  <div class="cpanel-login-shell">
+    <div class="cpanel-login-container">
+      <div class="cpanel-login-brand">
+        <UiBrandMark variant="staff" />
       </div>
 
-      <UiAlert v-if="auth.error" tone="err">{{ auth.error }}</UiAlert>
+      <!-- Credentials step -->
+      <template v-if="step === 'credentials'">
+        <form class="cpanel-login-card" @submit.prevent="handleLogin">
+          <UiAlert v-if="route.query.verified === '1'" tone="ok" class="compact-alert">Email verified. You can log in.</UiAlert>
 
-      <button type="submit" :disabled="auth.loading">
-        {{ auth.loading ? 'Signing in…' : 'Log in' }}
-      </button>
-    </form>
+          <div class="cpanel-input-wrap">
+            <span class="cpanel-input-icon">
+              <i class="fas fa-user" aria-hidden="true" />
+            </span>
+            <input
+              ref="emailInput"
+              v-model="email"
+              type="email"
+              autocomplete="username"
+              required
+              placeholder="Username or email"
+            />
+          </div>
 
-    <form
-      v-else-if="step === 'challenge'"
-      class="card ds-auth-card"
-      @submit.prevent="handleVerify"
-    >
-      <UiBrandMark class="auth-brand" />
-      <h1 class="ds-page-title">Approve device</h1>
-      <p class="hint">New IP{{ challengeIp ? ` · ${challengeIp}` : '' }}. Enter the server code.</p>
+          <div class="cpanel-input-wrap">
+            <span class="cpanel-input-icon">
+              <i class="fas fa-lock" aria-hidden="true" />
+            </span>
+            <input
+              v-model="password"
+              :type="showPassword ? 'text' : 'password'"
+              required
+              autocomplete="current-password"
+              placeholder="Password"
+            />
+            <button
+              type="button"
+              class="cpanel-eye-btn"
+              :title="showPassword ? 'Hide password' : 'Show password'"
+              tabindex="-1"
+              @click="showPassword = !showPassword"
+            >
+              <IconEyeOff v-if="showPassword" :size="16" />
+              <IconEye v-else :size="16" />
+            </button>
+          </div>
 
-      <label>
-        <span>Code</span>
-        <input
-          ref="codeInput"
-          v-model="approvalCode"
-          type="text"
-          inputmode="numeric"
-          autocomplete="one-time-code"
-          required
-          maxlength="8"
-          placeholder="6-digit code"
-          class="code"
-        />
-      </label>
+          <UiAlert v-if="auth.error" tone="err" class="compact-alert">{{ auth.error }}</UiAlert>
 
-      <UiAlert v-if="auth.error" tone="err">{{ auth.error }}</UiAlert>
+          <button type="submit" class="cpanel-btn-submit" :disabled="auth.loading">
+            {{ auth.loading ? 'Signing in…' : 'Log in' }}
+          </button>
+        </form>
 
-      <button type="submit" :disabled="auth.loading || approvalCode.trim().length < 4">
-        {{ auth.loading ? 'Verifying…' : 'Continue' }}
-      </button>
-      <button type="button" class="ghost" @click="backToCredentials">Back</button>
-    </form>
+        <div class="cpanel-card-foot">
+          <router-link class="cpanel-foot-link" :to="{ name: 'forgot-password' }">Reset Password</router-link>
+        </div>
+      </template>
 
-    <form v-else class="card ds-auth-card" @submit.prevent="handleTotp">
-      <UiBrandMark class="auth-brand" />
-      <h1 class="ds-page-title">Authenticator</h1>
+      <!-- Challenge step -->
+      <form
+        v-else-if="step === 'challenge'"
+        class="cpanel-login-card"
+        @submit.prevent="handleVerify"
+      >
+        <div class="cpanel-input-wrap">
+          <span class="cpanel-input-icon">
+            <i class="fas fa-shield-alt" aria-hidden="true" />
+          </span>
+          <input
+            ref="codeInput"
+            v-model="approvalCode"
+            type="text"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            required
+            maxlength="8"
+            placeholder="Device code"
+            class="code"
+          />
+        </div>
 
-      <label>
-        <span>Code</span>
-        <input
-          v-model="totpCode"
-          class="code"
-          maxlength="8"
-          inputmode="numeric"
-          autocomplete="one-time-code"
-          required
-          placeholder="6-digit code"
-        />
-      </label>
+        <UiAlert v-if="auth.error" tone="err" class="compact-alert">{{ auth.error }}</UiAlert>
 
-      <UiAlert v-if="auth.error" tone="err">{{ auth.error }}</UiAlert>
+        <button type="submit" class="cpanel-btn-submit" :disabled="auth.loading || approvalCode.trim().length < 4">
+          {{ auth.loading ? 'Verifying…' : 'Continue' }}
+        </button>
+        <button type="button" class="cpanel-btn-ghost" @click="backToCredentials">Back</button>
+      </form>
 
-      <button type="submit" :disabled="auth.loading">
-        {{ auth.loading ? 'Signing in…' : 'Continue' }}
-      </button>
-      <button type="button" class="ghost" @click="backToCredentials">Back</button>
-    </form>
+      <!-- TOTP step -->
+      <form
+        v-else-if="step === 'totp'"
+        class="cpanel-login-card"
+        @submit.prevent="handleTotp"
+      >
+        <div class="cpanel-input-wrap">
+          <span class="cpanel-input-icon">
+            <i class="fas fa-key" aria-hidden="true" />
+          </span>
+          <input
+            v-model="totpCode"
+            class="code"
+            maxlength="8"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            required
+            placeholder="6-digit code"
+          />
+        </div>
+
+        <UiAlert v-if="auth.error" tone="err" class="compact-alert">{{ auth.error }}</UiAlert>
+
+        <button type="submit" class="cpanel-btn-submit" :disabled="auth.loading">
+          {{ auth.loading ? 'Signing in…' : 'Continue' }}
+        </button>
+        <button type="button" class="cpanel-btn-ghost" @click="backToCredentials">Back</button>
+      </form>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.login-page {
+.cpanel-login-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: var(--ds-paper, #f1f4f8);
   color-scheme: light;
 }
+
+.cpanel-login-container {
+  width: min(100%, 19.5rem);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.cpanel-login-brand {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 0.2rem;
+}
+
+.cpanel-login-card {
+  width: 100%;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.75rem;
+  padding: 1.15rem 1.25rem 0.95rem;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), 0 6px 18px rgba(15, 23, 42, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.cpanel-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.cpanel-input-icon {
+  position: absolute;
+  left: 0.75rem;
+  color: #94a3b8;
+  font-size: 0.82rem;
+  pointer-events: none;
+  display: grid;
+  place-items: center;
+}
+
+.cpanel-input-wrap input {
+  width: 100%;
+  border-radius: 0.5rem;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #1e293b;
+  font-family: inherit;
+  font-size: 0.86rem;
+  padding: 0.52rem 0.65rem 0.52rem 2.25rem;
+  transition: all 0.15s ease;
+  outline: none;
+}
+
+.cpanel-input-wrap input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.cpanel-input-wrap input::placeholder {
+  color: #94a3b8;
+}
+
+.cpanel-eye-btn {
+  position: absolute;
+  right: 0.65rem;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  padding: 0.2rem;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  border-radius: 0.35rem;
+  transition: color 0.15s ease;
+}
+
+.cpanel-eye-btn:hover {
+  color: #475569;
+}
+
+.cpanel-btn-submit {
+  width: 100%;
+  border: none;
+  border-radius: 0.5rem;
+  background: #1e3a5f;
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  padding: 0.58rem 1rem;
+  cursor: pointer;
+  margin-top: 0.25rem;
+  transition: background 0.15s ease;
+}
+
+.cpanel-btn-submit:hover:not(:disabled) {
+  background: #152c48;
+}
+
+.cpanel-btn-submit:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.cpanel-btn-ghost {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: #475569;
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.48rem 1rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.cpanel-btn-ghost:hover:not(:disabled) {
+  background: #f1f5f9;
+  color: #1e293b;
+}
+
+.cpanel-card-foot {
+  text-align: center;
+  margin-top: 0.25rem;
+}
+
+.cpanel-foot-link {
+  color: #64748b;
+  font-size: 0.74rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.cpanel-foot-link:hover {
+  color: #1e3a5f;
+  text-decoration: underline;
+}
+
+.compact-alert {
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.76rem;
+}
+
 input.code {
   text-align: center;
   font-family: var(--ds-font-mono, ui-monospace, monospace);
-  letter-spacing: 0.28em;
+  letter-spacing: 0.25em;
+  padding-left: 0.75rem;
 }
 </style>

@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import UiBrandMark from '@/components/ui/UiBrandMark.vue'
 import UiAlert from '@/components/ui/UiAlert.vue'
+import { IconEye, IconEyeOff } from '@/components/icons'
 import { authApi } from '@/api'
 
 const route = useRoute()
@@ -15,6 +16,8 @@ const token = computed(() => {
 
 const password = ref('')
 const confirm = ref('')
+const showPassword = ref(false)
+const showConfirm = ref(false)
 const passwordInput = ref<HTMLInputElement | null>(null)
 const loading = ref(false)
 const error = ref('')
@@ -57,53 +60,81 @@ function goLogin() {
 
 <template>
   <div class="login-page ds-auth-shell">
-    <form class="card ds-auth-card" @submit.prevent="done ? goLogin() : submit()">
-      <UiBrandMark class="auth-brand" />
-      <h1 class="ds-page-title">Reset password</h1>
-      <p class="hint">Set a new password for your IFNOTUS account.</p>
+    <div class="ds-auth-container">
+      <div class="auth-brand-wrap">
+        <UiBrandMark class="auth-brand" />
+      </div>
+      <form class="card ds-auth-card" @submit.prevent="done ? goLogin() : submit()">
+        <h1 class="ds-page-title">Reset password</h1>
+        <p class="hint">Set a new password for your IFNOTUS account.</p>
 
-      <template v-if="done">
-        <UiAlert tone="ok">Password updated. You can sign in with your new password.</UiAlert>
-        <button type="submit">Go to login</button>
-      </template>
+        <template v-if="done">
+          <UiAlert tone="ok">Password updated. You can sign in with your new password.</UiAlert>
+          <button type="submit">Go to login</button>
+        </template>
 
-      <template v-else>
-        <label>
-          <span>New password</span>
-          <input
-            ref="passwordInput"
-            v-model="password"
-            type="password"
-            autocomplete="new-password"
-            required
-            minlength="8"
-            placeholder="At least 8 characters"
-          />
-        </label>
+        <template v-else>
+          <label>
+            <span>New password</span>
+            <div class="ds-input-eye-wrap">
+              <input
+                ref="passwordInput"
+                v-model="password"
+                :type="showPassword ? 'text' : 'password'"
+                autocomplete="new-password"
+                required
+                minlength="8"
+                placeholder="At least 8 characters"
+              />
+              <button
+                type="button"
+                class="ds-eye-btn"
+                :title="showPassword ? 'Hide password' : 'Show password'"
+                tabindex="-1"
+                @click="showPassword = !showPassword"
+              >
+                <IconEyeOff v-if="showPassword" :size="18" />
+                <IconEye v-else :size="18" />
+              </button>
+            </div>
+          </label>
 
-        <label>
-          <span>Confirm password</span>
-          <input
-            v-model="confirm"
-            type="password"
-            autocomplete="new-password"
-            required
-            minlength="8"
-            placeholder="Repeat new password"
-          />
-        </label>
+          <label>
+            <span>Confirm password</span>
+            <div class="ds-input-eye-wrap">
+              <input
+                v-model="confirm"
+                :type="showConfirm ? 'text' : 'password'"
+                autocomplete="new-password"
+                required
+                minlength="8"
+                placeholder="Repeat new password"
+              />
+              <button
+                type="button"
+                class="ds-eye-btn"
+                :title="showConfirm ? 'Hide password' : 'Show password'"
+                tabindex="-1"
+                @click="showConfirm = !showConfirm"
+              >
+                <IconEyeOff v-if="showConfirm" :size="18" />
+                <IconEye v-else :size="18" />
+              </button>
+            </div>
+          </label>
 
-        <UiAlert v-if="error" tone="err">{{ error }}</UiAlert>
+          <UiAlert v-if="error" tone="err">{{ error }}</UiAlert>
 
-        <button type="submit" :disabled="loading">
-          {{ loading ? 'Saving…' : 'Update password' }}
-        </button>
+          <button type="submit" :disabled="loading">
+            {{ loading ? 'Saving…' : 'Update password' }}
+          </button>
 
-        <p class="row row--center">
-          <router-link class="link" :to="{ name: 'forgot-password' }">Request a new link</router-link>
-        </p>
-      </template>
-    </form>
+          <p class="row row--center">
+            <router-link class="link" :to="{ name: 'forgot-password' }">Request a new link</router-link>
+          </p>
+        </template>
+      </form>
+    </div>
   </div>
 </template>
 

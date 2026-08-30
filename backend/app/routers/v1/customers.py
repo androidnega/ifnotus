@@ -12,7 +12,7 @@ from app.api.deps import AccessControlDep, CurrentUser, DbSession, SettingsDep
 from app.core.exceptions import AppException, AuthenticationError, AuthorizationError, NotFoundError
 from app.core.permissions import Permission, Role
 from app.core.security import create_token_pair
-from app.models.platform import HostingPlan, PlatformAuditLog, Subscription
+from app.models.platform import CustomerEnvironment, EnvironmentDatabase, HostingPlan, PlatformAuditLog, Subscription
 from app.schemas.ai import (
     AiApplyActionRequest,
     AiChatRequest,
@@ -33,6 +33,7 @@ from app.schemas.databases import (
     DbSchemaResponse,
 )
 from app.schemas.hosting import (
+    FileChmodRequest,
     FileDetailSchema,
     FileUploadCompleteRequest,
     FileUploadInitRequest,
@@ -101,6 +102,8 @@ from app.schemas.platform import (
     TotpSetupResponse,
     EnvironmentDatabaseResponse,
     EnvironmentDatabaseCreateRequest,
+    EnvironmentDatabaseImportRequest,
+    EnvironmentDatabaseImportResponse,
     EnvironmentDatabaseRevealResponse,
     PhpMyAdminOpenResponse,
     EnvironmentDatabaseV2Response,
@@ -1106,6 +1109,25 @@ async def copy_env_file(
 
 
 @router.post(
+    "/environments/{environment_id}/files/chmod",
+    response_model=OperationResult,
+)
+async def chmod_env_file(
+    environment_id: UUID,
+    body: FileChmodRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> OperationResult:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    await TenantService(session).require_capability(env, "file_manager", label="File manager")
+    roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
+    return await _tenant_files(settings, env, roots).chmod(body.path, body.mode)
+
+
+@router.post(
     "/environments/{environment_id}/files/unzip",
     response_model=OperationResult,
 )
@@ -1289,10 +1311,39 @@ async def get_env_database(
     session: DbSession,
     settings: SettingsDep,
     reveal: bool = False,
+    db_id: str | None = Query(default=None),
 ) -> EnvironmentDatabaseResponse:
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.services.platform.environment_databases import EnvironmentDatabaseService
+
+    # 1. If explicit db_id or env has no primary db, look up in EnvironmentDatabase table
+    if db_id or not (env.db_name and env.db_engine):
+        dbs = await EnvironmentDatabaseService(settings, session).list_databases(env, None)
+        target = next((d for d in dbs if str(d.id) == db_id), None) if db_id else (dbs[0] if dbs else None)
+        if target:
+            password = None
+            uri = None
+            if reveal and target.password_set:
+                try:
+                    rev = await EnvironmentDatabaseService(settings, session).reveal(env, str(target.id))
+                    password = rev.password
+                    uri = rev.connection_uri
+                except Exception:
+                    pass
+            return EnvironmentDatabaseResponse(
+                environment_id=env.id,
+                engine=target.engine,
+                name=target.name,
+                username=target.username,
+                host=_customer_db_host(target.host),
+                port=target.port,
+                password_set=target.password_set,
+                password=password,
+                connection_uri=uri,
+            )
+
     password = None
     uri = None
     if reveal and env.db_password_encrypted:
@@ -1434,7 +1485,7 @@ async def open_primary_env_phpmyadmin(
     session: DbSession,
     settings: SettingsDep,
 ) -> PhpMyAdminOpenResponse:
-    """phpMyAdmin for the site's primary stack database (legacy / WordPress MySQL)."""
+    """phpMyAdmin for the site's primary stack database or first available MySQL database."""
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
@@ -1442,7 +1493,16 @@ async def open_primary_env_phpmyadmin(
     from app.services.hosting.phpmyadmin import PhpMyAdminService
     from app.services.platform.environment_databases import EnvironmentDatabaseService
 
-    db_id = str(getattr(env, "db_registry_id", None) or f"legacy:{env.id}")
+    db_id = str(getattr(env, "db_registry_id", None) or "")
+    if not db_id and not (env.db_name and env.db_engine):
+        dbs = await EnvironmentDatabaseService(settings, session).list_databases(env, None)
+        mysql_dbs = [d for d in dbs if (d.engine or "").lower() in {"mysql", "mariadb"}]
+        if not mysql_dbs:
+            raise AppException("No MySQL database found on this site. Create one from Databases first.", code="no_database")
+        db_id = str(mysql_dbs[0].id)
+    elif not db_id:
+        db_id = f"legacy:{env.id}"
+
     revealed = await EnvironmentDatabaseService(settings, session).reveal(env, db_id)
     PhpMyAdminService.assert_mysql_engine(revealed.engine)
     if not revealed.password:
@@ -1522,6 +1582,50 @@ async def backup_env_database(
     from app.services.platform.environment_databases import EnvironmentDatabaseService
 
     return await EnvironmentDatabaseService(settings, session).backup(env, plan, database_id)
+
+
+@router.post(
+    "/environments/{environment_id}/databases/{database_id}/import",
+    response_model=EnvironmentDatabaseImportResponse,
+)
+async def import_env_database_sql(
+    environment_id: UUID,
+    database_id: str,
+    body: EnvironmentDatabaseImportRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> EnvironmentDatabaseImportResponse:
+    """Import a .sql file or statements directly into a database."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    plan = await TenantService(session).require_capability(env, "db_manage", label="Database management")
+    from app.services.platform.environment_databases import EnvironmentDatabaseService
+
+    return await EnvironmentDatabaseService(settings, session).import_sql(env, database_id, body.sql)
+
+
+@router.post(
+    "/environments/{environment_id}/database/import",
+    response_model=EnvironmentDatabaseImportResponse,
+)
+async def import_primary_env_database_sql(
+    environment_id: UUID,
+    body: EnvironmentDatabaseImportRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> EnvironmentDatabaseImportResponse:
+    """Import a .sql file or statements into the primary site database."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    plan = await TenantService(session).require_capability(env, "db_manage", label="Database management")
+    from app.services.platform.environment_databases import EnvironmentDatabaseService
+
+    db_id = str(getattr(env, "db_registry_id", "") or f"legacy-{env.id}")
+    return await EnvironmentDatabaseService(settings, session).import_sql(env, db_id, body.sql)
 
 
 @router.get(
@@ -1663,14 +1767,53 @@ async def delete_env_application(
     await ApplicationRuntimeService(settings, session).delete(env, application_id)
 
 
-def _env_db_id(env) -> str:
+async def _resolve_env_db_id(
+    session: DbSession,
+    env: CustomerEnvironment,
+    db_id: str | None = None,
+) -> str:
+    from app.services.platform.environment_databases import _decode_host_ref
+
+    if db_id:
+        try:
+            db_uuid = UUID(db_id)
+            res = await session.execute(
+                select(EnvironmentDatabase).where(
+                    EnvironmentDatabase.environment_id == env.id,
+                    EnvironmentDatabase.id == db_uuid,
+                )
+            )
+            row = res.scalar_one_or_none()
+            if row:
+                meta = _decode_host_ref(row.host_ref)
+                rid = meta.get("registry_id")
+                if rid:
+                    return str(rid)
+        except (ValueError, TypeError):
+            pass
+        return str(db_id)
+
     rid = getattr(env, "db_registry_id", None)
-    if not rid:
-        raise AppException(
-            "No database on this site yet. Install WordPress or Laravel, or ask support to attach one.",
-            code="no_database",
-        )
-    return str(rid)
+    if rid:
+        return str(rid)
+
+    res = await session.execute(
+        select(EnvironmentDatabase)
+        .where(EnvironmentDatabase.environment_id == env.id)
+        .order_by(EnvironmentDatabase.created_at.desc())
+    )
+    first_db = res.scalars().first()
+    if first_db:
+        meta = _decode_host_ref(first_db.host_ref)
+        rid = meta.get("registry_id")
+        if rid:
+            return str(rid)
+        return str(first_db.id)
+
+    raise AppException(
+        "No database on this site yet. Create one in Databases or install WordPress/Laravel from Stack.",
+        code="no_database",
+    )
 
 
 def _require_db_write(plan) -> None:
@@ -1704,12 +1847,14 @@ async def get_env_database_schema(
     user: CurrentUser,
     session: DbSession,
     settings: SettingsDep,
+    db_id: str | None = Query(default=None),
 ) -> DbSchemaResponse:
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     await TenantService(session).require_capability(env, "db_manage", label="Database management")
-    return await DatabaseStudioService(DatabaseManagerService(settings)).schema_managed(_env_db_id(env))
+    resolved_id = await _resolve_env_db_id(session, env, db_id)
+    return await DatabaseStudioService(DatabaseManagerService(settings)).schema_managed(resolved_id)
 
 
 @router.get(
@@ -1726,15 +1871,17 @@ async def get_env_database_rows(
     schema_name: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    db_id: str | None = Query(default=None),
 ) -> DbQueryResponse:
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     await TenantService(session).require_capability(env, "db_manage", label="Database management")
+    resolved_id = await _resolve_env_db_id(session, env, db_id)
     body = DbRowsRequest(
         table=table, collection=collection, schema_name=schema_name, limit=limit, offset=offset
     )
-    return await DatabaseStudioService(DatabaseManagerService(settings)).rows_managed(_env_db_id(env), body)
+    return await DatabaseStudioService(DatabaseManagerService(settings)).rows_managed(resolved_id, body)
 
 
 @router.post(
@@ -1747,14 +1894,16 @@ async def insert_env_database_row(
     user: CurrentUser,
     session: DbSession,
     settings: SettingsDep,
+    db_id: str | None = Query(default=None),
 ) -> DbQueryResponse:
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     plan = await TenantService(session).require_capability(env, "db_manage", label="Database management")
     _require_db_write(plan)
+    resolved_id = await _resolve_env_db_id(session, env, db_id)
     return await DatabaseStudioService(DatabaseManagerService(settings)).insert_row_managed(
-        _env_db_id(env), body
+        resolved_id, body
     )
 
 
@@ -1768,14 +1917,16 @@ async def update_env_database_row(
     user: CurrentUser,
     session: DbSession,
     settings: SettingsDep,
+    db_id: str | None = Query(default=None),
 ) -> DbQueryResponse:
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     plan = await TenantService(session).require_capability(env, "db_manage", label="Database management")
     _require_db_write(plan)
+    resolved_id = await _resolve_env_db_id(session, env, db_id)
     return await DatabaseStudioService(DatabaseManagerService(settings)).update_row_managed(
-        _env_db_id(env), body
+        resolved_id, body
     )
 
 
@@ -1789,14 +1940,16 @@ async def delete_env_database_row(
     user: CurrentUser,
     session: DbSession,
     settings: SettingsDep,
+    db_id: str | None = Query(default=None),
 ) -> DbQueryResponse:
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     plan = await TenantService(session).require_capability(env, "db_manage", label="Database management")
     _require_db_write(plan)
+    resolved_id = await _resolve_env_db_id(session, env, db_id)
     return await DatabaseStudioService(DatabaseManagerService(settings)).delete_row_managed(
-        _env_db_id(env), body
+        resolved_id, body
     )
 
 
@@ -2310,14 +2463,16 @@ async def query_env_database(
     user: CurrentUser,
     session: DbSession,
     settings: SettingsDep,
+    db_id: str | None = Query(default=None),
 ) -> DbQueryResponse:
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     plan = await TenantService(session).require_capability(env, "db_manage", label="Database management")
     _deny_limited_db_writes(plan, body.sql)
+    resolved_id = await _resolve_env_db_id(session, env, db_id)
     return await DatabaseStudioService(DatabaseManagerService(settings)).query_managed(
-        _env_db_id(env), body
+        resolved_id, body
     )
 
 

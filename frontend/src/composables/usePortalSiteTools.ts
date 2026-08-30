@@ -5,7 +5,7 @@ import type { DbQueryResult, DbSchema } from '@/types/databases'
 import { formatCpu, formatRamGb } from '@/lib/planResources'
 import type { EnvUsageSnapshot } from '@/lib/resourceUsage'
 
-export type PortalSiteTab = 'files' | 'stack' | 'applications' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail' | ''
+export type PortalSiteTab = 'files' | 'stack' | 'applications' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail' | 'git' | ''
 
 export function usePortalSiteTools(
   dash: Ref<CustomerDashboard | null>,
@@ -63,6 +63,8 @@ export function usePortalSiteTools(
   const dbActionMsg = ref('')
   const newDbEngine = ref('mysql')
   const newDbName = ref('')
+  const newDbUser = ref('')
+  const newDbPassword = ref('')
   const ftpInfo = ref('')
   const ftpCreds = ref<{
     enabled?: boolean
@@ -136,6 +138,21 @@ export function usePortalSiteTools(
   } | null>(null)
   const monitoringMsg = ref('')
   const healthInfo = ref('')
+
+  const gitStatus = ref<{
+    environment_id?: string
+    configured?: boolean
+    path?: string
+    branch?: string | null
+    commit?: string | null
+    remote?: string | null
+    dirty?: boolean
+    message?: string
+  } | null>(null)
+  const gitBusy = ref(false)
+  const gitMsg = ref('')
+  const gitCloneUrl = ref('')
+  const gitCloneBranch = ref('')
   const dnsInfo = ref('')
   const dnsData = ref<{
     domain?: string | null
@@ -513,18 +530,58 @@ export function usePortalSiteTools(
   async function createDatabase() {
     if (!activeEnv.value || !newDbName.value.trim()) return
     dbBusy.value = true
-    dbActionMsg.value = 'Creating…'
+    dbActionMsg.value = 'Creating database & user…'
     try {
       await customersApi.createEnvDatabase(activeEnv.value.id, {
         engine: newDbEngine.value,
         logical_name: newDbName.value.trim(),
+        username: newDbUser.value.trim() || undefined,
+        password: newDbPassword.value.trim() || undefined,
       })
       newDbName.value = ''
-      dbActionMsg.value = 'Database created.'
+      newDbUser.value = ''
+      newDbPassword.value = ''
+      dbActionMsg.value = 'Database & user created successfully with full permissions.'
       await loadDbList()
     } catch (e: unknown) {
       const err = e as { response?: { data?: { error?: { message?: string } } } }
       dbActionMsg.value = err.response?.data?.error?.message ?? 'Create failed.'
+    } finally {
+      dbBusy.value = false
+    }
+  }
+
+  async function importDatabaseSql(dbId?: string | null, sqlContent?: string) {
+    if (!activeEnv.value || !sqlContent?.trim()) return
+    dbBusy.value = true
+    dbActionMsg.value = 'Importing SQL file…'
+    try {
+      const { data } = await customersApi.importEnvDatabaseSql(activeEnv.value.id, dbId, sqlContent.trim())
+      dbActionMsg.value = data.message || 'SQL import completed successfully.'
+      await loadDbList()
+      if (selectedDbId.value) await loadDb(true)
+      return data
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      const msg = err.response?.data?.error?.message ?? 'SQL import failed.'
+      dbActionMsg.value = msg
+      throw new Error(msg)
+    } finally {
+      dbBusy.value = false
+    }
+  }
+
+  async function backupDatabase(dbId: string) {
+    if (!activeEnv.value) return
+    dbBusy.value = true
+    dbActionMsg.value = 'Generating database backup…'
+    try {
+      const { data } = await customersApi.backupEnvDatabase(activeEnv.value.id, dbId)
+      dbActionMsg.value = 'Database backup generated successfully.'
+      return data
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      dbActionMsg.value = err.response?.data?.error?.message ?? 'Backup failed.'
     } finally {
       dbBusy.value = false
     }
@@ -1403,6 +1460,62 @@ export function usePortalSiteTools(
     }
   }
 
+  async function loadGitStatus() {
+    if (!activeEnv.value) return
+    gitBusy.value = true
+    try {
+      const { data } = await customersApi.getEnvGit(activeEnv.value.id)
+      gitStatus.value = data
+      if (data.message && !gitMsg.value) {
+        gitMsg.value = data.message
+      }
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      gitMsg.value = err.response?.data?.error?.message ?? 'Could not check Git status.'
+    } finally {
+      gitBusy.value = false
+    }
+  }
+
+  async function cloneGitRepo() {
+    if (!activeEnv.value || !gitCloneUrl.value.trim()) return
+    gitBusy.value = true
+    gitMsg.value = 'Cloning repository into document root…'
+    try {
+      const { data } = await customersApi.cloneEnvGit(activeEnv.value.id, {
+        repo_url: gitCloneUrl.value.trim(),
+        branch: gitCloneBranch.value.trim() || undefined,
+      })
+      gitMsg.value = data.message || 'Repository cloned successfully.'
+      gitCloneUrl.value = ''
+      gitCloneBranch.value = ''
+      await loadGitStatus()
+      await loadFiles()
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      gitMsg.value = err.response?.data?.error?.message ?? 'Git clone failed.'
+    } finally {
+      gitBusy.value = false
+    }
+  }
+
+  async function pullGitRepo() {
+    if (!activeEnv.value) return
+    gitBusy.value = true
+    gitMsg.value = 'Pulling latest commits from remote…'
+    try {
+      const { data } = await customersApi.pullEnvGit(activeEnv.value.id)
+      gitMsg.value = data.message || 'Pulled latest commits successfully.'
+      await loadGitStatus()
+      await loadFiles()
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      gitMsg.value = err.response?.data?.error?.message ?? 'Git pull failed.'
+    } finally {
+      gitBusy.value = false
+    }
+  }
+
   function resetToolState() {
     filePath.value = '.'
     editingFile.value = ''
@@ -1414,6 +1527,10 @@ export function usePortalSiteTools(
     dbActionMsg.value = ''
     dbSchema.value = null
     dbRows.value = null
+    gitStatus.value = null
+    gitMsg.value = ''
+    gitCloneUrl.value = ''
+    gitCloneBranch.value = ''
     ftpInfo.value = ''
     ftpCreds.value = null
     sftpInfo.value = ''
@@ -1481,6 +1598,16 @@ export function usePortalSiteTools(
     dbActionMsg,
     newDbEngine,
     newDbName,
+    newDbUser,
+    newDbPassword,
+    gitStatus,
+    gitBusy,
+    gitMsg,
+    gitCloneUrl,
+    gitCloneBranch,
+    loadGitStatus,
+    cloneGitRepo,
+    pullGitRepo,
     ftpInfo,
     ftpCreds,
     sftpCreds,
@@ -1540,6 +1667,8 @@ export function usePortalSiteTools(
     deleteDatabase,
     resetDbPassword,
     selectDatabase,
+    importDatabaseSql,
+    backupDatabase,
     loadFtp,
     loadSftp,
     ensureSftp,

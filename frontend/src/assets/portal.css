@@ -6,10 +6,10 @@
   --p-accent-soft: color-mix(in srgb, var(--p-accent) 12%, var(--p-surface));
   --p-accent-mid: color-mix(in srgb, var(--p-accent) 22%, var(--p-surface));
   --p-ink: var(--if-ink, #161a1d);
-  --p-muted: var(--if-muted, #6b7280);
-  --p-border: var(--if-border, #e7e2db);
+  --p-muted: var(--if-muted, #64748b);
+  --p-border: var(--if-border, #e2e8f0);
   --p-surface: var(--if-surface, #ffffff);
-  --p-paper: var(--if-paper, #f4f1ec);
+  --p-paper: var(--if-paper, #f8fafc);
 }
 
 .portal-app .btn-primary,

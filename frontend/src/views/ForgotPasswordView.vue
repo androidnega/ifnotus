@@ -31,39 +31,43 @@ async function submit() {
 
 <template>
   <div class="login-page ds-auth-shell">
-    <form class="card ds-auth-card" @submit.prevent="submit">
-      <UiBrandMark class="auth-brand" />
-      <h1 class="ds-page-title">Forgot password</h1>
-      <p class="hint">Enter your account email and we’ll send a reset link if it exists.</p>
+    <div class="ds-auth-container">
+      <div class="auth-brand-wrap">
+        <UiBrandMark class="auth-brand" />
+      </div>
+      <form class="card ds-auth-card" @submit.prevent="submit">
+        <h1 class="ds-page-title">Forgot password</h1>
+        <p class="hint">Enter your account email and we’ll send a reset link if it exists.</p>
 
-      <UiAlert v-if="sent" tone="ok">
-        If an account exists for that email, a reset link has been sent. Check your inbox.
-      </UiAlert>
+        <UiAlert v-if="sent" tone="ok">
+          If an account exists for that email, a reset link has been sent. Check your inbox.
+        </UiAlert>
 
-      <template v-else>
-        <label>
-          <span>Email</span>
-          <input
-            ref="emailInput"
-            v-model="email"
-            type="email"
-            autocomplete="username"
-            required
-            placeholder="you@example.com"
-          />
-        </label>
+        <template v-else>
+          <label>
+            <span>Email</span>
+            <input
+              ref="emailInput"
+              v-model="email"
+              type="email"
+              autocomplete="username"
+              required
+              placeholder="you@example.com"
+            />
+          </label>
 
-        <UiAlert v-if="error" tone="err">{{ error }}</UiAlert>
+          <UiAlert v-if="error" tone="err">{{ error }}</UiAlert>
 
-        <button type="submit" :disabled="loading">
-          {{ loading ? 'Sending…' : 'Send reset link' }}
-        </button>
-      </template>
+          <button type="submit" :disabled="loading">
+            {{ loading ? 'Sending…' : 'Send reset link' }}
+          </button>
+        </template>
 
-      <p class="row row--center">
-        <router-link class="link" :to="{ name: 'login' }">Back to login</router-link>
-      </p>
-    </form>
+        <p class="row row--center">
+          <router-link class="link" :to="{ name: 'login' }">Back to login</router-link>
+        </p>
+      </form>
+    </div>
   </div>
 </template>
 

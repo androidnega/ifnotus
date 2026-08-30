@@ -79,7 +79,7 @@ const siteColors = ref({
   primary: '#ff6c2c',
   primary_hover: '#e85a1c',
   ink: '#161a1d',
-  paper: '#f4f1ec',
+  paper: '#f8fafc',
   surface: '#ffffff',
   muted: '#6b7280',
   border: '#e7e2db',

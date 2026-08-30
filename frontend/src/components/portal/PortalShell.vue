@@ -220,7 +220,7 @@ onUnmounted(() => {
   min-height: 100dvh;
   display: flex;
   flex-direction: column;
-  background: var(--if-paper, #f4f1ec);
+  background: var(--if-paper, #f8fafc);
 }
 
 .portal-marketing-main {
@@ -241,11 +241,11 @@ onUnmounted(() => {
   --if-plan: #1e3a5f;
   --p-accent: #1e3a5f;
   --if-ink: #0f172a;
-  --if-paper: #f4f1ec;
+  --if-paper: #f8fafc;
   --if-surface: #ffffff;
   --if-muted: #5b6b7c;
-  --if-border: #d7dee8;
-  background: var(--if-paper, #f4f1ec);
+  --if-border: #e2e8f0;
+  background: var(--if-paper, #f8fafc);
 }
 
 .portal-header-inner {

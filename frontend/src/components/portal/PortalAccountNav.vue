@@ -1,9 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import UiTabBar from '@/components/ui/UiTabBar.vue'
 import { PORTAL_ACCOUNT_TABS } from '@/lib/uiRegistry'
 import { openHostingFromAccount } from '@/lib/hostingDeepLink'
+import {
+  IconDashboard,
+  IconServer,
+  IconChart,
+  IconActivity,
+  IconSettings,
+} from '@/components/icons'
 
 const props = defineProps<{
   hasEnv?: boolean
@@ -28,10 +34,18 @@ const panel = computed(() => {
   return q
 })
 
+const tabIconMap: Record<string, any> = {
+  home: IconDashboard,
+  billing: IconChart,
+  support: IconActivity,
+  settings: IconSettings,
+}
+
 const tabItems = computed(() =>
-  PORTAL_ACCOUNT_TABS.filter((t) => !('requiresEnv' in t && t.requiresEnv) || props.hasEnv).map((t) => ({
+  PORTAL_ACCOUNT_TABS.map((t) => ({
     id: t.id,
     label: t.label,
+    icon: tabIconMap[t.id] || IconDashboard,
   })),
 )
 
@@ -48,47 +62,107 @@ function go(next: string) {
     void router.push({ name: 'portal-dashboard' })
     return
   }
-  if (next === 'hosting') {
-    if (props.domain && openHostingFromAccount(props.domain, null, props.environmentId)) return
-    void router.push({ name: 'portal-dashboard', query: { panel: 'billing' } })
-    return
-  }
   void router.push({ name: 'portal-dashboard', query: { panel: next } })
-}
-
-function onTab(id: string) {
-  go(id)
 }
 </script>
 
 <template>
-  <UiTabBar
-    :items="tabItems"
-    :model-value="panel"
-    variant="sidebar"
-    aria-label="Account"
-    class="portal-account-nav"
-    @update:model-value="onTab"
-  />
+  <nav class="portal-account-nav-card" aria-label="Account navigation">
+    <div class="nav-list">
+      <button
+        v-for="item in tabItems"
+        :key="item.id"
+        type="button"
+        class="nav-tab-btn"
+        :class="{ on: panel === item.id }"
+        @click="go(item.id)"
+      >
+        <component :is="item.icon" :size="17" class="nav-icon" />
+        <span class="nav-label">{{ item.label }}</span>
+      </button>
+    </div>
+  </nav>
 </template>
 
 <style scoped>
-.portal-account-nav :deep(.ds-tabbar--sidebar) {
-  background: color-mix(in srgb, var(--if-border) 45%, var(--if-surface));
+.portal-account-nav-card {
+  background: var(--p-surface, #ffffff);
+  border: 1px solid var(--p-border, #e2e8f0);
+  border-radius: 1.15rem;
+  padding: 0.5rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
+
+.nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.nav-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--p-muted, #64748b);
+  font-family: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  padding: 0.65rem 0.95rem;
+  border-radius: 0.8rem;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+
+.nav-icon {
+  flex-shrink: 0;
+  opacity: 0.75;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.nav-tab-btn:hover {
+  background: color-mix(in srgb, var(--p-accent, #1e3a5f) 7%, transparent);
+  color: var(--p-ink, #0f172a);
+}
+
+.nav-tab-btn:hover .nav-icon {
+  opacity: 1;
+  transform: scale(1.05);
+}
+
+.nav-tab-btn.on {
+  background: var(--p-accent, #1e3a5f);
+  color: #ffffff;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--p-accent, #1e3a5f) 30%, transparent);
+}
+
+.nav-tab-btn.on .nav-icon {
+  opacity: 1;
+}
+
 @media (max-width: 1099px) {
-  .portal-account-nav :deep(.ds-tabbar--sidebar) {
-    flex-direction: row;
-    width: fit-content;
-    max-width: 100%;
+  .portal-account-nav-card {
     border-radius: 999px;
-    padding: 0.28rem;
+    padding: 0.3rem;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
-  .portal-account-nav :deep(.ds-tabbar--sidebar .ds-tab) {
+  .portal-account-nav-card::-webkit-scrollbar {
+    display: none;
+  }
+  .nav-list {
+    flex-direction: row;
+    gap: 0.25rem;
+  }
+  .nav-tab-btn {
     width: auto;
-    text-align: center;
+    white-space: nowrap;
     border-radius: 999px;
-    padding: 0.48rem 1.05rem;
+    padding: 0.45rem 0.95rem;
+    font-size: 0.82rem;
   }
 }
 </style>

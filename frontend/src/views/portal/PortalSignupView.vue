@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { customersApi } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import PortalShell from '@/components/portal/PortalShell.vue'
+import UiBrandMark from '@/components/ui/UiBrandMark.vue'
+import { IconEye, IconEyeOff } from '@/components/icons'
 import { ensureDeviceFingerprint } from '@/api/client'
 import { hostnameNow, isCustomerCpanelHost } from '@/lib/platformHosts'
 
@@ -32,6 +34,9 @@ const otpMessage = ref('')
 
 const emailLogin = ref('')
 const passwordLogin = ref('')
+const showPasswordLogin = ref(false)
+const showPanelPass = ref(false)
+const showPanelPassConfirm = ref(false)
 const panelUsername = ref('')
 const panelPassword = ref('')
 const panelPasswordConfirm = ref('')
@@ -349,7 +354,7 @@ function onSubmit() {
 
 const submitLabel = computed(() => {
   if (loading.value) return 'Please wait…'
-  if (panelLogin.value) return panelNeedsCreate.value ? 'Create password & open panel' : 'Open hosting panel'
+  if (panelLogin.value) return panelNeedsCreate.value ? 'Create password & log in' : 'Log in'
   if (step.value === 'phone') return isSignup.value ? 'Send code' : 'Send login code'
   if (step.value === 'otp') return 'Verify & continue'
   if (step.value === 'password') return 'Log in'
@@ -372,58 +377,92 @@ async function onPanelUsernameBlur() {
 <template>
   <!-- Tenant hosting panel login (domain/cpanel) — username + create/use password -->
   <div v-if="panelLogin" class="panel-login">
-    <form class="panel-card" @submit.prevent="onSubmit">
-      <div class="panel-brand" aria-hidden="true">
-        <span class="mark">IF</span>
+    <div class="panel-login-container">
+      <div class="panel-brand">
+        <UiBrandMark variant="staff" />
       </div>
-      <h1>{{ panelNeedsCreate ? 'Create panel password' : 'Hosting panel' }}</h1>
-      <p class="panel-sub">
-        {{ panelDomainHint ? panelDomainHint : 'Tenant control panel' }}
-        — not your IFNOTUS account login
-      </p>
-      <label for="panel-user">Hosting username</label>
-      <input
-        id="panel-user"
-        v-model="panelUsername"
-        type="text"
-        autocomplete="username"
-        autocapitalize="none"
-        spellcheck="false"
-        placeholder="Your hosting ID"
-        required
-        @blur="onPanelUsernameBlur"
-      />
-      <label for="panel-pass">{{ panelNeedsCreate ? 'Create password' : 'Password' }}</label>
-      <input
-        id="panel-pass"
-        v-model="panelPassword"
-        type="password"
-        :autocomplete="panelNeedsCreate ? 'new-password' : 'current-password'"
-        :placeholder="panelNeedsCreate ? 'At least 8 characters' : 'Password'"
-        required
-        minlength="8"
-      />
-      <template v-if="panelNeedsCreate">
-        <label for="panel-pass2">Confirm password</label>
-        <input
-          id="panel-pass2"
-          v-model="panelPasswordConfirm"
-          type="password"
-          autocomplete="new-password"
-          placeholder="Confirm password"
-          required
-          minlength="8"
-        />
-      </template>
-      <p v-if="error" class="err">{{ error }}</p>
-      <button type="submit" class="submit" :disabled="loading || (!panelStatusLoaded && !panelUsername)">
-        {{ submitLabel }}
-      </button>
-      <p class="panel-foot">
-        Managing invoices?
-        <router-link :to="{ name: 'login' }">Account login</router-link>
-      </p>
-    </form>
+
+      <form class="panel-card" @submit.prevent="onSubmit">
+        <div class="panel-input-wrap">
+          <span class="panel-input-icon">
+            <i class="fas fa-user" aria-hidden="true" />
+          </span>
+          <input
+            id="panel-user"
+            v-model="panelUsername"
+            type="text"
+            autocomplete="username"
+            autocapitalize="none"
+            spellcheck="false"
+            placeholder="Username or ID"
+            required
+            @blur="onPanelUsernameBlur"
+          />
+        </div>
+
+        <div class="panel-input-wrap">
+          <span class="panel-input-icon">
+            <i class="fas fa-lock" aria-hidden="true" />
+          </span>
+          <input
+            id="panel-pass"
+            v-model="panelPassword"
+            :type="showPanelPass ? 'text' : 'password'"
+            :autocomplete="panelNeedsCreate ? 'new-password' : 'current-password'"
+            :placeholder="panelNeedsCreate ? 'Create password' : 'Password'"
+            required
+            minlength="8"
+          />
+          <button
+            type="button"
+            class="panel-eye-btn"
+            :title="showPanelPass ? 'Hide password' : 'Show password'"
+            tabindex="-1"
+            @click="showPanelPass = !showPanelPass"
+          >
+            <IconEyeOff v-if="showPanelPass" :size="16" />
+            <IconEye v-else :size="16" />
+          </button>
+        </div>
+
+        <template v-if="panelNeedsCreate">
+          <div class="panel-input-wrap">
+            <span class="panel-input-icon">
+              <i class="fas fa-lock" aria-hidden="true" />
+            </span>
+            <input
+              id="panel-pass2"
+              v-model="panelPasswordConfirm"
+              :type="showPanelPassConfirm ? 'text' : 'password'"
+              autocomplete="new-password"
+              placeholder="Confirm password"
+              required
+              minlength="8"
+            />
+            <button
+              type="button"
+              class="panel-eye-btn"
+              :title="showPanelPassConfirm ? 'Hide password' : 'Show password'"
+              tabindex="-1"
+              @click="showPanelPassConfirm = !showPanelPassConfirm"
+            >
+              <IconEyeOff v-if="showPanelPassConfirm" :size="16" />
+              <IconEye v-else :size="16" />
+            </button>
+          </div>
+        </template>
+
+        <p v-if="error" class="err">{{ error }}</p>
+
+        <button type="submit" class="submit" :disabled="loading || (!panelStatusLoaded && !panelUsername)">
+          {{ submitLabel }}
+        </button>
+      </form>
+
+      <div class="panel-card-foot">
+        <router-link class="panel-foot-link" :to="{ name: 'forgot-password' }">Reset Password</router-link>
+      </div>
+    </div>
   </div>
 
   <PortalShell v-else mode="marketing">
@@ -505,14 +544,26 @@ async function onPanelUsernameBlur() {
             required
           />
           <label for="password-login">Password</label>
-          <input
-            id="password-login"
-            v-model="passwordLogin"
-            type="password"
-            autocomplete="current-password"
-            placeholder="Password"
-            required
-          />
+          <div class="ds-input-eye-wrap">
+            <input
+              id="password-login"
+              v-model="passwordLogin"
+              :type="showPasswordLogin ? 'text' : 'password'"
+              autocomplete="current-password"
+              placeholder="Password"
+              required
+            />
+            <button
+              type="button"
+              class="ds-eye-btn"
+              :title="showPasswordLogin ? 'Hide password' : 'Show password'"
+              tabindex="-1"
+              @click="showPasswordLogin = !showPasswordLogin"
+            >
+              <IconEyeOff v-if="showPasswordLogin" :size="18" />
+              <IconEye v-else :size="18" />
+            </button>
+          </div>
           <router-link class="text-btn" :to="{ name: 'forgot-password' }">
             Forgot password?
           </router-link>
@@ -572,88 +623,127 @@ async function onPanelUsernameBlur() {
   min-height: 100dvh;
   display: grid;
   place-items: center;
-  padding: 1rem;
-  background: var(--if-paper, #f4f1ec);
+  padding: 1.25rem;
+  background: var(--if-paper, #f1f4f8);
   font-family: Figtree, ui-sans-serif, system-ui, sans-serif;
+  color-scheme: light;
 }
-.panel-card {
-  width: min(18.5rem, 100%);
-  background: #fff;
-  border: 1px solid #e3e7ec;
-  border-radius: 0.75rem;
-  padding: 1.1rem 1rem 1rem;
+.panel-login-container {
+  width: min(100%, 19.5rem);
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
-  box-shadow: 0 8px 28px rgb(22 26 29 / 0.06);
-}
-.panel-brand { margin-bottom: 0.15rem; }
-.mark {
-  display: inline-flex;
   align-items: center;
+  gap: 0.65rem;
+}
+.panel-brand {
+  display: flex;
   justify-content: center;
-  width: 1.85rem;
-  height: 1.85rem;
-  border-radius: 0.4rem;
-  background: #ff6c2c;
-  color: #fff;
-  font-family: Sora, sans-serif;
-  font-size: 0.68rem;
-  font-weight: 800;
+  margin-bottom: 0.2rem;
 }
-.panel-card h1 {
-  margin: 0.15rem 0 0;
-  font-family: Sora, sans-serif;
-  font-size: 1.15rem;
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  color: #161a1d;
+.panel-card {
+  width: 100%;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.75rem;
+  padding: 1.15rem 1.25rem 0.95rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), 0 6px 18px rgba(15, 23, 42, 0.03);
 }
-.panel-sub {
-  margin: 0 0 0.45rem;
-  font-size: 0.78rem;
-  color: #6b7280;
+.panel-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
 }
-.panel-card label {
-  margin-top: 0.25rem;
-  font-size: 0.72rem;
-  font-weight: 650;
-  color: #5c6670;
+.panel-input-icon {
+  position: absolute;
+  left: 0.75rem;
+  color: #94a3b8;
+  font-size: 0.82rem;
+  pointer-events: none;
+  display: grid;
+  place-items: center;
 }
-.panel-card input {
-  border: 1px solid #d7dde5;
+.panel-input-wrap input {
+  width: 100%;
   border-radius: 0.5rem;
-  padding: 0.5rem 0.65rem;
-  font-size: 0.88rem;
-  background: #fff;
-  color: #161a1d;
-}
-.panel-card input:focus {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #1e293b;
+  font-family: inherit;
+  font-size: 0.86rem;
+  padding: 0.52rem 0.65rem 0.52rem 2.25rem;
+  transition: all 0.15s ease;
   outline: none;
-  border-color: #ff6c2c;
-  box-shadow: 0 0 0 3px rgba(255, 108, 44, 0.14);
+}
+.panel-input-wrap input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+.panel-input-wrap input::placeholder {
+  color: #94a3b8;
+}
+.panel-eye-btn {
+  position: absolute;
+  right: 0.65rem;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  padding: 0.2rem;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  border-radius: 0.35rem;
+  transition: color 0.15s ease;
+}
+.panel-eye-btn:hover {
+  color: #475569;
 }
 .panel-card .submit {
-  margin-top: 0.65rem;
   width: 100%;
-  border: 0;
+  border: none;
   border-radius: 0.5rem;
-  background: #ff6c2c;
-  color: #fff;
-  font-weight: 650;
-  font-size: 0.88rem;
-  padding: 0.6rem 0.75rem;
+  background: #1e3a5f;
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  padding: 0.58rem 1rem;
   cursor: pointer;
+  margin-top: 0.25rem;
+  transition: background 0.15s ease;
 }
-.panel-card .submit:disabled { opacity: 0.6; cursor: not-allowed; }
-.panel-card .err { margin: 0.35rem 0 0; color: #b42318; font-size: 0.78rem; }
-.panel-foot {
-  margin: 0.65rem 0 0;
-  font-size: 0.75rem;
-  color: #6b7280;
+.panel-card .submit:hover:not(:disabled) {
+  background: #152c48;
+}
+.panel-card .submit:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+.panel-card .err {
+  margin: 0.25rem 0 0;
+  color: #b42318;
+  font-size: 0.78rem;
   text-align: center;
 }
-.panel-foot a { color: #1a1f24; font-weight: 600; }
+.panel-card-foot {
+  display: flex;
+  justify-content: center;
+  margin-top: 0.35rem;
+}
+.panel-foot-link {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #64748b;
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+.panel-foot-link:hover {
+  color: #0f172a;
+  text-decoration: underline;
+}
 
 .wrap {
   width: min(22rem, 100%);

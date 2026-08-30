@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { alertsApi, platformAdminApi } from '@/api'
 import { REALTIME_POLL_MS } from '@/config/polling'
+import { isSoundMuted, setSoundMuted, playOrderBell } from '@/lib/sound'
 import type { AlertItem } from '@/types/dashboard'
 
 export type NotificationType = 'info' | 'success' | 'warning' | 'error'
@@ -59,11 +60,26 @@ export const useNotificationStore = defineStore('notifications', () => {
   const recentlyPaid = ref(0)
   const openSupportTickets = ref(0)
   const readIds = ref<Set<string>>(loadReadIds())
+  const soundMuted = ref(isSoundMuted())
+  const initialSyncComplete = ref(false)
+  const lastAwaitingCount = ref(0)
   let timer: ReturnType<typeof setInterval> | null = null
 
   const unreadCount = computed(() => items.value.filter((n) => !n.read).length)
   const ordersBadge = computed(() => awaitingPaymentConfirm.value)
   const supportBadge = computed(() => openSupportTickets.value)
+
+  function toggleSound() {
+    soundMuted.value = !soundMuted.value
+    setSoundMuted(soundMuted.value)
+    if (!soundMuted.value) {
+      playOrderBell()
+    }
+  }
+
+  function testSound() {
+    playOrderBell()
+  }
 
   async function syncFromApi() {
     if (!localStorage.getItem('access_token')) return
@@ -83,9 +99,18 @@ export const useNotificationStore = defineStore('notifications', () => {
 
       if (inboxRes.status === 'fulfilled') {
         const inbox = inboxRes.value.data
-        awaitingPaymentConfirm.value = inbox.awaiting_payment_confirm || 0
+        const newAwaitingCount = inbox.awaiting_payment_confirm || 0
+        
+        // Bell chime: trigger sound when a new order needing confirmation arrives
+        if (initialSyncComplete.value && newAwaitingCount > lastAwaitingCount.value) {
+          playOrderBell()
+        }
+
+        awaitingPaymentConfirm.value = newAwaitingCount
+        lastAwaitingCount.value = newAwaitingCount
         recentlyPaid.value = inbox.recently_paid || 0
         openSupportTickets.value = inbox.open_support_tickets || 0
+
         for (const item of inbox.items || []) {
           next.push({
             id: item.id,
@@ -111,6 +136,7 @@ export const useNotificationStore = defineStore('notifications', () => {
         (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
       )
       items.value = next
+      initialSyncComplete.value = true
     } catch {
       /* keep last known notifications on transient errors */
     } finally {
@@ -169,6 +195,9 @@ export const useNotificationStore = defineStore('notifications', () => {
     awaitingPaymentConfirm,
     recentlyPaid,
     openSupportTickets,
+    soundMuted,
+    toggleSound,
+    testSound,
     syncFromApi,
     startPolling,
     stopPolling,

@@ -3,7 +3,8 @@ import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import AppTopBar from '@/components/layout/AppTopBar.vue'
-import { useThemeStore } from '@/stores/theme'
+import DashboardAiFab from '@/components/ai/DashboardAiFab.vue'
+import { useThemeStore, applyTheme } from '@/stores/theme'
 import { syncSiteDocumentTone } from '@/composables/useSiteTheme'
 
 defineProps<{
@@ -17,6 +18,7 @@ defineEmits<{
 }>()
 
 const route = useRoute()
+const theme = useThemeStore()
 const sidebarCollapsed = ref(false)
 const mobileNavOpen = ref(false)
 
@@ -27,11 +29,16 @@ watch(
   },
 )
 
+watch(
+  () => theme.isDark,
+  (isDark) => {
+    applyTheme(isDark)
+  },
+)
+
 onMounted(() => {
   document.documentElement.classList.add('control-ui')
-  const theme = useThemeStore()
-  document.documentElement.classList.toggle('dark', theme.isDark)
-  document.documentElement.style.colorScheme = theme.isDark ? 'dark' : 'light'
+  applyTheme(theme.isDark)
 })
 
 onUnmounted(() => {
@@ -70,6 +77,8 @@ onUnmounted(() => {
         </div>
       </main>
     </div>
+
+    <DashboardAiFab />
   </div>
 </template>
 

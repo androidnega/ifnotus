@@ -61,6 +61,55 @@ class SSLReader:
                     message=f"Certificate file not found: {resolved}",
                 )
 
+        # Fast in-memory parsing via cryptography
+        try:
+            import cryptography.x509
+            from cryptography.x509.oid import ExtensionOID, NameOID
+
+            cert_bytes = path.read_bytes()
+            cert = cryptography.x509.load_pem_x509_certificate(cert_bytes)
+            not_before = cert.not_valid_before_utc
+            not_after = cert.not_valid_after_utc
+            issuer_parts = [f"{attr.oid._name}={attr.value}" for attr in cert.issuer]
+            issuer = ", ".join(issuer_parts)
+            subject_parts = [f"{attr.oid._name}={attr.value}" for attr in cert.subject]
+            subject = ", ".join(subject_parts)
+            cns = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+            subject_cn = cns[0].value if cns else display_domain
+
+            days = (not_after - datetime.now(UTC)).days if not_after else None
+            sans: list[str] = []
+            try:
+                san_ext = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
+                sans = [str(n.value) for n in san_ext.value]
+            except Exception:
+                sans = []
+
+            if days is None:
+                status = HealthStatus.DEGRADED
+            elif days < 0:
+                status = HealthStatus.UNHEALTHY
+            elif days < 14:
+                status = HealthStatus.DEGRADED
+            else:
+                status = HealthStatus.HEALTHY
+
+            return SSLStatusSchema(
+                configured=True,
+                domain=display_domain,
+                status=status,
+                subject=subject or subject_cn,
+                issuer=issuer,
+                valid_from=not_before,
+                valid_until=not_after,
+                days_remaining=days,
+                sans=sans,
+                fingerprint_sha256=cert.fingerprint(cryptography.hazmat.primitives.hashes.SHA256()).hex(),
+                message=f"Certificate OK · {days}d remaining" if days is not None and days >= 0 else None,
+            )
+        except Exception:
+            pass
+
         if not self._openssl:
             return SSLStatusSchema(
                 configured=True,
@@ -79,6 +128,7 @@ class SSLReader:
                 "-dates",
                 "-issuer",
                 "-subject",
+                timeout=5.0,
             )
             if code != 0:
                 return SSLStatusSchema(
@@ -97,8 +147,11 @@ class SSLReader:
             sans: list[str] = []
             fingerprint = None
             if not light:
-                sans = await self._read_sans(path)
-                fingerprint = await self._read_fingerprint(path)
+                try:
+                    sans = await self._read_sans(path)
+                    fingerprint = await self._read_fingerprint(path)
+                except Exception:
+                    pass
 
             if days is None:
                 status = HealthStatus.DEGRADED

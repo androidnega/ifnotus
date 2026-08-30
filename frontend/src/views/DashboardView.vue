@@ -37,7 +37,9 @@ const canonicalRole = computed(() => getCanonicalRole(auth.user) || 'platform_ow
 const isSupport = computed(() => canonicalRole.value === 'support_agent')
 const isBilling = computed(() => canonicalRole.value === 'billing_agent')
 const isAuditorRole = computed(() => canonicalRole.value === 'auditor')
+const isPlatformAdminRole = computed(() => canonicalRole.value === 'platform_admin')
 const isFullAdmin = computed(() => canonicalRole.value === 'platform_owner' || canonicalRole.value === 'platform_admin')
+
 
 const { data, loading, refreshing, error, refresh } = useDashboard()
 const domains = ref<Domain[]>([])
@@ -492,8 +494,114 @@ export default { name: 'DashboardView' }
         </section>
       </template>
 
-      <!-- 4. ROLES: HOSTING OPERATOR, PLATFORM ADMIN, PLATFORM OWNER -->
+      <!-- 4. ROLE: PLATFORM ADMIN DASHBOARD -->
+      <template v-else-if="isPlatformAdminRole">
+        <UiPageHeader
+          eyebrow="Management"
+          title="Platform Administration &amp; Operations"
+          lede="Customer directory, revenue oversight, hosting plans, and support operations"
+        >
+          <template #actions>
+            <button type="button" class="ds-btn-ghost" :disabled="refreshing" @click="refresh">
+              {{ refreshing ? 'Refreshing…' : 'Refresh' }}
+            </button>
+          </template>
+        </UiPageHeader>
+
+        <section class="metrics">
+          <article class="metric">
+            <p class="k">Orders awaiting</p>
+            <p class="v" :class="(opsInbox?.awaiting_payment_confirm || 0) > 0 ? 'bad' : 'ok'">
+              {{ opsInbox?.awaiting_payment_confirm || 0 }}
+            </p>
+            <p class="s">Ready for clearance</p>
+          </article>
+          <article class="metric">
+            <p class="k">Period revenue</p>
+            <p class="v sm">{{ accountingSummary?.currency || 'GHS' }} {{ Number(accountingSummary?.totals.collected_period || 0).toLocaleString() }}</p>
+            <p class="s">Realized cash in</p>
+          </article>
+          <article class="metric">
+            <p class="k">Open tickets</p>
+            <p class="v ok">{{ supportTickets.length }}</p>
+            <p class="s">Customer requests</p>
+          </article>
+          <article class="metric">
+            <p class="k">Platform status</p>
+            <p class="v ok">Operational</p>
+            <p class="s">All services live</p>
+          </article>
+          <article class="metric">
+            <p class="k">Assigned role</p>
+            <p class="v sm">Platform Admin</p>
+            <p class="s">Executive privilege</p>
+          </article>
+        </section>
+
+        <section class="mid two">
+          <article class="card">
+            <header>
+              <h2>Orders &amp; Payment Queue</h2>
+              <RouterLink to="/platform/orders" class="link">View all orders →</RouterLink>
+            </header>
+            <div v-if="recentOrders.length" class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Invoice / ID</th>
+                    <th>Customer</th>
+                    <th>Amount</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="o in recentOrders" :key="o.id">
+                    <td>
+                      <RouterLink :to="`/platform/orders?order=${o.id}`" class="dom">
+                        {{ o.invoice_number || o.id.slice(0, 8) }}
+                      </RouterLink>
+                    </td>
+                    <td>{{ o.customer_name || o.customer_email || 'Customer' }}</td>
+                    <td>{{ o.currency }} {{ o.total_price }}</td>
+                    <td>
+                      <span class="pill" :class="o.payment_status === 'paid' ? 'ok' : 'warn'">
+                        {{ o.payment_status }}
+                      </span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-else class="empty pad">No pending orders in the queue.</p>
+          </article>
+
+          <article class="card">
+            <header>
+              <h2>Customer Directory Search</h2>
+              <RouterLink to="/platform/customers" class="link">All customers →</RouterLink>
+            </header>
+            <p class="muted">Search customer accounts by email, name, or domain name.</p>
+            <div class="search-box">
+              <input
+                v-model="customerSearchInput"
+                type="search"
+                placeholder="Search email, name, domain…"
+                class="ctrl-input"
+                @keyup.enter="searchCustomer"
+              />
+              <button type="button" class="cta" @click="searchCustomer">Search</button>
+            </div>
+            <dl class="facts" style="margin-top: 1rem;">
+              <div><dt>Hosting Plans</dt><dd><RouterLink to="/platform/plans" class="link">Manage Plans →</RouterLink></dd></div>
+              <div><dt>Accounting</dt><dd><RouterLink to="/platform/accounting" class="link">Open Ledger →</RouterLink></dd></div>
+            </dl>
+          </article>
+        </section>
+      </template>
+
+      <!-- 5. ROLES: HOSTING OPERATOR, PLATFORM OWNER -->
       <template v-else>
+
         <UiPageHeader
           eyebrow="Control"
           title="Dashboard"
@@ -551,7 +659,7 @@ export default { name: 'DashboardView' }
           </article>
         </section>
 
-        <section class="mid" :class="{ 'three': !isOwner }">
+        <section class="mid" :class="{ 'has-ssh': isOwner }">
           <article class="card health">
             <header>
               <h2>Server health</h2>
@@ -782,11 +890,11 @@ export default { name: 'DashboardView' }
   display: grid;
   gap: 0.75rem;
   grid-template-columns: 1fr;
+  width: 100%;
 }
-@media (min-width: 1100px) {
-  .mid { grid-template-columns: 1.4fr 1.2fr 0.9fr; }
-  .mid.two { grid-template-columns: 1.3fr 1fr; }
-  .mid.three { grid-template-columns: 1fr 1fr 1fr; }
+@media (min-width: 960px) {
+  .mid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mid.has-ssh { grid-template-columns: 1.3fr 1.2fr 0.9fr; }
 }
 .card { padding: 1rem 1.1rem 1.15rem; }
 .card header {
@@ -799,10 +907,11 @@ export default { name: 'DashboardView' }
 .card h2 { margin: 0; font-size: 0.92rem; font-weight: 700; }
 .muted { color: var(--color-text-muted); font-size: 0.78rem; line-height: 1.45; }
 .gauges {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 0.4rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  align-items: center;
+  justify-items: center;
 }
 .facts {
   display: grid;

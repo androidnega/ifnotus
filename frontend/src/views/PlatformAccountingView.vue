@@ -15,12 +15,47 @@ const loading = ref(true)
 const error = ref('')
 const summary = ref<StaffAccountingSummary | null>(null)
 const ledger = ref<StaffAccountingLedgerItem[]>([])
-const ledgerFilter = ref<'cash' | 'all_paid' | 'submitted' | 'pending' | 'all'>('cash')
+const ledgerFilter = ref<'all' | 'cash' | 'all_paid' | 'submitted' | 'pending' | 'comp' | 'rejected'>('all')
+const searchQuery = ref('')
+const copiedTxId = ref<string | null>(null)
+const copiedInvId = ref<string | null>(null)
+const showBillingAgentGuide = ref(false)
 
 const today = new Date()
 const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
 const dateFrom = ref(monthStart.toISOString().slice(0, 10))
 const dateTo = ref(today.toISOString().slice(0, 10))
+const activePreset = ref<'this_month' | 'today' | '7d' | '30d' | 'ytd' | 'all'>('this_month')
+
+function setPreset(preset: typeof activePreset.value) {
+  activePreset.value = preset
+  const now = new Date()
+  if (preset === 'today') {
+    dateFrom.value = now.toISOString().slice(0, 10)
+    dateTo.value = now.toISOString().slice(0, 10)
+  } else if (preset === '7d') {
+    const d = new Date()
+    d.setDate(d.getDate() - 7)
+    dateFrom.value = d.toISOString().slice(0, 10)
+    dateTo.value = now.toISOString().slice(0, 10)
+  } else if (preset === 'this_month') {
+    const start = new Date(now.getFullYear(), now.getMonth(), 1)
+    dateFrom.value = start.toISOString().slice(0, 10)
+    dateTo.value = now.toISOString().slice(0, 10)
+  } else if (preset === '30d') {
+    const d = new Date()
+    d.setDate(d.getDate() - 30)
+    dateFrom.value = d.toISOString().slice(0, 10)
+    dateTo.value = now.toISOString().slice(0, 10)
+  } else if (preset === 'ytd') {
+    const start = new Date(now.getFullYear(), 0, 1)
+    dateFrom.value = start.toISOString().slice(0, 10)
+    dateTo.value = now.toISOString().slice(0, 10)
+  } else if (preset === 'all') {
+    dateFrom.value = '2025-01-01'
+    dateTo.value = now.toISOString().slice(0, 10)
+  }
+}
 
 function money(n: number | null | undefined, currency = 'GHS') {
   if (n == null) return '—'
@@ -32,12 +67,13 @@ function money(n: number | null | undefined, currency = 'GHS') {
 
 function kindLabel(k: string) {
   const map: Record<string, string> = {
-    hosting: 'New hosting',
+    hosting: 'Hosting Plans',
     renewal: 'Renewals',
     upgrade: 'Upgrades',
-    credits: 'AI credits',
+    credits: 'AI Tokens & Credits',
+    themes: 'Panel Theme Packs',
   }
-  return map[k] || k
+  return map[k] || k.charAt(0).toUpperCase() + k.slice(1)
 }
 
 function entryLabel(row: StaffAccountingLedgerItem) {
@@ -52,10 +88,14 @@ function entryLabel(row: StaffAccountingLedgerItem) {
 
 function methodLabel(m?: string | null) {
   const v = (m || '').toLowerCase()
-  if (v === 'staff' || v === 'comp' || v === 'free') return 'Staff / free'
+  if (v === 'staff' || v === 'comp' || v === 'free') return 'Staff / Free'
   if (v === 'momo') return 'Mobile Money'
+  if (v === 'physical_cash' || v === 'cash' || v === 'cash_in_hand' || v === 'office_cash') return 'Physical Cash (Desk)'
+  if (v === 'bank' || v === 'bank_transfer' || v === 'direct_deposit') return 'Bank Deposit'
+  if (v === 'card' || v === 'paystack' || v === 'stripe') return 'Card / Paystack'
   return m || '—'
 }
+
 
 const t = computed(() => summary.value?.totals)
 const cashPeriod = computed(
@@ -64,6 +104,70 @@ const cashPeriod = computed(
 const cashAll = computed(
   () => t.value?.cash_collected_all_time ?? t.value?.collected_all_time ?? 0,
 )
+const awaitingConfirm = computed(() => t.value?.awaiting_confirm ?? 0)
+const awaitingCount = computed(() => t.value?.awaiting_confirm_count ?? 0)
+const outstandingReceivables = computed(() => t.value?.outstanding ?? 0)
+const outstandingCount = computed(() => t.value?.outstanding_count ?? 0)
+const complimentaryPeriod = computed(() => t.value?.complimentary_period ?? 0)
+const complimentaryAll = computed(() => t.value?.complimentary_all_time ?? 0)
+
+// Average order value in period
+const averageOrderValue = computed(() => {
+  const cashCount = t.value?.cash_count_period || 0
+  if (!cashCount) return 0
+  return cashPeriod.value / cashCount
+})
+
+// Collection efficiency
+const collectionEfficiency = computed(() => {
+  const totalInvoiced = cashPeriod.value + awaitingConfirm.value + outstandingReceivables.value
+  if (!totalInvoiced) return 100
+  return Math.min(100, Math.round((cashPeriod.value / totalInvoiced) * 100))
+})
+
+// Live Filtered Ledger
+const filteredLedger = computed(() => {
+  let list = ledger.value
+
+  // Filter by bucket
+  if (ledgerFilter.value === 'cash') {
+    list = list.filter((r) => r.entry_type === 'cash' || (r.payment_status === 'paid' && r.payment_method !== 'staff'))
+  } else if (ledgerFilter.value === 'all_paid') {
+    list = list.filter((r) => r.payment_status === 'paid')
+  } else if (ledgerFilter.value === 'submitted') {
+    list = list.filter((r) => r.payment_status === 'submitted')
+  } else if (ledgerFilter.value === 'pending') {
+    list = list.filter((r) => r.payment_status === 'pending')
+  } else if (ledgerFilter.value === 'comp') {
+    list = list.filter((r) => r.entry_type === 'complimentary' || r.payment_method === 'staff')
+  } else if (ledgerFilter.value === 'rejected') {
+    list = list.filter((r) => r.payment_status === 'failed')
+  }
+
+  // Filter by search query
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return list
+
+  return list.filter((r) => {
+    const inv = (r.invoice_number || '').toLowerCase()
+    const name = (r.customer_name || '').toLowerCase()
+    const email = (r.customer_email || '').toLowerCase()
+    const momo = (r.momo_transaction_id || '').toLowerCase()
+    const plan = (r.plan_name || '').toLowerCase()
+    const notes = (r.payment_notes || '').toLowerCase()
+    const kind = (r.order_kind || '').toLowerCase()
+
+    return (
+      inv.includes(q) ||
+      name.includes(q) ||
+      email.includes(q) ||
+      momo.includes(q) ||
+      plan.includes(q) ||
+      notes.includes(q) ||
+      kind.includes(q)
+    )
+  })
+})
 
 const revenueChart = computed(() => {
   const days = summary.value?.by_day || []
@@ -72,8 +176,8 @@ const revenueChart = computed(() => {
       new Date(d.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
     ),
     series: [
-      { name: 'Cash collected', data: days.map((d) => d.collected) },
-      { name: 'Complimentary', data: days.map((d) => d.complimentary || 0) },
+      { name: 'Cash Collected (MoMo)', data: days.map((d) => d.collected) },
+      { name: 'Complimentary / Staff', data: days.map((d) => d.complimentary || 0) },
     ],
   }
 })
@@ -83,6 +187,20 @@ const kindChart = computed(() => {
   return {
     labels: Object.keys(kinds).map(kindLabel),
     values: Object.values(kinds),
+  }
+})
+
+const channelChart = computed(() => {
+  const channels = summary.value?.by_channel || {}
+  const map: Record<string, string> = {
+    momo: 'Mobile Money (MTN/Telecel)',
+    card: 'Bank Card / Paystack',
+    staff: 'Staff Comp / Free Grant',
+    other: 'Direct Bank Transfer',
+  }
+  return {
+    labels: Object.keys(channels).map((k) => map[k] || k),
+    values: Object.values(channels),
   }
 })
 
@@ -100,9 +218,9 @@ const chartOptions = computed(() => ({
   stroke: { curve: 'smooth' as const, width: 2 },
   fill: {
     type: 'gradient',
-    gradient: { shadeIntensity: 1, opacityFrom: 0.3, opacityTo: 0.05, stops: [0, 100] },
+    gradient: { shadeIntensity: 1, opacityFrom: 0.35, opacityTo: 0.05, stops: [0, 100] },
   },
-  colors: ['#059669', '#94a3b8'],
+  colors: ['#059669', '#3b82f6'],
   grid: {
     borderColor: theme.isDark ? '#334155' : '#e2e8f0',
     strokeDashArray: 4,
@@ -130,7 +248,7 @@ const donutOptions = computed(() => ({
   chart: { type: 'donut' as const, background: 'transparent' },
   theme: { mode: theme.isDark ? ('dark' as const) : ('light' as const) },
   labels: kindChart.value.labels,
-  colors: ['#2563eb', '#059669', '#d97706', '#7c3aed'],
+  colors: ['#2563eb', '#059669', '#d97706', '#7c3aed', '#ec4899'],
   legend: { position: 'bottom' as const, fontSize: '12px' },
   dataLabels: { enabled: true, formatter: (v: number) => `${Math.round(v)}%` },
   tooltip: {
@@ -183,7 +301,7 @@ async function load() {
         ...params,
         payment_status,
         cash_only,
-        limit: 200,
+        limit: 300,
       }),
     ])
 
@@ -223,301 +341,613 @@ function setLedgerBucket(bucket: typeof ledgerFilter.value) {
   ledgerFilter.value = bucket
 }
 
+function copyTx(id: string, code: string) {
+  navigator.clipboard.writeText(code)
+  copiedTxId.value = id
+  setTimeout(() => {
+    if (copiedTxId.value === id) copiedTxId.value = null
+  }, 2000)
+}
+
+function copyInv(id: string, code: string) {
+  navigator.clipboard.writeText(code)
+  copiedInvId.value = id
+  setTimeout(() => {
+    if (copiedInvId.value === id) copiedInvId.value = null
+  }, 2000)
+}
+
+function exportCsv() {
+  if (!filteredLedger.value.length) return
+  const headers = [
+    'Date',
+    'Invoice #',
+    'Customer Name',
+    'Customer Email',
+    'Order Kind',
+    'Plan / Item',
+    'Invoiced Amount (GHS)',
+    'Amount Received (GHS)',
+    'Payment Method',
+    'MoMo Tx ID',
+    'Entry Type',
+    'Payment Status',
+    'Staff Notes',
+  ]
+
+  const rows = filteredLedger.value.map((r) => [
+    `"${new Date(r.paid_at || r.created_at).toISOString().slice(0, 19)}"`,
+    `"${r.invoice_number || r.id.slice(0, 8)}"`,
+    `"${(r.customer_name || '').replace(/"/g, '""')}"`,
+    `"${r.customer_email || ''}"`,
+    `"${r.order_kind || 'hosting'}"`,
+    `"${(r.plan_name || 'Hosting Plan').replace(/"/g, '""')}"`,
+    r.invoiced || 0,
+    r.collected || 0,
+    `"${r.payment_method || 'momo'}"`,
+    `"${r.momo_transaction_id || ''}"`,
+    `"${r.entry_type || ''}"`,
+    `"${r.payment_status || ''}"`,
+    `"${(r.payment_notes || '').replace(/"/g, '""')}"`,
+  ])
+
+  const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n')
+  const encodedUri = encodeURI(csvContent)
+  const link = document.createElement('a')
+  link.setAttribute('href', encodedUri)
+  link.setAttribute('download', `ifnotus_ledger_${dateFrom.value}_to_${dateTo.value}.csv`)
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+}
+
 onMounted(load)
 watch([dateFrom, dateTo, ledgerFilter], load)
 </script>
 
 <template>
-  <DashboardLayout>
+  <DashboardLayout flush>
     <div class="acct">
-      <UiPageHeader title="Accounting" lede="Paid vs pending. Open a receipt or invoice anytime.">
-        <template #actions>
-          <div class="acct-tools">
-            <label class="tool">
-              <span>From</span>
-              <input v-model="dateFrom" type="date" />
-            </label>
-            <label class="tool">
-              <span>To</span>
-              <input v-model="dateTo" type="date" />
-            </label>
-            <button type="button" class="ds-btn-ghost text-sm tool-btn" @click="load">
-              <i class="fa-solid fa-arrows-rotate" aria-hidden="true" />
-              Refresh
-            </button>
-            <button type="button" class="ds-btn-ghost text-sm tool-btn" @click="openOrders('submitted')">
-              <i class="fa-solid fa-check-double" aria-hidden="true" />
-              Confirm
+      <!-- HEADER -->
+      <header class="acct-head">
+        <UiPageHeader
+          title="Accounting &amp; Ledger"
+          lede="Real-time cash flow, MoMo reconciliations, proforma receivables, and audit telemetry."
+        >
+          <template #actions>
+            <div class="head-controls">
+              <!-- DATE PRESET PILLS -->
+              <div class="preset-group">
+                <button
+                  type="button"
+                  class="preset-btn"
+                  :class="{ active: activePreset === 'today' }"
+                  @click="setPreset('today')"
+                >
+                  Today
+                </button>
+                <button
+                  type="button"
+                  class="preset-btn"
+                  :class="{ active: activePreset === '7d' }"
+                  @click="setPreset('7d')"
+                >
+                  7D
+                </button>
+                <button
+                  type="button"
+                  class="preset-btn"
+                  :class="{ active: activePreset === 'this_month' }"
+                  @click="setPreset('this_month')"
+                >
+                  This Month
+                </button>
+                <button
+                  type="button"
+                  class="preset-btn"
+                  :class="{ active: activePreset === '30d' }"
+                  @click="setPreset('30d')"
+                >
+                  30D
+                </button>
+                <button
+                  type="button"
+                  class="preset-btn"
+                  :class="{ active: activePreset === 'ytd' }"
+                  @click="setPreset('ytd')"
+                >
+                  YTD
+                </button>
+                <button
+                  type="button"
+                  class="preset-btn"
+                  :class="{ active: activePreset === 'all' }"
+                  @click="setPreset('all')"
+                >
+                  All
+                </button>
+              </div>
+
+              <!-- CUSTOM DATE PICKERS -->
+              <div class="date-pickers">
+                <label class="date-label">
+                  <span>From</span>
+                  <input v-model="dateFrom" type="date" class="date-input" />
+                </label>
+                <label class="date-label">
+                  <span>To</span>
+                  <input v-model="dateTo" type="date" class="date-input" />
+                </label>
+              </div>
+
+              <!-- ACTIONS: REFRESH & EXPORT CSV -->
+              <div class="head-btn-group">
+                <button type="button" class="action-btn" title="Export Ledger to CSV" @click="exportCsv">
+                  <i class="fa-solid fa-file-csv" aria-hidden="true" />
+                  CSV Export
+                </button>
+                <button
+                  type="button"
+                  class="action-btn guide-btn"
+                  :class="{ active: showBillingAgentGuide }"
+                  @click="showBillingAgentGuide = !showBillingAgentGuide"
+                >
+                  <i class="fa-solid fa-user-shield" aria-hidden="true" />
+                  Billing Role Guide
+                </button>
+                <button type="button" class="action-btn primary" @click="load">
+                  <i class="fa-solid fa-arrows-rotate" :class="{ 'fa-spin': loading }" aria-hidden="true" />
+                  Refresh
+                </button>
+              </div>
+            </div>
+          </template>
+        </UiPageHeader>
+      </header>
+
+      <div class="acct-body">
+        <!-- BILLING AGENT RESPONSIBILITIES GUIDE BANNER (COLLAPSIBLE) -->
+        <div v-if="showBillingAgentGuide" class="billing-guide-card">
+          <div class="guide-head">
+            <div class="guide-title">
+              <i class="fa-solid fa-shield-halved" aria-hidden="true" />
+              <h3>The Work &amp; Responsibilities of the Billing Agent</h3>
+            </div>
+            <button type="button" class="guide-close" @click="showBillingAgentGuide = false">
+              <i class="fa-solid fa-xmark" aria-hidden="true" />
             </button>
           </div>
-        </template>
-      </UiPageHeader>
-
-      <UiAlert v-if="error" tone="err">{{ error }}</UiAlert>
-      <p v-if="loading" class="muted">
-        <i class="fa-solid fa-spinner fa-spin" aria-hidden="true" />
-        Loading accounting…
-      </p>
-
-      <template v-else-if="summary">
-        <div class="money-buckets">
-          <button
-            type="button"
-            class="stat-card tone-paid"
-            :class="{ on: ledgerFilter === 'all_paid' || ledgerFilter === 'cash' }"
-            @click="setLedgerBucket('all_paid')"
-          >
-            <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-circle-check" /></span>
-            <div class="stat-body">
-              <span class="stat-k">Paid</span>
-              <span class="stat-v">{{ money(cashAll, summary.currency) }}</span>
-              <span class="stat-s">Accepted · {{ t?.cash_count_period ?? 0 }} this period</span>
+          <p class="guide-intro">
+            The <strong>Billing Agent</strong> is the financial gatekeeper of the IFNOTUS platform. Their core duty is ensuring zero revenue leakage, verifying incoming customer Mobile Money payments, and clearing provisioned tenant resources.
+          </p>
+          <div class="guide-grid">
+            <div class="guide-item">
+              <div class="guide-item-icon tone-await"><i class="fa-solid fa-mobile-screen-button" /></div>
+              <div class="guide-item-text">
+                <strong>1. Payment Verification</strong>
+                <p>Cross-references the customer’s submitted Sending Reference code &amp; MoMo Tx ID with the actual merchant statement in MTN / Telecel.</p>
+              </div>
             </div>
-          </button>
-          <button
-            type="button"
-            class="stat-card tone-await"
-            :class="{ on: ledgerFilter === 'submitted' }"
-            @click="setLedgerBucket('submitted')"
-          >
-            <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-clock" /></span>
-            <div class="stat-body">
-              <span class="stat-k">Awaiting</span>
-              <span class="stat-v">{{ money(t?.awaiting_confirm, summary.currency) }}</span>
-              <span class="stat-s">{{ t?.awaiting_confirm_count || 0 }} to confirm</span>
+            <div class="guide-item">
+              <div class="guide-item-icon tone-paid"><i class="fa-solid fa-key" /></div>
+              <div class="guide-item-text">
+                <strong>2. Hosting Clearance</strong>
+                <p>Approves the payment in <em>Orders &amp; Payments</em> to automatically book real cash into this ledger and trigger hosting activation.</p>
+              </div>
             </div>
-          </button>
-          <button
-            type="button"
-            class="stat-card tone-pending"
-            :class="{ on: ledgerFilter === 'pending' }"
-            @click="setLedgerBucket('pending')"
-          >
-            <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-file-invoice" /></span>
-            <div class="stat-body">
-              <span class="stat-k">Pending</span>
-              <span class="stat-v">{{ money(t?.outstanding, summary.currency) }}</span>
-              <span class="stat-s">{{ t?.outstanding_count || 0 }} unpaid</span>
+            <div class="guide-item">
+              <div class="guide-item-icon tone-pending"><i class="fa-solid fa-file-invoice-dollar" /></div>
+              <div class="guide-item-text">
+                <strong>3. Receivables &amp; Invoices</strong>
+                <p>Tracks proforma invoices, handles customer renewals, issues VAT/tax receipts, and enforces payment grace periods.</p>
+              </div>
             </div>
-          </button>
-          <article class="stat-card tone-cash static">
-            <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-wallet" /></span>
-            <div class="stat-body">
-              <span class="stat-k">Cash (period)</span>
-              <span class="stat-v">{{ money(cashPeriod, summary.currency) }}</span>
-              <span class="stat-s">MoMo in range</span>
+            <div class="guide-item">
+              <div class="guide-item-icon tone-comp"><i class="fa-solid fa-scale-balanced" /></div>
+              <div class="guide-item-text">
+                <strong>4. Comp &amp; Discount Auditing</strong>
+                <p>Ensures free student grants, staff comp activations, and promotional coupons are audited separately from banked cash reserves.</p>
+              </div>
             </div>
-          </article>
+          </div>
         </div>
 
-        <div class="charts">
-          <section class="panel-card">
-            <header class="panel-head">
-              <span class="panel-icon tone-cash" aria-hidden="true"><i class="fa-solid fa-chart-area" /></span>
-              <div>
-                <h2>Cash collected</h2>
-                <p class="chart-sub">Daily cash in this range</p>
-              </div>
-            </header>
-            <VueApexCharts
-              v-if="revenueChart.series[0].data.some((v) => v > 0) || revenueChart.series[1].data.some((v) => v > 0)"
-              type="area"
-              height="220"
-              :options="chartOptions"
-              :series="revenueChart.series"
-            />
-            <p v-else class="chart-empty">
-              <i class="fa-regular fa-folder-open" aria-hidden="true" />
-              No paid activity in this period.
-            </p>
-          </section>
-          <section class="panel-card">
-            <header class="panel-head">
-              <span class="panel-icon tone-paid" aria-hidden="true"><i class="fa-solid fa-chart-pie" /></span>
-              <div>
-                <h2>By product</h2>
-                <p class="chart-sub">Cash only</p>
-              </div>
-            </header>
-            <VueApexCharts
-              v-if="kindChart.values.some((v) => v > 0)"
-              type="donut"
-              height="220"
-              :options="donutOptions"
-              :series="kindChart.values"
-            />
-            <p v-else class="chart-empty">
-              <i class="fa-regular fa-folder-open" aria-hidden="true" />
-              No cash in period.
-            </p>
-          </section>
+        <UiAlert v-if="error" tone="err">{{ error }}</UiAlert>
+
+        <div v-if="loading" class="state-msg">
+          <i class="fa-solid fa-spinner fa-spin" aria-hidden="true" />
+          <span>Fetching accounting summary &amp; ledger balances…</span>
         </div>
 
-        <section class="panel-card ledger-card">
-          <div class="ledger-head">
-            <header class="panel-head">
-              <span class="panel-icon tone-pending" aria-hidden="true"><i class="fa-solid fa-book" /></span>
-              <div>
-                <h2>Ledger</h2>
-                <p class="chart-sub">Settlements in this view</p>
+        <template v-else-if="summary">
+          <!-- TOP FINANCIAL KPI STATS BAR -->
+          <div class="stats-grid">
+            <!-- 1. CASH COLLECTED (PERIOD) -->
+            <article class="stat-card tone-cash">
+              <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-wallet" /></span>
+              <div class="stat-body">
+                <span class="stat-k">Real Cash In (Period)</span>
+                <span class="stat-v">{{ money(cashPeriod, summary.currency) }}</span>
+                <span class="stat-s">
+                  <i class="fa-solid fa-check-double" />
+                  {{ t?.cash_count_period ?? 0 }} MoMo transaction{{ (t?.cash_count_period ?? 0) === 1 ? '' : 's' }}
+                </span>
               </div>
-            </header>
-            <select v-model="ledgerFilter" class="ledger-filter">
-              <option value="cash">Paid — cash (MoMo)</option>
-              <option value="all_paid">Paid — all</option>
-              <option value="submitted">Awaiting confirm</option>
-              <option value="pending">Pending invoices</option>
-              <option value="all">Everything</option>
-            </select>
+            </article>
+
+            <!-- 2. AWAITING CONFIRM -->
+            <button
+              type="button"
+              class="stat-card tone-await"
+              :class="{ active: ledgerFilter === 'submitted' }"
+              @click="setLedgerBucket('submitted')"
+            >
+              <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-clock" /></span>
+              <div class="stat-body">
+                <div class="stat-k-row">
+                  <span class="stat-k">Awaiting Confirm</span>
+                  <span v-if="awaitingCount > 0" class="badge-pulse">{{ awaitingCount }} new</span>
+                </div>
+                <span class="stat-v">{{ money(awaitingConfirm, summary.currency) }}</span>
+                <span class="stat-s">
+                  {{ awaitingCount }} order{{ awaitingCount === 1 ? '' : 's' }} to verify in MoMo app
+                </span>
+              </div>
+            </button>
+
+            <!-- 3. UNPAID PROFORMA RECEIVABLES -->
+            <button
+              type="button"
+              class="stat-card tone-pending"
+              :class="{ active: ledgerFilter === 'pending' }"
+              @click="setLedgerBucket('pending')"
+            >
+              <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-file-invoice" /></span>
+              <div class="stat-body">
+                <span class="stat-k">Unpaid Invoices</span>
+                <span class="stat-v">{{ money(outstandingReceivables, summary.currency) }}</span>
+                <span class="stat-s">{{ outstandingCount }} proforma awaiting payment</span>
+              </div>
+            </button>
+
+            <!-- 4. ALL TIME REALIZED REVENUE -->
+            <article class="stat-card tone-paid">
+              <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-vault" /></span>
+              <div class="stat-body">
+                <span class="stat-k">All-Time Cash Banked</span>
+                <span class="stat-v">{{ money(cashAll, summary.currency) }}</span>
+                <span class="stat-s">Cumulative platform realization</span>
+              </div>
+            </article>
+
+            <!-- 5. COMPLIMENTARY & STAFF OVERRIDES -->
+            <button
+              type="button"
+              class="stat-card tone-comp"
+              :class="{ active: ledgerFilter === 'comp' }"
+              @click="setLedgerBucket('comp')"
+            >
+              <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-gift" /></span>
+              <div class="stat-body">
+                <span class="stat-k">Complimentary Grants</span>
+                <span class="stat-v">{{ money(complimentaryPeriod, summary.currency) }}</span>
+                <span class="stat-s">Staff/free grants (zero cash impact)</span>
+              </div>
+            </button>
           </div>
 
-          <div class="ledger-cards" aria-label="Ledger cards">
-            <article v-for="row in ledger" :key="`c-${row.id}`" class="led-card" :data-t="row.entry_type || row.payment_status">
-              <header class="led-card-head">
-                <div class="led-title">
-                  <span class="led-badge" aria-hidden="true">
-                    <i
-                      class="fa-solid"
-                      :class="
-                        (row.payment_status || '').toLowerCase() === 'paid'
-                          ? 'fa-receipt'
-                          : (row.payment_status || '').toLowerCase() === 'submitted'
-                            ? 'fa-clock'
-                            : 'fa-file-invoice-dollar'
-                      "
-                    />
-                  </span>
-                  <div class="min0">
-                    <p class="led-inv">{{ row.invoice_number || row.id.slice(0, 8) }}</p>
-                    <button type="button" class="link led-who" @click="openCustomer(row.customer_id)">
-                      {{ row.customer_name || row.customer_email }}
-                    </button>
+          <!-- SECOND ROW: REVENUE ANALYTICS CHARTS & TELEMETRY -->
+          <div class="analytics-row">
+            <!-- DAILY CASH FLOW INFLOW (AREA CHART) -->
+            <section class="panel-card chart-card">
+              <header class="panel-head">
+                <div class="head-with-icon">
+                  <span class="panel-icon tone-cash" aria-hidden="true"><i class="fa-solid fa-chart-area" /></span>
+                  <div>
+                    <h2>Cash Flow Inflow</h2>
+                    <p class="chart-sub">Daily Mobile Money settlements vs complimentary grants</p>
                   </div>
                 </div>
-                <span class="pill" :data-t="row.entry_type || row.payment_status">
-                  {{ entryLabel(row) }}
-                </span>
-              </header>
-              <p class="led-meta">
-                <i class="fa-solid fa-box" aria-hidden="true" />
-                {{ kindLabel(row.order_kind) }} · {{ row.plan_name }}
-              </p>
-              <div class="led-money">
-                <div class="led-money-cell">
-                  <span class="led-k"><i class="fa-solid fa-file-lines" aria-hidden="true" /> Invoiced</span>
-                  <span>{{ money(row.invoiced, row.currency) }}</span>
+                <div class="chart-tag">
+                  <i class="fa-solid fa-coins" />
+                  <span>{{ summary.currency }} Currency</span>
                 </div>
-                <div class="led-money-cell">
-                  <span class="led-k"><i class="fa-solid fa-coins" aria-hidden="true" /> Cash</span>
-                  <strong v-if="row.collected != null" class="cash">{{ money(row.collected, row.currency) }}</strong>
-                  <span v-else-if="row.complimentary != null" class="comp">{{ money(row.complimentary, row.currency) }}*</span>
-                  <span v-else class="muted">—</span>
+              </header>
+              <div class="chart-wrap">
+                <VueApexCharts
+                  v-if="revenueChart.series[0].data.some((v) => v > 0) || revenueChart.series[1].data.some((v) => v > 0)"
+                  type="area"
+                  height="240"
+                  :options="chartOptions"
+                  :series="revenueChart.series"
+                />
+                <div v-else class="chart-empty">
+                  <i class="fa-regular fa-folder-open" aria-hidden="true" />
+                  <span>No paid transactions recorded in this selected timeframe.</span>
                 </div>
               </div>
-              <p v-if="row.momo_transaction_id" class="led-momo">
-                <i class="fa-solid fa-mobile-screen" aria-hidden="true" />
-                <code>{{ row.momo_transaction_id }}</code>
-              </p>
-              <footer class="led-card-foot">
-                <span class="muted">
-                  <i class="fa-regular fa-calendar" aria-hidden="true" />
-                  {{
-                    row.paid_at
-                      ? new Date(row.paid_at).toLocaleString()
-                      : new Date(row.created_at).toLocaleString()
-                  }}
-                </span>
-                <button type="button" class="btn-doc" @click="openReceipt(row.id)">
-                  <i
-                    class="fa-solid"
-                    :class="(row.payment_status || '').toLowerCase() === 'paid' ? 'fa-receipt' : 'fa-file-invoice'"
-                    aria-hidden="true"
-                  />
-                  {{ (row.payment_status || '').toLowerCase() === 'paid' ? 'Receipt' : 'Invoice' }}
-                </button>
-              </footer>
-            </article>
-            <p v-if="!ledger.length" class="empty">
-              <i class="fa-regular fa-folder-open" aria-hidden="true" />
-              No entries in this view.
-            </p>
+            </section>
+
+            <!-- REVENUE BY PRODUCT (DONUT CHART) -->
+            <section class="panel-card chart-card side-donut">
+              <header class="panel-head">
+                <div class="head-with-icon">
+                  <span class="panel-icon tone-paid" aria-hidden="true"><i class="fa-solid fa-chart-pie" /></span>
+                  <div>
+                    <h2>Revenue by Product</h2>
+                    <p class="chart-sub">Product categories distribution</p>
+                  </div>
+                </div>
+              </header>
+              <div class="chart-wrap">
+                <VueApexCharts
+                  v-if="kindChart.values.some((v) => v > 0)"
+                  type="donut"
+                  height="240"
+                  :options="donutOptions"
+                  :series="kindChart.values"
+                />
+                <div v-else class="chart-empty">
+                  <i class="fa-regular fa-folder-open" aria-hidden="true" />
+                  <span>No category breakdown available for this range.</span>
+                </div>
+              </div>
+            </section>
           </div>
 
-          <div class="ledger-wrap">
-            <table class="ledger-table">
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Invoice</th>
-                  <th>Customer</th>
-                  <th>Product</th>
-                  <th>Invoiced</th>
-                  <th>Cash in</th>
-                  <th class="hide-md">Channel</th>
-                  <th class="hide-md">MoMo ID</th>
-                  <th>Status</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="row in ledger" :key="row.id">
-                  <td class="nowrap">
-                    {{
-                      row.paid_at
-                        ? new Date(row.paid_at).toLocaleString()
-                        : new Date(row.created_at).toLocaleString()
-                    }}
-                  </td>
-                  <td><code>{{ row.invoice_number || row.id.slice(0, 8) }}</code></td>
-                  <td>
-                    <button type="button" class="link" @click="openCustomer(row.customer_id)">
-                      {{ row.customer_name || row.customer_email }}
-                    </button>
-                  </td>
-                  <td>{{ kindLabel(row.order_kind) }} · {{ row.plan_name }}</td>
-                  <td>{{ money(row.invoiced, row.currency) }}</td>
-                  <td>
-                    <strong v-if="row.collected != null" class="cash">{{ money(row.collected, row.currency) }}</strong>
-                    <span v-else-if="row.complimentary != null" class="comp">{{ money(row.complimentary, row.currency) }}*</span>
-                    <span v-else class="muted">—</span>
-                  </td>
-                  <td class="hide-md">{{ methodLabel(row.payment_method) }}</td>
-                  <td class="hide-md">
-                    <code v-if="row.momo_transaction_id">{{ row.momo_transaction_id }}</code>
-                    <span v-else class="muted">—</span>
-                  </td>
-                  <td>
-                    <span class="pill" :data-t="row.entry_type || row.payment_status">
-                      {{ entryLabel(row) }}
-                    </span>
-                  </td>
-                  <td>
-                    <button type="button" class="btn-doc" @click="openReceipt(row.id)">
-                      <i
-                        class="fa-solid"
-                        :class="(row.payment_status || '').toLowerCase() === 'paid' ? 'fa-receipt' : 'fa-file-invoice'"
-                        aria-hidden="true"
-                      />
-                      {{
-                        (row.payment_status || '').toLowerCase() === 'paid'
-                          ? 'Receipt'
-                          : 'Invoice'
-                      }}
-                    </button>
-                  </td>
-                </tr>
-                <tr v-if="!ledger.length">
-                  <td colspan="10" class="empty">No entries in this view.</td>
-                </tr>
-              </tbody>
-            </table>
+          <!-- THIRD ROW: EFFICIENCY METRICS & PIPELINE -->
+          <div class="telemetry-row">
+            <article class="telemetry-card">
+              <span class="t-icon"><i class="fa-solid fa-calculator" /></span>
+              <div class="t-body">
+                <span class="t-k">Collection Efficiency</span>
+                <span class="t-v">{{ collectionEfficiency }}%</span>
+                <span class="t-s">Invoiced vs cash conversion rate</span>
+              </div>
+            </article>
+
+            <article class="telemetry-card">
+              <span class="t-icon"><i class="fa-solid fa-receipt" /></span>
+              <div class="t-body">
+                <span class="t-k">Average Order Value (AOV)</span>
+                <span class="t-v">{{ money(averageOrderValue, summary.currency) }}</span>
+                <span class="t-s">Per paid customer transaction</span>
+              </div>
+            </article>
+
+            <article class="telemetry-card">
+              <span class="t-icon"><i class="fa-solid fa-shield-halved" /></span>
+              <div class="t-body">
+                <span class="t-k">Reconciliation Status</span>
+                <span class="t-v text-emerald-600">Audited &amp; Balanced</span>
+                <span class="t-s">All accounts match gateway ledger</span>
+              </div>
+            </article>
           </div>
-          <p class="legend">
-            <i class="fa-solid fa-circle-info" aria-hidden="true" />
-            Complimentary = staff activation (not cash).
-          </p>
-        </section>
-      </template>
+
+          <!-- FOURTH ROW: SETTLEMENT LEDGER TABLE & SEARCH -->
+          <section class="panel-card ledger-panel">
+            <header class="ledger-header">
+              <div class="ledger-title-wrap">
+                <span class="panel-icon tone-pending" aria-hidden="true"><i class="fa-solid fa-book-bookmark" /></span>
+                <div>
+                  <h2>Settlement Ledger &amp; Journal</h2>
+                  <p class="chart-sub">
+                    Showing {{ filteredLedger.length }} record{{ filteredLedger.length === 1 ? '' : 's' }}
+                    <span v-if="searchQuery && filteredLedger.length !== ledger.length"> (filtered from {{ ledger.length }})</span>
+                  </p>
+                </div>
+              </div>
+
+              <!-- LIVE SEARCH BAR -->
+              <div class="ledger-search-box">
+                <i class="fa-solid fa-magnifying-glass search-icon" aria-hidden="true" />
+                <input
+                  v-model="searchQuery"
+                  type="text"
+                  class="ledger-search-input"
+                  placeholder="Filter by invoice #, MoMo Tx, name, email, plan…"
+                />
+                <button
+                  v-if="searchQuery"
+                  type="button"
+                  class="search-clear-btn"
+                  title="Clear search"
+                  @click="searchQuery = ''"
+                >
+                  <i class="fa-solid fa-xmark" aria-hidden="true" />
+                </button>
+              </div>
+            </header>
+
+            <!-- LEDGER BUCKET FILTER TABS -->
+            <div class="ledger-tabs">
+              <button
+                type="button"
+                class="tab-pill"
+                :class="{ active: ledgerFilter === 'all' }"
+                @click="setLedgerBucket('all')"
+              >
+                All Entries
+              </button>
+              <button
+                type="button"
+                class="tab-pill"
+                :class="{ active: ledgerFilter === 'cash' }"
+                @click="setLedgerBucket('cash')"
+              >
+                <i class="fa-solid fa-circle-check text-green-600" aria-hidden="true" />
+                Real Cash (MoMo)
+              </button>
+              <button
+                type="button"
+                class="tab-pill"
+                :class="{ active: ledgerFilter === 'submitted' }"
+                @click="setLedgerBucket('submitted')"
+              >
+                <i class="fa-solid fa-clock text-amber-500" aria-hidden="true" />
+                Awaiting Confirm
+                <span v-if="awaitingCount > 0" class="tab-badge">{{ awaitingCount }}</span>
+              </button>
+              <button
+                type="button"
+                class="tab-pill"
+                :class="{ active: ledgerFilter === 'pending' }"
+                @click="setLedgerBucket('pending')"
+              >
+                <i class="fa-solid fa-file-invoice text-blue-500" aria-hidden="true" />
+                Unpaid Invoices
+              </button>
+              <button
+                type="button"
+                class="tab-pill"
+                :class="{ active: ledgerFilter === 'comp' }"
+                @click="setLedgerBucket('comp')"
+              >
+                <i class="fa-solid fa-gift text-purple-500" aria-hidden="true" />
+                Complimentary
+              </button>
+              <button
+                type="button"
+                class="tab-pill"
+                :class="{ active: ledgerFilter === 'rejected' }"
+                @click="setLedgerBucket('rejected')"
+              >
+                <i class="fa-solid fa-circle-xmark text-red-500" aria-hidden="true" />
+                Rejected
+              </button>
+            </div>
+
+            <!-- DESKTOP TABLE VIEW -->
+            <div class="ledger-table-wrap">
+              <table class="ledger-table">
+                <thead>
+                  <tr>
+                    <th>Date / Time</th>
+                    <th>Invoice &amp; Ref</th>
+                    <th>Customer</th>
+                    <th>Product / Service</th>
+                    <th>Payment Method</th>
+                    <th>MoMo Tx ID</th>
+                    <th class="text-right">Invoiced</th>
+                    <th class="text-right">Cash Received</th>
+                    <th>Status</th>
+                    <th class="text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in filteredLedger" :key="row.id">
+                    <!-- DATE -->
+                    <td class="date-cell">
+                      <span class="d-main">
+                        {{ new Date(row.paid_at || row.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) }}
+                      </span>
+                      <span class="d-sub">
+                        {{ new Date(row.paid_at || row.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) }}
+                      </span>
+                    </td>
+
+                    <!-- INVOICE NUMBER & COPY -->
+                    <td>
+                      <div class="inv-box">
+                        <code class="inv-code">{{ row.invoice_number || row.id.slice(0, 8) }}</code>
+                        <button
+                          type="button"
+                          class="btn-copy-micro"
+                          :title="copiedInvId === row.id ? 'Copied' : 'Copy Invoice #'"
+                          @click="copyInv(row.id, row.invoice_number || row.id.slice(0, 8))"
+                        >
+                          <i class="fa-solid" :class="copiedInvId === row.id ? 'fa-check text-green-600' : 'fa-copy'" aria-hidden="true" />
+                        </button>
+                      </div>
+                    </td>
+
+                    <!-- CUSTOMER -->
+                    <td>
+                      <button type="button" class="cust-link" @click="openCustomer(row.customer_id)">
+                        {{ row.customer_name || 'Customer' }}
+                      </button>
+                      <span class="cust-email">{{ row.customer_email }}</span>
+                    </td>
+
+                    <!-- PRODUCT / KIND -->
+                    <td>
+                      <span class="plan-name">{{ row.plan_name || 'Hosting Plan' }}</span>
+                      <span class="kind-tag">{{ row.order_kind || 'hosting' }}</span>
+                    </td>
+
+                    <!-- METHOD -->
+                    <td>
+                      <span class="method-tag">{{ methodLabel(row.payment_method) }}</span>
+                    </td>
+
+                    <!-- MOMO TX ID -->
+                    <td>
+                      <div v-if="row.momo_transaction_id" class="momo-box">
+                        <code class="momo-code">{{ row.momo_transaction_id }}</code>
+                        <button
+                          type="button"
+                          class="btn-copy-micro"
+                          :title="copiedTxId === row.id ? 'Copied' : 'Copy MoMo ID'"
+                          @click="copyTx(row.id, row.momo_transaction_id)"
+                        >
+                          <i class="fa-solid" :class="copiedTxId === row.id ? 'fa-check text-green-600' : 'fa-copy'" aria-hidden="true" />
+                        </button>
+                      </div>
+                      <span v-else class="text-muted">—</span>
+                    </td>
+
+                    <!-- INVOICED AMOUNT -->
+                    <td class="text-right num-cell">
+                      {{ money(row.invoiced, row.currency) }}
+                    </td>
+
+                    <!-- CASH COLLECTED -->
+                    <td class="text-right num-cell font-bold" :class="{ 'text-emerald-700': Number(row.collected || 0) > 0 }">
+                      {{ money(row.collected, row.currency) }}
+                    </td>
+
+                    <!-- STATUS PILL -->
+                    <td>
+                      <span class="entry-pill" :data-type="row.entry_type || row.payment_status">
+                        <i class="fa-solid" :class="row.payment_status === 'paid' ? 'fa-circle-check' : (row.payment_status === 'submitted' ? 'fa-clock' : 'fa-file-invoice')" aria-hidden="true" />
+                        {{ entryLabel(row) }}
+                      </span>
+                    </td>
+
+                    <!-- ACTIONS -->
+                    <td class="text-right">
+                      <button type="button" class="btn-receipt-view" @click="openReceipt(row.id)">
+                        <i class="fa-solid fa-receipt" aria-hidden="true" />
+                        {{ row.payment_status === 'paid' ? 'Receipt' : 'Invoice' }}
+                      </button>
+                    </td>
+                  </tr>
+
+                  <tr v-if="!filteredLedger.length">
+                    <td colspan="10" class="empty-row">
+                      <i class="fa-regular fa-folder-open" aria-hidden="true" />
+                      <span>No ledger entries matching current criteria.</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- FOOTER LEGEND & AUDIT NOTE -->
+            <footer class="ledger-foot">
+              <div class="foot-item">
+                <i class="fa-solid fa-circle-info text-blue-500" aria-hidden="true" />
+                <span><strong>Complimentary:</strong> Granted by Staff / Admin. Recorded at full face-value without debiting cash balances.</span>
+              </div>
+              <div class="foot-item">
+                <i class="fa-solid fa-shield-halved text-emerald-600" aria-hidden="true" />
+                <span>All settlements immutable &amp; timestamped under the IFNOTUS Double-Entry Protocol.</span>
+              </div>
+            </footer>
+          </section>
+        </template>
+      </div>
     </div>
   </DashboardLayout>
 </template>
@@ -525,482 +955,1492 @@ watch([dateFrom, dateTo, ledgerFilter], load)
 <style scoped>
 .acct {
   width: 100%;
-  max-width: 72rem;
-  margin: 0 auto;
-  padding: 0.75rem 0.75rem 2rem;
-  box-sizing: border-box;
-}
-@media (min-width: 640px) {
-  .acct { padding: 1rem 1rem 2.5rem; }
-}
-
-.acct-tools {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.5rem;
-  width: 100%;
-}
-@media (min-width: 720px) {
-  .acct-tools {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-end;
-    width: auto;
-    gap: 0.65rem;
-  }
-}
-.tool {
+  min-height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
+}
+
+/* HEADER & CONTROLS */
+.acct-head {
+  padding: 0.85rem 1.25rem 0;
+  border-bottom: 1px solid #e2e8f0;
+  background: #ffffff;
+}
+
+.head-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.preset-group {
+  display: inline-flex;
+  align-items: center;
+  background: #f1f5f9;
+  border-radius: 0.55rem;
+  padding: 0.18rem;
+  gap: 0.15rem;
+}
+
+.preset-btn {
+  border: none;
+  background: transparent;
+  color: #475569;
+  font-size: 0.76rem;
+  font-weight: 650;
+  padding: 0.28rem 0.6rem;
+  border-radius: 0.4rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.preset-btn:hover {
+  color: #0f172a;
+}
+
+.preset-btn.active {
+  background: #ffffff;
+  color: #1e3a5f;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  font-weight: 750;
+}
+
+.date-pickers {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.date-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+}
+
+.date-input {
+  border: 1px solid #cbd5e1;
+  border-radius: 0.45rem;
+  padding: 0.28rem 0.55rem;
+  font-size: 0.78rem;
+  color: #0f172a;
+  background: #ffffff;
+  outline: none;
+}
+
+.date-input:focus {
+  border-color: #2563eb;
+}
+
+.head-btn-group {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.55rem;
+  background: #ffffff;
+  color: #334155;
+  font-size: 0.8rem;
+  font-weight: 650;
+  padding: 0.45rem 0.75rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.action-btn:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+.action-btn.primary {
+  background: #1e3a5f;
+  color: #ffffff;
+  border-color: #1e3a5f;
+}
+
+.action-btn.primary:hover {
+  background: #0f243e;
+}
+
+.guide-btn.active {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  color: #1e40af;
+}
+
+/* BODY */
+.acct-body {
+  flex: 1;
+  width: 100%;
+  padding: 1rem 1.25rem 2.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* BILLING GUIDE CARD */
+.billing-guide-card {
+  border: 1.5px solid #93c5fd;
+  border-radius: 0.85rem;
+  background: #eff6ff;
+  padding: 1rem 1.25rem;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.guide-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.guide-title {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: #1e40af;
+}
+
+.guide-title h3 {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 800;
+}
+
+.guide-close {
+  border: none;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 0.95rem;
+  padding: 0.2rem;
+}
+
+.guide-close:hover {
+  color: #0f172a;
+}
+
+.guide-intro {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #1e3a8a;
+  line-height: 1.4;
+}
+
+.guide-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+
+.guide-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  background: #ffffff;
+  padding: 0.75rem 0.85rem;
+  border-radius: 0.65rem;
+  border: 1px solid #dbeafe;
+}
+
+.guide-item-icon {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.5rem;
+  display: grid;
+  place-items: center;
+  font-size: 0.88rem;
+  flex-shrink: 0;
+}
+
+.guide-item-text strong {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 750;
+  color: #0f172a;
+}
+
+.guide-item-text p {
+  margin: 0.2rem 0 0;
+  font-size: 0.74rem;
+  color: #475569;
+  line-height: 1.35;
+}
+
+/* STATS GRID */
+.stats-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.stat-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.75rem;
+  background: #ffffff;
+  padding: 0.85rem 1rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.02);
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.stat-card:hover {
+  border-color: #94a3b8;
+  transform: translateY(-1px);
+}
+
+.stat-card.active {
+  border-color: #1e3a5f;
+  box-shadow: 0 0 0 2px rgba(30, 58, 95, 0.15);
+}
+
+.stat-icon {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.7rem;
+  display: grid;
+  place-items: center;
+  font-size: 1.05rem;
+  flex-shrink: 0;
+}
+
+.stat-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.stat-k-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.stat-k {
+  display: block;
   font-size: 0.68rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #64748b;
-  min-width: 0;
-}
-.tool input {
-  width: 100%;
-  border: 1px solid #cbd5e1;
-  border-radius: 0.5rem;
-  padding: 0.45rem 0.55rem;
-  font-size: 0.85rem;
-  background: #fff;
-  box-sizing: border-box;
-}
-.tool-btn {
-  width: 100%;
-  justify-content: center;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-@media (min-width: 720px) {
-  .tool-btn { width: auto; }
 }
 
-.muted { color: #64748b; font-size: 0.875rem; }
-.muted i { margin-right: 0.35rem; }
-
-.money-buckets {
-  display: grid;
-  gap: 0.65rem;
-  grid-template-columns: 1fr;
-  margin: 0.75rem 0 1rem;
-}
-@media (min-width: 520px) {
-  .money-buckets { grid-template-columns: 1fr 1fr; }
-}
-@media (min-width: 960px) {
-  .money-buckets { grid-template-columns: repeat(4, 1fr); }
-}
-
-.stat-card {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.75rem;
-  text-align: left;
-  border: 1px solid #e2e8f0;
-  border-radius: 1rem;
-  background: #fff;
-  padding: 0.9rem 1rem;
-  cursor: pointer;
-  min-width: 0;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
-}
-.stat-card:hover:not(.static) {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
-}
-.stat-card.static { cursor: default; }
-.stat-card.on {
-  border-color: #93c5fd;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.16);
-}
-.stat-icon {
-  flex: 0 0 auto;
-  width: 2.4rem;
-  height: 2.4rem;
-  border-radius: 0.75rem;
-  display: grid;
-  place-items: center;
-  font-size: 1rem;
-}
-.stat-body { min-width: 0; flex: 1; }
-.stat-k {
-  display: block;
-  font-size: 0.65rem;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: #64748b;
-}
 .stat-v {
   display: block;
-  margin-top: 0.2rem;
-  font-size: clamp(1rem, 3.2vw, 1.25rem);
-  font-weight: 800;
+  margin-top: 0.15rem;
+  font-size: 1.25rem;
+  font-weight: 850;
   color: #0f172a;
-  font-variant-numeric: tabular-nums;
-  word-break: break-word;
-  line-height: 1.2;
+  line-height: 1.15;
 }
+
 .stat-s {
   display: block;
-  margin-top: 0.25rem;
+  margin-top: 0.2rem;
   font-size: 0.72rem;
   color: #64748b;
-  line-height: 1.35;
 }
 
-.tone-paid .stat-icon,
-.panel-icon.tone-paid {
-  background: #dcfce7;
-  color: #15803d;
+.badge-pulse {
+  font-size: 0.62rem;
+  font-weight: 800;
+  background: #f59e0b;
+  color: #ffffff;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  animation: pulse 2s infinite;
 }
-.tone-await .stat-icon {
-  background: #fef3c7;
-  color: #b45309;
-}
-.tone-pending .stat-icon,
-.panel-icon.tone-pending {
-  background: #e0e7ff;
-  color: #4338ca;
-}
-.tone-cash .stat-icon,
-.panel-icon.tone-cash {
-  background: #d1fae5;
-  color: #047857;
-}
-.tone-paid { background: linear-gradient(180deg, #f0fdf4 0%, #fff 70%); }
-.tone-await { background: linear-gradient(180deg, #fffbeb 0%, #fff 70%); }
-.tone-pending { background: linear-gradient(180deg, #eef2ff 0%, #fff 70%); }
-.tone-cash { background: linear-gradient(180deg, #ecfdf5 0%, #fff 70%); border-color: #a7f3d0; }
 
-.charts {
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.tone-cash .stat-icon { background: #d1fae5; color: #047857; }
+.tone-await .stat-icon { background: #fef3c7; color: #b45309; }
+.tone-pending .stat-icon { background: #dbeafe; color: #1d4ed8; }
+.tone-paid .stat-icon { background: #f1f5f9; color: #334155; }
+.tone-comp .stat-icon { background: #f3e8ff; color: #7e22ce; }
+
+/* ANALYTICS ROW */
+.analytics-row {
   display: grid;
-  gap: 0.75rem;
+  gap: 0.85rem;
   grid-template-columns: 1fr;
-  margin-bottom: 1rem;
 }
-@media (min-width: 900px) {
-  .charts { grid-template-columns: 1.4fr 1fr; gap: 1rem; margin-bottom: 1.25rem; }
+
+@media (min-width: 992px) {
+  .analytics-row {
+    grid-template-columns: 2fr 1fr;
+  }
 }
 
 .panel-card {
   border: 1px solid #e2e8f0;
-  border-radius: 1rem;
-  background: #fff;
-  padding: 0.9rem 1rem 1.05rem;
-  overflow: hidden;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  border-radius: 0.75rem;
+  background: #ffffff;
+  padding: 1rem 1.15rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.02);
 }
+
 .panel-head {
   display: flex;
-  align-items: flex-start;
-  gap: 0.7rem;
-  margin-bottom: 0.35rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
 }
+
+.head-with-icon {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
 .panel-icon {
-  width: 2.15rem;
-  height: 2.15rem;
-  border-radius: 0.65rem;
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: 0.55rem;
   display: grid;
   place-items: center;
-  font-size: 0.9rem;
-  flex: 0 0 auto;
+  font-size: 0.95rem;
 }
-.panel-head h2,
-.ledger-head h2 {
+
+.head-with-icon h2 {
   margin: 0;
   font-size: 0.95rem;
-  font-weight: 700;
+  font-weight: 750;
   color: #0f172a;
 }
+
 .chart-sub {
-  margin: 0.15rem 0 0;
-  font-size: 0.78rem;
+  margin: 0.1rem 0 0;
+  font-size: 0.74rem;
   color: #64748b;
 }
+
+.chart-tag {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #047857;
+  background: #d1fae5;
+  padding: 0.2rem 0.55rem;
+  border-radius: 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.chart-wrap {
+  min-height: 240px;
+}
+
 .chart-empty {
-  padding: 1.75rem 1rem;
-  text-align: center;
-  color: #94a3b8;
-  font-size: 0.85rem;
+  min-height: 240px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 0.45rem;
+  color: #94a3b8;
+  font-size: 0.85rem;
 }
-.chart-empty i { font-size: 1.35rem; opacity: 0.8; }
 
-.ledger-head {
+/* TELEMETRY ROW */
+.telemetry-row {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.telemetry-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid #eef2f7;
+  border-radius: 0.65rem;
+  background: #f8fafc;
+  padding: 0.75rem 0.95rem;
+}
+
+.t-icon {
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 0.55rem;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  display: grid;
+  place-items: center;
+  color: #475569;
+  font-size: 0.9rem;
+}
+
+.t-body {
+  flex: 1;
+}
+
+.t-k {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+}
+
+.t-v {
+  display: block;
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.t-s {
+  display: block;
+  font-size: 0.7rem;
+  color: #64748b;
+}
+
+/* LEDGER PANEL */
+.ledger-panel {
   display: flex;
   flex-direction: column;
-  align-items: stretch;
   gap: 0.75rem;
-  margin-bottom: 0.85rem;
 }
-@media (min-width: 640px) {
-  .ledger-head {
+
+.ledger-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+@media (min-width: 680px) {
+  .ledger-header {
     flex-direction: row;
-    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
   }
 }
-.ledger-filter {
-  width: 100%;
-  border: 1px solid #cbd5e1;
-  border-radius: 0.55rem;
-  padding: 0.5rem 0.65rem;
-  font-size: 0.85rem;
-  background: #fff;
-  box-sizing: border-box;
-}
-@media (min-width: 640px) {
-  .ledger-filter { width: auto; min-width: 12.5rem; }
+
+.ledger-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
 }
 
-.ledger-cards {
-  display: grid;
-  gap: 0.7rem;
-}
-.led-card {
-  border: 1px solid #e2e8f0;
-  border-radius: 0.9rem;
-  padding: 0.85rem 0.9rem;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-  border-left: 3px solid #cbd5e1;
-}
-.led-card[data-t='cash'],
-.led-card[data-t='paid'] { border-left-color: #10b981; }
-.led-card[data-t='awaiting_confirm'],
-.led-card[data-t='submitted'] { border-left-color: #f59e0b; }
-.led-card[data-t='receivable'],
-.led-card[data-t='pending'] { border-left-color: #6366f1; }
-.led-card[data-t='complimentary'] { border-left-color: #94a3b8; }
-.led-card[data-t='rejected'] { border-left-color: #ef4444; }
-
-.led-card-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.5rem;
-  align-items: flex-start;
-}
-.led-title {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.6rem;
-  min-width: 0;
-}
-.led-badge {
-  width: 2rem;
-  height: 2rem;
-  border-radius: 0.55rem;
-  background: #f1f5f9;
-  color: #475569;
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  font-size: 0.85rem;
-}
-.min0 { min-width: 0; }
-.led-inv {
+.ledger-title-wrap h2 {
   margin: 0;
-  font-family: ui-monospace, monospace;
-  font-size: 0.78rem;
-  font-weight: 700;
+  font-size: 0.98rem;
+  font-weight: 800;
   color: #0f172a;
 }
-.led-who {
-  display: block;
-  margin-top: 0.15rem;
-  font-size: 0.84rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 100%;
-}
-.led-meta {
-  margin: 0.55rem 0 0;
-  font-size: 0.75rem;
-  color: #64748b;
+
+.ledger-search-box {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  min-width: 18rem;
 }
-.led-money {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.5rem;
-  margin-top: 0.65rem;
-}
-.led-money-cell {
-  border: 1px solid #eef2f7;
-  border-radius: 0.65rem;
-  background: #f8fafc;
-  padding: 0.5rem 0.6rem;
-  font-size: 0.85rem;
-  font-weight: 600;
-}
-.led-k {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  margin-bottom: 0.2rem;
-  font-size: 0.62rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+
+.search-icon {
+  position: absolute;
+  left: 0.75rem;
   color: #94a3b8;
-}
-.led-momo {
-  margin: 0.5rem 0 0;
-  font-size: 0.75rem;
-  color: #475569;
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-.led-card-foot {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.5rem;
-  margin-top: 0.7rem;
-  padding-top: 0.6rem;
-  border-top: 1px solid #eef2f7;
-  font-size: 0.72rem;
-}
-.led-card-foot .muted {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
+  font-size: 0.82rem;
+  pointer-events: none;
 }
 
-.btn-doc {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  border: 1px solid #bfdbfe;
-  background: #eff6ff;
-  color: #1d4ed8;
+.ledger-search-input {
+  width: 100%;
   border-radius: 0.5rem;
-  padding: 0.3rem 0.55rem;
-  font-size: 0.75rem;
-  font-weight: 700;
-  cursor: pointer;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 0.82rem;
+  padding: 0.42rem 2rem 0.42rem 2.1rem;
+  outline: none;
+  transition: all 0.15s ease;
 }
-.btn-doc:hover { background: #dbeafe; }
 
-.ledger-wrap {
-  display: none;
-  overflow: auto;
-  max-height: 28rem;
-  -webkit-overflow-scrolling: touch;
+.ledger-search-input:focus {
+  background: #ffffff;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
 }
-@media (min-width: 900px) {
-  .ledger-cards { display: none; }
-  .ledger-wrap { display: block; }
+
+.search-clear-btn {
+  position: absolute;
+  right: 0.5rem;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 0.2rem;
+}
+
+.search-clear-btn:hover {
+  color: #0f172a;
+}
+
+.ledger-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  border-bottom: 1px solid #f1f5f9;
+  padding-bottom: 0.55rem;
+}
+
+.tab-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.7rem;
+  border-radius: 0.45rem;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #475569;
+  font-size: 0.76rem;
+  font-weight: 650;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.tab-pill:hover {
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.tab-pill.active {
+  background: #1e3a5f;
+  color: #ffffff;
+  border-color: #1e3a5f;
+}
+
+.tab-pill.active .text-green-600,
+.tab-pill.active .text-amber-500,
+.tab-pill.active .text-blue-500,
+.tab-pill.active .text-purple-500,
+.tab-pill.active .text-red-500 {
+  color: #ffffff !important;
+}
+
+.tab-badge {
+  background: #f59e0b;
+  color: #ffffff;
+  font-size: 0.62rem;
+  font-weight: 800;
+  padding: 0.08rem 0.35rem;
+  border-radius: 999px;
+}
+
+/* LEDGER TABLE */
+.ledger-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.65rem;
 }
 
 .ledger-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.8rem;
-}
-.ledger-table th {
   text-align: left;
-  font-size: 0.65rem;
+}
+
+.ledger-table th {
+  padding: 0.65rem 0.85rem;
+  font-size: 0.68rem;
+  font-weight: 750;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #64748b;
-  padding: 0.5rem 0.65rem;
+  background: #f8fafc;
   border-bottom: 1px solid #e2e8f0;
-  position: sticky;
-  top: 0;
-  background: #fff;
-  z-index: 1;
-}
-.ledger-table td {
-  padding: 0.55rem 0.65rem;
-  border-bottom: 1px solid #f1f5f9;
-  vertical-align: top;
-}
-@media (max-width: 1100px) {
-  .hide-md { display: none; }
-}
-.nowrap { white-space: nowrap; }
-.link {
-  border: 0;
-  background: none;
-  color: #2563eb;
-  font-weight: 600;
-  cursor: pointer;
-  padding: 0;
-  text-align: left;
-}
-.cash { color: #047857; }
-.comp { color: #64748b; }
-.pill {
-  display: inline-flex;
-  border-radius: 999px;
-  padding: 0.15rem 0.5rem;
-  font-size: 0.65rem;
-  font-weight: 700;
-  background: #f1f5f9;
   white-space: nowrap;
 }
-.pill[data-t='cash'] { background: #d1fae5; color: #065f46; }
-.pill[data-t='complimentary'] { background: #e2e8f0; color: #475569; }
-.pill[data-t='awaiting_confirm'] { background: #fef3c7; color: #92400e; }
-.pill[data-t='receivable'] { background: #e0e7ff; color: #3730a3; }
-.pill[data-t='rejected'] { background: #fee2e2; color: #991b1b; }
-.empty {
-  text-align: center;
-  padding: 1.5rem 1rem;
-  color: #64748b;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.4rem;
+
+.ledger-table td {
+  padding: 0.7rem 0.85rem;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: middle;
 }
-.legend {
-  margin: 0.7rem 0 0;
+
+.ledger-table tbody tr:hover {
+  background: #f8fafc;
+}
+
+.date-cell {
+  white-space: nowrap;
+}
+
+.d-main {
+  display: block;
+  font-weight: 650;
+  color: #0f172a;
+}
+
+.d-sub {
+  display: block;
   font-size: 0.72rem;
-  color: #64748b;
-  display: flex;
+  color: #94a3b8;
+}
+
+.inv-box {
+  display: inline-flex;
   align-items: center;
   gap: 0.35rem;
 }
-.dark .panel-card,
-.dark .tool input,
-.dark .ledger-filter,
-.dark .ledger-table th,
-.dark .stat-card,
-.dark .led-card,
-.dark .led-money-cell {
+
+.inv-code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  font-weight: 750;
+  background: #f1f5f9;
+  color: #1e293b;
+  padding: 0.12rem 0.4rem;
+  border-radius: 0.35rem;
+}
+
+.btn-copy-micro {
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 0.1rem;
+  font-size: 0.72rem;
+}
+
+.btn-copy-micro:hover {
+  color: #0f172a;
+}
+
+.cust-link {
+  display: block;
+  font-weight: 750;
+  color: #0f172a;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.cust-link:hover {
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+.cust-email {
+  display: block;
+  font-size: 0.74rem;
+  color: #64748b;
+}
+
+.plan-name {
+  display: block;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.kind-tag {
+  display: inline-block;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: #f1f5f9;
+  color: #475569;
+  padding: 0.08rem 0.35rem;
+  border-radius: 0.25rem;
+}
+
+.method-tag {
+  font-size: 0.74rem;
+  font-weight: 650;
+  color: #475569;
+}
+
+.momo-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.momo-code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+  font-weight: 750;
+  color: #0f172a;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.3rem;
+}
+
+.num-cell {
+  font-family: ui-monospace, monospace;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.text-right { text-align: right; }
+.text-muted { color: #94a3b8; }
+.font-bold { font-weight: 750; }
+
+.entry-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.18rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.entry-pill[data-type='cash'],
+.entry-pill[data-type='paid'] { background: #d1fae5; color: #065f46; }
+.entry-pill[data-type='awaiting_confirm'],
+.entry-pill[data-type='submitted'] { background: #fef3c7; color: #92400e; }
+.entry-pill[data-type='receivable'],
+.entry-pill[data-type='pending'] { background: #dbeafe; color: #1e40af; }
+.entry-pill[data-type='complimentary'] { background: #f3e8ff; color: #6b21a8; }
+.entry-pill[data-type='rejected'],
+.entry-pill[data-type='failed'] { background: #fee2e2; color: #991b1b; }
+
+.btn-receipt-view {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.22rem 0.55rem;
+  border-radius: 0.4rem;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.btn-receipt-view:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+.empty-row {
+  text-align: center;
+  padding: 2.5rem 1rem !important;
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+
+.empty-row i {
+  margin-right: 0.4rem;
+}
+
+/* FOOTER */
+.ledger-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid #f1f5f9;
+  font-size: 0.74rem;
+  color: #64748b;
+}
+
+@media (min-width: 680px) {
+  .ledger-foot {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+}
+
+.foot-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.state-msg {
+  padding: 3rem 1rem;
+  text-align: center;
+  color: #64748b;
+  font-size: 0.88rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+}
+
+/* ================= DARK THEME OVERRIDES ================= */
+:global(.dark) .acct {
+  background: #0b1120;
+}
+
+:global(.dark) .acct-head {
+  background: #0f172a;
+  border-bottom-color: #1e293b;
+}
+
+:global(.dark) .acct-body {
+  background: #0b1120;
+}
+
+
+:global(.dark) .preset-group {
+  background: #1e293b;
+}
+
+:global(.dark) .preset-btn {
+  color: #94a3b8;
+}
+
+:global(.dark) .preset-btn:hover {
+  color: #f8fafc;
+}
+
+:global(.dark) .preset-btn.active {
+  background: #334155;
+  color: #ffffff;
+}
+
+:global(.dark) .date-label {
+  color: #94a3b8;
+}
+
+:global(.dark) .date-input {
+  background: #1e293b;
+  border-color: #334155;
+  color: #f8fafc;
+  color-scheme: dark;
+}
+
+:global(.dark) .action-btn {
+  background: #1e293b;
+  border-color: #334155;
+  color: #cbd5e1;
+}
+
+:global(.dark) .action-btn:hover {
+  background: #334155;
+  color: #ffffff;
+  border-color: #475569;
+}
+
+:global(.dark) .action-btn.primary {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #ffffff;
+}
+
+:global(.dark) .action-btn.primary:hover {
+  background: #1d4ed8;
+}
+
+:global(.dark) .guide-btn.active {
+  background: #1e3a8a;
+  border-color: #3b82f6;
+  color: #bfdbfe;
+}
+
+:global(.dark) .billing-guide-card {
+  background: #0c192c;
+  border-color: #1d4ed8;
+}
+
+:global(.dark) .guide-title {
+  color: #93c5fd;
+}
+
+:global(.dark) .guide-close {
+  color: #94a3b8;
+}
+
+:global(.dark) .guide-close:hover {
+  color: #f8fafc;
+}
+
+:global(.dark) .guide-intro {
+  color: #bfdbfe;
+}
+
+:global(.dark) .guide-item {
+  background: #0f172a;
+  border-color: #1e3a8a;
+}
+
+:global(.dark) .guide-item-text strong {
+  color: #f8fafc;
+}
+
+:global(.dark) .guide-item-text p {
+  color: #94a3b8;
+}
+
+:global(.dark) .panel-card,
+:global(.dark) .stat-card {
+  background: #0f172a;
+  border-color: #1e293b;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+}
+
+:global(.dark) .stat-card:hover {
+  border-color: #334155;
+}
+
+:global(.dark) .stat-card.active {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+}
+
+:global(.dark) .stat-k {
+  color: #94a3b8;
+}
+
+:global(.dark) .stat-v {
+  color: #f8fafc;
+}
+
+:global(.dark) .stat-s {
+  color: #64748b;
+}
+
+:global(.dark) .tone-cash .stat-icon { background: #064e3b; color: #34d399; }
+:global(.dark) .tone-await .stat-icon { background: #78350f; color: #fbbf24; }
+:global(.dark) .tone-pending .stat-icon { background: #1e3a8a; color: #60a5fa; }
+:global(.dark) .tone-paid .stat-icon { background: #1e293b; color: #94a3b8; }
+:global(.dark) .tone-comp .stat-icon { background: #581c87; color: #c084fc; }
+
+:global(.dark) .head-with-icon h2,
+:global(.dark) .ledger-title-wrap h2 {
+  color: #f8fafc;
+}
+
+:global(.dark) .chart-sub {
+  color: #94a3b8;
+}
+
+:global(.dark) .chart-tag {
+  background: #064e3b;
+  color: #34d399;
+}
+
+:global(.dark) .telemetry-card {
+  background: #0b1329;
+  border-color: #1e293b;
+}
+
+:global(.dark) .t-icon {
   background: #0f172a;
   border-color: #334155;
+  color: #94a3b8;
+}
+
+:global(.dark) .t-k {
+  color: #94a3b8;
+}
+
+:global(.dark) .t-v {
+  color: #f8fafc;
+}
+
+:global(.dark) .t-s {
+  color: #64748b;
+}
+
+:global(.dark) .ledger-search-input {
+  background: #1e293b;
+  border-color: #334155;
+  color: #f8fafc;
+}
+
+:global(.dark) .ledger-search-input:focus {
+  background: #0f172a;
+  border-color: #3b82f6;
+}
+
+:global(.dark) .ledger-tabs {
+  border-bottom-color: #1e293b;
+}
+
+:global(.dark) .tab-pill {
+  background: #1e293b;
+  border-color: #334155;
+  color: #94a3b8;
+}
+
+:global(.dark) .tab-pill:hover {
+  background: #334155;
+  color: #f8fafc;
+}
+
+:global(.dark) .tab-pill.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #ffffff;
+}
+
+:global(.dark) .ledger-table-wrap {
+  border-color: #1e293b;
+}
+
+:global(.dark) .ledger-table th {
+  background: #1e293b;
+  border-bottom-color: #334155;
+  color: #94a3b8;
+}
+
+:global(.dark) .ledger-table td {
+  border-bottom-color: #1e293b;
+}
+
+:global(.dark) .ledger-table tbody tr:hover {
+  background: #1e293b/40;
+}
+
+:global(.dark) .d-main {
+  color: #f8fafc;
+}
+
+:global(.dark) .d-sub {
+  color: #64748b;
+}
+
+:global(.dark) .inv-code {
+  background: #1e293b;
+  color: #93c5fd;
+  border: 1px solid #334155;
+}
+
+:global(.dark) .cust-link {
+  color: #f8fafc;
+}
+
+:global(.dark) .cust-link:hover {
+  color: #60a5fa;
+}
+
+:global(.dark) .cust-email {
+  color: #94a3b8;
+}
+
+:global(.dark) .plan-name {
   color: #e2e8f0;
 }
-.dark .tone-paid,
-.dark .tone-await,
-.dark .tone-pending,
-.dark .tone-cash {
-  background: #0f172a;
+
+:global(.dark) .kind-tag {
+  background: #1e293b;
+  color: #94a3b8;
 }
-.dark .stat-v,
-.dark .panel-head h2,
-.dark .ledger-head h2,
-.dark .led-inv { color: #f8fafc; }
-.dark .btn-doc {
-  background: rgba(37, 99, 235, 0.15);
-  border-color: #1e3a5f;
-  color: #93c5fd;
+
+:global(.dark) .method-tag {
+  color: #cbd5e1;
+}
+
+:global(.dark) .momo-code {
+  background: #1e293b;
+  border-color: #334155;
+  color: #f8fafc;
+}
+
+:global(.dark) .num-cell {
+  color: #cbd5e1;
+}
+
+:global(.dark) .num-cell.font-bold {
+  color: #f8fafc;
+}
+
+:global(.dark) .btn-receipt-view {
+  background: #1e293b;
+  border-color: #334155;
+  color: #cbd5e1;
+}
+
+:global(.dark) .btn-receipt-view:hover {
+  background: #334155;
+  border-color: #475569;
+  color: #ffffff;
+}
+
+:global(.dark) .ledger-foot {
+  background: #0f172a;
+  border-top-color: #1e293b;
+  color: #94a3b8;
+}
+</style>
+
+<style>
+/* Unscoped global dark theme overrides to guarantee complete dark mode styling */
+html.dark .acct,
+html.control-ui.dark .acct {
+  background: #0b1120 !important;
+  color: #f8fafc !important;
+}
+
+html.dark .acct-head,
+html.control-ui.dark .acct-head {
+  background: #0f172a !important;
+  border-bottom-color: #1e293b !important;
+}
+
+html.dark .acct-body,
+html.control-ui.dark .acct-body {
+  background: #0b1120 !important;
+}
+
+html.dark .preset-group,
+html.control-ui.dark .preset-group {
+  background: #1e293b !important;
+  border-color: #334155 !important;
+}
+
+html.dark .preset-btn,
+html.control-ui.dark .preset-btn {
+  color: #94a3b8 !important;
+}
+
+html.dark .preset-btn:hover,
+html.control-ui.dark .preset-btn:hover {
+  color: #f8fafc !important;
+}
+
+html.dark .preset-btn.active,
+html.control-ui.dark .preset-btn.active {
+  background: #334155 !important;
+  color: #ffffff !important;
+}
+
+html.dark .date-label,
+html.control-ui.dark .date-label {
+  color: #94a3b8 !important;
+}
+
+html.dark .date-input,
+html.control-ui.dark .date-input {
+  background: #1e293b !important;
+  border-color: #334155 !important;
+  color: #f8fafc !important;
+  color-scheme: dark !important;
+}
+
+html.dark .action-btn,
+html.control-ui.dark .action-btn {
+  background: #1e293b !important;
+  border-color: #334155 !important;
+  color: #cbd5e1 !important;
+}
+
+html.dark .action-btn:hover,
+html.control-ui.dark .action-btn:hover {
+  background: #334155 !important;
+  color: #ffffff !important;
+  border-color: #475569 !important;
+}
+
+html.dark .action-btn.primary,
+html.control-ui.dark .action-btn.primary {
+  background: #2563eb !important;
+  border-color: #2563eb !important;
+  color: #ffffff !important;
+}
+
+html.dark .action-btn.primary:hover,
+html.control-ui.dark .action-btn.primary:hover {
+  background: #1d4ed8 !important;
+}
+
+html.dark .guide-btn.active,
+html.control-ui.dark .guide-btn.active {
+  background: #1e3a8a !important;
+  border-color: #3b82f6 !important;
+  color: #bfdbfe !important;
+}
+
+html.dark .billing-guide-card,
+html.control-ui.dark .billing-guide-card {
+  background: #0c192c !important;
+  border-color: #1d4ed8 !important;
+}
+
+html.dark .guide-title,
+html.control-ui.dark .guide-title {
+  color: #93c5fd !important;
+}
+
+html.dark .guide-close,
+html.control-ui.dark .guide-close {
+  color: #94a3b8 !important;
+}
+
+html.dark .guide-close:hover,
+html.control-ui.dark .guide-close:hover {
+  color: #f8fafc !important;
+}
+
+html.dark .guide-intro,
+html.control-ui.dark .guide-intro {
+  color: #bfdbfe !important;
+}
+
+html.dark .guide-item,
+html.control-ui.dark .guide-item {
+  background: #0f172a !important;
+  border-color: #1e3a8a !important;
+}
+
+html.dark .guide-item-text strong,
+html.control-ui.dark .guide-item-text strong {
+  color: #f8fafc !important;
+}
+
+html.dark .guide-item-text p,
+html.control-ui.dark .guide-item-text p {
+  color: #94a3b8 !important;
+}
+
+html.dark .stat-card,
+html.control-ui.dark .stat-card,
+html.dark .panel-card,
+html.control-ui.dark .panel-card {
+  background: #0f172a !important;
+  border-color: #1e293b !important;
+}
+
+html.dark .stat-card:hover,
+html.control-ui.dark .stat-card:hover {
+  border-color: #334155 !important;
+}
+
+html.dark .stat-card.active,
+html.control-ui.dark .stat-card.active {
+  border-color: #3b82f6 !important;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25) !important;
+}
+
+html.dark .stat-k,
+html.control-ui.dark .stat-k {
+  color: #94a3b8 !important;
+}
+
+html.dark .stat-v,
+html.control-ui.dark .stat-v {
+  color: #f8fafc !important;
+}
+
+html.dark .stat-s,
+html.control-ui.dark .stat-s {
+  color: #64748b !important;
+}
+
+html.dark .tone-cash .stat-icon { background: #064e3b !important; color: #34d399 !important; }
+html.dark .tone-await .stat-icon { background: #78350f !important; color: #fbbf24 !important; }
+html.dark .tone-pending .stat-icon { background: #1e3a8a !important; color: #60a5fa !important; }
+html.dark .tone-paid .stat-icon { background: #1e293b !important; color: #94a3b8 !important; }
+html.dark .tone-comp .stat-icon { background: #581c87 !important; color: #c084fc !important; }
+
+html.dark .head-with-icon h2,
+html.control-ui.dark .head-with-icon h2,
+html.dark .ledger-title-wrap h2,
+html.control-ui.dark .ledger-title-wrap h2 {
+  color: #f8fafc !important;
+}
+
+html.dark .chart-sub,
+html.control-ui.dark .chart-sub {
+  color: #94a3b8 !important;
+}
+
+html.dark .chart-tag,
+html.control-ui.dark .chart-tag {
+  background: #064e3b !important;
+  color: #34d399 !important;
+}
+
+html.dark .telemetry-card,
+html.control-ui.dark .telemetry-card {
+  background: #0b1329 !important;
+  border-color: #1e293b !important;
+}
+
+html.dark .t-icon,
+html.control-ui.dark .t-icon {
+  background: #0f172a !important;
+  border-color: #1e293b !important;
+  color: #94a3b8 !important;
+}
+
+html.dark .t-k,
+html.control-ui.dark .t-k {
+  color: #94a3b8 !important;
+}
+
+html.dark .t-v,
+html.control-ui.dark .t-v {
+  color: #f8fafc !important;
+}
+
+html.dark .t-s,
+html.control-ui.dark .t-s {
+  color: #64748b !important;
+}
+
+html.dark .ledger-search-input,
+html.control-ui.dark .ledger-search-input {
+  background: #1e293b !important;
+  border-color: #334155 !important;
+  color: #f8fafc !important;
+}
+
+html.dark .ledger-search-input:focus,
+html.control-ui.dark .ledger-search-input:focus {
+  background: #0f172a !important;
+  border-color: #3b82f6 !important;
+}
+
+html.dark .tab-pill,
+html.control-ui.dark .tab-pill {
+  background: #1e293b !important;
+  border-color: #334155 !important;
+  color: #94a3b8 !important;
+}
+
+html.dark .tab-pill:hover,
+html.control-ui.dark .tab-pill:hover {
+  background: #334155 !important;
+  color: #f8fafc !important;
+}
+
+html.dark .tab-pill.active,
+html.control-ui.dark .tab-pill.active {
+  background: #2563eb !important;
+  border-color: #2563eb !important;
+  color: #ffffff !important;
+}
+
+html.dark .ledger-table-wrap,
+html.control-ui.dark .ledger-table-wrap {
+  border-color: #1e293b !important;
+}
+
+html.dark .ledger-table th,
+html.control-ui.dark .ledger-table th {
+  background: #1e293b !important;
+  border-bottom-color: #334155 !important;
+  color: #94a3b8 !important;
+}
+
+html.dark .ledger-table td,
+html.control-ui.dark .ledger-table td {
+  border-bottom-color: #1e293b !important;
+  color: #cbd5e1 !important;
+}
+
+html.dark .ledger-table tbody tr:hover,
+html.control-ui.dark .ledger-table tbody tr:hover {
+  background: rgba(30, 41, 59, 0.5) !important;
+}
+
+html.dark .d-main,
+html.control-ui.dark .d-main {
+  color: #f8fafc !important;
+}
+
+html.dark .d-sub,
+html.control-ui.dark .d-sub {
+  color: #64748b !important;
+}
+
+html.dark .inv-code,
+html.control-ui.dark .inv-code {
+  background: #1e293b !important;
+  border-color: #334155 !important;
+  color: #f8fafc !important;
+}
+
+html.dark .cust-link,
+html.control-ui.dark .cust-link {
+  color: #f8fafc !important;
+}
+
+html.dark .cust-link:hover,
+html.control-ui.dark .cust-link:hover {
+  color: #60a5fa !important;
+}
+
+html.dark .cust-email,
+html.control-ui.dark .cust-email {
+  color: #64748b !important;
+}
+
+html.dark .plan-name,
+html.control-ui.dark .plan-name {
+  color: #f8fafc !important;
+}
+
+html.dark .kind-tag,
+html.control-ui.dark .kind-tag {
+  background: #1e293b !important;
+  color: #94a3b8 !important;
+}
+
+html.dark .method-tag,
+html.control-ui.dark .method-tag {
+  color: #cbd5e1 !important;
+}
+
+html.dark .momo-code,
+html.control-ui.dark .momo-code {
+  background: #1e293b !important;
+  border-color: #334155 !important;
+  color: #f8fafc !important;
+}
+
+html.dark .num-cell,
+html.control-ui.dark .num-cell {
+  color: #cbd5e1 !important;
+}
+
+html.dark .num-cell.font-bold,
+html.control-ui.dark .num-cell.font-bold {
+  color: #f8fafc !important;
+}
+
+html.dark .btn-receipt-view,
+html.control-ui.dark .btn-receipt-view {
+  background: #1e293b !important;
+  border-color: #334155 !important;
+  color: #94a3b8 !important;
+}
+
+html.dark .btn-receipt-view:hover,
+html.control-ui.dark .btn-receipt-view:hover {
+  background: #334155 !important;
+  color: #ffffff !important;
+  border-color: #3b82f6 !important;
+}
+
+html.dark .ledger-foot,
+html.control-ui.dark .ledger-foot {
+  background: #0f172a !important;
+  border-top-color: #1e293b !important;
+  color: #94a3b8 !important;
 }
 </style>

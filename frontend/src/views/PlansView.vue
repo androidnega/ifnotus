@@ -146,7 +146,7 @@ onMounted(async () => {
   flex-direction: column;
   font-family: 'Figtree', 'Segoe UI', sans-serif;
   color: var(--if-ink, #161a1d);
-  background: var(--if-paper, #f4f1ec);
+  background: var(--if-paper, #f8fafc);
   opacity: 0;
   transition: opacity 0.2s ease;
 }

@@ -19,6 +19,7 @@ from app.models.platform import CustomerEnvironment, EnvironmentDatabase, Hostin
 from app.schemas.databases import DatabaseCreateRequest, DatabaseDropOptions
 from app.schemas.platform import (
     EnvironmentDatabaseCreateRequest,
+    EnvironmentDatabaseImportResponse,
     EnvironmentDatabaseRevealResponse,
     EnvironmentDatabaseV2Response,
 )
@@ -173,17 +174,21 @@ class EnvironmentDatabaseService:
         logical = self._slug(body.logical_name or body.name or "db")
         short = str(env.id).replace("-", "")[:10]
         db_name = self._db_name(engine, short, logical)
+        custom_user = self._slug(body.username) if body.username else db_name
+        custom_pass = body.password.strip() if body.password else None
 
         created = await self._db.create(
             DatabaseCreateRequest(
                 engine=engine,
                 name=db_name,
+                username=custom_user,
+                password=custom_pass,
                 create_user=True,
                 remote_access=bool(ent.remote_database_access),
                 notes=f"IFNOTUS env DB {env.id} / {logical}",
             )
         )
-        password = created.password or ""
+        password = created.password or custom_pass or ""
         host = created.database.host or "127.0.0.1"
         port = created.database.port or (5432 if engine == "postgresql" else 3306)
         remote_mode = "subnet" if ent.remote_database_access else "localhost"
@@ -193,7 +198,7 @@ class EnvironmentDatabaseService:
             engine=engine,
             logical_name=logical,
             db_name=created.database.name,
-            username=created.database.username or db_name,
+            username=created.database.username or custom_user,
             credential_secret_ref=self._db._encrypt(password) if password else None,
             host_ref=_encode_host_ref(created.database.id, host, int(port)),
             storage_limit_mb=ent.database_storage_mb,
@@ -220,11 +225,11 @@ class EnvironmentDatabaseService:
             storage_limit_mb=row.storage_limit_mb,
             remote_access_mode=row.remote_access_mode,
             message=(
-                f"{engine.title()} database created. "
+                f"{engine.title()} database `{db_name}` and user `{row.username}` created with full privileges. "
                 + (
                     "Remote DB clients allowed per package."
                     if remote_mode != "localhost"
-                    else "MySQL login is localhost-only (apps on this server)."
+                    else "Database login is localhost-only (apps on this server)."
                 )
             ),
         )
@@ -316,10 +321,69 @@ class EnvironmentDatabaseService:
         await self._audit(env, "database_backup", {"database_id": db_id, "backup_id": backup.id})
         return backup.model_dump()
 
+    async def import_sql(
+        self,
+        env: CustomerEnvironment,
+        db_id: str,
+        sql_content: str,
+    ) -> EnvironmentDatabaseImportResponse:
+        revealed = await self.reveal(env, db_id)
+        engine = (revealed.engine or "mysql").lower()
+        db_name = revealed.name
+        if not db_name:
+            raise ValidationError("Target database name is missing.", code="db_missing")
+
+        trimmed = (sql_content or "").strip()
+        if not trimmed:
+            raise ValidationError("SQL file/query is empty.", code="empty_sql")
+
+        # Run SQL import via database engine
+        if engine in {"mysql", "mariadb"}:
+            code, out, err = self._db._run(["mysql", db_name], input_text=trimmed, timeout=300)
+            if code != 0:
+                raise AppException(f"MySQL import error: {err or out}", code="db_import_failed")
+        elif engine in {"postgresql", "postgres"}:
+            code, out, err = self._db._run(
+                ["sudo", "-u", "postgres", "psql", "-d", db_name, "-v", "ON_ERROR_STOP=1"],
+                input_text=trimmed,
+                timeout=300,
+            )
+            if code != 0:
+                raise AppException(f"PostgreSQL import error: {err or out}", code="db_import_failed")
+        else:
+            raise ValidationError(f"SQL import not supported for {engine}.", code="unsupported_engine")
+
+        await self._audit(
+            env,
+            "database_import_sql",
+            {"database": db_name, "engine": engine, "size_bytes": len(trimmed.encode("utf-8"))},
+        )
+
+        stmts = [s for s in trimmed.split(";") if s.strip()]
+        return EnvironmentDatabaseImportResponse(
+            success=True,
+            message=f"SQL import complete for `{db_name}` ({len(stmts)} statement(s) processed).",
+            database=db_name,
+            engine=engine,
+            statements_executed=len(stmts),
+            imported_bytes=len(trimmed.encode("utf-8")),
+        )
+
     async def _resolve_registry_id(self, env: CustomerEnvironment, db_id: str) -> str:
-        if _is_legacy_id(db_id):
+        if _is_legacy_id(db_id) or db_id == str(getattr(env, "db_registry_id", "") or ""):
             rid = getattr(env, "db_registry_id", None)
             if not rid:
+                result = await self._session.execute(
+                    select(EnvironmentDatabase).where(
+                        EnvironmentDatabase.environment_id == env.id
+                    ).order_by(EnvironmentDatabase.created_at.desc())
+                )
+                first_db = result.scalars().first()
+                if first_db:
+                    meta = _decode_host_ref(first_db.host_ref)
+                    rid = meta.get("registry_id")
+                    if rid:
+                        return str(rid)
                 raise NotFoundError("No managed registry id for legacy database.")
             return str(rid)
         row = await self._get_row(env, db_id)
@@ -331,6 +395,14 @@ class EnvironmentDatabaseService:
 
     async def _reveal_legacy(self, env: CustomerEnvironment) -> EnvironmentDatabaseRevealResponse:
         if not env.db_name:
+            result = await self._session.execute(
+                select(EnvironmentDatabase).where(
+                    EnvironmentDatabase.environment_id == env.id
+                ).order_by(EnvironmentDatabase.created_at.desc())
+            )
+            first_db = result.scalars().first()
+            if first_db:
+                return await self.reveal(env, str(first_db.id))
             raise NotFoundError("No database on this site yet.")
         password = None
         if env.db_password_encrypted:

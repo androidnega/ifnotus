@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { customersApi } from '@/api'
 import { tenantMailUrl } from '@/lib/platformHosts'
+import { IconEye, IconEyeOff } from '@/components/icons'
 
 const props = defineProps<{
   environmentId: string
@@ -35,6 +36,7 @@ const webmail = ref('https://mail.ifnotus.space/')
 const clients = ref<Record<string, unknown> | null>(null)
 const localPart = ref('hello')
 const password = ref('')
+const showPassword = ref(false)
 const msg = ref('')
 const creating = ref(false)
 const busyId = ref('')
@@ -42,6 +44,7 @@ const showConnect = ref(false)
 const aliasSource = ref('')
 const aliasDest = ref('')
 const resetPassword = ref('')
+const showResetPassword = ref(false)
 
 const atLimit = computed(() => {
   if (props.mailboxLimit == null) return false
@@ -220,15 +223,27 @@ onMounted(load)
             </label>
             <label class="field">
               <span>Password</span>
-              <input
-                v-model="password"
-                class="input"
-                type="password"
-                placeholder="At least 8 characters"
-                minlength="8"
-                required
-                autocomplete="new-password"
-              />
+              <div class="ds-input-eye-wrap">
+                <input
+                  v-model="password"
+                  class="input"
+                  :type="showPassword ? 'text' : 'password'"
+                  placeholder="At least 8 characters"
+                  minlength="8"
+                  required
+                  autocomplete="new-password"
+                />
+                <button
+                  type="button"
+                  class="ds-eye-btn"
+                  :title="showPassword ? 'Hide password' : 'Show password'"
+                  tabindex="-1"
+                  @click="showPassword = !showPassword"
+                >
+                  <IconEyeOff v-if="showPassword" :size="18" />
+                  <IconEye v-else :size="18" />
+                </button>
+              </div>
             </label>
             <p class="hint">
               Will create <strong>{{ previewEmail }}</strong>
@@ -282,7 +297,25 @@ onMounted(load)
           </div>
           <label v-if="mailboxes.length" class="field mt">
             <span>New password (for Reset pass)</span>
-            <input v-model="resetPassword" class="input" type="password" minlength="8" autocomplete="new-password" />
+            <div class="ds-input-eye-wrap">
+              <input
+                v-model="resetPassword"
+                class="input"
+                :type="showResetPassword ? 'text' : 'password'"
+                minlength="8"
+                autocomplete="new-password"
+              />
+              <button
+                type="button"
+                class="ds-eye-btn"
+                :title="showResetPassword ? 'Hide password' : 'Show password'"
+                tabindex="-1"
+                @click="showResetPassword = !showResetPassword"
+              >
+                <IconEyeOff v-if="showResetPassword" :size="18" />
+                <IconEye v-else :size="18" />
+              </button>
+            </div>
           </label>
         </section>
       </div>

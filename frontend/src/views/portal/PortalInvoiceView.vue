@@ -22,6 +22,9 @@ const supportWhatsapp = ref('+233541069241')
 const customerName = ref('')
 const customerEmail = ref('')
 const customerPhone = ref('')
+const copiedRef = ref(false)
+const copiedNum = ref(false)
+
 
 const unpaid = computed(() => {
   const s = order.value?.payment_status
@@ -164,8 +167,19 @@ async function submit() {
 function copyNumber() {
   if (!momo.value?.number) return
   void navigator.clipboard.writeText(momo.value.number)
+  copiedNum.value = true
   msg.value = 'Merchant number copied.'
+  setTimeout(() => { copiedNum.value = false }, 3000)
 }
+
+function copyReference() {
+  if (!invoiceNo.value || invoiceNo.value === '—') return
+  void navigator.clipboard.writeText(invoiceNo.value)
+  copiedRef.value = true
+  msg.value = `Reference code "${invoiceNo.value}" copied! Use this as your MoMo Reference / Note.`
+  setTimeout(() => { copiedRef.value = false }, 3000)
+}
+
 
 onMounted(load)
 </script>
@@ -295,31 +309,58 @@ onMounted(load)
               </div>
 
               <section v-if="unpaid && momo" class="pay-box">
-                <p class="pay-box-title">How to pay</p>
+                <div class="pay-box-header">
+                  <p class="pay-box-title">
+                    <i class="fa-solid fa-mobile-screen-button" aria-hidden="true" />
+                    How to pay with Mobile Money
+                  </p>
+                  <span class="momo-instant-badge">Instant matching</span>
+                </div>
+
+                <!-- CRITICAL SENDING REFERENCE HIGHLIGHT -->
+                <div class="ref-highlight-box">
+                  <div class="ref-highlight-head">
+                    <span class="ref-k-tag"><i class="fa-solid fa-key" aria-hidden="true" /> REQUIRED MoMo Reference:</span>
+                    <span class="ref-warn-tag">Use this exact code</span>
+                  </div>
+                  <div class="ref-highlight-body">
+                    <code class="ref-big-code">{{ invoiceNo }}</code>
+                    <button type="button" class="btn-copy-ref-action" @click="copyReference">
+                      <i class="fa-solid" :class="copiedRef ? 'fa-check text-emerald-400' : 'fa-copy'" aria-hidden="true" />
+                      <span>{{ copiedRef ? 'Copied!' : 'Copy Reference' }}</span>
+                    </button>
+                  </div>
+                  <p class="ref-helper-text">
+                    ⚠️ <strong>Do not leave reference empty and do not type your name.</strong>
+                    Enter <code>{{ invoiceNo }}</code> in the Reference field on your phone.
+                  </p>
+                </div>
+
                 <div class="pay-box-grid">
                   <div>
                     <p class="pay-k">Network</p>
                     <p class="pay-v">{{ momo.network }}</p>
                   </div>
                   <div>
-                    <p class="pay-k">Merchant</p>
+                    <p class="pay-k">Merchant Name</p>
                     <p class="pay-v">{{ momo.account_name }}</p>
                   </div>
                   <div>
-                    <p class="pay-k">Number</p>
-                    <p class="pay-v mono">{{ momo.number }}</p>
+                    <p class="pay-k">Merchant Number</p>
+                    <div class="pay-num-row">
+                      <p class="pay-v mono font-bold">{{ momo.number }}</p>
+                      <button type="button" class="btn-copy-mini" title="Copy Number" @click="copyNumber">
+                        <i class="fa-solid" :class="copiedNum ? 'fa-check text-emerald-400' : 'fa-copy'" aria-hidden="true" />
+                      </button>
+                    </div>
                   </div>
                   <div>
-                    <p class="pay-k">Reference</p>
-                    <p class="pay-v mono">{{ invoiceNo }}</p>
+                    <p class="pay-k">Amount Due</p>
+                    <p class="pay-v font-bold text-slate-900">{{ order.currency }} {{ money(order.total_price) }}</p>
                   </div>
                 </div>
-                <p class="pay-box-note">
-                  Send exactly <strong>{{ order.currency }} {{ money(order.total_price) }}</strong>
-                  and use the invoice number as the MoMo reference. Then share the transaction ID
-                  in your IFNOTUS account to activate hosting.
-                </p>
               </section>
+
 
               <p v-if="order.momo_transaction_id" class="sheet-note">
                 Transaction ID on file: <span class="mono">{{ order.momo_transaction_id }}</span>
@@ -347,36 +388,48 @@ onMounted(load)
           </article>
 
           <aside v-if="unpaid" class="pay-panel no-print">
-            <h2 class="pay-title">Payment</h2>
+            <h2 class="pay-title">Payment Instructions</h2>
 
-            <label class="field">
-              <span class="field-label">Method</span>
-              <select v-model="method" class="field-input">
-                <option value="">Select payment method</option>
-                <option value="momo">Mobile Money (direct transfer)</option>
-              </select>
-            </label>
+            <div v-if="momo" class="pay-flow">
+              <!-- PROMINENT REFERENCE CARD IN ASIDE -->
+              <div class="aside-ref-card">
+                <div class="aside-ref-head">
+                  <i class="fa-solid fa-key text-amber-500" aria-hidden="true" />
+                  <span>Your MoMo Reference Code</span>
+                </div>
+                <div class="aside-ref-row">
+                  <code class="aside-ref-code">{{ invoiceNo }}</code>
+                  <button type="button" class="btn-copy-ref-aside" @click="copyReference">
+                    <i class="fa-solid" :class="copiedRef ? 'fa-check text-emerald-400' : 'fa-copy'" aria-hidden="true" />
+                    <span>{{ copiedRef ? 'Copied' : 'Copy' }}</span>
+                  </button>
+                </div>
+                <p class="aside-ref-tip">
+                  Enter <code>{{ invoiceNo }}</code> in the MoMo Reference / Note field.
+                </p>
+              </div>
 
-            <div v-if="method === 'momo' && momo" class="pay-flow">
               <section class="merchant-card">
                 <p class="merchant-kicker">Merchant Mobile Money</p>
                 <p class="merchant-network">{{ momo.network }} · {{ momo.account_name }}</p>
                 <p class="merchant-number">{{ momo.number }}</p>
                 <p class="merchant-note">
-                  Send <strong>{{ order.currency }} {{ money(order.total_price) }}</strong>
-                  and use <strong>{{ invoiceNo }}</strong> as the reference.
+                  Amount: <strong>{{ order.currency }} {{ money(order.total_price) }}</strong>
                 </p>
-                <button type="button" class="btn-copy" @click="copyNumber">Copy merchant number</button>
+                <button type="button" class="btn-copy" @click="copyNumber">
+                  <i class="fa-solid" :class="copiedNum ? 'fa-check' : 'fa-copy'" aria-hidden="true" />
+                  <span>{{ copiedNum ? 'Number Copied' : 'Copy merchant number' }}</span>
+                </button>
               </section>
 
               <ol class="pay-steps">
-                <li>Pay the merchant number from your MoMo wallet.</li>
-                <li>Copy the transaction ID from the confirmation SMS.</li>
-                <li>Paste it below so we can match and activate hosting.</li>
+                <li>Send <strong>{{ order.currency }} {{ money(order.total_price) }}</strong> to the merchant number above.</li>
+                <li>Enter reference <strong>{{ invoiceNo }}</strong> on your phone.</li>
+                <li>Copy the transaction ID from the confirmation SMS and paste it below.</li>
               </ol>
 
               <label class="field">
-                <span class="field-label">Transaction ID</span>
+                <span class="field-label">MoMo Transaction ID (from SMS)</span>
                 <input
                   v-model="txn"
                   class="field-input"
@@ -387,14 +440,15 @@ onMounted(load)
               </label>
 
               <button type="button" class="btn-primary" :disabled="busy" @click="submit">
-                {{ busy ? 'Sending…' : 'I’ve paid — share ID' }}
+                {{ busy ? 'Sending…' : 'I’ve paid — Submit MoMo ID' }}
               </button>
 
-              <p v-if="msg" class="pay-msg" :class="{ ok: msg.includes('Thanks') || msg.includes('copied') }">
+              <p v-if="msg" class="pay-msg" :class="{ ok: msg.includes('Thanks') || msg.includes('copied') || msg.includes('Reference') }">
                 {{ msg }}
               </p>
             </div>
           </aside>
+
         </div>
       </template>
     </div>
@@ -802,19 +856,216 @@ onMounted(load)
 
 .pay-box {
   margin-top: 1.25rem;
-  padding: 1rem 1.05rem;
+  padding: 1.15rem;
   border-radius: 0.85rem;
   border: 1px solid #dbe3ee;
   background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
 }
-.pay-box-title {
-  margin: 0 0 0.75rem;
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: #64748b;
+
+.pay-box-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
 }
+
+.pay-box-title {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 800;
+  color: #0f172a;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.momo-instant-badge {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.2rem 0.55rem;
+  border-radius: 9999px;
+  background: #ecfdf5;
+  color: #059669;
+  border: 1px solid #a7f3d0;
+}
+
+/* HIGH-VISIBILITY REFERENCE HIGHLIGHT */
+.ref-highlight-box {
+  background: #fffbeb;
+  border: 2px solid #f59e0b;
+  border-radius: 0.75rem;
+  padding: 0.85rem 1rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.12);
+}
+
+.ref-highlight-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.ref-k-tag {
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: #92400e;
+  letter-spacing: 0.04em;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.ref-warn-tag {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #b45309;
+  background: #fef3c7;
+  padding: 0.15rem 0.45rem;
+  border-radius: 0.35rem;
+}
+
+.ref-highlight-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0.25rem 0 0.45rem;
+}
+
+.ref-big-code {
+  font-family: var(--ds-font-mono, ui-monospace, monospace);
+  font-size: 1.45rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  color: #0f172a;
+  background: #ffffff;
+  padding: 0.25rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1.5px solid #d97706;
+}
+
+.btn-copy-ref-action {
+  background: #d97706;
+  color: #ffffff;
+  border: none;
+  font-weight: 800;
+  font-size: 0.82rem;
+  padding: 0.55rem 1rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  transition: background 0.15s;
+}
+
+.btn-copy-ref-action:hover {
+  background: #b45309;
+}
+
+.ref-helper-text {
+  margin: 0.35rem 0 0;
+  font-size: 0.76rem;
+  color: #78350f;
+  line-height: 1.45;
+}
+
+.ref-helper-text code {
+  font-weight: 800;
+  color: #92400e;
+  background: #fde68a;
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.25rem;
+}
+
+.pay-num-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.btn-copy-mini {
+  background: #e2e8f0;
+  border: none;
+  border-radius: 0.35rem;
+  color: #334155;
+  padding: 0.15rem 0.35rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.btn-copy-mini:hover {
+  background: #cbd5e1;
+}
+
+/* ASIDE REFERENCE CARD */
+.aside-ref-card {
+  background: #fffbeb;
+  border: 1.5px solid #f59e0b;
+  border-radius: 0.65rem;
+  padding: 0.65rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.aside-ref-head {
+  font-size: 0.7rem;
+  font-weight: 800;
+  color: #92400e;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.aside-ref-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.aside-ref-code {
+  font-family: var(--ds-font-mono, ui-monospace, monospace);
+  font-size: 1.15rem;
+  font-weight: 900;
+  color: #0f172a;
+}
+
+.btn-copy-ref-aside {
+  background: #f59e0b;
+  color: #ffffff;
+  border: none;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.3rem 0.65rem;
+  border-radius: 0.35rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.btn-copy-ref-aside:hover {
+  background: #d97706;
+}
+
+.aside-ref-tip {
+  margin: 0;
+  font-size: 0.72rem;
+  color: #78350f;
+  line-height: 1.4;
+}
+
+.aside-ref-tip code {
+  font-weight: 800;
+  color: #92400e;
+}
+
 .pay-box-grid {
   display: grid;
   gap: 0.75rem;
@@ -1141,5 +1392,105 @@ onMounted(load)
   .sheet-foot {
     page-break-inside: avoid;
   }
+}
+
+/* ================= DARK THEME OVERRIDES ================= */
+:global(.dark) .ref-highlight-box {
+  background: #1c1917;
+  border-color: #f59e0b;
+}
+
+:global(.dark) .ref-k-tag {
+  color: #fcd34d;
+}
+
+:global(.dark) .ref-warn-tag {
+  background: #78350f;
+  color: #fef3c7;
+}
+
+:global(.dark) .ref-big-code {
+  background: #0c0a09;
+  color: #fbbf24;
+  border-color: #d97706;
+}
+
+:global(.dark) .ref-helper-text {
+  color: #fde68a;
+}
+
+:global(.dark) .ref-helper-text code {
+  background: #78350f;
+  color: #fef3c7;
+}
+
+:global(.dark) .aside-ref-card {
+  background: #172554;
+  border-color: #2563eb;
+}
+
+:global(.dark) .aside-ref-card-head {
+  color: #bfdbfe;
+}
+
+:global(.dark) .aside-ref-code {
+  background: #0f172a;
+  color: #60a5fa;
+  border-color: #1d4ed8;
+}
+
+:global(.dark) .aside-ref-desc {
+  color: #bfdbfe;
+}
+</style>
+
+<style>
+/* Unscoped global dark theme overrides for Portal Invoice View */
+html.dark .ref-highlight-box {
+  background: #1c1917 !important;
+  border-color: #f59e0b !important;
+}
+
+html.dark .ref-k-tag {
+  color: #fcd34d !important;
+}
+
+html.dark .ref-warn-tag {
+  background: #78350f !important;
+  color: #fef3c7 !important;
+}
+
+html.dark .ref-big-code {
+  background: #0c0a09 !important;
+  color: #fbbf24 !important;
+  border-color: #d97706 !important;
+}
+
+html.dark .ref-helper-text {
+  color: #fde68a !important;
+}
+
+html.dark .ref-helper-text code {
+  background: #78350f !important;
+  color: #fef3c7 !important;
+}
+
+html.dark .aside-ref-card {
+  background: #172554 !important;
+  border-color: #2563eb !important;
+}
+
+html.dark .aside-ref-card-head {
+  color: #bfdbfe !important;
+}
+
+html.dark .aside-ref-code {
+  background: #0f172a !important;
+  color: #60a5fa !important;
+  border-color: #1d4ed8 !important;
+}
+
+html.dark .aside-ref-desc {
+  color: #bfdbfe !important;
 }
 </style>

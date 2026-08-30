@@ -104,9 +104,14 @@ function goSearch(to: string) {
 
 async function handleLogout() {
   menuOpen.value = false
-  await auth.logout()
+  auth.clearSession()
+  try {
+    await auth.logout()
+  } catch {
+    /* ignore */
+  }
   if (typeof window !== 'undefined') {
-    window.location.href = '/login'
+    window.location.replace('/login')
   } else {
     await router.replace({ name: 'login' })
   }

@@ -44,6 +44,18 @@ class StaffCustomerUpdateRequest(SchemaBase):
     email_verified: bool | None = None
 
 
+class StaffCustomerCreateRequest(SchemaBase):
+    """Staff direct onboarding of a new customer."""
+
+    email: str = Field(min_length=3, max_length=320)
+    full_name: str = Field(min_length=2, max_length=255)
+    password: str | None = Field(default=None, max_length=128)
+    phone: str | None = Field(default=None, max_length=32)
+    company: str | None = Field(default=None, max_length=255)
+    plan_id: str | None = Field(default=None)
+    domain: str | None = Field(default=None)
+
+
 class StaffSubscriptionItem(SchemaBase):
     id: UUID
     plan_id: UUID
@@ -178,12 +190,19 @@ class StaffOpsInboxResponse(SchemaBase):
 class StaffConfirmPaymentRequest(SchemaBase):
     notes: str | None = None
     amount_received: Decimal | None = None
+    domain_name: str | None = None
+    payment_method: str | None = None
+
 
 
 class StaffProvisionHostingRequest(SchemaBase):
     plan_id: UUID
     domain_name: str | None = None
     domain_extension: str | None = None
+
+
+class StaffUpdateSubdomainRequest(SchemaBase):
+    domain: str = Field(min_length=3, max_length=255)
 
 
 class StaffUserCreateRequest(SchemaBase):

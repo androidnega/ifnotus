@@ -1116,9 +1116,24 @@ class EnvironmentDatabaseV2Response(SchemaBase):
 
 
 class EnvironmentDatabaseCreateRequest(SchemaBase):
-    engine: str = Field(min_length=3, max_length=24)
+    engine: str = Field(default="mysql", min_length=3, max_length=24)
     logical_name: str | None = Field(default=None, max_length=64)
     name: str | None = Field(default=None, max_length=64)
+    username: str | None = Field(default=None, max_length=64)
+    password: str | None = Field(default=None, max_length=128)
+
+
+class EnvironmentDatabaseImportRequest(SchemaBase):
+    sql: str = Field(min_length=1)
+
+
+class EnvironmentDatabaseImportResponse(SchemaBase):
+    success: bool = True
+    message: str
+    database: str
+    engine: str
+    statements_executed: int | None = None
+    imported_bytes: int | None = None
 
 
 class EnvironmentDatabaseRevealResponse(SchemaBase):

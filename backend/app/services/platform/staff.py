@@ -430,12 +430,13 @@ class StaffPlatformService:
         *,
         payment_status: str | None = None,
         limit: int = 100,
+        mask_financials: bool = False,
     ) -> list[dict]:
         limit = max(1, min(limit, 500))
         stmt = (
             select(Order, Customer, HostingPlan)
-            .join(Customer, Customer.id == Order.customer_id)
-            .join(HostingPlan, HostingPlan.id == Order.plan_id)
+            .outerjoin(Customer, Customer.id == Order.customer_id)
+            .outerjoin(HostingPlan, HostingPlan.id == Order.plan_id)
             .order_by(Order.created_at.desc())
             .limit(limit)
         )
@@ -446,17 +447,17 @@ class StaffPlatformService:
             {
                 "id": order.id,
                 "customer_id": order.customer_id,
-                "customer_email": customer.email,
-                "customer_name": customer.full_name,
-                "customer_phone": customer.phone,
+                "customer_email": customer.email if customer else "unknown@ifnotus.space",
+                "customer_name": customer.full_name if customer else "Customer",
+                "customer_phone": customer.phone if customer else None,
                 "plan_id": order.plan_id,
-                "plan_name": plan.name,
+                "plan_name": plan.name if plan else (order.order_kind.title() if order.order_kind else "Hosting Plan"),
                 "domain_name": order.domain_name,
                 "domain_extension": order.domain_extension,
-                "plan_price": order.plan_price,
-                "domain_price": order.domain_price,
-                "total_price": order.total_price,
-                "currency": order.currency,
+                "plan_price": Decimal("0.00") if mask_financials else order.plan_price,
+                "domain_price": Decimal("0.00") if mask_financials else order.domain_price,
+                "total_price": Decimal("0.00") if mask_financials else order.total_price,
+                "currency": "" if mask_financials else order.currency,
                 "payment_status": order.payment_status,
                 "provisioning_status": order.provisioning_status,
                 "order_kind": order.order_kind,
@@ -464,7 +465,7 @@ class StaffPlatformService:
                 "invoice_number": order.invoice_number,
                 "payment_method": order.payment_method,
                 "momo_transaction_id": order.momo_transaction_id,
-                "payment_amount_received": order.payment_amount_received,
+                "payment_amount_received": None if mask_financials else order.payment_amount_received,
                 "payment_notes": order.payment_notes,
                 "payment_confirmed_at": order.payment_confirmed_at,
                 "paid_at": order.paid_at,
@@ -473,9 +474,9 @@ class StaffPlatformService:
             for order, customer, plan in rows
         ]
 
-    async def ops_inbox(self, *, paid_within_hours: int = 48) -> dict:
+    async def ops_inbox(self, *, paid_within_hours: int = 48, mask_financials: bool = False) -> dict:
         """Staff cPanel inbox: MoMo awaiting confirm + recently paid invoices."""
-        submitted = await self.list_orders(payment_status="submitted", limit=50)
+        submitted = await self.list_orders(payment_status="submitted", limit=50, mask_financials=mask_financials)
         since = datetime.now(UTC) - timedelta(hours=max(1, min(paid_within_hours, 168)))
         paid_stmt = (
             select(Order, Customer, HostingPlan)
@@ -496,7 +497,7 @@ class StaffPlatformService:
             inv = row.get("invoice_number") or str(row["id"])[:8]
             who = row.get("customer_name") or row.get("customer_email") or "Customer"
             domain = row.get("domain_name") or "hosting"
-            amount = f"{row.get('currency') or 'GHS'} {row.get('total_price')}"
+            amount_text = f" · {row.get('currency') or 'GHS'} {row.get('total_price')}" if not mask_financials else ""
             txn = row.get("momo_transaction_id") or "—"
             items.append(
                 {
@@ -504,7 +505,7 @@ class StaffPlatformService:
                     "kind": "momo_submitted",
                     "title": "New payment to confirm",
                     "message": (
-                        f"{inv} · {amount} · {who} · {domain}. "
+                        f"{inv}{amount_text} · {who} · {domain}. "
                         f"MoMo ID {txn}."
                     ),
                     "severity": "warning",
@@ -519,14 +520,14 @@ class StaffPlatformService:
             inv = order.invoice_number or str(order.id)[:8]
             who = customer.full_name or customer.email or "Customer"
             domain = order.domain_name or plan.name or "hosting"
-            amount = f"{order.currency} {order.total_price}"
+            amount_text = f" · {order.currency} {order.total_price}" if not mask_financials else ""
             items.append(
                 {
                     "id": f"invoice-paid-{order.id}",
                     "kind": "invoice_paid",
                     "title": "Hosting invoice paid",
                     "message": (
-                        f"{inv} · {amount} · {who} · {domain} "
+                        f"{inv}{amount_text} · {who} · {domain} "
                         f"({order.provisioning_status})."
                     ),
                     "severity": "info",
@@ -766,6 +767,62 @@ class StaffPlatformService:
         return await EnvironmentLifecycleService(self._settings, self._session).terminate(
             env.customer_id, environment_id
         )
+
+    async def update_environment_subdomain(
+        self,
+        environment_id: UUID,
+        new_domain: str,
+        *,
+        actor_id: UUID | None = None,
+    ) -> CustomerEnvironment:
+        env = await self.get_environment(environment_id)
+        raw_name = (new_domain or "").strip().lower()
+        if not raw_name:
+            raise ValidationError("Domain or subdomain is required.")
+        if not re.match(r"^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?)+$", raw_name):
+            raise ValidationError("Invalid subdomain or domain format (e.g. sub.domain.com).")
+
+        old_domain = env.domain
+        if old_domain == raw_name:
+            return env
+
+        clash_stmt = select(CustomerEnvironment).where(
+            CustomerEnvironment.domain == raw_name,
+            CustomerEnvironment.id != environment_id,
+        )
+        existing = (await self._session.execute(clash_stmt)).scalar_one_or_none()
+        if existing:
+            raise ConflictError(f"Domain/subdomain '{raw_name}' is already assigned to another environment.")
+
+        env.domain = raw_name
+
+        if env.document_root:
+            from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
+            provisioner = DomainNginxProvisioner(self._settings)
+            try:
+                await provisioner.provision(
+                    raw_name,
+                    web_root=env.document_root,
+                    php_version=getattr(env, "php_version", "8.3") or "8.3",
+                    run_user=getattr(env, "unix_user", "www-data") or "www-data",
+                    run_group=getattr(env, "unix_group", "www-data") or "www-data",
+                )
+            except Exception as e:
+                logger.warning("update_env_nginx_provision_failed", error=str(e), domain=raw_name)
+
+        self._session.add(
+            PlatformAuditLog(
+                customer_id=env.customer_id,
+                actor_id=actor_id,
+                action="environment.subdomain_updated",
+                target_type="environment",
+                target_id=str(environment_id),
+                result="success",
+                metadata_json={"old_domain": old_domain, "new_domain": raw_name},
+            )
+        )
+        await self._session.flush()
+        return env
 
     def env_item_payload(self, env: CustomerEnvironment) -> dict:
         return self._env_detail_row(env)

@@ -44,11 +44,19 @@ class SslService:
         self._ssl_discovery = SslDiscoveryService(settings)
 
     async def list_certificates(self) -> SslListResponse:
-        domains = await self._domains.list_all()
-        certs = list(
-            await asyncio.gather(*(self._build_certificate(domain) for domain in domains))
+        try:
+            domains = await self._domains.list_all()
+        except Exception as exc:
+            logger.warning("Failed to list domains from database for SSL: %s", exc)
+            domains = []
+
+        raw_results = await asyncio.gather(
+            *(self._build_certificate(domain) for domain in domains),
+            return_exceptions=True,
         )
-        db_names = {d.name for d in domains}
+        certs: list[SslCertificateSchema] = [
+            r for r in raw_results if isinstance(r, SslCertificateSchema)
+        ]
 
         for cert in certs:
             cert.in_database = True
@@ -57,7 +65,12 @@ class SslService:
                 SslReconciliationState.MANAGED if cert.configured else SslReconciliationState.MISSING
             )
 
-        discovered_certs = await self._ssl_discovery.scan_certificates()
+        try:
+            discovered_certs = await self._ssl_discovery.scan_certificates()
+        except Exception as exc:
+            logger.warning("Failed during ssl discovery scan: %s", exc)
+            discovered_certs = []
+
         discovered_only = 0
         for disc in discovered_certs:
             match = next((c for c in certs if c.domain == disc.domain), None)

@@ -35,7 +35,7 @@ onMounted(async () => {
 <style scoped>
 .maint {
   min-height: 100vh;
-  background: var(--if-paper, #f4f1ec);
+  background: var(--if-paper, #f8fafc);
   color: var(--if-ink, #161a1d);
 }
 .card {

@@ -6,9 +6,11 @@ import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import UiTabBar from '@/components/ui/UiTabBar.vue'
 import UiAlert from '@/components/ui/UiAlert.vue'
 import { platformAdminApi } from '@/api'
+import { getApiErrorMessage } from '@/lib/apiError'
+import { IconEye, IconEyeOff } from '@/components/icons'
 import { usePermissions } from '@/composables/usePermissions'
 import { useAuthStore } from '@/stores/auth'
-import { isPlatformOwner } from '@/lib/roles'
+import { isPlatformOwner, getCanonicalRole } from '@/lib/roles'
 import { Permission } from '@/lib/permissions'
 import type {
   StaffAuditItem,
@@ -34,6 +36,44 @@ const canGrantCredits = computed(
 const canEditProfile = computed(
   () => can(Permission.CUSTOMERS_MANAGE) || can(Permission.PLATFORM_OPS) || isPlatformOwner(auth.user),
 )
+const canEditSubdomain = computed(
+  () => can(Permission.DOMAINS_WRITE) || isPlatformOwner(auth.user),
+)
+const showEditSubdomainModal = ref(false)
+const newSubdomainDomain = ref('')
+const editSubdomainBusy = ref(false)
+const editSubdomainError = ref('')
+
+function openEditSubdomainModal(env: StaffEnvironmentItem) {
+  newSubdomainDomain.value = env.domain || ''
+  editSubdomainError.value = ''
+  showEditSubdomainModal.value = true
+}
+
+async function submitEditSubdomain() {
+  if (!activeEnv.value || !newSubdomainDomain.value.trim()) {
+    editSubdomainError.value = 'Please enter a valid subdomain/domain.'
+    return
+  }
+  editSubdomainBusy.value = true
+  editSubdomainError.value = ''
+  try {
+    const { data } = await platformAdminApi.updateEnvironmentSubdomain(
+      activeEnv.value.id,
+      newSubdomainDomain.value.trim().toLowerCase(),
+    )
+    msg.value = `Subdomain updated to ${data.domain || newSubdomainDomain.value}!`
+    showEditSubdomainModal.value = false
+    if (selected.value) {
+      await openCustomer(selected.value.customer.id)
+    }
+  } catch (e: unknown) {
+    editSubdomainError.value = getApiErrorMessage(e, 'Failed to update subdomain.')
+  } finally {
+    editSubdomainBusy.value = false
+  }
+}
+
 const grantCredits = ref(50)
 const grantNote = ref('')
 const grantBusy = ref(false)
@@ -49,6 +89,53 @@ const allPlans = ref<import('@/types/platform').HostingPlan[]>([])
 const deleteConfirmEmail = ref('')
 const deleteBusy = ref(false)
 const statusFilter = ref<'all' | 'live' | 'awaiting_payment' | 'setting_up' | 'none'>('all')
+
+const showAddCustomerModal = ref(false)
+const newCustFullName = ref('')
+const newCustEmail = ref('')
+const newCustPhone = ref('')
+const newCustPassword = ref('')
+const showNewCustPassword = ref(false)
+const newCustCompany = ref('')
+const newCustPlanId = ref('')
+const newCustDomain = ref('')
+const addCustBusy = ref(false)
+const addCustError = ref('')
+
+async function submitCreateCustomer() {
+  if (!newCustEmail.value || !newCustFullName.value) {
+    addCustError.value = 'Full name and email are required.'
+    return
+  }
+  addCustBusy.value = true
+  addCustError.value = ''
+  try {
+    const { data } = await platformAdminApi.createCustomer({
+      email: newCustEmail.value.trim(),
+      full_name: newCustFullName.value.trim(),
+      phone: newCustPhone.value.trim() || undefined,
+      password: newCustPassword.value.trim() || undefined,
+      company: newCustCompany.value.trim() || undefined,
+      plan_id: newCustPlanId.value || undefined,
+      domain: newCustDomain.value.trim() || undefined,
+    })
+    showAddCustomerModal.value = false
+    newCustFullName.value = ''
+    newCustEmail.value = ''
+    newCustPhone.value = ''
+    newCustPassword.value = ''
+    newCustCompany.value = ''
+    newCustPlanId.value = ''
+    newCustDomain.value = ''
+    msg.value = `Customer ${data.email} created successfully!`
+    await loadList()
+    if (data.id) await openCustomer(data.id)
+  } catch (e: unknown) {
+    addCustError.value = getApiErrorMessage(e, 'Failed to create customer.')
+  } finally {
+    addCustBusy.value = false
+  }
+}
 
 const customers = ref<StaffCustomerListItem[]>([])
 const selected = ref<StaffCustomerDetail | null>(null)
@@ -79,9 +166,26 @@ const activeEnv = computed(() =>
   selected.value?.environments.find((e) => e.id === activeEnvId.value) || null,
 )
 
+const isHostingOperator = computed(() => getCanonicalRole(auth.user) === 'hosting_operator')
+
+const isAwaitingBilling = computed(() => {
+  if (!selected.value) return false
+  const status = selected.value.customer?.hosting_status || ''
+  const hasUnclearedOrder = selected.value.orders?.some(
+    (o) => o.payment_status === 'submitted' || o.payment_status === 'pending',
+  )
+  return status === 'awaiting_payment' || (Boolean(hasUnclearedOrder) && !selected.value.environments?.length)
+})
+
 const filteredCustomers = computed(() => {
-  if (statusFilter.value === 'all') return customers.value
-  return customers.value.filter((c) => (c.hosting_status || 'none') === statusFilter.value)
+  let list = customers.value
+  if (isHostingOperator.value && statusFilter.value === 'all') {
+    // For hosting operators, default view filters out uncleared accounts awaiting billing confirmation
+    list = list.filter((c) => (c.hosting_status || 'none') !== 'awaiting_payment')
+  } else if (statusFilter.value !== 'all') {
+    list = list.filter((c) => (c.hosting_status || 'none') === statusFilter.value)
+  }
+  return list
 })
 
 const statusCounts = computed(() => {
@@ -527,11 +631,131 @@ watch(
           title="Customers"
           lede="Find accounts, confirm payments from Orders, and manage live hosting."
         />
-        <form class="cust-search" @submit.prevent="loadList">
-          <input v-model="q" type="search" placeholder="Search name, email, phone" />
-          <button type="submit">Search</button>
-        </form>
+        <div class="cust-head-actions">
+          <form class="cust-search" @submit.prevent="loadList">
+            <input v-model="q" type="search" placeholder="Search name, email, phone" />
+            <button type="submit">Search</button>
+          </form>
+          <button type="button" class="btn-new-cust" @click="showAddCustomerModal = true">
+            + Add Customer
+          </button>
+        </div>
       </header>
+
+      <!-- Add Customer Modal -->
+      <div v-if="showAddCustomerModal" class="cust-modal-backdrop" @click.self="showAddCustomerModal = false">
+        <div class="cust-modal-card">
+          <div class="modal-head">
+            <h3>Add New Customer</h3>
+            <button type="button" class="btn-close" @click="showAddCustomerModal = false">✕</button>
+          </div>
+          <p class="modal-sub">Create a customer account directly and optionally provision their initial hosting environment.</p>
+
+          <UiAlert v-if="addCustError" tone="err">{{ addCustError }}</UiAlert>
+
+          <form class="modal-form" @submit.prevent="submitCreateCustomer">
+            <div class="form-group">
+              <label>Full Name *</label>
+              <input v-model="newCustFullName" required placeholder="e.g. John Doe" />
+            </div>
+
+            <div class="form-group">
+              <label>Email Address *</label>
+              <input v-model="newCustEmail" type="email" required placeholder="customer@example.com" />
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Phone Number (optional)</label>
+                <input v-model="newCustPhone" placeholder="+233..." />
+              </div>
+              <div class="form-group">
+                <label>Company (optional)</label>
+                <input v-model="newCustCompany" placeholder="Organization name" />
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>Password (optional, default auto-set)</label>
+              <div class="ds-input-eye-wrap">
+                <input
+                  v-model="newCustPassword"
+                  :type="showNewCustPassword ? 'text' : 'password'"
+                  placeholder="Leave blank for WelcomePass2026!"
+                />
+                <button
+                  type="button"
+                  class="ds-eye-btn"
+                  :title="showNewCustPassword ? 'Hide password' : 'Show password'"
+                  tabindex="-1"
+                  @click="showNewCustPassword = !showNewCustPassword"
+                >
+                  <IconEyeOff v-if="showNewCustPassword" :size="18" />
+                  <IconEye v-else :size="18" />
+                </button>
+              </div>
+            </div>
+
+            <div class="form-section-title">Initial Hosting (Optional)</div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Hosting Plan</label>
+                <select v-model="newCustPlanId">
+                  <option value="">-- No hosting now --</option>
+                  <option v-for="p in allPlans" :key="p.id" :value="p.id">
+                    {{ p.name }} (₵{{ p.price_monthly }}/mo)
+                  </option>
+                </select>
+              </div>
+              <div v-if="newCustPlanId" class="form-group">
+                <label>Primary Domain</label>
+                <input v-model="newCustDomain" placeholder="e.g. customerdomain.com" />
+              </div>
+            </div>
+
+            <div class="modal-actions">
+              <button type="button" class="btn-ghost" @click="showAddCustomerModal = false">Cancel</button>
+              <button type="submit" class="btn-submit-cust" :disabled="addCustBusy">
+                {{ addCustBusy ? 'Creating Customer…' : 'Create & Onboard Customer' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Edit Subdomain Modal (Hosting Operator & Owner Only) -->
+      <div v-if="showEditSubdomainModal && activeEnv" class="cust-modal-backdrop" @click.self="showEditSubdomainModal = false">
+        <div class="cust-modal-card">
+          <div class="modal-head">
+            <h3>Edit Personal Hosting Subdomain</h3>
+            <button type="button" class="btn-close" @click="showEditSubdomainModal = false">✕</button>
+          </div>
+          <p class="modal-sub">
+            Update the primary domain or custom subdomain for this hosting environment. Infrastructure and Nginx will be re-routed.
+          </p>
+
+          <UiAlert v-if="editSubdomainError" tone="err">{{ editSubdomainError }}</UiAlert>
+
+          <form class="modal-form" @submit.prevent="submitEditSubdomain">
+            <div class="form-group">
+              <label>Domain or Subdomain *</label>
+              <input
+                v-model="newSubdomainDomain"
+                required
+                placeholder="e.g. john.ifnotus.space or mydomain.online"
+                autofocus
+              />
+            </div>
+
+            <div class="modal-actions">
+              <button type="button" class="btn-ghost" :disabled="editSubdomainBusy" @click="showEditSubdomainModal = false">Cancel</button>
+              <button type="submit" class="btn-submit-cust" :disabled="editSubdomainBusy">
+                {{ editSubdomainBusy ? 'Updating Subdomain…' : 'Save Subdomain' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
 
       <p v-if="loading" class="cust-muted cust-status">Loading…</p>
       <UiAlert v-else-if="error" class="cust-status" tone="err">{{ error }}</UiAlert>
@@ -829,6 +1053,15 @@ watch(
                 </div>
 
                 <div v-if="canOps" class="actions">
+                  <button
+                    v-if="canEditSubdomain && activeEnv.status !== 'terminated'"
+                    type="button"
+                    class="btn"
+                    :disabled="busy"
+                    @click="openEditSubdomainModal(activeEnv)"
+                  >
+                    Edit Subdomain
+                  </button>
                   <button type="button" class="btn" :disabled="busy" @click="runHealth">Live health</button>
                   <button type="button" class="btn" :disabled="busy" @click="loadLogs">Logs</button>
                   <button type="button" class="btn" :disabled="busy" @click="repairFs(activeEnv.id)">Repair permissions</button>
@@ -1004,6 +1237,172 @@ watch(
   font-size: 1.15rem;
 }
 
+.cust-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.btn-new-cust {
+  background: #1e3a5f;
+  color: #fff;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.btn-new-cust:hover {
+  background: #2b5182;
+}
+
+.cust-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(2px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.cust-modal-card {
+  background: #fff;
+  border-radius: 0.85rem;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  width: 100%;
+  max-width: 32rem;
+  padding: 1.75rem;
+  color: #1e293b;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.dark .cust-modal-card {
+  background: #0f172a;
+  color: #f1f5f9;
+  border: 1px solid #334155;
+}
+
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.25rem;
+}
+
+.modal-head h3 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.btn-close {
+  background: transparent;
+  border: none;
+  font-size: 1.1rem;
+  cursor: pointer;
+  color: #64748b;
+}
+
+.modal-sub {
+  font-size: 0.85rem;
+  color: #64748b;
+  margin-bottom: 1.25rem;
+}
+
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  flex: 1;
+}
+
+.form-group label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.dark .form-group label {
+  color: #94a3b8;
+}
+
+.form-group input,
+.form-group select {
+  border: 1px solid #cbd5e1;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  background: #fff;
+  color: inherit;
+}
+
+.dark .form-group input,
+.dark .form-group select {
+  background: #1e293b;
+  border-color: #334155;
+}
+
+.form-row {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.form-section-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #1e3a5f;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 0.75rem;
+  margin-top: 0.25rem;
+}
+
+.dark .form-section-title {
+  color: #38bdf8;
+  border-top-color: #334155;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.btn-submit-cust {
+  background: #0284c7;
+  color: #fff;
+  border: none;
+  padding: 0.55rem 1.25rem;
+  border-radius: 0.5rem;
+  font-weight: 600;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.btn-submit-cust:hover {
+  background: #0369a1;
+}
+
+.btn-submit-cust:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .cust-search {
   display: flex;
   flex-wrap: wrap;
@@ -1104,7 +1503,7 @@ watch(
   min-height: 0;
   overflow: auto;
   padding: 1.15rem 1.35rem 1.65rem;
-  background: var(--if-paper, #f4f1ec);
+  background: var(--if-paper, #f8fafc);
 }
 .dark .cust-detail {
   background: #0b1120;

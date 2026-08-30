@@ -21,10 +21,10 @@ export const DEFAULT_COLORS: ThemeColors = {
   primary: '#ff6c2c',
   primary_hover: '#e85a1c',
   ink: '#161a1d',
-  paper: '#f4f1ec',
+  paper: '#f8fafc',
   surface: '#ffffff',
-  muted: '#6b7280',
-  border: '#e7e2db',
+  muted: '#64748b',
+  border: '#e2e8f0',
 }
 
 export const DEFAULT_PLAN_TIERS: PlanColorTier[] = [
@@ -42,11 +42,6 @@ export function applyThemeColors(
   const merged = { ...DEFAULT_COLORS, ...colors }
   root.style.setProperty('--if-primary', merged.primary)
   root.style.setProperty('--if-primary-hover', merged.primary_hover)
-  root.style.setProperty('--if-ink', merged.ink)
-  root.style.setProperty('--if-paper', merged.paper)
-  root.style.setProperty('--if-surface', merged.surface)
-  root.style.setProperty('--if-muted', merged.muted)
-  root.style.setProperty('--if-border', merged.border)
   root.style.setProperty('--if-primary-soft', softAccent(merged.primary, 0.14))
   root.style.setProperty('--if-primary-ring', softAccent(merged.primary, 0.22))
   root.style.setProperty('--if-glow', softAccent(merged.primary, 0.1))
@@ -56,10 +51,20 @@ export function applyThemeColors(
   root.style.setProperty('--color-brand-600', merged.primary_hover)
   root.style.setProperty('--brand-rgb-500', hexToRgbChannels(merged.primary))
   root.style.setProperty('--brand-rgb-600', hexToRgbChannels(merged.primary_hover))
-  root.style.setProperty('--color-surface', merged.paper)
-  root.style.setProperty('--color-surface-raised', merged.surface)
-  root.style.setProperty('--color-border', merged.border)
-  root.style.setProperty('--color-text-muted', merged.muted)
+
+  const isDark = root.classList.contains('dark')
+  if (!isDark) {
+    root.style.setProperty('--if-ink', merged.ink)
+    root.style.setProperty('--if-paper', merged.paper)
+    root.style.setProperty('--if-surface', merged.surface)
+    root.style.setProperty('--if-muted', merged.muted)
+    root.style.setProperty('--if-border', merged.border)
+    root.style.setProperty('--color-surface', merged.paper)
+    root.style.setProperty('--color-surface-raised', merged.surface)
+    root.style.setProperty('--color-surface-overlay', merged.surface)
+    root.style.setProperty('--color-border', merged.border)
+    root.style.setProperty('--color-text-muted', merged.muted)
+  }
 
   const known = ['studio-light', 'ocean-clean', 'graphite', 'palm-grove', 'server-dark']
   for (const id of known) {

@@ -48,3 +48,22 @@ function select(item: UiTabItem) {
     </button>
   </nav>
 </template>
+
+<style scoped>
+.ds-tabbar {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+  overflow-y: hidden !important;
+}
+
+.ds-tabbar::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+.ds-tabbar--flat {
+  width: 100% !important;
+  overflow: visible !important;
+}
+</style>

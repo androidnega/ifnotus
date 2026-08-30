@@ -360,7 +360,7 @@ watch(slug, () => {
   flex-direction: column;
   font-family: 'Figtree', 'Segoe UI', sans-serif;
   color: var(--if-ink, #161a1d);
-  background: var(--if-paper, #f4f1ec);
+  background: var(--if-paper, #f8fafc);
   opacity: 0;
   transition: opacity 0.2s ease;
 }
@@ -484,7 +484,7 @@ watch(slug, () => {
   color: var(--if-muted, #64748b);
   padding: 0.4rem 0.5rem;
   border-radius: 0.5rem;
-  background: color-mix(in srgb, var(--if-paper, #f4f1ec) 70%, var(--if-surface, #fff));
+  background: color-mix(in srgb, var(--if-paper, #f8fafc) 70%, var(--if-surface, #fff));
 }
 .metric i {
   color: var(--plan-accent, var(--if-primary, #ff6c2c));
@@ -576,7 +576,7 @@ watch(slug, () => {
   font-size: 0.68rem;
   font-weight: 700;
   color: var(--if-muted, #64748b);
-  background: var(--if-paper, #f4f1ec);
+  background: var(--if-paper, #f8fafc);
   border-radius: 999px;
   padding: 0.1rem 0.4rem;
 }
@@ -622,7 +622,7 @@ watch(slug, () => {
   font-size: 0.84rem;
   padding: 0.55rem 0.65rem;
   border-radius: 0.55rem;
-  background: color-mix(in srgb, var(--if-paper, #f4f1ec) 65%, var(--if-surface, #fff));
+  background: color-mix(in srgb, var(--if-paper, #f8fafc) 65%, var(--if-surface, #fff));
 }
 .quick-stats strong {
   font-weight: 650;
@@ -641,7 +641,7 @@ watch(slug, () => {
   align-items: flex-start;
   padding: 0.55rem 0.65rem;
   border-radius: 0.55rem;
-  background: color-mix(in srgb, var(--if-paper, #f4f1ec) 55%, var(--if-surface, #fff));
+  background: color-mix(in srgb, var(--if-paper, #f8fafc) 55%, var(--if-surface, #fff));
 }
 .feature-list i {
   margin-top: 0.2rem;
@@ -712,7 +712,7 @@ watch(slug, () => {
   color: var(--if-muted, #64748b);
   padding: 0.55rem 0.65rem;
   border-radius: 0.55rem;
-  background: color-mix(in srgb, var(--if-paper, #f4f1ec) 55%, var(--if-surface, #fff));
+  background: color-mix(in srgb, var(--if-paper, #f8fafc) 55%, var(--if-surface, #fff));
 }
 .notes-list i {
   margin-top: 0.15rem;

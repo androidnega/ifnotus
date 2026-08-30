@@ -19,7 +19,6 @@ export type UiRouteEntry = {
 /** Customer account primary tabs (/account) */
 export const PORTAL_ACCOUNT_TABS = [
   { id: 'home', label: 'Overview' },
-  { id: 'hosting', label: 'Hosting', requiresEnv: true },
   { id: 'billing', label: 'Billing' },
   { id: 'support', label: 'Support' },
   { id: 'settings', label: 'Settings' },
@@ -30,6 +29,7 @@ export const SITE_WORKSPACE_TABS = [
   { id: 'stack', label: 'Stack' },
   { id: 'applications', label: 'Applications' },
   { id: 'files', label: 'Files', planGate: 'file_manager' },
+  { id: 'git', label: 'Git Deploy', planGate: 'git' },
   { id: 'logs', label: 'Logs' },
   { id: 'cron', label: 'Cron', planGate: 'cron' },
   { id: 'database', label: 'Database', planGate: 'db_manage' },

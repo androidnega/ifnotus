@@ -32,6 +32,13 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('access_token')
     localStorage.removeItem('refresh_token')
     localStorage.removeItem('ifnotus_portal')
+    localStorage.removeItem('tenant_env_id')
+    localStorage.removeItem('tenant_domain')
+    try {
+      sessionStorage.clear()
+    } catch {
+      /* ignore */
+    }
     accessToken.value = null
     user.value = null
     error.value = null
@@ -146,7 +153,7 @@ export const useAuthStore = defineStore('auth', () => {
     }
     if (!hadToken) return
     try {
-      await authApi.logout()
+      void authApi.logout().catch(() => undefined)
     } catch {
       /* Server logout is best-effort; local session is already cleared. */
     }

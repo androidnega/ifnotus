@@ -99,17 +99,24 @@ class AccountingService:
         awaiting = sum((Decimal(str(o.total_price or 0)) for o in submitted), Decimal("0"))
 
         by_kind: dict[str, Decimal] = {}
-        by_channel: dict[str, Decimal] = {"momo": Decimal("0"), "staff": Decimal("0"), "other": Decimal("0")}
+        by_channel: dict[str, Decimal] = {"momo": Decimal("0"), "cash": Decimal("0"), "card": Decimal("0"), "bank": Decimal("0"), "staff": Decimal("0"), "other": Decimal("0")}
         for o in paid_in_period:
             if not _is_cash(o):
                 continue
             kind = (o.order_kind or "hosting").lower()
             by_kind[kind] = by_kind.get(kind, Decimal("0")) + _money(o)
             method = (o.payment_method or "momo").lower()
+            if method in {"physical_cash", "cash_in_hand", "office_cash"}:
+                method = "cash"
+            elif method in {"card", "paystack", "stripe"}:
+                method = "card"
+            elif method in {"bank", "bank_transfer", "direct_deposit"}:
+                method = "bank"
             if method in by_channel:
                 by_channel[method] += _money(o)
             else:
                 by_channel["other"] += _money(o)
+
 
         day_map: dict[str, dict] = {}
         cursor = start

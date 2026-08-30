@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
+import { DEFAULT_COLORS } from '@/lib/theme'
 import { syncSiteDocumentTone } from '@/composables/useSiteTheme'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
@@ -9,16 +10,49 @@ const STORAGE_KEY = 'theme'
 function resolveDark(mode: ThemeMode): boolean {
   if (mode === 'dark') return true
   if (mode === 'light') return false
+  if (typeof window === 'undefined') return false
   return window.matchMedia('(prefers-color-scheme: dark)').matches
 }
 
-function applyTheme(isDark: boolean) {
-  if (!document.documentElement.classList.contains('control-ui')) {
-    syncSiteDocumentTone()
-    return
+export function applyTheme(isDark: boolean) {
+  if (typeof document === 'undefined') return
+  const root = document.documentElement
+  root.classList.toggle('dark', isDark)
+  root.style.colorScheme = isDark ? 'dark' : 'light'
+
+  if (isDark) {
+    root.style.setProperty('--color-surface', '#0b1120')
+    root.style.setProperty('--color-surface-raised', '#111827')
+    root.style.setProperty('--color-surface-overlay', '#1e293b')
+    root.style.setProperty('--color-border', '#1e293b')
+    root.style.setProperty('--color-text-muted', '#94a3b8')
+    root.style.setProperty('--if-paper', '#0b1120')
+    root.style.setProperty('--if-surface', '#111827')
+    root.style.setProperty('--if-ink', '#f8fafc')
+    root.style.setProperty('--if-muted', '#94a3b8')
+    root.style.setProperty('--if-border', '#1e293b')
+  } else {
+    try {
+      const cached = JSON.parse(localStorage.getItem('ifnotus_theme_colors') || 'null')
+      const merged = { ...DEFAULT_COLORS, ...(cached || {}) }
+      root.style.setProperty('--if-ink', merged.ink)
+      root.style.setProperty('--if-paper', merged.paper)
+      root.style.setProperty('--if-surface', merged.surface)
+      root.style.setProperty('--if-muted', merged.muted)
+      root.style.setProperty('--if-border', merged.border)
+      root.style.setProperty('--color-surface', merged.paper)
+      root.style.setProperty('--color-surface-raised', merged.surface)
+      root.style.setProperty('--color-surface-overlay', merged.surface)
+      root.style.setProperty('--color-border', merged.border)
+      root.style.setProperty('--color-text-muted', merged.muted)
+    } catch {
+      /* ignore */
+    }
   }
-  document.documentElement.classList.toggle('dark', isDark)
-  document.documentElement.style.colorScheme = isDark ? 'dark' : 'light'
+
+  if (!root.classList.contains('control-ui')) {
+    syncSiteDocumentTone()
+  }
 }
 
 export const useThemeStore = defineStore('theme', () => {

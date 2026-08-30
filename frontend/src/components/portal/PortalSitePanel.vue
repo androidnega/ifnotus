@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { customersApi } from '@/api'
 import type { CustomerEnvironment, HostingPlan } from '@/types/platform'
 import { formatCpu, formatRamGb } from '@/lib/planResources'
@@ -10,6 +11,7 @@ import UiTabBar from '@/components/ui/UiTabBar.vue'
 import { envCan, visibleStacks } from '@/lib/planMatrix'
 import { SITE_WORKSPACE_TABS } from '@/lib/uiRegistry'
 import { isCustomerCpanelHost, tenantCpanelUrl } from '@/lib/platformHosts'
+import { getApiErrorMessage } from '@/lib/apiError'
 
 const props = defineProps<{
   environments: CustomerEnvironment[]
@@ -136,6 +138,8 @@ const props = defineProps<{
   dbActionMsg?: string
   newDbEngine?: string
   newDbName?: string
+  newDbUser?: string
+  newDbPassword?: string
   ftpInfo?: string
   ftpCreds?: {
     enabled?: boolean
@@ -227,6 +231,20 @@ const props = defineProps<{
   logEntries?: Array<{ source: string; message: string }>
   logMsg?: string
   logBusy?: boolean
+  gitStatus?: {
+    environment_id?: string
+    configured?: boolean
+    path?: string
+    branch?: string | null
+    commit?: string | null
+    remote?: string | null
+    dirty?: boolean
+    message?: string
+  } | null
+  gitBusy?: boolean
+  gitMsg?: string
+  gitCloneUrl?: string
+  gitCloneBranch?: string
 }>()
 
 const emit = defineEmits<{
@@ -262,9 +280,18 @@ const emit = defineEmits<{
   deleteDatabase: [string]
   resetDbPassword: [string]
   selectDatabase: [string]
+  importDatabaseSql: [string | null, string]
+  backupDatabase: [string]
   'update:newDbEngine': [string]
   'update:newDbName': [string]
+  'update:newDbUser': [string]
+  'update:newDbPassword': [string]
   updateDbSql: [string]
+  loadGitStatus: []
+  cloneGitRepo: []
+  pullGitRepo: []
+  'update:gitCloneUrl': [string]
+  'update:gitCloneBranch': [string]
   loadFtp: [boolean?]
   ensureFtp: [boolean?]
   loadSftp: [boolean?]
@@ -295,7 +322,7 @@ const emit = defineEmits<{
   'update:newAppGitUrl': [string]
 }>()
 
-const siteTab = ref<'files' | 'stack' | 'applications' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail'>('stack')
+const siteTab = ref<'files' | 'stack' | 'applications' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail' | 'git'>('stack')
 const copiedKey = ref('')
 const customDomainInput = ref('')
 const assignPick = ref('')
@@ -371,10 +398,16 @@ watch(siteTab, (tab) => {
   }
   if (tab === 'protect') emit('loadDns')
   if (tab === 'logs') emit('loadLogs')
+  if (tab === 'git') emit('loadGitStatus')
 })
 
-const packStacks = computed(() => visibleStacks(props.activePlan))
+const packStacks = computed(() => {
+  const all = visibleStacks(props.activePlan)
+  // Cleanly display only active/included runtimes for this pack, removing unneeded cluttered limited placeholders
+  return all.filter((s) => s.level !== 'limited')
+})
 const canFiles = computed(() => envCan(props.activeEnv, 'file_manager'))
+const canGit = computed(() => envCan(props.activeEnv, 'git'))
 const canCron = computed(() => envCan(props.activeEnv, 'cron'))
 const canDb = computed(() => envCan(props.activeEnv, 'db_manage'))
 const canMail = computed(() => envCan(props.activeEnv, 'mail'))
@@ -383,6 +416,7 @@ const canFtp = computed(() => envCan(props.activeEnv, 'sftp'))
 const siteTabItems = computed(() =>
   SITE_WORKSPACE_TABS.filter((t) => {
     if (t.id === 'files') return canFiles.value
+    if (t.id === 'git') return canGit.value
     if (t.id === 'cron') return canCron.value
     if (t.id === 'database') return canDb.value
     if (t.id === 'ftp') return canFtp.value
@@ -437,10 +471,262 @@ async function openSqlStudio() {
 function packLocked(label: string) {
   return `${label} is not on ${props.activePlan?.name || 'this package'}. Open Billing to upgrade.`
 }
+const route = useRoute()
+
+const activeStackToken = computed(() => {
+  const param = route.params?.stackToken
+  if (param && typeof param === 'string' && param.trim()) {
+    return param.trim()
+  }
+  if (Array.isArray(param) && param.length) {
+    return param.filter(Boolean).join('-')
+  }
+  const raw = String(props.activeEnv?.id || '48330444-347').replace(/[^a-zA-Z0-9]/g, '')
+  return `${raw.slice(0, 8) || '48330444'}-347`
+})
+
 const currentStackIcon = computed(() => {
   const id = String(props.currentStack?.stack || '')
   const hit = props.stacks.find((s) => s.id === id)
   return hit?.icon || id || 'php'
+})
+
+const showImportModal = ref(false)
+const targetImportDbId = ref('')
+const importFile = ref<File | null>(null)
+const importSqlText = ref('')
+const importBusy = ref(false)
+const importSuccessMsg = ref('')
+const importErrorMsg = ref('')
+const connectionSnippetType = ref<'pdo' | 'mysqli' | 'pgsql' | 'laravel' | 'wordpress' | 'nodejs' | 'python'>('pdo')
+const showDbPassword = ref(false)
+
+const showStackGuideModal = ref(false)
+const selectedGuideTab = ref<'mysql' | 'postgres' | 'laravel' | 'wordpress' | 'react' | 'git'>('mysql')
+
+function openStackGuide(tab: 'mysql' | 'postgres' | 'laravel' | 'wordpress' | 'react' | 'git' = 'mysql') {
+  selectedGuideTab.value = tab
+  showStackGuideModal.value = true
+}
+
+function closeStackGuide() {
+  showStackGuideModal.value = false
+}
+
+function openImportModal(dbId?: string) {
+  targetImportDbId.value = dbId || props.selectedDbId || ''
+  importFile.value = null
+  importSqlText.value = ''
+  importSuccessMsg.value = ''
+  importErrorMsg.value = ''
+  showImportModal.value = true
+}
+
+function closeImportModal() {
+  showImportModal.value = false
+  importFile.value = null
+  importSqlText.value = ''
+  importSuccessMsg.value = ''
+  importErrorMsg.value = ''
+}
+
+async function onImportFileSelected(e: Event) {
+  const target = e.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (!file) return
+  importFile.value = file
+  try {
+    const text = await file.text()
+    importSqlText.value = text
+  } catch {
+    /* ignore */
+  }
+}
+
+async function runDirectSqlImport() {
+  const envId = props.activeEnv?.id
+  const sql = importSqlText.value.trim()
+  if (!envId || !sql) return
+  importBusy.value = true
+  importSuccessMsg.value = ''
+  importErrorMsg.value = ''
+  try {
+    const { data } = await customersApi.importEnvDatabaseSql(envId, targetImportDbId.value || undefined, sql)
+    importSuccessMsg.value = data.message || 'SQL dump imported successfully!'
+    emit('loadDbList')
+    if (props.selectedDbId) emit('loadDb', true)
+  } catch (e: unknown) {
+    importErrorMsg.value = getApiErrorMessage(e, 'SQL import failed.')
+  } finally {
+    importBusy.value = false
+  }
+}
+
+function generateStrongPassword() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*-_=+'
+  let pass = ''
+  for (let i = 0; i < 20; i++) {
+    pass += chars.charAt(Math.floor(Math.random() * chars.length))
+  }
+  emit('update:newDbPassword', pass)
+}
+
+async function openPhpMyAdminDirect(dbId?: string) {
+  const id = props.activeEnv?.id
+  if (!id) return
+  try {
+    const target = dbId || props.selectedDbId || undefined
+    const { data } = await customersApi.openEnvPhpMyAdmin(id, target)
+    window.open(data.url, `ifnotus-pma-${id}`)
+  } catch (e) {
+    alert(getApiErrorMessage(e, 'Could not launch phpMyAdmin.'))
+  }
+}
+
+function openBuiltinSqlStudio() {
+  const id = props.activeEnv?.id
+  if (!id) return
+  const href = `https://ifnotus.space/account/database/studio?env=${encodeURIComponent(id)}`
+  window.open(href, `ifnotus-sql-${id}`)
+}
+
+const connectionSnippet = computed(() => {
+  const name = props.dbCreds?.name || 'app_db'
+  const user = props.dbCreds?.username || 'app_user'
+  const pass = props.dbCreds?.password || 'YourPasswordHere'
+  const host = props.dbCreds?.host || 'localhost'
+  const isPg = String(props.dbCreds?.engine || '').toLowerCase().includes('postgre')
+  const port = props.dbCreds?.port || (isPg ? 5432 : 3306)
+
+  if (connectionSnippetType.value === 'pdo') {
+    if (isPg) {
+      return `// PHP PDO Connection (PostgreSQL - pdo_pgsql)
+$dbHost = '${host}';
+$dbName = '${name}';
+$dbUser = '${user}';
+$dbPass = '${pass}';
+$dbPort = ${port};
+
+try {
+    $pdo = new PDO("pgsql:host=$dbHost;port=$dbPort;dbname=$dbName", $dbUser, $dbPass, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    ]);
+} catch (PDOException $e) {
+    die("PostgreSQL connection failed: " . $e->getMessage());
+}`
+    }
+    return `// PHP PDO Connection (MySQL - pdo_mysql)
+$dbHost = '${host}';
+$dbName = '${name}';
+$dbUser = '${user}';
+$dbPass = '${pass}';
+$dbPort = ${port};
+
+try {
+    $pdo = new PDO("mysql:host=$dbHost;port=$dbPort;dbname=$dbName;charset=utf8mb4", $dbUser, $dbPass, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_EMULATE_PREPARES => false,
+    ]);
+} catch (PDOException $e) {
+    die("MySQL connection failed: " . $e->getMessage());
+}`
+  }
+
+  if (connectionSnippetType.value === 'mysqli') {
+    return `// PHP MySQLi Connection
+$dbHost = '${host}';
+$dbName = '${name}';
+$dbUser = '${user}';
+$dbPass = '${pass}';
+$dbPort = ${port};
+
+$conn = new mysqli($dbHost, $dbUser, $dbPass, $dbName, $dbPort);
+if ($conn->connect_error) {
+    die("Connection failed: " . $conn->connect_error);
+}
+$conn->set_charset("utf8mb4");`
+  }
+
+  if (connectionSnippetType.value === 'pgsql') {
+    return `// PHP pg_connect Connection (PostgreSQL)
+$connStr = "host=${host} port=${port} dbname=${name} user=${user} password=${pass}";
+$dbconn = pg_connect($connStr);
+if (!$dbconn) {
+    die("PostgreSQL connection failed: " . pg_last_error());
+}`
+  }
+
+  if (connectionSnippetType.value === 'laravel') {
+    return `# Laravel .env Configuration
+DB_CONNECTION=${isPg ? 'pgsql' : 'mysql'}
+DB_HOST=${host}
+DB_PORT=${port}
+DB_DATABASE=${name}
+DB_USERNAME=${user}
+DB_PASSWORD=${pass}`
+  }
+
+  if (connectionSnippetType.value === 'wordpress') {
+    return `// WordPress wp-config.php Database Settings
+define( 'DB_NAME', '${name}' );
+define( 'DB_USER', '${user}' );
+define( 'DB_PASSWORD', '${pass}' );
+define( 'DB_HOST', '${host}:${port}' );
+define( 'DB_CHARSET', 'utf8mb4' );
+define( 'DB_COLLATE', '' );`
+  }
+
+  if (connectionSnippetType.value === 'nodejs') {
+    if (isPg) {
+      return `// Node.js (PostgreSQL - pg)
+const { Pool } = require('pg');
+const pool = new Pool({
+  host: '${host}',
+  port: ${port},
+  database: '${name}',
+  user: '${user}',
+  password: '${pass}',
+});`
+    }
+    return `// Node.js (MySQL - mysql2)
+const mysql = require('mysql2/promise');
+const pool = mysql.createPool({
+  host: '${host}',
+  port: ${port},
+  database: '${name}',
+  user: '${user}',
+  password: '${pass}',
+});`
+  }
+
+  if (connectionSnippetType.value === 'python') {
+    if (isPg) {
+      return `# Python (PostgreSQL - psycopg2)
+import psycopg2
+
+conn = psycopg2.connect(
+    host="${host}",
+    port=${port},
+    dbname="${name}",
+    user="${user}",
+    password="${pass}"
+)`
+    }
+    return `# Python (MySQL - pymysql)
+import pymysql
+
+conn = pymysql.connect(
+    host="${host}",
+    port=${port},
+    database="${name}",
+    user="${user}",
+    password="${pass}"
+)`
+  }
+
+  return ''
 })
 
 async function copyValue(key: string, value?: string | null) {
@@ -599,82 +885,370 @@ function formatBytes(n?: number | null) {
       <p v-if="fileMsg" class="muted mt">{{ fileMsg }}</p>
     </div>
 
-    <div v-else-if="siteTab === 'applications'" class="block">
-      <h3>Applications</h3>
-      <p class="muted">Run multiple apps on this site. IFNOTUS manages processes — no systemctl or pm2 access.</p>
-      <ul v-if="applications?.length" class="app-list mt">
-        <li v-for="app in applications" :key="app.id" class="app-row">
-          <div>
-            <strong>{{ app.name }}</strong>
-            <span class="muted">{{ app.framework_label || app.framework }} · {{ app.runtime_version || app.runtime }}</span>
+    <div v-else-if="siteTab === 'git' && !canGit" class="block">
+      <p>{{ packLocked('Git Version Control') }}</p>
+    </div>
+    <div v-else-if="siteTab === 'git'" class="block git-panel-section">
+      <div class="git-head">
+        <div>
+          <div class="git-title-row">
+            <span class="git-badge"><i class="fa-brands fa-git-alt" /> Version Control</span>
+            <h3>Git Deployment Pipeline</h3>
           </div>
-          <div class="app-actions">
-            <span class="pill" :class="app.status">{{ app.status }}</span>
-            <button
-              v-if="app.status === 'pending' || app.status === 'failed'"
-              type="button"
-              class="btn-primary"
-              :disabled="appBusy"
-              @click="emit('deployApplication', app.id)"
-            >
-              Deploy
-            </button>
-            <button type="button" class="btn-ghost" :disabled="appBusy" @click="emit('deleteApplication', app.id)">
-              Delete
-            </button>
-          </div>
-        </li>
-      </ul>
-      <p v-else class="muted mt">No applications yet.</p>
-      <div class="app-create mt">
-        <h4>Create application</h4>
-        <label class="field">
-          <span>Name</span>
-          <input
-            :value="newAppName"
-            type="text"
-            placeholder="My API"
-            @input="emit('update:newAppName', ($event.target as HTMLInputElement).value)"
-          />
-        </label>
-        <label class="field">
-          <span>Framework</span>
-          <select
-            :value="newAppFramework"
-            @change="emit('update:newAppFramework', ($event.target as HTMLSelectElement).value)"
+          <p class="muted">
+            Connect your GitHub, GitLab, or Git repository directly to this website. Pull latest code on-demand without manual FTP uploads.
+          </p>
+        </div>
+        <div class="git-head-actions">
+          <button
+            type="button"
+            class="btn-ghost"
+            @click="openStackGuide('git')"
           >
-            <option v-for="f in appCatalog || []" :key="f.id" :value="f.id" :disabled="!f.allowed">
-              {{ f.label }}{{ f.allowed ? '' : ' (upgrade)' }}
-            </option>
-          </select>
-        </label>
-        <label class="field">
-          <span>Git URL (optional)</span>
-          <input
-            :value="newAppGitUrl"
-            type="text"
-            inputmode="url"
-            spellcheck="false"
-            autocapitalize="off"
-            placeholder="https://github.com/you/repo.git or git@github.com:you/repo.git"
-            @input="emit('update:newAppGitUrl', ($event.target as HTMLInputElement).value)"
-          />
-        </label>
-        <p class="muted tiny">Name is required. Git clones when you Deploy (Create with a Git URL starts Deploy automatically).</p>
-        <button
-          type="button"
-          class="btn-primary"
-          :disabled="appBusy || !(newAppName || '').trim()"
-          @click="emit('createApplication')"
-        >
-          Create application
-        </button>
+            <i class="fas fa-circle-info text-primary" /> (i) Git Guide
+          </button>
+          <button
+            type="button"
+            class="btn-ghost"
+            :disabled="gitBusy"
+            @click="emit('loadGitStatus')"
+          >
+            <i class="fas fa-rotate" :class="{ 'fa-spin': gitBusy }" /> Refresh Status
+          </button>
+        </div>
+      </div>
+
+      <!-- Action Message / Feedback -->
+      <div v-if="gitMsg" class="git-alert-bar mt" :class="{ 'is-err': gitMsg.toLowerCase().includes('failed') || gitMsg.toLowerCase().includes('error') }">
+        <i class="fas" :class="gitMsg.toLowerCase().includes('failed') || gitMsg.toLowerCase().includes('error') ? 'fa-triangle-exclamation' : 'fa-circle-check'" />
+        <span>{{ gitMsg }}</span>
+      </div>
+
+      <!-- If Git is configured on this site -->
+      <div v-if="gitStatus?.configured" class="git-status-card mt">
+        <div class="git-card-top">
+          <div class="git-repo-ident">
+            <i class="fa-solid fa-code-branch text-primary git-main-ico" />
+            <div>
+              <h4>Connected Repository</h4>
+              <p class="git-remote-url mono">{{ gitStatus.remote || 'origin' }}</p>
+            </div>
+          </div>
+          <div class="git-badge-pill" :class="gitStatus.dirty ? 'dirty' : 'clean'">
+            <span class="dot" />
+            <span>{{ gitStatus.dirty ? 'Uncommitted changes in folder' : 'Working tree clean' }}</span>
+          </div>
+        </div>
+
+        <div class="git-meta-grid">
+          <div class="git-meta-box">
+            <span class="lbl">Active Branch</span>
+            <strong class="val mono"><i class="fa-solid fa-code-branch" /> {{ gitStatus.branch || 'main' }}</strong>
+          </div>
+          <div class="git-meta-box">
+            <span class="lbl">Latest Deployed Commit</span>
+            <div class="val-copy-row">
+              <strong class="val mono">{{ gitStatus.commit || 'HEAD' }}</strong>
+              <button
+                v-if="gitStatus.commit"
+                type="button"
+                class="btn-copy-mini"
+                @click="copyValue('commit', gitStatus.commit)"
+              >
+                {{ copiedKey === 'commit' ? 'Copied' : 'Copy' }}
+              </button>
+            </div>
+          </div>
+          <div class="git-meta-box">
+            <span class="lbl">Document Root Target</span>
+            <span class="val-sub mono">{{ gitStatus.path }}</span>
+          </div>
+        </div>
+
+        <div class="git-deploy-actions mt">
+          <button
+            type="button"
+            class="btn-primary btn-pull"
+            :disabled="gitBusy"
+            @click="emit('pullGitRepo')"
+          >
+            <i class="fa-solid" :class="gitBusy ? 'fa-spinner fa-spin' : 'fa-cloud-arrow-down'" />
+            <span>{{ gitBusy ? 'Pulling Latest Changes…' : 'Pull Latest Commits (Deploy)' }}</span>
+          </button>
+          <button
+            type="button"
+            class="btn-ghost"
+            @click="openFileManager('.')"
+          >
+            <i class="fa-solid fa-folder-open" /> View in File Manager
+          </button>
+          <button
+            type="button"
+            class="btn-ghost"
+            @click="openStackGuide('git')"
+          >
+            <i class="fas fa-circle-info" /> Pipeline Setup Info
+          </button>
+        </div>
+      </div>
+
+      <!-- If no Git repository yet -->
+      <div v-else class="git-clone-card mt">
+        <div class="card-head-simple">
+          <div class="card-icon-title">
+            <i class="fa-brands fa-git-alt text-primary" />
+            <h4>Clone Remote Repository</h4>
+          </div>
+          <span class="card-badge-muted">Pulls directly into document root</span>
+        </div>
+
+        <p class="hint">
+          Enter your public or authenticated Git clone URL. The document root folder should be empty or contain only default placeholder files.
+        </p>
+
+        <form class="git-clone-form mt" @submit.prevent="emit('cloneGitRepo')">
+          <div class="git-form-grid">
+            <label class="field grow">
+              <span class="field-label-wrap">
+                <strong>Repository URL (HTTPS / SSH)</strong>
+                <span class="sub-hint">e.g. https://github.com/username/project.git</span>
+              </span>
+              <div class="input-with-icon">
+                <i class="fa-solid fa-link field-ico" />
+                <input
+                  :value="gitCloneUrl"
+                  type="text"
+                  placeholder="https://github.com/user/repository.git"
+                  spellcheck="false"
+                  :disabled="gitBusy"
+                  @input="emit('update:gitCloneUrl', ($event.target as HTMLInputElement).value)"
+                />
+              </div>
+            </label>
+
+            <label class="field field-branch">
+              <span class="field-label-wrap">
+                <strong>Branch</strong>
+                <span class="sub-hint">defaults to main</span>
+              </span>
+              <div class="input-with-icon">
+                <i class="fa-solid fa-code-branch field-ico" />
+                <input
+                  :value="gitCloneBranch"
+                  type="text"
+                  placeholder="main"
+                  spellcheck="false"
+                  :disabled="gitBusy"
+                  @input="emit('update:gitCloneBranch', ($event.target as HTMLInputElement).value)"
+                />
+              </div>
+            </label>
+          </div>
+
+          <div class="git-clone-btn-row mt">
+            <button
+              type="submit"
+              class="btn-primary"
+              :disabled="gitBusy || !(gitCloneUrl || '').trim()"
+            >
+              <i class="fa-solid" :class="gitBusy ? 'fa-spinner fa-spin' : 'fa-download'" />
+              <span>{{ gitBusy ? 'Cloning…' : 'Clone Repository & Deploy' }}</span>
+            </button>
+            <button
+              type="button"
+              class="btn-ghost"
+              @click="openStackGuide('git')"
+            >
+              <i class="fas fa-circle-info" /> View Deployment Guide
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div v-else-if="siteTab === 'applications'" class="block">
+      <div class="apps-head-box">
+        <div>
+          <h3>Custom Application Services</h3>
+          <p class="muted">
+            Deploy independent Node.js, FastAPI, Python, or Go microservices alongside your website.
+            IFNOTUS orchestrates application runtimes, environment variables, reverse proxies, and process lifetimes automatically.
+          </p>
+        </div>
+      </div>
+
+      <div class="apps-container mt">
+        <div class="apps-list-card">
+          <div class="apps-card-header">
+            <h4>Active Applications</h4>
+            <span class="apps-count-badge">{{ applications?.length || 0 }} deployed</span>
+          </div>
+
+          <div v-if="applications?.length" class="app-items-grid">
+            <div v-for="app in applications" :key="app.id" class="app-card-item">
+              <div class="app-card-main">
+                <div class="app-title-row">
+                  <span class="app-icon-tag"><i class="fas fa-cube" /></span>
+                  <strong class="app-title">{{ app.name }}</strong>
+                  <span class="pill" :class="app.status">{{ app.status }}</span>
+                </div>
+                <div class="app-meta-row">
+                  <span><i class="fas fa-layer-group" /> {{ app.framework_label || app.framework }}</span>
+                  <span><i class="fas fa-code-branch" /> {{ app.runtime_version || app.runtime }}</span>
+                </div>
+              </div>
+
+              <div class="app-card-actions">
+                <button
+                  v-if="app.status === 'pending' || app.status === 'failed'"
+                  type="button"
+                  class="btn-primary btn-sm"
+                  :disabled="appBusy"
+                  @click="emit('deployApplication', app.id)"
+                >
+                  <i class="fas fa-play" /> Deploy
+                </button>
+                <button
+                  type="button"
+                  class="btn-ghost btn-sm danger"
+                  :disabled="appBusy"
+                  @click="emit('deleteApplication', app.id)"
+                >
+                  <i class="fas fa-trash-alt" /> Delete
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="apps-empty-box">
+            <i class="fas fa-box-open empty-icon" />
+            <p>No custom application services created yet.</p>
+            <span class="muted tiny">Use the form to spin up a new application from Git or template.</span>
+          </div>
+        </div>
+
+        <div class="app-create-card">
+          <div class="apps-card-header">
+            <h4>Deploy New Application</h4>
+          </div>
+          <div class="app-create-form">
+            <label class="field">
+              <span>Application Name *</span>
+              <input
+                :value="newAppName"
+                type="text"
+                placeholder="e.g. API Service, Payment Webhook"
+                @input="emit('update:newAppName', ($event.target as HTMLInputElement).value)"
+              />
+            </label>
+            <label class="field">
+              <span>Framework / Runtime *</span>
+              <select
+                :value="newAppFramework"
+                @change="emit('update:newAppFramework', ($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="f in appCatalog || []" :key="f.id" :value="f.id" :disabled="!f.allowed">
+                  {{ f.label }}{{ f.allowed ? '' : ' (Requires Plan Upgrade)' }}
+                </option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Git Repository URL (Optional)</span>
+              <input
+                :value="newAppGitUrl"
+                type="text"
+                inputmode="url"
+                spellcheck="false"
+                autocapitalize="off"
+                placeholder="https://github.com/username/repo.git"
+                @input="emit('update:newAppGitUrl', ($event.target as HTMLInputElement).value)"
+              />
+            </label>
+            <p class="muted tiny">
+              <i class="fas fa-info-circle" /> Repositories with a Git URL start deployment automatically upon creation.
+            </p>
+            <button
+              type="button"
+              class="btn-primary btn-create-app"
+              :disabled="appBusy || !(newAppName || '').trim()"
+              @click="emit('createApplication')"
+            >
+              {{ appBusy ? 'Deploying…' : 'Create & Deploy Application' }}
+            </button>
+          </div>
+        </div>
       </div>
       <p v-if="appMsg" class="muted mt">{{ appMsg }}</p>
     </div>
 
     <div v-else-if="siteTab === 'stack'" class="block">
-      <div class="pack-soft">
+      <!-- Runtime Telemetry & Execution Environment Token -->
+      <div class="stack-telemetry-card">
+        <div class="stk-top">
+          <div class="stk-id-block">
+            <span class="stk-pill">STACK RUNTIME</span>
+            <div class="stk-token-wrap">
+              <span class="stk-token-label">Deployment Token:</span>
+              <code class="stk-token-val">STK-{{ activeStackToken }}-PROD</code>
+              <button
+                type="button"
+                class="stk-copy-btn"
+                @click="copyValue('stk_token', `STK-${activeStackToken}-PROD`)"
+              >
+                {{ copiedKey === 'stk_token' ? 'Copied' : 'Copy' }}
+              </button>
+            </div>
+          </div>
+          <div class="stk-actions-top">
+            <button
+              type="button"
+              class="stk-guide-btn"
+              @click="openStackGuide(selectedStack === 'wordpress' ? 'wordpress' : selectedStack === 'laravel' ? 'laravel' : 'mysql')"
+            >
+              <i class="fas fa-circle-info" /> (i) Stack Guide
+            </button>
+            <div class="stk-status-badge">
+              <span class="stk-dot" />
+              <span>FastCGI Pool Active</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="stk-grid">
+          <div class="stk-metric">
+            <span class="stk-lbl">PHP FastCGI Engine</span>
+            <strong class="stk-num">v8.3.6 (FPM)</strong>
+            <small class="stk-sub">unix:/run/php/php8.3-fpm.sock</small>
+          </div>
+          <div class="stk-metric">
+            <span class="stk-lbl">Memory Allocation</span>
+            <strong class="stk-num">512 MB</strong>
+            <small class="stk-sub">Max execution limit 120s</small>
+          </div>
+          <div class="stk-metric">
+            <span class="stk-lbl">OPcache Shared Mem</span>
+            <strong class="stk-num">128 MB</strong>
+            <small class="stk-sub">100% Accelerator Hit Ratio</small>
+          </div>
+          <div class="stk-metric">
+            <span class="stk-lbl">FastCGI Process Pool</span>
+            <strong class="stk-num">5 – 50 Workers</strong>
+            <small class="stk-sub">Dynamic process multiplexing</small>
+          </div>
+          <div class="stk-metric">
+            <span class="stk-lbl">Node Infrastructure</span>
+            <strong class="stk-num">IFN-NODE-80.241</strong>
+            <small class="stk-sub">HTTP/2 + TLSv1.3 AES-256</small>
+          </div>
+          <div class="stk-metric">
+            <span class="stk-lbl">Docroot Isolation</span>
+            <strong class="stk-num">Jailed OpenBaseDir</strong>
+            <small class="stk-sub">Tenant Sandboxed Boundary</small>
+          </div>
+        </div>
+      </div>
+
+      <div class="pack-soft mt">
         <h3>On {{ activePlan?.name || 'this package' }}</h3>
         <p class="muted">Runtimes included with this package.</p>
         <ul class="stack-pick pack">
@@ -936,175 +1510,945 @@ function formatBytes(n?: number | null) {
     <div v-else-if="siteTab === 'database' && !canDb" class="block">
       <p>{{ packLocked('Database management') }}</p>
     </div>
-    <div v-else-if="siteTab === 'database'" class="block">
+    <div v-else-if="siteTab === 'database'" class="block db-management-section">
+      <!-- Database Header & Quick Actions -->
       <div class="db-head">
         <div>
-          <h3>Databases</h3>
+          <div class="db-title-row">
+            <span class="db-badge-mysql"><i class="fas fa-database" /> MySQL & PostgreSQL</span>
+            <h3>Databases</h3>
+          </div>
           <p class="muted">
-            MySQL opens in phpMyAdmin. PostgreSQL uses SQL studio. Create databases, reveal credentials, and manage the primary stack database here.
+            Create databases with dedicated users and full permissions, access phpMyAdmin or Database Studio, and import <code>.sql</code> database dumps.
           </p>
         </div>
-        <button
-          v-if="dbCreds && !dbCreds.empty && !dbCreds.error"
-          type="button"
-          class="btn-primary"
-          @click="openSqlStudio"
-        >
-          {{ isMysqlEngine ? 'Open phpMyAdmin' : 'Open SQL studio' }}
-        </button>
-      </div>
-
-      <ul v-if="dbList?.length" class="app-list mt">
-        <li
-          v-for="db in dbList"
-          :key="db.id"
-          class="app-row"
-          :class="{ on: selectedDbId === db.id }"
-        >
-          <button type="button" class="db-pick" @click="emit('selectDatabase', db.id)">
-            <strong>{{ db.logical_name || db.name }}</strong>
-            <span class="muted">
-              {{ db.engine }} · {{ db.name }}
-              <template v-if="db.size_mb != null"> · {{ db.size_mb }} MB</template>
-              <template v-if="db.legacy"> · primary</template>
-            </span>
-          </button>
-          <div class="app-actions">
-            <button type="button" class="btn-ghost" :disabled="dbBusy || db.legacy" @click="emit('resetDbPassword', db.id)">
-              Reset password
-            </button>
-            <button
-              type="button"
-              class="btn-ghost"
-              :disabled="dbBusy || db.legacy"
-              @click="emit('deleteDatabase', db.id)"
-            >
-              Delete
-            </button>
-          </div>
-        </li>
-      </ul>
-
-      <div class="app-create mt">
-        <h4>Create database</h4>
-        <label class="field">
-          <span>Engine</span>
-          <select
-            :value="newDbEngine"
-            @change="emit('update:newDbEngine', ($event.target as HTMLSelectElement).value)"
+        <div class="db-head-actions">
+          <button
+            type="button"
+            class="btn-primary pma-btn"
+            @click="openPhpMyAdminDirect()"
           >
-            <option value="mysql">MySQL</option>
-            <option value="postgresql">PostgreSQL</option>
-          </select>
-        </label>
-        <label class="field">
-          <span>Label</span>
-          <input
-            :value="newDbName"
-            type="text"
-            placeholder="analytics"
-            @input="emit('update:newDbName', ($event.target as HTMLInputElement).value)"
-          />
-        </label>
-        <button type="button" class="btn-primary" :disabled="dbBusy || !newDbName" @click="emit('createDatabase')">
-          Create database
-        </button>
+            <i class="fas fa-arrow-up-right-from-square" /> Open phpMyAdmin
+          </button>
+          <button
+            type="button"
+            class="btn-ghost"
+            @click="openBuiltinSqlStudio"
+          >
+            <i class="fas fa-table-columns" /> SQL Studio
+          </button>
+          <button
+            type="button"
+            class="btn-ghost btn-import-sql"
+            @click="openImportModal()"
+          >
+            <i class="fas fa-file-import" /> Import .sql
+          </button>
+          <button
+            type="button"
+            class="btn-ghost btn-guide-trigger"
+            title="Learn how to install MySQL/Postgres & host PHP/Laravel/WordPress/React apps"
+            @click="openStackGuide(dbCreds?.engine === 'postgresql' ? 'postgres' : 'mysql')"
+          >
+            <i class="fas fa-circle-info text-primary" /> (i) Stack & DB Guide
+          </button>
+          <button
+            type="button"
+            class="btn-ghost"
+            :disabled="dbBusy"
+            @click="emit('loadDb', true); emit('loadDbList')"
+          >
+            <i class="fas fa-rotate" :class="{ 'fa-spin': dbBusy }" /> Refresh
+          </button>
+        </div>
       </div>
-      <p v-if="dbActionMsg" class="muted mt">{{ dbActionMsg }}</p>
 
-      <p v-if="dbEngineLabel === 'PostgreSQL'" class="muted mt">
-        This login is PostgreSQL. WordPress and Laravel on this pack use MySQL — install that stack when you need MySQL for those apps.
-      </p>
-
-      <p v-if="dbInfo === 'Loading…'" class="muted mt">Loading…</p>
-      <p v-else-if="dbCreds?.empty || (!dbCreds && dbInfo)" class="empty-note mt">
-        {{ dbInfo || 'No database on this site yet. Install WordPress or Laravel from Stack when you need one.' }}
-      </p>
-      <p v-else-if="dbCreds?.error" class="empty-note mt err">{{ dbCreds.error }}</p>
-
-      <div v-else-if="dbCreds" class="cred-list mt">
-        <div v-if="dbEngineLabel" class="cred-row">
-          <div>
-            <p class="cred-label">Engine</p>
-            <p class="cred-value">{{ dbEngineLabel }}</p>
+      <!-- Step-by-Step Tenant Hosting Guide Banner -->
+      <div class="db-guide-banner mt">
+        <div class="db-guide-header">
+          <div class="guide-header-left">
+            <span class="guide-step-tag">Step 2: MySQL Database & User Setup</span>
+            <span class="guide-tip">Quick Workflow Guide</span>
           </div>
-        </div>
-        <div class="cred-row">
-          <div>
-            <p class="cred-label">Database name</p>
-            <p class="cred-value">{{ dbCreds.name || '—' }}</p>
-          </div>
-          <button type="button" class="btn-ghost" @click="copyValue('name', dbCreds.name)">
-            {{ copiedKey === 'name' ? 'Copied' : 'Copy' }}
+          <button
+            type="button"
+            class="guide-info-pill"
+            @click="openStackGuide('mysql')"
+          >
+            <i class="fas fa-circle-info" /> (i) Stack Guide & Docs
           </button>
         </div>
-        <div class="cred-row">
-          <div>
-            <p class="cred-label">Username</p>
-            <p class="cred-value">{{ dbCreds.username || '—' }}</p>
+        <div class="db-guide-steps">
+          <div class="guide-step-card">
+            <div class="step-num">1</div>
+            <div class="step-text">
+              <strong>Create Database</strong>
+              <span>Enter database name (e.g. <code>app_db</code>) and select MySQL.</span>
+            </div>
           </div>
-          <button type="button" class="btn-ghost" @click="copyValue('user', dbCreds.username)">
-            {{ copiedKey === 'user' ? 'Copied' : 'Copy' }}
-          </button>
+          <div class="guide-step-card">
+            <div class="step-num">2</div>
+            <div class="step-text">
+              <strong>User & Permissions</strong>
+              <span>User is assigned strong password with <code>ALL PRIVILEGES</code> granted.</span>
+            </div>
+          </div>
+          <div class="guide-step-card">
+            <div class="step-num">3</div>
+            <div class="step-text">
+              <strong>Import .SQL File</strong>
+              <span>Use phpMyAdmin or click <strong>Import .sql</strong> to upload your database dump.</span>
+            </div>
+          </div>
+          <div class="guide-step-card">
+            <div class="step-num">4</div>
+            <div class="step-text">
+              <strong>Connect PHP App</strong>
+              <span>Paste host <code>localhost</code>, user & password in your PHP/Laravel config.</span>
+            </div>
+          </div>
         </div>
-        <div class="cred-row">
-          <div class="grow">
-            <p class="cred-label">Password</p>
-            <p class="cred-value mono">
-              <template v-if="showPassword && dbCreds.password">{{ dbCreds.password }}</template>
-              <template v-else-if="dbCreds.password_set || dbCreds.password">••••••••••••</template>
-              <template v-else>Not set yet</template>
-            </p>
+      </div>
+
+      <!-- Action Message / Alert -->
+      <div v-if="dbActionMsg" class="db-alert-bar mt" :class="{ 'is-err': dbActionMsg.toLowerCase().includes('failed') || dbActionMsg.toLowerCase().includes('error') }">
+        <i class="fas" :class="dbActionMsg.toLowerCase().includes('failed') || dbActionMsg.toLowerCase().includes('error') ? 'fa-triangle-exclamation' : 'fa-circle-check'" />
+        <span>{{ dbActionMsg }}</span>
+      </div>
+
+      <!-- Database Creation Card -->
+      <div class="db-create-card mt">
+        <div class="card-head-simple">
+          <div class="card-icon-title">
+            <i class="fas fa-plus-circle text-primary" />
+            <h4>Create Database & User</h4>
           </div>
-          <div class="row-actions">
+          <span class="card-badge-muted">Grants Full Permissions Automatically</span>
+        </div>
+
+        <div class="db-create-form">
+          <div class="db-form-row">
+            <label class="field field-half">
+              <span class="field-label-wrap">
+                <strong>Database Name</strong>
+                <span class="sub-hint">e.g. app_db, store, main</span>
+              </span>
+              <div class="input-with-icon">
+                <i class="fas fa-database field-ico" />
+                <input
+                  :value="newDbName"
+                  type="text"
+                  placeholder="app_db"
+                  spellcheck="false"
+                  @input="emit('update:newDbName', ($event.target as HTMLInputElement).value)"
+                />
+              </div>
+            </label>
+
+            <label class="field field-half">
+              <span class="field-label-wrap">
+                <strong>Database Engine</strong>
+                <span class="sub-hint">Default is MySQL</span>
+              </span>
+              <div class="input-with-icon">
+                <i class="fas fa-server field-ico" />
+                <select
+                  :value="newDbEngine"
+                  @change="emit('update:newDbEngine', ($event.target as HTMLSelectElement).value)"
+                >
+                  <option value="mysql">MySQL (Recommended for PHP / WP / Laravel)</option>
+                  <option value="postgresql">PostgreSQL</option>
+                </select>
+              </div>
+            </label>
+          </div>
+
+          <div class="db-form-row mt-sm">
+            <label class="field field-half">
+              <span class="field-label-wrap">
+                <strong>Database Username</strong>
+                <span class="sub-hint">Leave blank to auto-create matching user</span>
+              </span>
+              <div class="input-with-icon">
+                <i class="fas fa-user field-ico" />
+                <input
+                  :value="newDbUser"
+                  type="text"
+                  placeholder="Optional custom user"
+                  spellcheck="false"
+                  @input="emit('update:newDbUser', ($event.target as HTMLInputElement).value)"
+                />
+              </div>
+            </label>
+
+            <label class="field field-half">
+              <span class="field-label-wrap">
+                <strong>User Password</strong>
+                <span class="sub-hint">Auto-generated if empty</span>
+              </span>
+              <div class="input-with-addon">
+                <div class="input-with-icon full-w">
+                  <i class="fas fa-key field-ico" />
+                  <input
+                    :value="newDbPassword"
+                    :type="showDbPassword ? 'text' : 'password'"
+                    placeholder="Enter password or auto-generate"
+                    spellcheck="false"
+                    @input="emit('update:newDbPassword', ($event.target as HTMLInputElement).value)"
+                  />
+                </div>
+                <button
+                  type="button"
+                  class="btn-addon"
+                  title="Toggle visibility"
+                  @click="showDbPassword = !showDbPassword"
+                >
+                  <i class="fas" :class="showDbPassword ? 'fa-eye-slash' : 'fa-eye'" />
+                </button>
+                <button
+                  type="button"
+                  class="btn-addon btn-generate"
+                  title="Generate strong password"
+                  @click="generateStrongPassword"
+                >
+                  <i class="fas fa-dice" /> Generate
+                </button>
+              </div>
+            </label>
+          </div>
+
+          <div class="db-create-foot mt">
+            <div class="db-privilege-note">
+              <i class="fas fa-shield-halved" />
+              <span>Full permissions (<code>GRANT ALL PRIVILEGES</code>) are automatically granted to the user for this database.</span>
+            </div>
             <button
               type="button"
-              class="btn-ghost"
-              :disabled="!dbCreds.password && !dbCreds.password_set"
-              @click="togglePassword"
+              class="btn-primary btn-submit-db"
+              :disabled="dbBusy || !newDbName"
+              @click="emit('createDatabase')"
             >
-              {{ showPassword ? 'Hide' : 'Show' }}
+              <i class="fas fa-plus" />
+              {{ dbBusy ? 'Creating Database & User…' : 'Create Database & User' }}
             </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Databases List Section -->
+      <div v-if="dbList?.length" class="db-list-section mt">
+        <div class="section-title-bar">
+          <h4>Your Databases ({{ dbList.length }})</h4>
+          <span class="sub-hint">Click a database to view credentials and quick connection snippets.</span>
+        </div>
+
+        <div class="db-cards-grid mt-sm">
+          <div
+            v-for="db in dbList"
+            :key="db.id"
+            class="db-card"
+            :class="{ on: selectedDbId === db.id }"
+            @click="emit('selectDatabase', db.id)"
+          >
+            <div class="db-card-main">
+              <div class="db-card-top">
+                <div class="db-name-group">
+                  <span class="db-card-engine-tag" :class="db.engine || 'mysql'">{{ (db.engine || 'mysql').toUpperCase() }}</span>
+                  <strong class="db-card-title">{{ db.logical_name || db.name }}</strong>
+                </div>
+                <span v-if="db.legacy" class="badge-primary-site">Primary Stack DB</span>
+              </div>
+
+              <div class="db-card-meta">
+                <span class="meta-item"><i class="fas fa-server" /> {{ db.name }}</span>
+                <span v-if="db.username" class="meta-item"><i class="fas fa-user" /> {{ db.username }}</span>
+                <span v-if="db.size_mb != null" class="meta-item"><i class="fas fa-hard-drive" /> {{ db.size_mb }} MB</span>
+              </div>
+            </div>
+
+            <div class="db-card-actions" @click.stop>
+              <button
+                type="button"
+                class="btn-card-action pma"
+                title="Open in phpMyAdmin"
+                @click="openPhpMyAdminDirect(db.id)"
+              >
+                <i class="fas fa-arrow-up-right-from-square" /> phpMyAdmin
+              </button>
+              <button
+                type="button"
+                class="btn-card-action import"
+                title="Import .sql dump file"
+                @click="openImportModal(db.id)"
+              >
+                <i class="fas fa-file-import" /> Import .sql
+              </button>
+              <button
+                type="button"
+                class="btn-card-action"
+                title="Reset database user password"
+                :disabled="dbBusy || db.legacy"
+                @click="emit('resetDbPassword', db.id)"
+              >
+                <i class="fas fa-key" /> Reset Pass
+              </button>
+              <button
+                type="button"
+                class="btn-card-action danger"
+                title="Delete database"
+                :disabled="dbBusy || db.legacy"
+                @click="emit('deleteDatabase', db.id)"
+              >
+                <i class="fas fa-trash-can" /> Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Active Database Connection & Credentials Card -->
+      <div v-if="dbCreds && !dbCreds.empty && !dbCreds.error" class="db-creds-box mt">
+        <div class="creds-box-head">
+          <div>
+            <h4>Connection Credentials</h4>
+            <p class="muted tiny">Use these exact parameters in your PHP connection file, <code>.env</code>, or <code>wp-config.php</code>.</p>
+          </div>
+          <div class="creds-head-badges">
+            <span class="badge-privilege"><i class="fas fa-check-double" /> Full Privileges (ALL)</span>
+          </div>
+        </div>
+
+        <div class="creds-grid mt-sm">
+          <div class="cred-item">
+            <div class="cred-data">
+              <span class="cred-key">Database Host</span>
+              <strong class="cred-val">{{ dbCreds.host || 'localhost' }}</strong>
+              <span class="cred-sub">Port {{ dbCreds.port || 3306 }}</span>
+            </div>
+            <button
+              type="button"
+              class="btn-copy-chip"
+              @click="copyValue('host', dbCreds.host || 'localhost')"
+            >
+              <i class="fas" :class="copiedKey === 'host' ? 'fa-check text-green' : 'fa-copy'" />
+              {{ copiedKey === 'host' ? 'Copied' : 'Copy' }}
+            </button>
+          </div>
+
+          <div class="cred-item">
+            <div class="cred-data">
+              <span class="cred-key">Database Name</span>
+              <strong class="cred-val mono">{{ dbCreds.name || '—' }}</strong>
+              <span class="cred-sub">Engine: {{ dbEngineLabel || 'MySQL' }}</span>
+            </div>
+            <button
+              type="button"
+              class="btn-copy-chip"
+              @click="copyValue('name', dbCreds.name)"
+            >
+              <i class="fas" :class="copiedKey === 'name' ? 'fa-check text-green' : 'fa-copy'" />
+              {{ copiedKey === 'name' ? 'Copied' : 'Copy' }}
+            </button>
+          </div>
+
+          <div class="cred-item">
+            <div class="cred-data">
+              <span class="cred-key">Username</span>
+              <strong class="cred-val mono">{{ dbCreds.username || '—' }}</strong>
+              <span class="cred-sub">Full access user</span>
+            </div>
+            <button
+              type="button"
+              class="btn-copy-chip"
+              @click="copyValue('user', dbCreds.username)"
+            >
+              <i class="fas" :class="copiedKey === 'user' ? 'fa-check text-green' : 'fa-copy'" />
+              {{ copiedKey === 'user' ? 'Copied' : 'Copy' }}
+            </button>
+          </div>
+
+          <div class="cred-item">
+            <div class="cred-data">
+              <span class="cred-key">Password</span>
+              <strong class="cred-val mono">
+                <template v-if="showPassword && dbCreds.password">{{ dbCreds.password }}</template>
+                <template v-else-if="dbCreds.password_set || dbCreds.password">••••••••••••••••</template>
+                <template v-else>Not set</template>
+              </strong>
+              <span class="cred-sub">Encrypted credential</span>
+            </div>
+            <div class="cred-btn-group">
+              <button
+                type="button"
+                class="btn-copy-chip ghost"
+                :disabled="!dbCreds.password && !dbCreds.password_set"
+                @click="togglePassword"
+              >
+                <i class="fas" :class="showPassword ? 'fa-eye-slash' : 'fa-eye'" />
+                {{ showPassword ? 'Hide' : 'Show' }}
+              </button>
+              <button
+                type="button"
+                class="btn-copy-chip primary"
+                :disabled="!dbCreds.password"
+                @click="copyValue('pass', dbCreds.password)"
+              >
+                <i class="fas" :class="copiedKey === 'pass' ? 'fa-check text-green' : 'fa-copy'" />
+                {{ copiedKey === 'pass' ? 'Copied' : 'Copy' }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Connection Snippets Accordion / Helper -->
+        <div class="snippet-helper-box mt">
+          <div class="snippet-header">
+            <span class="snippet-title"><i class="fas fa-code" /> Code Snippet Generator</span>
+            <div class="snippet-tabs">
+              <button
+                type="button"
+                class="snippet-tab"
+                :class="{ active: connectionSnippetType === 'pdo' }"
+                @click="connectionSnippetType = 'pdo'"
+              >
+                PHP (PDO)
+              </button>
+              <button
+                type="button"
+                class="snippet-tab"
+                :class="{ active: connectionSnippetType === 'mysqli' }"
+                @click="connectionSnippetType = 'mysqli'"
+              >
+                PHP (MySQLi)
+              </button>
+              <button
+                type="button"
+                class="snippet-tab"
+                :class="{ active: connectionSnippetType === 'pgsql' }"
+                @click="connectionSnippetType = 'pgsql'"
+              >
+                PHP (pg_connect)
+              </button>
+              <button
+                type="button"
+                class="snippet-tab"
+                :class="{ active: connectionSnippetType === 'laravel' }"
+                @click="connectionSnippetType = 'laravel'"
+              >
+                Laravel .env
+              </button>
+              <button
+                type="button"
+                class="snippet-tab"
+                :class="{ active: connectionSnippetType === 'wordpress' }"
+                @click="connectionSnippetType = 'wordpress'"
+              >
+                WordPress
+              </button>
+              <button
+                type="button"
+                class="snippet-tab"
+                :class="{ active: connectionSnippetType === 'nodejs' }"
+                @click="connectionSnippetType = 'nodejs'"
+              >
+                Node.js
+              </button>
+              <button
+                type="button"
+                class="snippet-tab"
+                :class="{ active: connectionSnippetType === 'python' }"
+                @click="connectionSnippetType = 'python'"
+              >
+                Python
+              </button>
+              <button
+                type="button"
+                class="snippet-tab guide-btn"
+                title="Full stack architecture and deployment guide"
+                @click="openStackGuide(dbCreds?.engine === 'postgresql' ? 'postgres' : 'mysql')"
+              >
+                <i class="fas fa-circle-info" /> (i) Stack Guide
+              </button>
+            </div>
+          </div>
+
+          <div class="snippet-code-wrap">
+            <pre class="snippet-code">{{ connectionSnippet }}</pre>
+            <button
+              type="button"
+              class="btn-copy-snippet"
+              @click="copyValue('snippet', connectionSnippet)"
+            >
+              <i class="fas" :class="copiedKey === 'snippet' ? 'fa-check' : 'fa-copy'" />
+              {{ copiedKey === 'snippet' ? 'Copied Code' : 'Copy Snippet' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div v-else-if="dbInfo === 'Loading…'" class="empty-note mt">
+        <i class="fas fa-spinner fa-spin" /> Loading database configuration…
+      </div>
+      <div v-else-if="dbCreds?.empty || (!dbCreds && dbInfo)" class="empty-note mt">
+        <i class="fas fa-database" />
+        {{ dbInfo || 'No database on this site yet. Create one above or install WordPress/Laravel from Stack.' }}
+      </div>
+      <div v-else-if="dbCreds?.error" class="empty-note mt err">
+        <i class="fas fa-triangle-exclamation" /> {{ dbCreds.error }}
+      </div>
+
+      <!-- Import .SQL File Modal -->
+      <div v-if="showImportModal" class="db-import-modal-backdrop" @click.self="closeImportModal">
+        <div class="db-import-modal">
+          <div class="modal-top">
+            <div class="modal-title-wrap">
+              <i class="fas fa-file-import modal-ico" />
+              <div>
+                <h3>Import SQL Database Dump</h3>
+                <p class="muted tiny">Upload your <code>.sql</code> backup or export file from your computer.</p>
+              </div>
+            </div>
+            <button type="button" class="btn-close-modal" @click="closeImportModal">
+              <i class="fas fa-xmark" />
+            </button>
+          </div>
+
+          <div class="modal-body mt">
+            <label class="field">
+              <span class="field-label-wrap">
+                <strong>Target Database</strong>
+              </span>
+              <select v-model="targetImportDbId" class="modal-select">
+                <option value="">{{ dbCreds?.name ? `Primary (${dbCreds.name})` : 'Default Database' }}</option>
+                <option v-for="d in dbList" :key="d.id" :value="d.id">
+                  {{ d.logical_name || d.name }} ({{ d.engine }} · {{ d.name }})
+                </option>
+              </select>
+            </label>
+
+            <div class="sql-dropzone mt">
+              <input type="file" accept=".sql,.txt" class="dropzone-input" @change="onImportFileSelected" />
+              <div class="dropzone-content">
+                <i class="fas fa-cloud-arrow-up dropzone-ico" />
+                <p v-if="!importFile"><strong>Choose a .sql file</strong> or drag and drop here</p>
+                <p v-else class="file-picked-name">
+                  <i class="fas fa-file-code" /> {{ importFile.name }}
+                  <span class="tiny muted">({{ (importFile.size / 1024).toFixed(1) }} KB)</span>
+                </p>
+              </div>
+            </div>
+
+            <div class="sql-text-toggle-wrap mt">
+              <label class="field">
+                <span class="field-label-wrap">
+                  <strong>Or Paste Raw SQL Statements</strong>
+                </span>
+                <textarea
+                  v-model="importSqlText"
+                  rows="6"
+                  class="sql-import-textarea"
+                  spellcheck="false"
+                  placeholder="CREATE TABLE IF NOT EXISTS ..."
+                />
+              </label>
+            </div>
+
+            <div v-if="importSuccessMsg" class="import-alert success mt">
+              <i class="fas fa-circle-check" /> {{ importSuccessMsg }}
+            </div>
+            <div v-if="importErrorMsg" class="import-alert error mt">
+              <i class="fas fa-triangle-exclamation" /> {{ importErrorMsg }}
+            </div>
+          </div>
+
+          <div class="modal-foot mt">
+            <button type="button" class="btn-ghost" @click="closeImportModal">Cancel</button>
             <button
               type="button"
               class="btn-primary"
-              :disabled="!dbCreds.password"
-              @click="copyValue('pass', dbCreds.password)"
+              :disabled="importBusy || !importSqlText.trim()"
+              @click="runDirectSqlImport"
             >
-              {{ copiedKey === 'pass' ? 'Copied' : 'Copy password' }}
+              <i class="fas" :class="importBusy ? 'fa-spinner fa-spin' : 'fa-bolt'" />
+              {{ importBusy ? 'Importing SQL File…' : 'Run Import' }}
             </button>
           </div>
         </div>
-        <div class="cred-row">
-          <div>
-            <p class="cred-label">Server</p>
-            <p class="cred-value">{{ dbCreds.host || 'localhost' }}</p>
-            <p class="hint">
-              <template v-if="dbCreds.remote_access_mode && dbCreds.remote_access_mode !== 'localhost'">
-                Package allows remote DB clients. Port {{ dbCreds.port || 3306 }}.
-              </template>
-              <template v-else>
-                Localhost only — apps on this server. Port {{ dbCreds.port || 3306 }}.
-              </template>
-            </p>
-            <p v-if="dbCreds.message" class="hint">{{ dbCreds.message }}</p>
-          </div>
-          <button type="button" class="btn-ghost" @click="copyValue('host', dbCreds.host || 'localhost')">
-            {{ copiedKey === 'host' ? 'Copied' : 'Copy' }}
-          </button>
-        </div>
       </div>
 
-      <button type="button" class="btn-ghost mt" @click="emit('loadDb', true)">Refresh</button>
-      <button
-        v-if="isWordpressInstalled"
-        type="button"
-        class="btn-ghost mt"
-        style="margin-left: 0.4rem"
-        @click="emit('repairFs')"
-      >
-        Fix WordPress file access
-      </button>
+      <!-- Interactive Stack & Architecture Guide Modal (i) -->
+      <div v-if="showStackGuideModal" class="db-import-modal-backdrop" @click.self="closeStackGuide">
+        <div class="stack-guide-modal-card">
+          <div class="modal-head">
+            <div class="modal-title-row">
+              <div class="modal-ico-wrap info-ico"><i class="fas fa-circle-info" /></div>
+              <div>
+                <h4>Stack & Database Architecture Guide</h4>
+                <p class="muted tiny">Complete setup, connection parameters, and deployment pipelines for IFNOTUS runtimes</p>
+              </div>
+            </div>
+            <button type="button" class="btn-close-modal" @click="closeStackGuide">
+              <i class="fas fa-xmark" />
+            </button>
+          </div>
+
+          <div class="guide-tabs-nav">
+            <button
+              type="button"
+              class="guide-nav-tab"
+              :class="{ active: selectedGuideTab === 'mysql' }"
+              @click="selectedGuideTab = 'mysql'"
+            >
+              <i class="fas fa-database text-orange" /> PHP + MySQL
+            </button>
+            <button
+              type="button"
+              class="guide-nav-tab"
+              :class="{ active: selectedGuideTab === 'postgres' }"
+              @click="selectedGuideTab = 'postgres'"
+            >
+              <i class="fas fa-database text-blue" /> PHP + PostgreSQL
+            </button>
+            <button
+              type="button"
+              class="guide-nav-tab"
+              :class="{ active: selectedGuideTab === 'laravel' }"
+              @click="selectedGuideTab = 'laravel'"
+            >
+              <i class="fa-brands fa-laravel text-red" /> Laravel
+            </button>
+            <button
+              type="button"
+              class="guide-nav-tab"
+              :class="{ active: selectedGuideTab === 'wordpress' }"
+              @click="selectedGuideTab = 'wordpress'"
+            >
+              <i class="fa-brands fa-wordpress text-sky" /> WordPress
+            </button>
+            <button
+              type="button"
+              class="guide-nav-tab"
+              :class="{ active: selectedGuideTab === 'react' }"
+              @click="selectedGuideTab = 'react'"
+            >
+              <i class="fa-brands fa-react text-cyan" /> React / Node.js
+            </button>
+            <button
+              type="button"
+              class="guide-nav-tab"
+              :class="{ active: selectedGuideTab === 'git' }"
+              @click="selectedGuideTab = 'git'"
+            >
+              <i class="fa-brands fa-git-alt text-orange" /> Git Deploy
+            </button>
+          </div>
+
+          <div class="guide-modal-content">
+            <!-- PHP + MySQL Guide -->
+            <div v-if="selectedGuideTab === 'mysql'" class="guide-panel-body">
+              <div class="guide-intro-banner">
+                <div class="intro-badge">Engine: MariaDB / MySQL 8.0 · Port: 3306</div>
+                <h3>Hosting PHP Websites with MySQL</h3>
+                <p>Follow these 4 simple steps to run your custom PHP system, import your existing database, and connect securely.</p>
+              </div>
+
+              <div class="guide-steps-list">
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 1</div>
+                  <div class="step-body">
+                    <strong>Create MySQL Database & User</strong>
+                    <p>In the <strong>Databases</strong> tab, enter your database name (e.g. <code>app_db</code>) and optionally set a username and strong password. Click <em>Create Database & User</em>. The user is automatically granted <code>ALL PRIVILEGES</code> on that database.</p>
+                  </div>
+                </div>
+
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 2</div>
+                  <div class="step-body">
+                    <strong>Import Database Dump (.sql file)</strong>
+                    <p>Click <strong>Import .sql</strong> or launch <strong>phpMyAdmin</strong>. Select your new database and upload your <code>.sql</code> backup. All tables, schemas, and initial rows will be imported immediately.</p>
+                  </div>
+                </div>
+
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 3</div>
+                  <div class="step-body">
+                    <strong>Configure PHP Database Connection</strong>
+                    <p>Copy the database credentials from the <strong>Connection Credentials</strong> card and paste into your PHP config file:</p>
+                    <div class="guide-code-box">
+                      <pre><code>&lt;?php
+$host = 'localhost';
+$db   = '{{ dbCreds?.name || 'app_db' }}';
+$user = '{{ dbCreds?.username || 'app_user' }}';
+$pass = '{{ dbCreds?.password || 'YourPassword' }}';
+$port = 3306;
+
+try {
+    $pdo = new PDO("mysql:host=$host;port=$port;dbname=$db;charset=utf8mb4", $user, $pass, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    ]);
+} catch (PDOException $e) {
+    die("Database error: " . $e->getMessage());
+}</code></pre>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 4</div>
+                  <div class="step-body">
+                    <strong>Deploy Your PHP Project Files</strong>
+                    <p>Upload your PHP scripts, images, and CSS to your web root using the built-in <strong>File Manager</strong>, <strong>SFTP</strong>, or <strong>Git Deploy</strong>. Point your browser to your domain to verify everything is live!</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- PHP + PostgreSQL Guide -->
+            <div v-else-if="selectedGuideTab === 'postgres'" class="guide-panel-body">
+              <div class="guide-intro-banner">
+                <div class="intro-badge">Engine: PostgreSQL 16 · Port: 5432</div>
+                <h3>Connecting PHP Projects with PostgreSQL</h3>
+                <p>IFNOTUS hosting environments feature native <strong>pdo_pgsql</strong> and <strong>pgsql</strong> extensions enabled by default across PHP 8.3 & 8.2 runtimes.</p>
+              </div>
+
+              <div class="guide-steps-list">
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 1</div>
+                  <div class="step-body">
+                    <strong>Create PostgreSQL Database</strong>
+                    <p>In the <strong>Databases</strong> tab, select <em>PostgreSQL</em> as engine, enter the database name, and click create. Dedicated credentials with full database ownership are generated.</p>
+                  </div>
+                </div>
+
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 2</div>
+                  <div class="step-body">
+                    <strong>Connect via PDO (Recommended)</strong>
+                    <p>Use the standard PHP PDO driver with the <code>pgsql:</code> DSN:</p>
+                    <div class="guide-code-box">
+                      <pre><code>&lt;?php
+$host = 'localhost';
+$port = 5432;
+$db   = '{{ dbCreds?.name || 'app_db' }}';
+$user = '{{ dbCreds?.username || 'app_user' }}';
+$pass = '{{ dbCreds?.password || 'YourPassword' }}';
+
+try {
+    $dsn = "pgsql:host=$host;port=$port;dbname=$db;";
+    $pdo = new PDO($dsn, $user, $pass, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    ]);
+} catch (PDOException $e) {
+    die("PostgreSQL connection error: " . $e->getMessage());
+}</code></pre>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 3</div>
+                  <div class="step-body">
+                    <strong>Or Connect with pg_connect()</strong>
+                    <div class="guide-code-box">
+                      <pre><code>&lt;?php
+$conn = pg_connect("host=localhost port=5432 dbname={{ dbCreds?.name || 'app_db' }} user={{ dbCreds?.username || 'app_user' }} password={{ dbCreds?.password || 'YourPassword' }}");
+if (!$conn) {
+    die("PostgreSQL error: " . pg_last_error());
+}</code></pre>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 4</div>
+                  <div class="step-body">
+                    <strong>Manage Schemas & Run Queries</strong>
+                    <p>Use the built-in <strong>SQL Studio</strong> to browse tables, run raw SQL queries, and manage views, sequences, and foreign keys.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Laravel Guide -->
+            <div v-else-if="selectedGuideTab === 'laravel'" class="guide-panel-body">
+              <div class="guide-intro-banner">
+                <div class="intro-badge">Framework: Laravel 10 / 11 · PHP 8.2 / 8.3</div>
+                <h3>Deploying Laravel Applications</h3>
+                <p>IFNOTUS servers are configured with Nginx FastCGI, Composer, and automated URL rewrites supporting Laravel routing out-of-the-box.</p>
+              </div>
+
+              <div class="guide-steps-list">
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 1</div>
+                  <div class="step-body">
+                    <strong>Set Document Root to /public</strong>
+                    <p>Laravel requires the web server document root to point to the <code>/public</code> directory. Select <em>Laravel</em> in the <strong>Stack</strong> tab to automatically configure Nginx virtual host rewrites.</p>
+                  </div>
+                </div>
+
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 2</div>
+                  <div class="step-body">
+                    <strong>Configure Database in .env</strong>
+                    <p>Update your <code>.env</code> file with your database credentials:</p>
+                    <div class="guide-code-box">
+                      <pre><code>APP_ENV=production
+APP_DEBUG=false
+APP_URL=https://{{ activeEnv?.domain || 'yourdomain.online' }}
+
+# For MySQL:
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE={{ dbCreds?.name || 'app_db' }}
+DB_USERNAME={{ dbCreds?.username || 'app_user' }}
+DB_PASSWORD={{ dbCreds?.password || 'YourPassword' }}
+
+# Or for PostgreSQL:
+# DB_CONNECTION=pgsql
+# DB_HOST=127.0.0.1
+# DB_PORT=5432
+# DB_DATABASE={{ dbCreds?.name || 'app_db' }}
+# DB_USERNAME={{ dbCreds?.username || 'app_user' }}
+# DB_PASSWORD={{ dbCreds?.password || 'YourPassword' }}</code></pre>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 3</div>
+                  <div class="step-body">
+                    <strong>Run Migrations & Cache Config</strong>
+                    <p>Import your database structure via <strong>Import .sql</strong> or use the SSH terminal to run <code>php artisan migrate --force</code> and <code>php artisan config:cache</code>.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- WordPress Guide -->
+            <div v-else-if="selectedGuideTab === 'wordpress'" class="guide-panel-body">
+              <div class="guide-intro-banner">
+                <div class="intro-badge">CMS: WordPress 6.x · 1-Click Provisioning</div>
+                <h3>Setting Up WordPress</h3>
+                <p>Deploy WordPress in under 2 minutes with automated database provisioning and SSL.</p>
+              </div>
+
+              <div class="guide-steps-list">
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 1</div>
+                  <div class="step-body">
+                    <strong>1-Click Install or Manual Upload</strong>
+                    <p>Go to the <strong>Stack</strong> tab and click <em>Install WordPress</em>. IFNOTUS downloads the latest release, extracts core files, and links the FastCGI runtime.</p>
+                  </div>
+                </div>
+
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 2</div>
+                  <div class="step-body">
+                    <strong>Configure wp-config.php</strong>
+                    <p>If installing manually, put these constants in your <code>wp-config.php</code>:</p>
+                    <div class="guide-code-box">
+                      <pre><code>define( 'DB_NAME', '{{ dbCreds?.name || 'wordpress_db' }}' );
+define( 'DB_USER', '{{ dbCreds?.username || 'wordpress_user' }}' );
+define( 'DB_PASSWORD', '{{ dbCreds?.password || 'YourPassword' }}' );
+define( 'DB_HOST', 'localhost' );
+define( 'DB_CHARSET', 'utf8mb4' );
+define( 'DB_COLLATE', '' );</code></pre>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 3</div>
+                  <div class="step-body">
+                    <strong>Access Admin & SSL</strong>
+                    <p>Open <code>https://{{ activeEnv?.domain || 'yourdomain.online' }}/wp-admin</code> to complete the 5-minute setup wizard.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- React / Node.js Guide -->
+            <div v-else-if="selectedGuideTab === 'react'" class="guide-panel-body">
+              <div class="guide-intro-banner">
+                <div class="intro-badge">Frontend: React / Vue / Vite · Backend: Node.js / Express</div>
+                <h3>Deploying React & Node.js Applications</h3>
+                <p>Host lightning-fast static Single Page Applications alongside background Node.js microservices.</p>
+              </div>
+
+              <div class="guide-steps-list">
+                <div class="guide-step-item">
+                  <div class="step-badge">Option A</div>
+                  <div class="step-body">
+                    <strong>Static SPA (React / Vite / Vue / Next static)</strong>
+                    <p>Build your app locally: <code>npm run build</code>. Upload the output <code>dist/</code> or <code>build/</code> folder contents directly into your site document root via File Manager or Git.</p>
+                  </div>
+                </div>
+
+                <div class="guide-step-item">
+                  <div class="step-badge">Option B</div>
+                  <div class="step-body">
+                    <strong>Node.js Backend & API Microservices</strong>
+                    <p>Go to the <strong>Applications</strong> tab, click <em>Create Application</em>, choose Node.js framework, and enter your entry script (e.g. <code>server.js</code>). Connect to databases using <code>pg</code> or <code>mysql2</code>:</p>
+                    <div class="guide-code-box">
+                      <pre><code>// Connecting Node.js to Database
+const { Pool } = require('pg');
+const pool = new Pool({
+  host: 'localhost',
+  port: 5432,
+  database: '{{ dbCreds?.name || 'app_db' }}',
+  user: '{{ dbCreds?.username || 'app_user' }}',
+  password: '{{ dbCreds?.password || 'YourPassword' }}',
+});</code></pre>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Git Pipeline Guide -->
+            <div v-else-if="selectedGuideTab === 'git'" class="guide-panel-body">
+              <div class="guide-intro-banner">
+                <div class="intro-badge">Deployment: Git Pull / CI Pipeline</div>
+                <h3>Git Version Control Deployment</h3>
+                <p>Deploy code directly from GitHub or GitLab to your IFNOTUS webroot in 1-click.</p>
+              </div>
+
+              <div class="guide-steps-list">
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 1</div>
+                  <div class="step-body">
+                    <strong>Initial Repository Clone</strong>
+                    <p>Go to the <strong>Git Deploy</strong> tab. Paste your GitHub / GitLab repository URL (e.g. <code>https://github.com/org/repo.git</code>) and branch (<code>main</code>). Click <em>Clone Repository & Deploy</em>.</p>
+                  </div>
+                </div>
+
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 2</div>
+                  <div class="step-body">
+                    <strong>1-Click Deployment (Pull Commits)</strong>
+                    <p>Whenever you push new changes to GitHub, navigate to <strong>Git Deploy</strong> and click <strong>Pull Latest Commits</strong>. The production files update automatically without having to transfer files via FTP!</p>
+                  </div>
+                </div>
+
+                <div class="guide-step-item">
+                  <div class="step-badge">Step 3</div>
+                  <div class="step-body">
+                    <strong>Private Repositories</strong>
+                    <p>For private repositories, use an authenticated token URL (e.g. <code>https://oauth2:YOUR_TOKEN@github.com/user/repo.git</code>) or set up a Personal Access Token.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-foot">
+            <button type="button" class="btn-primary" @click="closeStackGuide">Got It, Close Guide</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div v-else-if="siteTab === 'ftp' && !canFtp" class="block">
@@ -2008,6 +3352,148 @@ function formatBytes(n?: number | null) {
   font-weight: 650;
   color: #0f7a45;
 }
+.stack-telemetry-card {
+  border: 1px solid rgba(14, 165, 233, 0.25);
+  background: linear-gradient(135deg, rgba(240, 249, 255, 0.95), rgba(224, 242, 254, 0.65));
+  border-radius: 0.85rem;
+  padding: 1.15rem;
+  margin-bottom: 1.25rem;
+}
+.dark .stack-telemetry-card {
+  border-color: rgba(56, 189, 248, 0.2);
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.9), rgba(12, 74, 110, 0.25));
+}
+.stk-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid rgba(14, 165, 233, 0.2);
+}
+.stk-id-block {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+.stk-pill {
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  background: #0284c7;
+  color: #fff;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+}
+.stk-token-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+}
+.stk-token-label {
+  color: #64748b;
+  font-weight: 500;
+}
+.dark .stk-token-label { color: #94a3b8; }
+.stk-token-val {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 700;
+  font-size: 0.82rem;
+  color: #0369a1;
+  background: rgba(255, 255, 255, 0.8);
+  padding: 0.2rem 0.45rem;
+  border-radius: 0.35rem;
+  border: 1px solid rgba(14, 165, 233, 0.3);
+}
+.dark .stk-token-val {
+  background: rgba(15, 23, 42, 0.8);
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.3);
+}
+.stk-copy-btn {
+  background: transparent;
+  border: 1px solid rgba(14, 165, 233, 0.4);
+  color: #0284c7;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.18rem 0.45rem;
+  border-radius: 0.35rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.stk-copy-btn:hover {
+  background: #0284c7;
+  color: #fff;
+}
+.dark .stk-copy-btn { color: #38bdf8; border-color: rgba(56, 189, 248, 0.4); }
+.dark .stk-copy-btn:hover { background: #38bdf8; color: #0f172a; }
+.stk-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #047857;
+  background: #d1fae5;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid #a7f3d0;
+}
+.dark .stk-status-badge {
+  background: rgba(6, 78, 59, 0.4);
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.3);
+}
+.stk-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 6px #10b981;
+}
+.stk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.9rem;
+}
+.stk-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  background: rgba(255, 255, 255, 0.65);
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.55rem;
+  border: 1px solid rgba(14, 165, 233, 0.15);
+}
+.dark .stk-metric {
+  background: rgba(15, 23, 42, 0.55);
+  border-color: rgba(56, 189, 248, 0.15);
+}
+.stk-lbl {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  color: #64748b;
+}
+.dark .stk-lbl { color: #94a3b8; }
+.stk-num {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+.dark .stk-num { color: #f1f5f9; }
+.stk-sub {
+  font-size: 0.68rem;
+  color: #64748b;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+.dark .stk-sub { color: #94a3b8; }
+
 .grow { flex: 1; min-width: 0; }
 .stack-pick {
   display: grid;
@@ -2158,4 +3644,1444 @@ function formatBytes(n?: number | null) {
   color: var(--if-ink, #0f172a);
 }
 .panel-a { color: #1e3a5f; font-weight: 600; }
+
+/* Applications UI styling */
+.apps-head-box {
+  margin-bottom: 1.25rem;
+}
+.apps-container {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.5rem;
+}
+@media (min-width: 900px) {
+  .apps-container {
+    grid-template-columns: 1.15fr 0.85fr;
+  }
+}
+.apps-list-card,
+.app-create-card {
+  background: var(--p-surface, #fff);
+  border: 1px solid var(--p-border, #e2e8f0);
+  border-radius: 0.85rem;
+  padding: 1.25rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+.dark .apps-list-card,
+.dark .app-create-card {
+  background: #111827;
+  border-color: #1e293b;
+}
+.apps-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--p-border, #f1f5f9);
+}
+.apps-card-header h4 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--p-ink, #0f172a);
+}
+.apps-count-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: #f1f5f9;
+  color: #475569;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+}
+.dark .apps-count-badge {
+  background: #1e293b;
+  color: #94a3b8;
+}
+.app-items-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.app-card-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.65rem;
+}
+.dark .app-card-item {
+  background: #1e293b;
+  border-color: #334155;
+}
+.app-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.app-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.app-icon-tag {
+  color: #0284c7;
+  font-size: 0.95rem;
+}
+.app-title {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+.dark .app-title {
+  color: #f8fafc;
+}
+.app-meta-row {
+  display: flex;
+  gap: 0.85rem;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+.app-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.btn-sm {
+  padding: 0.35rem 0.75rem !important;
+  font-size: 0.78rem !important;
+}
+.apps-empty-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2.5rem 1rem;
+  text-align: center;
+  color: #64748b;
+}
+.empty-icon {
+  font-size: 2rem;
+  color: #94a3b8;
+  margin-bottom: 0.65rem;
+}
+.app-create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+.btn-create-app {
+  width: 100%;
+  margin-top: 0.5rem;
+  justify-content: center;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   DATABASE MANAGEMENT & STEP 2 WORKFLOW STYLING
+   ───────────────────────────────────────────────────────────── */
+.db-management-section {
+  display: flex;
+  flex-direction: column;
+}
+.db-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin-bottom: 0.25rem;
+}
+.db-title-row h3 {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 750;
+  color: var(--p-ink, #0f172a);
+}
+.db-badge-mysql {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: #f0fdf4;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+}
+.dark .db-badge-mysql {
+  background: rgba(22, 101, 52, 0.2);
+  color: #4ade80;
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.db-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.pma-btn {
+  background: #0284c7 !important;
+  border-color: #0284c7 !important;
+  color: #fff !important;
+  font-weight: 650 !important;
+}
+.pma-btn:hover {
+  background: #0369a1 !important;
+}
+.btn-import-sql {
+  color: #0f766e !important;
+  border-color: #99f6e4 !important;
+  background: #f0fdfa !important;
+}
+.dark .btn-import-sql {
+  background: rgba(15, 118, 110, 0.2) !important;
+  border-color: rgba(45, 212, 191, 0.3) !important;
+  color: #5eead4 !important;
+}
+
+/* Step-by-Step Tenant Guide Banner */
+.db-guide-banner {
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+  border: 1px solid #e2e8f0;
+  border-radius: 0.85rem;
+  padding: 1rem 1.15rem;
+}
+.dark .db-guide-banner {
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  border-color: #334155;
+}
+.db-guide-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+.guide-step-tag {
+  font-size: 0.78rem;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #0369a1;
+}
+.dark .guide-step-tag {
+  color: #38bdf8;
+}
+.guide-tip {
+  font-size: 0.72rem;
+  color: #64748b;
+  font-weight: 600;
+}
+.db-guide-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.75rem;
+}
+.guide-step-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.65rem;
+  padding: 0.65rem 0.75rem;
+}
+.dark .guide-step-card {
+  background: #111827;
+  border-color: #1e293b;
+}
+.step-num {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  background: #0284c7;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 750;
+  flex-shrink: 0;
+}
+.step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.step-text strong {
+  font-size: 0.82rem;
+  color: var(--p-ink, #0f172a);
+}
+.step-text span {
+  font-size: 0.72rem;
+  color: var(--p-muted, #64748b);
+  line-height: 1.35;
+}
+.step-text code {
+  font-size: 0.7rem;
+  background: #f1f5f9;
+  padding: 0.1rem 0.25rem;
+  border-radius: 0.25rem;
+  color: #0f172a;
+}
+.dark .step-text code {
+  background: #1e293b;
+  color: #e2e8f0;
+}
+
+/* Alert Bar */
+.db-alert-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.65rem;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  color: #065f46;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.db-alert-bar.is-err {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+.dark .db-alert-bar {
+  background: rgba(6, 95, 70, 0.25);
+  border-color: rgba(52, 211, 153, 0.3);
+  color: #6ee7b7;
+}
+.dark .db-alert-bar.is-err {
+  background: rgba(153, 27, 27, 0.25);
+  border-color: rgba(248, 113, 113, 0.3);
+  color: #fca5a5;
+}
+
+/* Create Database Card */
+.db-create-card {
+  background: var(--p-surface, #ffffff);
+  border: 1px solid var(--p-border, #e2e8f0);
+  border-radius: 0.85rem;
+  padding: 1.25rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+.dark .db-create-card {
+  background: #111827;
+  border-color: #1e293b;
+}
+.card-head-simple {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--p-border, #f1f5f9);
+  margin-bottom: 1rem;
+}
+.card-icon-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.card-icon-title h4 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 750;
+  color: var(--p-ink, #0f172a);
+}
+.card-badge-muted {
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  color: #64748b;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+}
+.dark .card-badge-muted {
+  background: #1e293b;
+  border-color: #334155;
+  color: #94a3b8;
+}
+
+.db-form-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+@media (min-width: 640px) {
+  .db-form-row {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.mt-sm {
+  margin-top: 0.85rem;
+}
+.field-label-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-bottom: 0.35rem;
+}
+.field-label-wrap strong {
+  font-size: 0.82rem;
+  color: var(--p-ink, #0f172a);
+}
+.sub-hint {
+  font-size: 0.72rem;
+  color: var(--p-muted, #64748b);
+}
+.input-with-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.input-with-icon.full-w {
+  flex: 1 1 auto;
+}
+.field-ico {
+  position: absolute;
+  left: 0.75rem;
+  color: #94a3b8;
+  font-size: 0.85rem;
+  pointer-events: none;
+}
+.input-with-icon input,
+.input-with-icon select {
+  width: 100%;
+  padding: 0.55rem 0.75rem 0.55rem 2.2rem;
+  border: 1px solid var(--p-border, #cbd5e1);
+  border-radius: 0.55rem;
+  font-size: 0.85rem;
+  background: #ffffff;
+  color: var(--p-ink, #0f172a);
+  transition: border-color 0.15s;
+}
+.dark .input-with-icon input,
+.dark .input-with-icon select {
+  background: #1e293b;
+  border-color: #334155;
+  color: #f8fafc;
+}
+.input-with-icon input:focus,
+.input-with-icon select:focus {
+  outline: none;
+  border-color: #0284c7;
+}
+
+.input-with-addon {
+  display: flex;
+  align-items: stretch;
+  gap: 0.35rem;
+}
+.btn-addon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.65rem;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+}
+.dark .btn-addon {
+  background: #1e293b;
+  border-color: #334155;
+  color: #cbd5e1;
+}
+.btn-addon:hover {
+  background: #e2e8f0;
+}
+.dark .btn-addon:hover {
+  background: #334155;
+}
+.btn-generate {
+  color: #0284c7;
+}
+.dark .btn-generate {
+  color: #38bdf8;
+}
+
+.db-create-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--p-border, #f1f5f9);
+}
+.db-privilege-note {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: #059669;
+}
+.dark .db-privilege-note {
+  color: #34d399;
+}
+.btn-submit-db {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.6rem 1.25rem !important;
+  font-size: 0.88rem !important;
+  font-weight: 700 !important;
+}
+
+/* Databases List Cards Grid */
+.db-list-section {
+  display: flex;
+  flex-direction: column;
+}
+.section-title-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-bottom: 0.5rem;
+}
+.section-title-bar h4 {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 750;
+  color: var(--p-ink, #0f172a);
+}
+.db-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.75rem;
+}
+.db-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: var(--p-surface, #ffffff);
+  border: 1px solid var(--p-border, #e2e8f0);
+  border-radius: 0.75rem;
+  padding: 0.85rem 1rem;
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+}
+.dark .db-card {
+  background: #111827;
+  border-color: #1e293b;
+}
+.db-card:hover {
+  border-color: #93c5fd;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+}
+.db-card.on {
+  border-color: #0284c7;
+  background: #f0f9ff;
+}
+.dark .db-card.on {
+  border-color: #0284c7;
+  background: rgba(2, 132, 199, 0.15);
+}
+.db-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+.db-name-group {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.db-card-engine-tag {
+  font-size: 0.65rem;
+  font-weight: 800;
+  padding: 0.15rem 0.45rem;
+  border-radius: 0.35rem;
+  background: #fef3c7;
+  color: #92400e;
+}
+.db-card-engine-tag.postgresql {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+.dark .db-card-engine-tag {
+  background: #78350f;
+  color: #fef3c7;
+}
+.db-card-title {
+  font-size: 0.92rem;
+  font-weight: 750;
+  color: var(--p-ink, #0f172a);
+}
+.badge-primary-site {
+  font-size: 0.65rem;
+  font-weight: 700;
+  background: #e0e7ff;
+  color: #3730a3;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+}
+.dark .badge-primary-site {
+  background: #312e81;
+  color: #c7d2fe;
+}
+.db-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  font-size: 0.75rem;
+  color: var(--p-muted, #64748b);
+  margin-bottom: 0.75rem;
+}
+.meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.db-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--p-border, #f1f5f9);
+}
+.btn-card-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.28rem 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #334155;
+  border-radius: 0.45rem;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.dark .btn-card-action {
+  background: #1e293b;
+  border-color: #334155;
+  color: #cbd5e1;
+}
+.btn-card-action:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+.dark .btn-card-action:hover {
+  background: #334155;
+}
+.btn-card-action.pma {
+  color: #0284c7;
+  border-color: #bae6fd;
+}
+.btn-card-action.import {
+  color: #0f766e;
+  border-color: #99f6e4;
+}
+.btn-card-action.danger {
+  color: #dc2626;
+}
+.btn-card-action.danger:hover {
+  background: #fef2f2;
+  border-color: #fca5a5;
+}
+
+/* Active Database Credentials Box */
+.db-creds-box {
+  background: var(--p-surface, #ffffff);
+  border: 1px solid var(--p-border, #e2e8f0);
+  border-radius: 0.85rem;
+  padding: 1.25rem;
+}
+.dark .db-creds-box {
+  background: #111827;
+  border-color: #1e293b;
+}
+.creds-box-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--p-border, #f1f5f9);
+}
+.creds-box-head h4 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 750;
+  color: var(--p-ink, #0f172a);
+}
+.badge-privilege {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: #ecfdf5;
+  color: #059669;
+  border: 1px solid #a7f3d0;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+}
+.dark .badge-privilege {
+  background: rgba(5, 150, 105, 0.2);
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.3);
+}
+.creds-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+.cred-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.65rem;
+  padding: 0.75rem 0.85rem;
+}
+.dark .cred-item {
+  background: #1e293b;
+  border-color: #334155;
+}
+.cred-data {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.cred-key {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+}
+.cred-val {
+  font-size: 0.92rem;
+  font-weight: 750;
+  color: var(--p-ink, #0f172a);
+  word-break: break-all;
+}
+.cred-sub {
+  font-size: 0.7rem;
+  color: #94a3b8;
+}
+.btn-copy-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  color: #334155;
+  border-radius: 0.45rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.dark .btn-copy-chip {
+  background: #0f172a;
+  border-color: #334155;
+  color: #cbd5e1;
+}
+.btn-copy-chip.primary {
+  background: #0284c7;
+  border-color: #0284c7;
+  color: #ffffff;
+}
+.btn-copy-chip.ghost {
+  background: transparent;
+  border-color: transparent;
+}
+.cred-btn-group {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+}
+.text-green {
+  color: #16a34a !important;
+}
+
+/* Code Snippet Generator */
+.snippet-helper-box {
+  background: #0f172a;
+  border-radius: 0.75rem;
+  padding: 0.85rem 1rem;
+  color: #e2e8f0;
+}
+.snippet-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.65rem;
+}
+.snippet-title {
+  font-size: 0.78rem;
+  font-weight: 750;
+  color: #38bdf8;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.snippet-tabs {
+  display: flex;
+  gap: 0.3rem;
+  background: #1e293b;
+  padding: 0.2rem;
+  border-radius: 0.5rem;
+}
+.snippet-tab {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  padding: 0.25rem 0.55rem;
+  border-radius: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+.snippet-tab.active {
+  background: #0284c7;
+  color: #ffffff;
+}
+.snippet-code-wrap {
+  position: relative;
+}
+.snippet-code {
+  margin: 0;
+  padding: 0.75rem 0.85rem;
+  background: #020617;
+  border: 1px solid #1e293b;
+  border-radius: 0.5rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
+  color: #f8fafc;
+  line-height: 1.45;
+  overflow-x: auto;
+}
+.btn-copy-snippet {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.65rem;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 0.35rem;
+  color: #ffffff;
+  font-size: 0.72rem;
+  font-weight: 650;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+}
+.btn-copy-snippet:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* SQL Import Modal */
+.db-import-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: 1rem;
+}
+.db-import-modal {
+  width: 100%;
+  max-width: 580px;
+  background: #ffffff;
+  border-radius: 0.85rem;
+  padding: 1.5rem;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+}
+.dark .db-import-modal {
+  background: #0f172a;
+  border: 1px solid #334155;
+}
+.modal-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+.modal-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.modal-ico {
+  font-size: 1.4rem;
+  color: #0284c7;
+}
+.modal-top h3 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 750;
+  color: var(--p-ink, #0f172a);
+}
+.btn-close-modal {
+  background: transparent;
+  border: none;
+  font-size: 1.1rem;
+  color: #94a3b8;
+  cursor: pointer;
+}
+.modal-select {
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.55rem;
+  font-size: 0.85rem;
+  background: #ffffff;
+  color: #0f172a;
+}
+.dark .modal-select {
+  background: #1e293b;
+  border-color: #334155;
+  color: #f8fafc;
+}
+.sql-dropzone {
+  position: relative;
+  border: 2px dashed #cbd5e1;
+  border-radius: 0.75rem;
+  padding: 1.5rem 1rem;
+  text-align: center;
+  background: #f8fafc;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.dark .sql-dropzone {
+  background: #1e293b;
+  border-color: #334155;
+}
+.sql-dropzone:hover {
+  border-color: #0284c7;
+  background: #f0f9ff;
+}
+.dropzone-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.dropzone-ico {
+  font-size: 2rem;
+  color: #0284c7;
+  margin-bottom: 0.45rem;
+}
+.file-picked-name {
+  font-weight: 700;
+  color: #0f172a;
+}
+.dark .file-picked-name {
+  color: #f8fafc;
+}
+.sql-import-textarea {
+  width: 100%;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.55rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  background: #f8fafc;
+  color: #0f172a;
+}
+.dark .sql-import-textarea {
+  background: #1e293b;
+  border-color: #334155;
+  color: #f8fafc;
+}
+.import-alert {
+  padding: 0.65rem 0.85rem;
+  border-radius: 0.55rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.import-alert.success {
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+.import-alert.error {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.65rem;
+}
+
+/* Stack & Hosting Architecture Guide Modal */
+.stack-guide-modal-card {
+  width: 100%;
+  max-width: 840px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--p-surface, #ffffff);
+  border: 1px solid var(--p-border, #e2e8f0);
+  border-radius: 1rem;
+  padding: 1.5rem;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+.dark .stack-guide-modal-card {
+  background: #0f172a;
+  border-color: #1e293b;
+}
+.modal-ico-wrap.info-ico {
+  background: #e0f2fe;
+  color: #0284c7;
+}
+.dark .modal-ico-wrap.info-ico {
+  background: rgba(2, 132, 199, 0.2);
+  color: #38bdf8;
+}
+.guide-tabs-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.75rem 0 0.5rem;
+  border-bottom: 1px solid var(--p-border, #e2e8f0);
+}
+.dark .guide-tabs-nav {
+  border-color: #1e293b;
+}
+.guide-nav-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: 0.5rem;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #64748b;
+  font-size: 0.82rem;
+  font-weight: 650;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.guide-nav-tab:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+.dark .guide-nav-tab:hover {
+  background: #1e293b;
+  color: #f8fafc;
+}
+.guide-nav-tab.active {
+  background: #0284c7;
+  color: #ffffff;
+  border-color: #0284c7;
+}
+.guide-nav-tab.active i {
+  color: #ffffff !important;
+}
+.guide-modal-content {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 1rem 0;
+  max-height: calc(85vh - 180px);
+}
+.guide-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.guide-intro-banner {
+  padding: 0.85rem 1.1rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.75rem;
+}
+.dark .guide-intro-banner {
+  background: #1e293b;
+  border-color: #334155;
+}
+.intro-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 750;
+  text-transform: uppercase;
+  color: #ff6c2c;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.25rem;
+}
+.guide-intro-banner h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1.1rem;
+  font-weight: 750;
+  color: var(--p-ink, #0f172a);
+}
+.guide-intro-banner p {
+  margin: 0;
+  font-size: 0.84rem;
+  color: #64748b;
+  line-height: 1.45;
+}
+.guide-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+.guide-step-item {
+  display: flex;
+  gap: 0.85rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.75rem;
+  background: var(--p-surface, #ffffff);
+}
+.dark .guide-step-item {
+  background: #111827;
+  border-color: #1e293b;
+}
+.step-badge {
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: #0284c7;
+  background: #e0f2fe;
+  padding: 0.2rem 0.55rem;
+  border-radius: 0.4rem;
+  height: fit-content;
+  white-space: nowrap;
+}
+.dark .step-badge {
+  background: rgba(2, 132, 199, 0.25);
+  color: #38bdf8;
+}
+.step-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.step-body strong {
+  font-size: 0.92rem;
+  color: var(--p-ink, #0f172a);
+}
+.step-body p {
+  margin: 0;
+  font-size: 0.83rem;
+  color: #64748b;
+  line-height: 1.5;
+}
+.guide-code-box {
+  margin-top: 0.45rem;
+  background: #0f172a;
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+}
+.guide-code-box pre {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
+  color: #e2e8f0;
+  line-height: 1.5;
+}
+
+/* Guide trigger buttons */
+.btn-guide-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 650;
+  color: #ff6c2c;
+}
+.guide-info-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #0284c7;
+  background: #e0f2fe;
+  border: 1px solid #bae6fd;
+  border-radius: 1rem;
+  padding: 0.2rem 0.65rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.guide-info-pill:hover {
+  background: #0284c7;
+  color: #ffffff;
+}
+.snippet-tab.guide-btn {
+  background: #fff7ed;
+  color: #ea580c;
+  border-color: #ffedd5;
+  font-weight: 700;
+}
+.snippet-tab.guide-btn:hover {
+  background: #ea580c;
+  color: #ffffff;
+}
+.stk-actions-top {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+.stk-guide-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 0.5rem;
+  padding: 0.25rem 0.65rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.stk-guide-btn:hover {
+  background: #38bdf8;
+  color: #0f172a;
+}
+
+/* Git Panel Styles */
+.git-panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.git-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.git-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+.git-badge {
+  font-size: 0.7rem;
+  font-weight: 750;
+  text-transform: uppercase;
+  color: #ea580c;
+  background: #fff7ed;
+  border: 1px solid #ffedd5;
+  padding: 0.15rem 0.5rem;
+  border-radius: 0.4rem;
+}
+.dark .git-badge {
+  background: rgba(234, 88, 12, 0.2);
+  border-color: rgba(234, 88, 12, 0.35);
+  color: #fb923c;
+}
+.git-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.git-alert-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.65rem;
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.git-alert-bar.is-err {
+  background: #fef2f2;
+  color: #991b1b;
+  border-color: #fecaca;
+}
+.git-status-card,
+.git-clone-card {
+  background: var(--p-surface, #ffffff);
+  border: 1px solid var(--p-border, #e2e8f0);
+  border-radius: 0.85rem;
+  padding: 1.25rem;
+  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.04);
+}
+.dark .git-status-card,
+.dark .git-clone-card {
+  background: #111827;
+  border-color: #1e293b;
+}
+.git-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #f1f5f9;
+}
+.dark .git-card-top {
+  border-color: #1e293b;
+}
+.git-repo-ident {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.git-main-ico {
+  font-size: 1.6rem;
+  color: #ea580c;
+}
+.git-repo-ident h4 {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 750;
+  color: var(--p-ink, #0f172a);
+}
+.git-remote-url {
+  margin: 0.15rem 0 0;
+  font-size: 0.8rem;
+  color: #64748b;
+}
+.git-badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 0.25rem 0.65rem;
+  border-radius: 1rem;
+}
+.git-badge-pill.clean {
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+.git-badge-pill.clean .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+}
+.git-badge-pill.dirty {
+  background: #fff7ed;
+  color: #c2410c;
+  border: 1px solid #fed7aa;
+}
+.git-badge-pill.dirty .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f97316;
+}
+.git-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.85rem;
+  margin-top: 1rem;
+}
+.git-meta-box {
+  padding: 0.75rem 1rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.65rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.dark .git-meta-box {
+  background: #1e293b;
+  border-color: #334155;
+}
+.git-meta-box .lbl {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #64748b;
+}
+.git-meta-box .val {
+  font-size: 0.95rem;
+  font-weight: 750;
+  color: var(--p-ink, #0f172a);
+}
+.val-copy-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.btn-copy-mini {
+  font-size: 0.72rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 0.35rem;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #334155;
+  cursor: pointer;
+}
+.dark .btn-copy-mini {
+  background: #334155;
+  border-color: #475569;
+  color: #f8fafc;
+}
+.val-sub {
+  font-size: 0.78rem;
+  color: #64748b;
+  word-break: break-all;
+}
+.git-deploy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+.btn-pull {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-weight: 700;
+}
+.git-form-grid {
+  display: grid;
+  grid-template-columns: 1fr minmax(130px, 180px);
+  gap: 0.85rem;
+}
+@media (max-width: 640px) {
+  .git-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.git-clone-btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
 </style>

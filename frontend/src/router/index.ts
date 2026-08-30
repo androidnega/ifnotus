@@ -216,14 +216,34 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/databases',
     name: 'cpanel-databases',
-    component: () => import('@/views/hosting/HostingPanelView.vue'),
-    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'databases' },
+    component: () => {
+      if (typeof window !== 'undefined' && isCustomerCpanelHost()) {
+        return import('@/views/hosting/HostingPanelView.vue')
+      }
+      return import('@/views/DatabasesView.vue')
+    },
+    meta: {
+      requiresAuth: true,
+      panel: typeof window !== 'undefined' && isCustomerCpanelHost() ? 'portal' : 'staff',
+      hostingTab: 'databases',
+      permission: typeof window !== 'undefined' && isCustomerCpanelHost() ? undefined : 'databases:read',
+    },
   },
   {
     path: '/domains',
     name: 'cpanel-domains',
-    component: () => import('@/views/hosting/HostingPanelView.vue'),
-    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'domains' },
+    component: () => {
+      if (typeof window !== 'undefined' && isCustomerCpanelHost()) {
+        return import('@/views/hosting/HostingPanelView.vue')
+      }
+      return import('@/views/DomainsView.vue')
+    },
+    meta: {
+      requiresAuth: true,
+      panel: typeof window !== 'undefined' && isCustomerCpanelHost() ? 'portal' : 'staff',
+      hostingTab: 'domains',
+      permission: typeof window !== 'undefined' && isCustomerCpanelHost() ? undefined : 'domains:read',
+    },
   },
   {
     path: '/email',
@@ -234,8 +254,18 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/apps',
     name: 'cpanel-apps',
-    component: () => import('@/views/hosting/HostingPanelView.vue'),
-    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'apps' },
+    component: () => {
+      if (typeof window !== 'undefined' && isCustomerCpanelHost()) {
+        return import('@/views/hosting/HostingPanelView.vue')
+      }
+      return import('@/views/ApplicationsView.vue')
+    },
+    meta: {
+      requiresAuth: true,
+      panel: typeof window !== 'undefined' && isCustomerCpanelHost() ? 'portal' : 'staff',
+      hostingTab: 'apps',
+      permission: typeof window !== 'undefined' && isCustomerCpanelHost() ? undefined : 'apps:read',
+    },
   },
   {
     path: '/cron',
@@ -266,6 +296,26 @@ const routes: RouteRecordRaw[] = [
     name: 'cpanel-transfer',
     component: () => import('@/views/hosting/HostingPanelView.vue'),
     meta: { requiresAuth: true, panel: 'portal', hostingTab: 'transfer' },
+  },
+  {
+    path: '/stack/:stackToken(.*)?',
+    name: 'cpanel-stack',
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'stack' },
+  },
+  {
+    path: '/ai',
+    name: 'cpanel-ai',
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'ai' },
+  },
+  {
+    path: '/wordpress',
+    redirect: '/stack',
+  },
+  {
+    path: '/install',
+    redirect: '/stack',
   },
   {
     path: '/forgot-password',
@@ -346,18 +396,6 @@ const routes: RouteRecordRaw[] = [
     name: 'support',
     component: () => import('@/views/SupportTicketsView.vue'),
     meta: { requiresAuth: true, panel: 'staff', permission: 'support:read' },
-  },
-  {
-    path: '/domains',
-    name: 'domains',
-    component: () => import('@/views/DomainsView.vue'),
-    meta: { requiresAuth: true, panel: 'staff', permission: 'domains:read' },
-  },
-  {
-    path: '/databases',
-    name: 'databases',
-    component: () => import('@/views/DatabasesView.vue'),
-    meta: { requiresAuth: true, panel: 'staff', permission: 'databases:read' },
   },
   {
     path: '/databases/studio',

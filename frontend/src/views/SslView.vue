@@ -57,18 +57,25 @@ const filteredCerts = computed(() => {
 
 async function load() {
   loading.value = true
+  message.value = null
   try {
     const { data } = await sslApi.list()
-    certs.value = data.certificates
-    summary.value = data.summary
-    discoveredTotal.value = data.discovered_total ?? 0
-    expiringCount.value = data.expiring_count ?? 0
-    missingCount.value = data.missing_count ?? 0
-    for (const cert of data.certificates) {
+    certs.value = data?.certificates || []
+    summary.value = data?.summary || null
+    discoveredTotal.value = data?.discovered_total ?? 0
+    expiringCount.value = data?.expiring_count ?? 0
+    missingCount.value = data?.missing_count ?? 0
+    for (const cert of certs.value) {
       if (cert.document_root && !webrootOverrides.value[cert.domain]) {
         webrootOverrides.value[cert.domain] = cert.document_root
       }
     }
+    if (certs.value.length && !selectedCert.value) {
+      selectedCert.value = certs.value[0]
+    }
+  } catch (e) {
+    message.value = { type: 'err', text: getApiErrorMessage(e, 'Failed to load SSL certificates') }
+    certs.value = []
   } finally {
     loading.value = false
   }

@@ -226,6 +226,28 @@ class OrderService:
             )
         )
         await self._session.flush()
+
+        # If order total is 0 (free tier / 100% discount / trial / student grant), automatically fulfill & activate immediately
+        if total <= Decimal("0"):
+            order.payment_status = "paid"
+            order.payment_method = "staff"
+            order.paid_at = datetime.now(UTC)
+            order.payment_confirmed_at = datetime.now(UTC)
+            order.payment_amount_received = Decimal("0")
+            order.payment_notes = "Free plan / 100% discount complimentary activation."
+            await self._session.flush()
+            fulfilled = await self._fulfill_paid_order(order, activate_inline=True)
+            return {
+                "order": fulfilled,
+                "authorization_url": None,
+                "reference": reference,
+                "demo": False,
+                "paystack_public_key": None,
+                "payment_method": "free",
+                "invoice_number": order.invoice_number,
+                "momo": self._momo_details(),
+            }
+
         return {
             "order": OrderResponse.model_validate(order),
             "authorization_url": None,
@@ -236,6 +258,7 @@ class OrderService:
             "invoice_number": order.invoice_number,
             "momo": self._momo_details(),
         }
+
 
     async def verify_and_activate(self, reference: str) -> OrderResponse:
         order = await self._get_by_reference(reference)
@@ -314,11 +337,33 @@ class OrderService:
         actor_id: UUID | None = None,
         amount_received: Decimal | None = None,
         notes: str | None = None,
+        domain_name: str | None = None,
+        payment_method: str | None = None,
     ) -> OrderResponse:
         order = await self._session.get(Order, order_id)
         if order is None:
             raise NotFoundError("Order not found.")
-        if amount_received is not None:
+        if domain_name and domain_name.strip():
+            order.domain_name = domain_name.strip().lower()
+        if payment_method and payment_method.strip():
+            order.payment_method = payment_method.strip().lower()
+
+        # Handle free / complimentary grant confirmation
+        is_free_grant = (
+            order.total_price <= Decimal("0")
+            or (payment_method and payment_method.lower() in {"complimentary", "free", "staff", "grant"})
+            or (notes and "free" in notes.lower())
+            or (notes and "comp" in notes.lower())
+            or (amount_received is not None and Decimal(str(amount_received)) == Decimal("0"))
+        )
+
+        if is_free_grant:
+            if not order.payment_method or order.payment_method == "momo":
+                order.payment_method = "staff"
+            order.payment_amount_received = Decimal("0")
+            if not notes and not order.payment_notes:
+                order.payment_notes = "Complimentary free account grant (0.00 GHS)"
+        elif amount_received is not None:
             expected = Decimal(str(order.total_price))
             got = Decimal(str(amount_received))
             if abs(expected - got) > Decimal("0.01"):
@@ -327,23 +372,102 @@ class OrderService:
                     code="momo_amount_mismatch",
                 )
             order.payment_amount_received = got
+
         if notes:
             order.payment_notes = notes[:2000]
         order.payment_confirmed_at = datetime.now(UTC)
         order.payment_confirmed_by = actor_id
-        if order.payment_status == "paid":
-            if order.provisioning_status in {"pending", "queued", "failed"} and (
-                order.order_kind or "hosting"
-            ) == "hosting":
-                if order.provisioning_status == "failed":
-                    return await self.retry_provision(order_id, activate_inline=True)
-                order.provisioning_status = "queued"
-                await self._activate_hosting(order, prefer_inline=True)
-                await self._session.flush()
-                await self._session.refresh(order)
+        order.payment_status = "paid"
+        order.paid_at = order.paid_at or datetime.now(UTC)
+
+        kind = (order.order_kind or "hosting").lower()
+        if kind == "renewal":
+            await self._activate_renewal(order)
+            await self._notify_payment_confirmed(order, activating="renewal")
+        elif kind == "upgrade":
+            await self._activate_upgrade(order)
+            await self._notify_payment_confirmed(order, activating="upgrade")
+        elif kind == "credits":
+            await self._activate_credits(order)
+            await self._notify_payment_confirmed(order, activating="credits")
+        elif kind == "panel_theme":
+            await self._activate_panel_theme(order)
+            await self._notify_payment_confirmed(order, activating="panel_theme")
+        else:
+            # Hosting purchase: billing agent confirms payment, marks order ready for hosting activation by operator.
+            order.provisioning_status = "ready_for_activation"
+            await self._notify_payment_confirmed(order, activating="hosting")
+
+        collected = order.payment_amount_received or order.total_price
+        self._session.add(
+            PlatformAuditLog(
+                customer_id=order.customer_id,
+                actor_id=actor_id,
+                action="order.payment_confirmed",
+                target_type="order",
+                target_id=str(order.id),
+                result="success",
+                metadata_json={
+                    "amount": str(collected),
+                    "currency": order.currency,
+                    "invoice": order.invoice_number,
+                    "momo_transaction_id": order.momo_transaction_id,
+                    "order_kind": order.order_kind or "hosting",
+                    "payment_method": order.payment_method or "momo",
+                },
+            )
+        )
+        await self._session.flush()
+        await self._session.refresh(order)
+        return OrderResponse.model_validate(order)
+
+    async def activate_hosting_by_operator(
+        self,
+        order_id: UUID,
+        *,
+        actor_id: UUID | None = None,
+    ) -> OrderResponse:
+        order = await self._session.get(Order, order_id)
+        if order is None:
+            raise NotFoundError("Order not found.")
+        if order.payment_status != "paid":
+            raise ValidationError(
+                "Payment must be verified and confirmed by a billing agent before hosting can be activated.",
+                code="payment_not_confirmed",
+            )
+        if order.provisioning_status == "active":
             return OrderResponse.model_validate(order)
-        # Confirm MoMo → activate hosting in one clear step (inline until live).
-        return await self._fulfill_paid_order(order, activate_inline=True)
+
+        order.provisioning_status = "queued"
+        await self._activate_hosting(order, prefer_inline=True)
+        order.provisioning_status = "active"
+
+        self._session.add(
+            PlatformAuditLog(
+                customer_id=order.customer_id,
+                actor_id=actor_id,
+                action="order.hosting_activated",
+                target_type="order",
+                target_id=str(order.id),
+                result="success",
+                metadata_json={
+                    "domain": order.domain_name,
+                    "plan_id": str(order.plan_id),
+                    "invoice_number": order.invoice_number,
+                },
+            )
+        )
+        await NotificationService(self._session, self._settings).notify(
+            order.customer_id,
+            title="Hosting Activated",
+            body=f"Your hosting environment ({order.domain_name or 'site'}) is now live and ready to use.",
+            kind="hosting",
+            deliver=True,
+        )
+        await self._session.flush()
+        await self._session.refresh(order)
+        return OrderResponse.model_validate(order)
+
 
     async def reject_payment(
         self,
@@ -561,12 +685,15 @@ class OrderService:
             title = "Payment confirmed — plan upgraded"
         else:
             sms = (
-                f"Payment confirmed for invoice {inv}. "
-                f"We're activating your hosting now."
+                f"Payment verified for invoice {inv}. "
+                f"Hosting infrastructure provisioning is in progress."
             )
             title, text, html = email_templates.payment_confirmed(
-                name=customer.full_name, invoice=inv
+                name=customer.full_name,
+                invoice=inv,
+                detail="Your payment has been verified and accepted. Hosting infrastructure and server provisioning are in progress.",
             )
+            title = f"Payment Verified — Invoice {inv}"
         await NotificationService(self._session, self._settings).notify(
             customer.id,
             title=title,
