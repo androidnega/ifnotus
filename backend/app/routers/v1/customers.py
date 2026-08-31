@@ -3443,7 +3443,7 @@ async def env_list_domain_items(
     primary_doc_root = "/public_html"
     primary_redirect = None
     primary_force_https = True
-    primary_ssl = bool(env.ssl_status == "active" or env.ssl_expiry)
+    primary_ssl = bool(env.ssl_expiry is not None)
     primary_created = env.created_at
 
     if env.hosting_domain_id:
@@ -3857,7 +3857,7 @@ async def env_update_domain_item(
         redirects_to=dom_row.redirect_url if dom_row else None,
         force_https=dom_row.force_https if dom_row else True,
         is_primary=is_primary,
-        ssl_active=bool(cd_row.ssl_status == "active" if cd_row else (env.ssl_status == "active")),
+        ssl_active=bool(cd_row.ssl_status == "active" if cd_row else (env.ssl_expiry is not None)),
         can_delete=not is_primary,
         created_at=cd_row.created_at if cd_row else env.created_at,
     )
