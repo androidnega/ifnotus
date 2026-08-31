@@ -2589,8 +2589,11 @@ export const platformAdminApi = {
       }>
     }>('/platform/integrations/sms-balance'),
 
-  activateOrderHosting: (orderId: string) =>
-    apiClient.post(`/platform/orders/${orderId}/activate-hosting`, {}),
+  activateOrderHosting: (orderId: string, body?: { domain?: string }) =>
+    apiClient.post(`/platform/orders/${orderId}/activate-hosting`, body || {}),
+
+  updateOrderDomain: (orderId: string, domain: string) =>
+    apiClient.patch(`/platform/orders/${orderId}/domain`, { domain }),
 
   retryOrderProvision: (orderId: string) =>
     apiClient.post(`/platform/orders/${orderId}/retry-provision`, {}),

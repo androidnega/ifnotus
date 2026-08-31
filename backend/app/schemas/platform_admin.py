@@ -210,6 +210,10 @@ class StaffUpdateSubdomainRequest(SchemaBase):
     domain: str = Field(min_length=3, max_length=255)
 
 
+class StaffActivateOrderHostingRequest(SchemaBase):
+    domain: str | None = Field(default=None, max_length=255)
+
+
 class StaffUserCreateRequest(SchemaBase):
     email: str
     password: str = Field(min_length=8, max_length=128)

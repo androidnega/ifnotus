@@ -441,6 +441,7 @@ class OrderService:
         order_id: UUID,
         *,
         actor_id: UUID | None = None,
+        domain: str | None = None,
     ) -> OrderResponse:
         order = await self._session.get(Order, order_id)
         if order is None:
@@ -450,6 +451,19 @@ class OrderService:
                 "Payment must be verified and confirmed by a billing agent before hosting can be activated.",
                 code="payment_not_confirmed",
             )
+        if domain and domain.strip():
+            raw_domain = domain.strip().lower()
+            if "." not in raw_domain:
+                raw_domain = f"{raw_domain}.ifnotus.space"
+            order.domain_name = raw_domain
+
+        if not order.domain_name:
+            cust = await self._session.get(Customer, order.customer_id)
+            if cust:
+                slug = (getattr(cust, "storage_slug", None) or cust.full_name.split()[0] or "student").lower()
+                clean_slug = re.sub(r"[^a-z0-9\-]", "", slug) or "site"
+                order.domain_name = f"{clean_slug}.ifnotus.space"
+
         if order.provisioning_status == "active":
             return OrderResponse.model_validate(order)
 
@@ -498,6 +512,92 @@ class OrderService:
                 kind="hosting",
                 deliver=True,
             )
+        await self._session.flush()
+        await self._session.refresh(order)
+        return OrderResponse.model_validate(order)
+
+    async def update_order_domain(
+        self,
+        order_id: UUID,
+        new_domain: str,
+        *,
+        actor_id: UUID | None = None,
+    ) -> OrderResponse:
+        order = await self._session.get(Order, order_id)
+        if order is None:
+            raise NotFoundError("Order not found.")
+        raw_name = (new_domain or "").strip().lower()
+        if not raw_name:
+            raise ValidationError("Domain or subdomain is required.")
+        if "." not in raw_name:
+            raw_name = f"{raw_name}.ifnotus.space"
+        if not re.match(r"^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?)+$", raw_name):
+            raise ValidationError("Invalid subdomain or domain format (e.g. surname.ifnotus.space or domain.com).")
+
+        old_domain = order.domain_name
+        order.domain_name = raw_name
+
+        # Sync to existing environment and customer domain if already provisioned
+        from app.models.platform import CustomerEnvironment, CustomerDomain
+        env_stmt = (
+            select(CustomerEnvironment)
+            .where(CustomerEnvironment.customer_id == order.customer_id)
+            .order_by(CustomerEnvironment.created_at.desc())
+        )
+        env = (await self._session.execute(env_stmt)).scalars().first()
+        if env:
+            env.domain = raw_name
+            cd_stmt = select(CustomerDomain).where(CustomerDomain.customer_id == order.customer_id)
+            cd = (await self._session.execute(cd_stmt)).scalar_one_or_none()
+            if cd:
+                cd.domain_name = raw_name
+            else:
+                self._session.add(
+                    CustomerDomain(
+                        customer_id=order.customer_id,
+                        domain_name=raw_name,
+                        environment_id=env.id,
+                        status="active",
+                        ssl_status="active",
+                    )
+                )
+            if env.document_root:
+                from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
+                try:
+                    await DomainNginxProvisioner(self._settings).provision(
+                        hostname=raw_name,
+                        document_root=env.document_root,
+                        proxy_port=None,
+                        force_https=True,
+                    )
+                except Exception as e:
+                    logger.warning("order_env_nginx_provision_failed", error=str(e), domain=raw_name)
+
+        meta = dict(order.meta_json or {})
+        actions = list(meta.get("audit_history") or [])
+        actions.append({
+            "action": "domain_updated",
+            "actor_id": str(actor_id) if actor_id else None,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "old_domain": old_domain,
+            "new_domain": raw_name,
+        })
+        meta["audit_history"] = actions
+        if actor_id:
+            meta["last_action_by_id"] = str(actor_id)
+        order.meta_json = meta
+
+        self._session.add(
+            PlatformAuditLog(
+                customer_id=order.customer_id,
+                actor_id=actor_id,
+                action="order.domain_updated",
+                target_type="order",
+                target_id=str(order.id),
+                result="success",
+                metadata_json={"old_domain": old_domain, "new_domain": raw_name, "actor_id": str(actor_id) if actor_id else None},
+            )
+        )
         await self._session.flush()
         await self._session.refresh(order)
         return OrderResponse.model_validate(order)

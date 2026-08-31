@@ -45,6 +45,7 @@ from app.schemas.platform_admin import (
     StaffOrderItem,
     StaffProvisionHostingRequest,
     StaffUpdateSubdomainRequest,
+    StaffActivateOrderHostingRequest,
     StaffUserCreateRequest,
     StaffUserItem,
     StaffUserUpdateRequest,
@@ -378,12 +379,34 @@ async def activate_order_hosting(
     session: DbSession,
     settings: SettingsDep,
     user: CurrentUser,
+    body: StaffActivateOrderHostingRequest | None = None,
 ) -> OrderResponse:
     """Hosting operator: activate and provision server infrastructure for paid order."""
     from app.services.platform.orders import OrderService
 
+    custom_domain = body.domain if body else None
     return await OrderService(settings, session).activate_hosting_by_operator(
-        order_id, actor_id=user.id
+        order_id, actor_id=user.id, domain=custom_domain
+    )
+
+
+@router.patch(
+    "/orders/{order_id}/domain",
+    response_model=OrderResponse,
+    dependencies=[Depends(RequirePermission(Permission.PLATFORM_OPS))],
+)
+async def update_order_domain(
+    order_id: UUID,
+    body: StaffUpdateSubdomainRequest,
+    session: DbSession,
+    settings: SettingsDep,
+    user: CurrentUser,
+) -> OrderResponse:
+    """Hosting operator: assign or customize subdomain / domain for an order."""
+    from app.services.platform.orders import OrderService
+
+    return await OrderService(settings, session).update_order_domain(
+        order_id, body.domain, actor_id=user.id
     )
 
 

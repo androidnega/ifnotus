@@ -847,6 +847,14 @@ class StaffPlatformService:
             except Exception as e:
                 logger.warning("update_env_dns_zone_failed", error=str(e), domain=raw_name)
 
+        # Update any active or recent orders for this customer to reflect the updated domain/subdomain
+        from app.models.platform import Order
+        ord_stmt = select(Order).where(Order.customer_id == env.customer_id)
+        orders = (await self._session.execute(ord_stmt)).scalars().all()
+        for ord_row in orders:
+            if not ord_row.domain_name or ord_row.domain_name == old_domain:
+                ord_row.domain_name = raw_name
+
         self._session.add(
             PlatformAuditLog(
                 customer_id=env.customer_id,

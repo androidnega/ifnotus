@@ -392,9 +392,31 @@ async function confirmPay(o: StaffOrderItem) {
   }
 }
 
+async function saveOrderDomain(orderId: string) {
+  const newDomain = (domainByOrder.value[orderId] || '').trim()
+  if (!newDomain) {
+    editingDomainId.value = null
+    return
+  }
+  busyId.value = orderId
+  try {
+    const { data } = await platformAdminApi.updateOrderDomain(orderId, newDomain)
+    domainByOrder.value[orderId] = data.domain_name || newDomain
+    editingDomainId.value = null
+    success.value = `Domain updated to ${data.domain_name || newDomain}!`
+    await load()
+  } catch (e: unknown) {
+    const errObj = e as { response?: { data?: { error?: { message?: string } } } }
+    error.value = errObj.response?.data?.error?.message ?? 'Could not update domain.'
+  } finally {
+    busyId.value = ''
+  }
+}
+
 async function activateHosting(o: StaffOrderItem) {
-  const domain = (domainByOrder.value[o.id] || o.domain_name || 'hosting').trim()
-  if (!confirm(`Activate and provision hosting for ${domain} (${o.invoice_number || o.customer_email})?`)) {
+  const customDomain = (domainByOrder.value[o.id] || o.domain_name || '').trim()
+  const domainLabel = customDomain || 'hosting'
+  if (!confirm(`Activate and provision hosting for ${domainLabel} (${o.invoice_number || o.customer_email})?`)) {
     return
   }
   busyId.value = o.id
@@ -402,12 +424,15 @@ async function activateHosting(o: StaffOrderItem) {
   success.value = ''
   startProgressSimulation()
   try {
-    const { data } = await platformAdminApi.activateOrderHosting(o.id)
+    const { data } = await platformAdminApi.activateOrderHosting(
+      o.id,
+      customDomain ? { domain: customDomain } : undefined,
+    )
     stopProgressSimulation(true)
     const status = (data?.provisioning_status || '').toLowerCase()
     success.value =
       status === 'active'
-        ? `Hosting successfully activated and live on ${domain}!`
+        ? `Hosting successfully activated and live on ${data?.domain_name || domainLabel}!`
         : `Activation queued. Status: ${data?.provisioning_status}.`
     await load()
   } catch (e: unknown) {
@@ -930,7 +955,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
                       <i class="fa-solid fa-globe" />
                       <span class="domain-text">{{ domainByOrder[selectedOrder.id] || selectedOrder.domain_name || 'No domain assigned' }}</span>
                       <button
-                        v-if="canEditSubdomain && selectedOrder.payment_status !== 'paid'"
+                        v-if="canEditSubdomain"
                         type="button"
                         class="btn-edit-subdomain"
                         :title="isStudentPlan(selectedOrder) ? 'Customize student subdomain' : 'Edit domain name'"
@@ -949,11 +974,14 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
                           type="text"
                           class="domain-input"
                           placeholder="e.g. kwame.ifnotus.space"
-                          @keyup.enter="editingDomainId = null"
+                          @keyup.enter="saveOrderDomain(selectedOrder.id)"
                         />
                       </div>
-                      <button type="button" class="btn-domain-done" @click="editingDomainId = null">
-                        <i class="fa-solid fa-check" /> Save
+                      <button type="button" class="btn-domain-done" :disabled="busyId === selectedOrder.id" @click="saveOrderDomain(selectedOrder.id)">
+                        <i class="fa-solid fa-check" /> {{ busyId === selectedOrder.id ? 'Saving…' : 'Save' }}
+                      </button>
+                      <button type="button" class="btn-domain-cancel" @click="editingDomainId = null">
+                        <i class="fa-solid fa-xmark" />
                       </button>
                     </div>
                   </div>

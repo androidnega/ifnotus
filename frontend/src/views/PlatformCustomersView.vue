@@ -26,8 +26,9 @@ import type {
 const route = useRoute()
 const auth = useAuthStore()
 const { can } = usePermissions()
-const canOps = computed(() => can(Permission.PLATFORM_OPS))
-const canProvision = computed(() => isPlatformOwner(auth.user) || can(Permission.SYSTEM_ADMIN))
+
+const canOps = computed(() => can(Permission.PLATFORM_OPS) || isPlatformOwner(auth.user))
+const canProvision = computed(() => isPlatformOwner(auth.user) || can(Permission.SYSTEM_ADMIN) || can(Permission.PLATFORM_OPS))
 const canTerminate = computed(() => isPlatformOwner(auth.user))
 const canDelete = computed(() => isPlatformOwner(auth.user))
 const canGrantCredits = computed(
@@ -37,33 +38,42 @@ const canEditProfile = computed(
   () => can(Permission.CUSTOMERS_MANAGE) || can(Permission.PLATFORM_OPS) || isPlatformOwner(auth.user),
 )
 const canEditSubdomain = computed(
-  () => can(Permission.DOMAINS_WRITE) || isPlatformOwner(auth.user),
+  () => can(Permission.DOMAINS_WRITE) || can(Permission.PLATFORM_OPS) || isPlatformOwner(auth.user),
 )
+
+// Subdomain Modal State
 const showEditSubdomainModal = ref(false)
+const targetEnvForSubdomain = ref<StaffEnvironmentItem | null>(null)
+const targetCustomerForSubdomain = ref<StaffCustomerListItem | null>(null)
 const newSubdomainDomain = ref('')
 const editSubdomainBusy = ref(false)
 const editSubdomainError = ref('')
 
-function openEditSubdomainModal(env: StaffEnvironmentItem) {
+function openEditSubdomainModal(env: StaffEnvironmentItem, cust?: StaffCustomerListItem | null) {
+  targetEnvForSubdomain.value = env
+  targetCustomerForSubdomain.value = cust || null
   newSubdomainDomain.value = env.domain || ''
   editSubdomainError.value = ''
   showEditSubdomainModal.value = true
 }
 
 async function submitEditSubdomain() {
-  if (!activeEnv.value || !newSubdomainDomain.value.trim()) {
-    editSubdomainError.value = 'Please enter a valid subdomain/domain.'
+  const env = targetEnvForSubdomain.value || activeEnv.value
+  if (!env || !newSubdomainDomain.value.trim()) {
+    editSubdomainError.value = 'Please enter a valid subdomain or surname.'
     return
+  }
+  let raw = newSubdomainDomain.value.trim().toLowerCase()
+  if (!raw.includes('.')) {
+    raw = `${raw}.ifnotus.space`
   }
   editSubdomainBusy.value = true
   editSubdomainError.value = ''
   try {
-    const { data } = await platformAdminApi.updateEnvironmentSubdomain(
-      activeEnv.value.id,
-      newSubdomainDomain.value.trim().toLowerCase(),
-    )
-    msg.value = `Subdomain updated to ${data.domain || newSubdomainDomain.value}!`
+    const { data } = await platformAdminApi.updateEnvironmentSubdomain(env.id, raw)
+    msg.value = `Subdomain successfully assigned and live on ${data.domain || raw}!`
     showEditSubdomainModal.value = false
+    await loadList()
     if (selected.value) {
       await openCustomer(selected.value.customer.id)
     }
@@ -74,6 +84,7 @@ async function submitEditSubdomain() {
   }
 }
 
+// Credits & Profile State
 const grantCredits = ref(50)
 const grantNote = ref('')
 const grantBusy = ref(false)
@@ -90,6 +101,7 @@ const deleteConfirmEmail = ref('')
 const deleteBusy = ref(false)
 const statusFilter = ref<'all' | 'live' | 'awaiting_payment' | 'setting_up' | 'none'>('all')
 
+// Add Customer Modal
 const showAddCustomerModal = ref(false)
 const newCustFullName = ref('')
 const newCustEmail = ref('')
@@ -137,15 +149,22 @@ async function submitCreateCustomer() {
   }
 }
 
+// Data List & Customer Detail Modal State
 const customers = ref<StaffCustomerListItem[]>([])
 const selected = ref<StaffCustomerDetail | null>(null)
+const showDetailModal = ref(false)
+const detailLoading = ref(false)
+const detailTab = ref<'profile' | 'environments' | 'provision' | 'credits' | 'audit' | 'danger'>('profile')
 const activeEnvId = ref<string | null>(null)
 const q = ref('')
 const loading = ref(true)
 const error = ref('')
 const msg = ref('')
 const busy = ref(false)
-const showList = ref(true)
+
+// Pagination
+const currentPage = ref(1)
+const pageSize = ref(15)
 
 const health = ref<StaffEnvHealth | null>(null)
 const usage = ref<StaffEnvUsage | null>(null)
@@ -171,12 +190,35 @@ const isHostingOperator = computed(() => getCanonicalRole(auth.user) === 'hostin
 const filteredCustomers = computed(() => {
   let list = customers.value
   if (isHostingOperator.value && statusFilter.value === 'all') {
-    // For hosting operators, default view filters out uncleared accounts awaiting billing confirmation
     list = list.filter((c) => (c.hosting_status || 'none') !== 'awaiting_payment')
   } else if (statusFilter.value !== 'all') {
     list = list.filter((c) => (c.hosting_status || 'none') === statusFilter.value)
   }
+  if (q.value.trim()) {
+    const term = q.value.trim().toLowerCase()
+    list = list.filter((c) =>
+      c.full_name?.toLowerCase().includes(term) ||
+      c.email?.toLowerCase().includes(term) ||
+      c.phone?.toLowerCase().includes(term) ||
+      c.primary_domain?.toLowerCase().includes(term) ||
+      c.id?.toLowerCase().includes(term)
+    )
+  }
   return list
+})
+
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredCustomers.value.length / pageSize.value)))
+
+const paginatedCustomers = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return filteredCustomers.value.slice(start, start + pageSize.value)
+})
+
+const showingStart = computed(() => (filteredCustomers.value.length === 0 ? 0 : (currentPage.value - 1) * pageSize.value + 1))
+const showingEnd = computed(() => Math.min(currentPage.value * pageSize.value, filteredCustomers.value.length))
+
+watch([statusFilter, q], () => {
+  currentPage.value = 1
 })
 
 const statusCounts = computed(() => {
@@ -190,6 +232,17 @@ const statusCounts = computed(() => {
   }
   return counts
 })
+
+// KPI Metrics
+const totalCustomersCount = computed(() => customers.value.length)
+const liveHostingCount = computed(() => statusCounts.value.live)
+const awaitingPaymentCount = computed(() => statusCounts.value.awaiting_payment)
+const totalEnvironmentsCount = computed(() =>
+  customers.value.reduce((acc, c) => acc + (c.environment_count || 0), 0),
+)
+const totalAiCredits = computed(() =>
+  customers.value.reduce((acc, c) => acc + (c.credits_remaining || 0), 0),
+)
 
 function hostingStatusLabel(status?: string | null) {
   switch (status) {
@@ -237,13 +290,7 @@ function envHeadline(env: { hosting_name?: string | null; domain?: string | null
 
 function checkValue(val: unknown) {
   if (val == null) return '—'
-  if (typeof val === 'object') {
-    try {
-      return JSON.stringify(val)
-    } catch {
-      return String(val)
-    }
-  }
+  if (typeof val === 'boolean') return val ? 'yes' : 'no'
   return String(val)
 }
 
@@ -274,16 +321,24 @@ async function openCustomer(id: string) {
   usage.value = null
   stacks.value = null
   logs.value = null
+  showDetailModal.value = true
+  detailLoading.value = true
   try {
     const { data } = await platformAdminApi.getCustomer(id)
     selected.value = data
     syncEditForm()
     activeEnvId.value = data.environments[0]?.id ?? null
-    showList.value = false
     if (activeEnvId.value) await loadEnvPanel(activeEnvId.value)
   } catch (e: unknown) {
     msg.value = apiErr(e, 'Could not open customer.')
+  } finally {
+    detailLoading.value = false
   }
+}
+
+function closeCustomerModal() {
+  showDetailModal.value = false
+  selected.value = null
 }
 
 function syncEditForm() {
@@ -341,8 +396,7 @@ async function deleteCustomer() {
   try {
     const { data } = await platformAdminApi.deleteCustomer(selected.value.customer.id, typed)
     msg.value = data.message
-    selected.value = null
-    showList.value = true
+    closeCustomerModal()
     deleteConfirmEmail.value = ''
     await loadList()
   } catch (e: unknown) {
@@ -551,7 +605,10 @@ async function provisionHosting() {
   if (!confirm(warn)) return
   busy.value = true
   try {
-    const domain = provisionDomain.value.trim().toLowerCase()
+    let domain = provisionDomain.value.trim().toLowerCase()
+    if (domain && !domain.includes('.')) {
+      domain = `${domain}.ifnotus.space`
+    }
     let name: string | undefined
     let ext: string | undefined
     if (domain && domain.includes('.')) {
@@ -593,6 +650,16 @@ const envAuditRows = computed(() =>
   ),
 )
 
+function quickAssignSubdomainForCustomer(cust: StaffCustomerListItem) {
+  openCustomer(cust.id).then(() => {
+    if (selected.value?.environments?.length) {
+      openEditSubdomainModal(selected.value.environments[0], cust)
+    } else {
+      detailTab.value = 'provision'
+    }
+  })
+}
+
 onMounted(async () => {
   await loadList()
   try {
@@ -617,42 +684,336 @@ watch(
 <template>
   <DashboardLayout flush>
     <div class="cust">
+      <!-- HEADER -->
       <header class="cust-head-bar">
         <UiPageHeader
-          title="Customers"
-          lede="Find accounts, confirm payments from Orders, and manage live hosting."
-        />
-        <div class="cust-head-actions">
-          <form class="cust-search" @submit.prevent="loadList">
-            <input v-model="q" type="search" placeholder="Search name, email, phone" />
-            <button type="submit">Search</button>
-          </form>
-          <button type="button" class="btn-new-cust" @click="showAddCustomerModal = true">
-            + Add Customer
-          </button>
-        </div>
+          title="Customers &amp; Tenants"
+          lede="Manage tenant accounts, live infrastructure, student subdomains, and AI allocations."
+        >
+          <template #actions>
+            <div class="head-btn-group">
+              <button type="button" class="action-btn primary" @click="loadList">
+                <i class="fa-solid fa-arrows-rotate" :class="{ 'fa-spin': loading }" aria-hidden="true" />
+                Refresh
+              </button>
+              <button type="button" class="action-btn" @click="showAddCustomerModal = true">
+                <i class="fa-solid fa-user-plus text-indigo-600 dark:text-indigo-400" aria-hidden="true" />
+                + Add Customer
+              </button>
+            </div>
+          </template>
+        </UiPageHeader>
       </header>
 
-      <!-- Add Customer Modal -->
-      <div v-if="showAddCustomerModal" class="cust-modal-backdrop" @click.self="showAddCustomerModal = false">
-        <div class="cust-modal-card">
+      <div class="cust-body">
+        <!-- TOP KPI STATS BAR -->
+        <div class="stats-grid">
+          <!-- 1. TOTAL ACCOUNTS -->
+          <article class="stat-card tone-total">
+            <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-users" /></span>
+            <div class="stat-body">
+              <span class="stat-k">Total Customers</span>
+              <span class="stat-v">{{ totalCustomersCount }}</span>
+              <span class="stat-s">Active accounts registered</span>
+            </div>
+          </article>
+
+          <!-- 2. LIVE HOSTING -->
+          <button
+            type="button"
+            class="stat-card tone-live"
+            :class="{ active: statusFilter === 'live' }"
+            @click="statusFilter = statusFilter === 'live' ? 'all' : 'live'"
+          >
+            <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-server" /></span>
+            <div class="stat-body">
+              <span class="stat-k">Live Hosting</span>
+              <span class="stat-v">{{ liveHostingCount }}</span>
+              <span class="stat-s">Production environments active</span>
+            </div>
+          </button>
+
+          <!-- 3. AWAITING PAYMENT -->
+          <button
+            type="button"
+            class="stat-card tone-await"
+            :class="{ active: statusFilter === 'awaiting_payment' }"
+            @click="statusFilter = statusFilter === 'awaiting_payment' ? 'all' : 'awaiting_payment'"
+          >
+            <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-clock-rotate-left" /></span>
+            <div class="stat-body">
+              <div class="stat-k-row">
+                <span class="stat-k">Awaiting Confirm</span>
+                <span v-if="awaitingPaymentCount > 0" class="badge-pulse">{{ awaitingPaymentCount }} pending</span>
+              </div>
+              <span class="stat-v">{{ awaitingPaymentCount }}</span>
+              <span class="stat-s">Orders awaiting MoMo / review</span>
+            </div>
+          </button>
+
+          <!-- 4. TOTAL ENVIRONMENTS -->
+          <article class="stat-card tone-env">
+            <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-cubes-stacked" /></span>
+            <div class="stat-body">
+              <span class="stat-k">Total Environments</span>
+              <span class="stat-v">{{ totalEnvironmentsCount }}</span>
+              <span class="stat-s">Linux jails &amp; PHP vhosts</span>
+            </div>
+          </article>
+
+          <!-- 5. AI CREDITS POOL -->
+          <article class="stat-card tone-ai">
+            <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-brain" /></span>
+            <div class="stat-body">
+              <span class="stat-k">AI Credits Pool</span>
+              <span class="stat-v">{{ totalAiCredits }}</span>
+              <span class="stat-s">Total allocated balance</span>
+            </div>
+          </article>
+        </div>
+
+        <!-- FILTER & SEARCH CONTROLS CARD -->
+        <section class="panel-card filters-card">
+          <div class="filters-row">
+            <!-- STATUS CHIP TABS -->
+            <div class="filter-tabs">
+              <button
+                v-for="f in [
+                  { id: 'all' as const, label: `All (${statusCounts.all})`, icon: 'fa-layer-group' },
+                  { id: 'live' as const, label: `Live (${statusCounts.live})`, icon: 'fa-circle-check' },
+                  { id: 'awaiting_payment' as const, label: `Awaiting Pay (${statusCounts.awaiting_payment})`, icon: 'fa-hourglass-half' },
+                  { id: 'setting_up' as const, label: `Setting Up (${statusCounts.setting_up})`, icon: 'fa-gears' },
+                  { id: 'none' as const, label: `No Hosting (${statusCounts.none})`, icon: 'fa-user' },
+                ]"
+                :key="f.id"
+                type="button"
+                class="filter-tab"
+                :class="{ active: statusFilter === f.id }"
+                @click="statusFilter = f.id"
+              >
+                <i class="fa-solid" :class="f.icon" aria-hidden="true" />
+                <span>{{ f.label }}</span>
+              </button>
+            </div>
+
+            <!-- SEARCH INPUT -->
+            <div class="search-box">
+              <i class="fa-solid fa-magnifying-glass search-icon" aria-hidden="true" />
+              <input
+                v-model="q"
+                type="search"
+                class="search-input"
+                placeholder="Search customer, email, phone, domain, ID…"
+                @keyup.enter="loadList"
+              />
+              <button v-if="q" type="button" class="btn-clear-search" title="Clear Search" @click="q = ''; loadList()">
+                <i class="fa-solid fa-xmark" />
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- GLOBAL STATUS ALERTS -->
+        <UiAlert v-if="error" tone="err">{{ error }}</UiAlert>
+        <UiAlert v-if="msg" :tone="msg.toLowerCase().includes('could not') || msg.toLowerCase().includes('fail') ? 'err' : 'ok'">
+          {{ msg }}
+        </UiAlert>
+
+        <!-- CUSTOMERS LIST DATA TABLE -->
+        <section class="panel-card table-card">
+          <div class="card-head-compact">
+            <div class="head-title-wrap">
+              <h3 class="panel-title">
+                <i class="fa-solid fa-users-gear text-indigo-600" />
+                Customer Accounts &amp; Hosted Sites
+              </h3>
+              <span class="count-badge">{{ filteredCustomers.length }} in view</span>
+            </div>
+
+            <div v-if="filteredCustomers.length" class="pagination-sub-info">
+              Showing {{ showingStart }}–{{ showingEnd }} of {{ filteredCustomers.length }}
+            </div>
+          </div>
+
+          <div v-if="loading" class="state-msg">
+            <i class="fa-solid fa-spinner fa-spin" aria-hidden="true" />
+            <span>Loading customer accounts &amp; live environments…</span>
+          </div>
+
+          <div v-else-if="filteredCustomers.length" class="cust-table-wrap">
+            <table class="cust-table">
+              <thead>
+                <tr>
+                  <th class="col-cust">Customer &amp; Account</th>
+                  <th class="col-hosting">Hosting &amp; Subdomain</th>
+                  <th class="col-status">Status &amp; Verification</th>
+                  <th class="col-ai">AI Credits</th>
+                  <th class="col-actions text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="c in paginatedCustomers"
+                  :key="c.id"
+                  class="cust-row cursor-pointer"
+                  :class="{ 'row-live': c.hosting_status === 'live', 'row-awaiting': c.hosting_status === 'awaiting_payment' }"
+                  @click="openCustomer(c.id)"
+                >
+                  <!-- 1. CUSTOMER & ACCOUNT -->
+                  <td class="cell-cust">
+                    <div class="row-top-info">
+                      <span class="cust-name font-bold">{{ c.full_name || 'Customer' }}</span>
+                      <span v-if="c.company" class="company-badge">{{ c.company }}</span>
+                    </div>
+                    <div class="cust-sub-details" @click.stop>
+                      <a :href="`mailto:${c.email}`" class="cust-email-link" :title="c.email">
+                        <i class="fa-solid fa-envelope text-slate-400" /> {{ c.email }}
+                      </a>
+                      <span v-if="c.phone" class="cust-phone-inline">
+                        <span class="dot-sep">·</span>
+                        <i class="fa-solid fa-phone text-slate-400" /> {{ c.phone }}
+                      </span>
+                    </div>
+                  </td>
+
+                  <!-- 2. HOSTING & SUBDOMAIN -->
+                  <td class="cell-hosting">
+                    <div class="row-top-info">
+                      <div class="domain-tag-inline" :title="c.primary_domain || 'No domain assigned'">
+                        <i class="fa-solid fa-globe text-indigo-500" />
+                        <span class="domain-text font-semibold">
+                          {{ c.primary_domain || 'No subdomain assigned' }}
+                        </span>
+                      </div>
+                    </div>
+                    <div class="env-count-sub">
+                      <span>{{ c.environment_count }} environment{{ c.environment_count === 1 ? '' : 's' }}</span>
+                      <span class="dot-sep">·</span>
+                      <span>{{ c.subscription_count }} subscription{{ c.subscription_count === 1 ? '' : 's' }}</span>
+                    </div>
+                  </td>
+
+                  <!-- 3. STATUS & VERIFICATION -->
+                  <td class="cell-status">
+                    <div class="row-top-info">
+                      <span class="status-pill" :data-s="c.hosting_status || 'none'">
+                        <i
+                          class="fa-solid"
+                          :class="{
+                            'fa-circle-check text-emerald-500': c.hosting_status === 'live',
+                            'fa-clock text-amber-500': c.hosting_status === 'awaiting_payment',
+                            'fa-gears text-blue-500': c.hosting_status === 'setting_up',
+                            'fa-user text-slate-400': !c.hosting_status || c.hosting_status === 'none',
+                          }"
+                        />
+                        {{ hostingStatusLabel(c.hosting_status) }}
+                      </span>
+                    </div>
+                    <div class="verif-sub">
+                      <span class="badge-micro" :class="c.email_verified ? 'verified' : 'unverified'">
+                        {{ c.email_verified ? 'Email Verified' : 'Unverified' }}
+                      </span>
+                      <span v-if="c.awaiting_payment_count" class="badge-micro awaiting-tag">
+                        {{ c.awaiting_payment_count }} pending order
+                      </span>
+                    </div>
+                  </td>
+
+                  <!-- 4. AI CREDITS -->
+                  <td class="cell-ai">
+                    <div class="ai-credits-box">
+                      <i class="fa-solid fa-bolt text-amber-500" />
+                      <span class="ai-val">{{ c.credits_remaining }}</span>
+                    </div>
+                  </td>
+
+                  <!-- 5. ACTIONS -->
+                  <td class="cell-actions text-right" @click.stop>
+                    <div class="actions-group">
+                      <button
+                        type="button"
+                        class="btn-tbl-primary"
+                        title="View Full Profile & Environments"
+                        @click="openCustomer(c.id)"
+                      >
+                        <i class="fa-solid fa-eye" />
+                        <span>Details</span>
+                      </button>
+
+                      <button
+                        v-if="canEditSubdomain"
+                        type="button"
+                        class="btn-tbl-subdomain"
+                        :title="c.primary_domain ? 'Update assigned subdomain' : 'Assign student surname subdomain'"
+                        @click="quickAssignSubdomainForCustomer(c)"
+                      >
+                        <i class="fa-solid fa-pen-to-square" />
+                        <span>{{ c.primary_domain ? 'Subdomain' : 'Assign Sub' }}</span>
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div v-else class="empty-box">
+            <i class="fa-solid fa-user-slash text-slate-300 dark:text-slate-600 text-3xl" />
+            <p class="empty-title">No customers found</p>
+            <p class="empty-desc">No accounts match the selected filter or query. Try searching for a different name, email, or clear the search.</p>
+          </div>
+
+          <!-- PAGINATION FOOTER -->
+          <footer v-if="filteredCustomers.length > pageSize" class="pagination-footer">
+            <span class="pagination-summary">
+              Showing <strong>{{ showingStart }}–{{ showingEnd }}</strong> of <strong>{{ filteredCustomers.length }}</strong>
+            </span>
+            <div class="pagination-controls">
+              <button
+                type="button"
+                class="btn-page"
+                :disabled="currentPage === 1"
+                @click="currentPage = Math.max(1, currentPage - 1)"
+              >
+                <i class="fa-solid fa-chevron-left" /> Prev
+              </button>
+              <span class="page-indicator">Page {{ currentPage }} of {{ totalPages }}</span>
+              <button
+                type="button"
+                class="btn-page"
+                :disabled="currentPage === totalPages"
+                @click="currentPage = Math.min(totalPages, currentPage + 1)"
+              >
+                Next <i class="fa-solid fa-chevron-right" />
+              </button>
+            </div>
+          </footer>
+        </section>
+      </div>
+
+      <!-- ADD CUSTOMER MODAL -->
+      <div v-if="showAddCustomerModal" class="modal-backdrop" @click.self="showAddCustomerModal = false">
+        <div class="modal-card">
           <div class="modal-head">
-            <h3>Add New Customer</h3>
+            <div class="modal-title-group">
+              <i class="fa-solid fa-user-plus text-indigo-600" />
+              <h3>Add New Customer Account</h3>
+            </div>
             <button type="button" class="btn-close" @click="showAddCustomerModal = false">✕</button>
           </div>
-          <p class="modal-sub">Create a customer account directly and optionally provision their initial hosting environment.</p>
+          <p class="modal-sub">Create a customer account directly and optionally provision an initial hosting package.</p>
 
           <UiAlert v-if="addCustError" tone="err">{{ addCustError }}</UiAlert>
 
           <form class="modal-form" @submit.prevent="submitCreateCustomer">
             <div class="form-group">
               <label>Full Name *</label>
-              <input v-model="newCustFullName" required placeholder="e.g. John Doe" />
+              <input v-model="newCustFullName" required placeholder="e.g. John Mensah" />
             </div>
 
             <div class="form-group">
               <label>Email Address *</label>
-              <input v-model="newCustEmail" type="email" required placeholder="customer@example.com" />
+              <input v-model="newCustEmail" type="email" required placeholder="john@example.com" />
             </div>
 
             <div class="form-row">
@@ -661,22 +1022,22 @@ watch(
                 <input v-model="newCustPhone" placeholder="+233..." />
               </div>
               <div class="form-group">
-                <label>Company (optional)</label>
-                <input v-model="newCustCompany" placeholder="Organization name" />
+                <label>Company / Institution (optional)</label>
+                <input v-model="newCustCompany" placeholder="TTU / Organization" />
               </div>
             </div>
 
             <div class="form-group">
               <label>Password (optional, default auto-set)</label>
-              <div class="ds-input-eye-wrap">
+              <div class="input-eye-wrap">
                 <input
                   v-model="newCustPassword"
                   :type="showNewCustPassword ? 'text' : 'password'"
-                  placeholder="Leave blank for WelcomePass2026!"
+                  placeholder="Leave blank for auto-generated password"
                 />
                 <button
                   type="button"
-                  class="ds-eye-btn"
+                  class="eye-btn"
                   :title="showNewCustPassword ? 'Hide password' : 'Show password'"
                   tabindex="-1"
                   @click="showNewCustPassword = !showNewCustPassword"
@@ -687,7 +1048,7 @@ watch(
               </div>
             </div>
 
-            <div class="form-section-title">Initial Hosting (Optional)</div>
+            <div class="form-section-title">Initial Hosting Plan &amp; Subdomain (Optional)</div>
             <div class="form-row">
               <div class="form-group">
                 <label>Hosting Plan</label>
@@ -699,496 +1060,426 @@ watch(
                 </select>
               </div>
               <div v-if="newCustPlanId" class="form-group">
-                <label>Primary Domain</label>
-                <input v-model="newCustDomain" placeholder="e.g. customerdomain.com" />
+                <label>Assigned Subdomain / Domain</label>
+                <input v-model="newCustDomain" placeholder="e.g. mensah.ifnotus.space" />
               </div>
             </div>
 
             <div class="modal-actions">
               <button type="button" class="btn-ghost" @click="showAddCustomerModal = false">Cancel</button>
-              <button type="submit" class="btn-submit-cust" :disabled="addCustBusy">
-                {{ addCustBusy ? 'Creating Customer…' : 'Create & Onboard Customer' }}
+              <button type="submit" class="btn-submit-primary" :disabled="addCustBusy">
+                {{ addCustBusy ? 'Creating Customer…' : 'Create Customer' }}
               </button>
             </div>
           </form>
         </div>
       </div>
 
-      <!-- Edit Subdomain Modal (Hosting Operator & Owner Only) -->
-      <div v-if="showEditSubdomainModal && activeEnv" class="cust-modal-backdrop" @click.self="showEditSubdomainModal = false">
-        <div class="cust-modal-card">
+      <!-- EDIT / ASSIGN SUBDOMAIN MODAL -->
+      <div v-if="showEditSubdomainModal" class="modal-backdrop" @click.self="showEditSubdomainModal = false">
+        <div class="modal-card">
           <div class="modal-head">
-            <h3>Edit Personal Hosting Subdomain</h3>
+            <div class="modal-title-group">
+              <i class="fa-solid fa-bolt text-indigo-600" />
+              <h3>Assign &amp; Customize Subdomain</h3>
+            </div>
             <button type="button" class="btn-close" @click="showEditSubdomainModal = false">✕</button>
           </div>
           <p class="modal-sub">
-            Update the primary domain or custom subdomain for this hosting environment. Infrastructure and Nginx will be re-routed.
+            Assign a student project subdomain (e.g. enter <code>surname</code> to automatically route to <code>surname.ifnotus.space</code>) or specify a custom apex domain.
           </p>
 
           <UiAlert v-if="editSubdomainError" tone="err">{{ editSubdomainError }}</UiAlert>
 
           <form class="modal-form" @submit.prevent="submitEditSubdomain">
             <div class="form-group">
-              <label>Domain or Subdomain *</label>
-              <input
-                v-model="newSubdomainDomain"
-                required
-                placeholder="e.g. john.ifnotus.space or mydomain.online"
-                autofocus
-              />
+              <label>Subdomain / Domain Name *</label>
+              <div class="input-addon-wrap">
+                <input
+                  v-model="newSubdomainDomain"
+                  required
+                  placeholder="e.g. mensah, blay, or customdomain.online"
+                  autofocus
+                />
+              </div>
+              <p class="field-hint">
+                Tip: Typing a single name like <strong>blay</strong> will automatically assign <strong>blay.ifnotus.space</strong>.
+              </p>
             </div>
 
             <div class="modal-actions">
               <button type="button" class="btn-ghost" :disabled="editSubdomainBusy" @click="showEditSubdomainModal = false">Cancel</button>
-              <button type="submit" class="btn-submit-cust" :disabled="editSubdomainBusy">
-                {{ editSubdomainBusy ? 'Updating Subdomain…' : 'Save Subdomain' }}
+              <button type="submit" class="btn-submit-primary" :disabled="editSubdomainBusy">
+                <i class="fa-solid fa-cloud-arrow-up mr-1" />
+                {{ editSubdomainBusy ? 'Assigning Subdomain…' : 'Save & Route Subdomain' }}
               </button>
             </div>
           </form>
         </div>
       </div>
 
-      <p v-if="loading" class="cust-muted cust-status">Loading…</p>
-      <UiAlert v-else-if="error" class="cust-status" tone="err">{{ error }}</UiAlert>
-
-      <div v-else class="cust-layout">
-        <aside class="cust-list" :class="{ 'is-hidden-mobile': selected && !showList }">
-          <div class="list-filters">
-            <button
-              v-for="f in [
-                { id: 'all' as const, label: `All (${statusCounts.all})` },
-                { id: 'live' as const, label: `Live (${statusCounts.live})` },
-                { id: 'awaiting_payment' as const, label: `Pay (${statusCounts.awaiting_payment})` },
-                { id: 'setting_up' as const, label: `Setup (${statusCounts.setting_up})` },
-                { id: 'none' as const, label: `None (${statusCounts.none})` },
-              ]"
-              :key="f.id"
-              type="button"
-              class="filter-chip"
-              :class="{ on: statusFilter === f.id }"
-              @click="statusFilter = f.id"
-            >
-              {{ f.label }}
-            </button>
+      <!-- FULL CUSTOMER DETAILS MODAL -->
+      <div v-if="showDetailModal" class="modal-backdrop" @click.self="closeCustomerModal">
+        <div class="modal-card wide customer-detail-modal">
+          <div class="modal-head">
+            <div class="modal-title-group">
+              <i class="fa-solid fa-user-gear text-indigo-600" />
+              <div>
+                <h3 v-if="selected">{{ selected.customer.full_name }}</h3>
+                <h3 v-else>Customer Details</h3>
+                <p v-if="selected" class="text-xs text-slate-500 font-mono">{{ selected.customer.email }} · ID: {{ selected.customer.id.slice(0, 8) }}</p>
+              </div>
+            </div>
+            <button type="button" class="btn-close" @click="closeCustomerModal">✕</button>
           </div>
 
-          <div class="cust-table-wrap">
-            <table class="cust-table">
-              <thead>
-                <tr>
-                  <th>Customer</th>
-                  <th>Status</th>
-                  <th class="hide-sm">Hosting</th>
-                  <th class="num">AI</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="c in filteredCustomers"
-                  :key="c.id"
-                  :class="{ on: selected?.customer.id === c.id }"
-                  @click="openCustomer(c.id)"
-                >
-                  <td>
-                    <p class="t-name">{{ c.full_name }}</p>
-                    <p class="t-email">{{ c.email }}</p>
-                    <p v-if="c.phone" class="t-meta">{{ c.phone }}</p>
-                  </td>
-                  <td>
-                    <span class="status-pill" :data-s="c.hosting_status || 'none'">
-                      {{ hostingStatusLabel(c.hosting_status) }}
-                    </span>
-                    <p v-if="c.awaiting_payment_count" class="t-meta warn">
-                      {{ c.awaiting_payment_count }} payment(s)
-                    </p>
-                  </td>
-                  <td class="hide-sm">
-                    <p class="t-domain">{{ c.primary_domain || '—' }}</p>
-                    <p class="t-meta">{{ c.environment_count }} env · {{ c.subscription_count }} sub</p>
-                  </td>
-                  <td class="num">{{ c.credits_remaining }}</td>
-                </tr>
-                <tr v-if="!filteredCustomers.length">
-                  <td colspan="4" class="cust-empty">No customers match.</td>
-                </tr>
-              </tbody>
-            </table>
+          <div v-if="detailLoading" class="state-msg py-8">
+            <i class="fa-solid fa-spinner fa-spin text-2xl" />
+            <span>Fetching complete customer telemetry, environments, and logs…</span>
           </div>
-        </aside>
 
-        <section class="cust-detail" :class="{ 'is-hidden-mobile': !selected || showList }">
-          <UiAlert v-if="msg" :tone="msg.toLowerCase().includes('could not') || msg.toLowerCase().includes('type ') ? 'err' : 'ok'">{{ msg }}</UiAlert>
-          <p v-if="!selected" class="cust-muted pick-hint">Select a customer from the list.</p>
+          <template v-else-if="selected">
+            <!-- MODAL TAB NAVIGATION -->
+            <div class="modal-nav-tabs">
+              <button
+                type="button"
+                class="modal-tab-btn"
+                :class="{ active: detailTab === 'profile' }"
+                @click="detailTab = 'profile'"
+              >
+                <i class="fa-solid fa-id-card" /> Profile
+              </button>
+              <button
+                type="button"
+                class="modal-tab-btn"
+                :class="{ active: detailTab === 'environments' }"
+                @click="detailTab = 'environments'"
+              >
+                <i class="fa-solid fa-server" /> Environments ({{ selected.environments.length }})
+              </button>
+              <button
+                v-if="canProvision"
+                type="button"
+                class="modal-tab-btn"
+                :class="{ active: detailTab === 'provision' }"
+                @click="detailTab = 'provision'"
+              >
+                <i class="fa-solid fa-plus-circle" /> Provision Hosting
+              </button>
+              <button
+                v-if="canGrantCredits"
+                type="button"
+                class="modal-tab-btn"
+                :class="{ active: detailTab === 'credits' }"
+                @click="detailTab = 'credits'"
+              >
+                <i class="fa-solid fa-bolt text-amber-500" /> AI Credits ({{ selected.credits_remaining }})
+              </button>
+              <button
+                type="button"
+                class="modal-tab-btn"
+                :class="{ active: detailTab === 'audit' }"
+                @click="detailTab = 'audit'"
+              >
+                <i class="fa-solid fa-clock-rotate-left" /> Audit Trail
+              </button>
+              <button
+                v-if="canDelete"
+                type="button"
+                class="modal-tab-btn danger"
+                :class="{ active: detailTab === 'danger' }"
+                @click="detailTab = 'danger'"
+              >
+                <i class="fa-solid fa-trash" /> Danger Zone
+              </button>
+            </div>
 
-          <template v-else>
-            <button type="button" class="cust-back" @click="showList = true">← Customers</button>
+            <!-- MODAL TAB BODIES -->
+            <div class="modal-tab-content">
+              <!-- TAB 1: PROFILE & CONTACT DETAILS -->
+              <div v-if="detailTab === 'profile'" class="tab-pane">
+                <form class="modal-form" @submit.prevent="saveCustomerProfile">
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label>Email Address</label>
+                      <input v-model="editEmail" :disabled="!canEditProfile" type="email" required />
+                    </div>
+                    <div class="form-group">
+                      <label>Phone Number</label>
+                      <input v-model="editPhone" :disabled="!canEditProfile" placeholder="+233..." />
+                    </div>
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label>First Name</label>
+                      <input v-model="editFirst" :disabled="!canEditProfile" />
+                    </div>
+                    <div class="form-group">
+                      <label>Last Name</label>
+                      <input v-model="editLast" :disabled="!canEditProfile" />
+                    </div>
+                  </div>
+                  <div class="form-group">
+                    <label>Company / Institution</label>
+                    <input v-model="editCompany" :disabled="!canEditProfile" />
+                  </div>
 
-            <div class="card">
-              <div class="card-top">
-                <div class="min0">
-                  <h2 class="title" :title="selected.customer.full_name">{{ selected.customer.full_name }}</h2>
-                  <p class="email-line" :title="selected.customer.email">{{ selected.customer.email }}</p>
-                </div>
-                <div class="chips">
-                  <span class="chip">{{ selected.customer.email_verified ? 'Verified' : 'Unverified' }}</span>
-                  <span class="chip">2FA {{ selected.customer.two_factor_enabled ? 'on' : 'off' }}</span>
-                  <span class="chip">{{ selected.credits_remaining }} AI credits</span>
+                  <div v-if="canEditProfile" class="modal-actions mt-3">
+                    <button type="submit" class="btn-submit-primary" :disabled="profileBusy">
+                      {{ profileBusy ? 'Saving…' : 'Save Contact Details' }}
+                    </button>
+                  </div>
+                </form>
+
+                <!-- SUBSCRIPTIONS SUMMARY -->
+                <div class="mt-4 pt-4 border-t border-slate-100 dark:border-slate-800">
+                  <h4 class="text-xs font-bold uppercase text-slate-500 mb-2">Active Subscriptions &amp; Resource Plans</h4>
+                  <div v-if="selected.subscriptions.length" class="space-y-2">
+                    <div
+                      v-for="s in selected.subscriptions"
+                      :key="s.id"
+                      class="flex flex-wrap items-center justify-between p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 text-xs"
+                    >
+                      <div>
+                        <span class="font-bold text-slate-800 dark:text-slate-200">{{ s.plan_name || 'Hosting Plan' }}</span>
+                        <span class="text-slate-500 ml-2 font-mono">ID: {{ s.id.slice(0, 8) }}</span>
+                        <div class="text-[11px] text-slate-500 mt-0.5">
+                          CPU: {{ s.cpu_allocated }} cores · RAM: {{ s.ram_allocated }} GB · Storage: {{ s.storage_allocated }} GB
+                        </div>
+                      </div>
+                      <div class="text-right">
+                        <span class="status-pill" :data-s="s.status">{{ s.status }}</span>
+                        <span v-if="s.expires_at" class="block text-[10px] text-slate-400 mt-1">
+                          Expires: {{ new Date(s.expires_at).toLocaleDateString() }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <p v-else class="text-xs text-slate-400">No active subscriptions found for this account.</p>
                 </div>
               </div>
-              <p v-if="!canEditProfile && (selected.customer.phone || selected.customer.company)" class="submeta">
-                <span v-if="selected.customer.phone">{{ selected.customer.phone }}</span>
-                <span v-if="selected.customer.phone && selected.customer.company"> · </span>
-                <span v-if="selected.customer.company">{{ selected.customer.company }}</span>
-              </p>
 
-              <div v-if="canEditProfile" class="provision profile-edit">
-                <h3>Contact details</h3>
-                <p class="cust-muted">
-                  Update login email or phone. Changing the phone marks it verified so SMS login works immediately.
-                </p>
-                <div class="profile-grid">
-                  <label class="profile-field">
-                    <span>Email</span>
-                    <input v-model="editEmail" type="email" autocomplete="off" />
-                  </label>
-                  <label class="profile-field">
-                    <span>Phone</span>
-                    <input v-model="editPhone" type="tel" autocomplete="off" placeholder="0248069639" />
-                  </label>
-                  <label class="profile-field">
-                    <span>First name</span>
-                    <input v-model="editFirst" type="text" autocomplete="off" />
-                  </label>
-                  <label class="profile-field">
-                    <span>Last name</span>
-                    <input v-model="editLast" type="text" autocomplete="off" />
-                  </label>
-                  <label class="profile-field profile-field-wide">
-                    <span>Company</span>
-                    <input v-model="editCompany" type="text" autocomplete="off" />
-                  </label>
+              <!-- TAB 2: ENVIRONMENTS & SUBDOMAINS -->
+              <div v-else-if="detailTab === 'environments'" class="tab-pane">
+                <div v-if="selected.environments.length" class="space-y-4">
+                  <div
+                    v-for="env in selected.environments"
+                    :key="env.id"
+                    class="env-card p-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/30"
+                  >
+                    <div class="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200 dark:border-slate-700">
+                      <div>
+                        <div class="flex items-center gap-2">
+                          <i class="fa-solid fa-server text-indigo-600" />
+                          <strong class="text-sm font-bold text-slate-900 dark:text-slate-100">{{ envHeadline(env) }}</strong>
+                          <span class="status-pill status-pill-xs" :data-s="env.status">{{ env.status }}</span>
+                        </div>
+                        <p class="text-xs text-slate-500 font-mono mt-0.5">
+                          Domain: {{ env.domain || 'No domain assigned' }} · Webroot: {{ env.document_root || 'public_html' }}
+                        </p>
+                      </div>
+
+                      <!-- ASSIGN SUBDOMAIN BUTTON -->
+                      <div class="flex items-center gap-2">
+                        <button
+                          v-if="canEditSubdomain"
+                          type="button"
+                          class="btn-action-primary"
+                          title="Assign or change student subdomain"
+                          @click="openEditSubdomainModal(env)"
+                        >
+                          <i class="fa-solid fa-bolt text-amber-300" />
+                          <span>Assign / Edit Subdomain</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <!-- ENVIRONMENT DETAILS GRID -->
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 my-3 text-xs">
+                      <div class="metric-mini-box">
+                        <span class="metric-mini-label">Health</span>
+                        <span class="font-semibold text-slate-800 dark:text-slate-200">{{ env.health_status || 'healthy' }}</span>
+                      </div>
+                      <div class="metric-mini-box">
+                        <span class="metric-mini-label">Limits</span>
+                        <span class="font-semibold text-slate-800 dark:text-slate-200">{{ env.cpu_limit }}c · {{ env.ram_limit_gb }}GB</span>
+                      </div>
+                      <div class="metric-mini-box">
+                        <span class="metric-mini-label">Storage</span>
+                        <span class="font-semibold text-slate-800 dark:text-slate-200">{{ env.storage_limit_gb }} GB</span>
+                      </div>
+                      <div class="metric-mini-box">
+                        <span class="metric-mini-label">Stack</span>
+                        <span class="font-semibold text-slate-800 dark:text-slate-200">{{ stackLabel(env) }}</span>
+                      </div>
+                    </div>
+
+                    <!-- OPS CONTROLS -->
+                    <div v-if="canOps" class="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                      <button type="button" class="btn-micro" :disabled="busy" @click="runHealth">
+                        <i class="fa-solid fa-heart-pulse text-emerald-500" /> Run Health
+                      </button>
+                      <button type="button" class="btn-micro" :disabled="busy" @click="repairFs(env.id)">
+                        <i class="fa-solid fa-wrench text-blue-500" /> Fix Permissions
+                      </button>
+                      <button
+                        v-if="env.status === 'active'"
+                        type="button"
+                        class="btn-micro"
+                        :disabled="busy"
+                        @click="suspendEnv(env.id)"
+                      >
+                        <i class="fa-solid fa-pause text-amber-500" /> Suspend
+                      </button>
+                      <button
+                        v-else-if="env.status === 'suspended'"
+                        type="button"
+                        class="btn-micro"
+                        :disabled="busy"
+                        @click="restoreEnv(env.id)"
+                      >
+                        <i class="fa-solid fa-play text-emerald-500" /> Restore
+                      </button>
+                      <button type="button" class="btn-micro" :disabled="busy" @click="clearEnvStack(env.id, env.domain)">
+                        <i class="fa-solid fa-eraser text-orange-500" /> Clear Stack
+                      </button>
+                      <button
+                        v-if="canTerminate"
+                        type="button"
+                        class="btn-micro text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30"
+                        :disabled="busy"
+                        @click="terminateEnv(env.id, env.domain)"
+                      >
+                        <i class="fa-solid fa-ban" /> Terminate
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <div class="provision-row">
-                  <button type="button" class="btn primary" :disabled="profileBusy" @click="saveCustomerProfile">
-                    {{ profileBusy ? 'Saving…' : 'Save contact details' }}
+
+                <div v-else class="empty-box py-6">
+                  <i class="fa-solid fa-cubes-stacked text-3xl text-slate-300 dark:text-slate-600" />
+                  <p class="empty-title">No environments provisioned</p>
+                  <p class="empty-desc">This customer does not have any active Linux environments yet.</p>
+                  <button
+                    v-if="canProvision"
+                    type="button"
+                    class="btn-submit-primary mt-3"
+                    @click="detailTab = 'provision'"
+                  >
+                    + Provision Initial Hosting
                   </button>
-                  <span v-if="selected.customer.phone_verified" class="cust-muted">Phone verified</span>
-                  <span v-else class="cust-muted warn">Phone not verified</span>
                 </div>
               </div>
 
-              <div v-if="canDelete" class="provision danger-zone danger-zone-top">
-                <h3>Remove account</h3>
-                <p class="cust-muted">
-                  Permanently deletes this tenant — login, hosting environments, orders, and on-disk files.
-                  Type their email to confirm.
-                </p>
-                <div class="provision-row">
-                  <input
-                    v-model="deleteConfirmEmail"
-                    type="email"
-                    :placeholder="selected.customer.email"
-                    autocomplete="off"
-                  />
+              <!-- TAB 3: PROVISION HOSTING -->
+              <div v-else-if="detailTab === 'provision'" class="tab-pane">
+                <form class="modal-form" @submit.prevent="provisionHosting">
+                  <div class="form-group">
+                    <label>Select Hosting Package *</label>
+                    <select v-model="provisionPlanId" required>
+                      <option v-for="p in allPlans" :key="p.id" :value="p.id">
+                        {{ p.name }} — ₵{{ p.price_monthly }}/mo ({{ p.cpu_cores }} CPU, {{ p.ram_gb }}GB RAM, {{ p.storage_gb }}GB Disk)
+                      </option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <label>Assigned Student Subdomain or Domain (Optional)</label>
+                    <input
+                      v-model="provisionDomain"
+                      placeholder="e.g. blay (expands to blay.ifnotus.space) or customdomain.online"
+                    />
+                    <p class="field-hint">Leave blank to automatically allocate based on customer account slug.</p>
+                  </div>
+
+                  <div class="modal-actions">
+                    <button type="submit" class="btn-submit-primary" :disabled="busy">
+                      <i class="fa-solid fa-bolt mr-1" />
+                      {{ busy ? 'Setting up server environment…' : 'Set Up & Activate Hosting' }}
+                    </button>
+                  </div>
+                </form>
+              </div>
+
+              <!-- TAB 4: AI CREDITS -->
+              <div v-else-if="detailTab === 'credits'" class="tab-pane">
+                <div class="flex items-center justify-between p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 mb-4">
+                  <div>
+                    <span class="text-xs font-bold text-amber-900 dark:text-amber-200 block">Current AI Balance</span>
+                    <strong class="text-2xl text-amber-700 dark:text-amber-400 font-extrabold">{{ selected.credits_remaining }} Credits</strong>
+                  </div>
+                  <i class="fa-solid fa-brain text-3xl text-amber-400" />
+                </div>
+
+                <form class="modal-form" @submit.prevent="grantCreditsToCustomer">
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label>Credits to Grant *</label>
+                      <input v-model.number="grantCredits" type="number" min="1" max="100000" required />
+                    </div>
+                    <div class="form-group">
+                      <label>Internal Note / Reason</label>
+                      <input v-model="grantNote" placeholder="e.g. Student grant / complimentary bonus" />
+                    </div>
+                  </div>
+
+                  <div class="modal-actions">
+                    <button type="submit" class="btn-submit-primary" :disabled="grantBusy">
+                      {{ grantBusy ? 'Granting…' : 'Grant AI Credits' }}
+                    </button>
+                  </div>
+                </form>
+              </div>
+
+              <!-- TAB 5: AUDIT TRAIL -->
+              <div v-else-if="detailTab === 'audit'" class="tab-pane">
+                <div v-if="auditRows.length" class="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  <div
+                    v-for="a in auditRows"
+                    :key="a.id"
+                    class="p-2.5 rounded-lg border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 text-xs"
+                  >
+                    <div class="flex items-center justify-between">
+                      <strong class="text-slate-800 dark:text-slate-200 font-mono">{{ a.action }}</strong>
+                      <span class="text-slate-400 text-[10px]">{{ new Date(a.occurred_at).toLocaleString() }}</span>
+                    </div>
+                    <div class="text-slate-600 dark:text-slate-400 mt-1 flex flex-wrap items-center gap-2 text-[11px]">
+                      <span>Target: <code>{{ a.target_type }}#{{ a.target_id?.slice(0, 8) }}</code></span>
+                      <span>Result: <span class="text-emerald-600 font-bold">{{ a.result }}</span></span>
+                    </div>
+                  </div>
+                </div>
+                <p v-else class="text-xs text-slate-400">No activity recorded yet for this customer account.</p>
+              </div>
+
+              <!-- TAB 6: DANGER ZONE -->
+              <div v-else-if="detailTab === 'danger'" class="tab-pane">
+                <div class="p-4 rounded-xl border border-rose-200 dark:border-rose-900 bg-rose-50/50 dark:bg-rose-950/20">
+                  <h4 class="text-sm font-bold text-rose-700 dark:text-rose-400">Permanently Delete Customer Account</h4>
+                  <p class="text-xs text-rose-600 dark:text-rose-300 mt-1">
+                    This terminates all hosting environments, deletes user accounts, and wipes platform access. This action cannot be undone.
+                  </p>
+
+                  <div class="form-group mt-3">
+                    <label class="text-xs font-bold text-rose-800 dark:text-rose-300">
+                      Type <code>{{ selected.customer.email }}</code> to confirm:
+                    </label>
+                    <input v-model="deleteConfirmEmail" placeholder="Type email address exactly" />
+                  </div>
+
                   <button
                     type="button"
-                    class="btn-danger"
-                    :disabled="deleteBusy || busy || !deleteConfirmEmail.trim()"
+                    class="btn-danger mt-2"
+                    :disabled="deleteBusy || deleteConfirmEmail.trim().toLowerCase() !== selected.customer.email.toLowerCase()"
                     @click="deleteCustomer"
                   >
-                    {{ deleteBusy ? 'Removing…' : 'Remove account' }}
+                    {{ deleteBusy ? 'Deleting Customer…' : 'Permanently Delete Account' }}
                   </button>
                 </div>
               </div>
-
-              <div class="split">
-                <div class="min0">
-                  <h3>Subscriptions</h3>
-                  <ul class="stack-list">
-                    <li v-for="s in selected.subscriptions" :key="s.id" class="mini-card">
-                      <p class="mini-title" :title="s.plan_name || s.plan_id">{{ s.plan_name || s.plan_id }}</p>
-                      <p class="mini-meta">{{ s.status }}</p>
-                      <p class="mini-meta wrap">
-                        {{ s.cpu_allocated }} vCPU · {{ s.ram_allocated }} GB · {{ s.storage_allocated }} GB
-                        <span v-if="s.expires_at"> · exp {{ new Date(s.expires_at).toLocaleDateString() }}</span>
-                        <span v-if="s.auto_renew"> · auto-renew</span>
-                      </p>
-                    </li>
-                    <li v-if="!selected.subscriptions.length" class="cust-muted">None</li>
-                  </ul>
-                </div>
-                <div class="min0">
-                  <h3>Recent orders</h3>
-                  <ul class="stack-list">
-                    <li v-for="o in selected.orders.slice(0, 6)" :key="o.id" class="mini-card">
-                      <p class="mini-title" :title="o.plan_name || o.plan_id">{{ o.plan_name || o.plan_id }}</p>
-                      <p class="mini-meta wrap">
-                        {{ o.payment_status }} / {{ o.provisioning_status }} · {{ o.currency }} {{ o.total_price }}
-                      </p>
-                    </li>
-                    <li v-if="!selected.orders.length" class="cust-muted">None</li>
-                  </ul>
-                </div>
-              </div>
-
-              <div v-if="canGrantCredits" class="provision grant-credits">
-                <h3>Give AI credits</h3>
-                <p class="cust-muted">
-                  Super admin or hosting can add credits manually (no invoice). Client sees the new balance in Billing / Dev Companion.
-                </p>
-                <div class="provision-row">
-                  <input
-                    v-model.number="grantCredits"
-                    type="number"
-                    min="1"
-                    max="100000"
-                    step="1"
-                    placeholder="Credits"
-                    aria-label="Credits to grant"
-                  />
-                  <input
-                    v-model="grantNote"
-                    placeholder="Optional note e.g. goodwill / support"
-                  />
-                  <button
-                    type="button"
-                    class="btn-primary"
-                    :disabled="grantBusy || busy || !grantCredits || grantCredits < 1"
-                    @click="grantCreditsToCustomer"
-                  >
-                    {{ grantBusy ? 'Adding…' : 'Add credits' }}
-                  </button>
-                </div>
-                <p class="mini-meta">Current balance: {{ selected.credits_remaining }} credits</p>
-              </div>
-
-              <div v-if="canProvision" class="provision">
-                <h3>Activate hosting</h3>
-                <p class="cust-muted">
-                  Super admin only — for goodwill / demo accounts without MoMo.
-                  Prefer <strong>Orders → Confirm &amp; activate</strong> for paid invoices.
-                </p>
-                <div class="provision-row">
-                  <select v-model="provisionPlanId">
-                    <option v-for="p in allPlans" :key="p.id" :value="p.id">
-                      {{ p.name }} — GHS {{ p.price_monthly }}
-                    </option>
-                  </select>
-                  <input
-                    v-model="provisionDomain"
-                    placeholder="Optional domain e.g. studio.online"
-                  />
-                  <button
-                    type="button"
-                    class="btn-primary"
-                    :disabled="busy || !provisionPlanId"
-                    @click="provisionHosting"
-                  >
-                    {{ busy ? 'Activating…' : 'Activate' }}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div class="env-layout">
-              <div class="card env-picker">
-                <h3>Environments</h3>
-                <ul>
-                  <li v-for="env in selected.environments" :key="env.id">
-                    <button
-                      type="button"
-                      class="env-item"
-                      :class="{ on: activeEnvId === env.id }"
-                      @click="selectEnv(env.id)"
-                    >
-                      <span class="env-domain" :title="env.domain || env.id">{{ envHeadline(env) }}</span>
-                      <span class="env-meta">{{ env.status }} · {{ env.health_status }}</span>
-                      <span class="env-stack" :title="stackLabel(env)">{{ stackLabel(env) }}</span>
-                    </button>
-                  </li>
-                  <li v-if="!selected.environments.length" class="cust-empty">No environments.</li>
-                </ul>
-              </div>
-
-              <div v-if="activeEnv" class="card env-panel min0">
-                <div class="env-head">
-                  <div class="min0">
-                    <h3 class="env-title" :title="activeEnv.domain || activeEnv.id">
-                      {{ envHeadline(activeEnv) }}
-                    </h3>
-                    <p v-if="activeEnv.hosting_name && activeEnv.domain" class="env-sub">
-                      {{ activeEnv.domain }}
-                    </p>
-                    <p class="env-tech muted">Environment ID {{ activeEnv.id }}</p>
-                    <div class="chips tight">
-                      <span class="chip">{{ activeEnv.status }}</span>
-                      <span class="chip">health {{ activeEnv.health_status }}</span>
-                      <span class="chip">{{ activeEnv.cpu_limit }} vCPU</span>
-                      <span class="chip">{{ activeEnv.ram_limit_gb }} GB RAM</span>
-                      <span class="chip">{{ activeEnv.storage_limit_gb }} GB disk</span>
-                      <span v-if="activeEnv.db_name" class="chip" :title="`${activeEnv.db_engine}:${activeEnv.db_name}`">
-                        {{ activeEnv.db_engine }}:{{ activeEnv.db_name }}
-                      </span>
-                      <span v-if="activeEnv.ftp_username" class="chip">FTP {{ activeEnv.ftp_username }}</span>
-                    </div>
-                    <p class="env-stack-line" :title="stackLabel(activeEnv)">{{ stackLabel(activeEnv) }}</p>
-                    <p
-                      v-if="activeEnv.document_root"
-                      class="path"
-                      :title="activeEnv.document_root"
-                    >{{ activeEnv.document_root }}</p>
-                    <p v-if="activeEnv.created_at" class="cust-muted">
-                      Created {{ new Date(activeEnv.created_at).toLocaleString() }}
-                    </p>
-                  </div>
-                </div>
-
-                <div v-if="canOps" class="actions">
-                  <button
-                    v-if="canEditSubdomain && activeEnv.status !== 'terminated'"
-                    type="button"
-                    class="btn"
-                    :disabled="busy"
-                    @click="openEditSubdomainModal(activeEnv)"
-                  >
-                    Edit Subdomain
-                  </button>
-                  <button type="button" class="btn" :disabled="busy" @click="runHealth">Live health</button>
-                  <button type="button" class="btn" :disabled="busy" @click="loadLogs">Logs</button>
-                  <button type="button" class="btn" :disabled="busy" @click="repairFs(activeEnv.id)">Repair permissions</button>
-                  <button
-                    type="button"
-                    class="btn warn"
-                    :disabled="busy || activeEnv.status === 'terminated'"
-                    @click="clearEnvStack(activeEnv.id, activeEnv.domain)"
-                  >
-                    Clear install
-                  </button>
-                  <button
-                    v-if="activeEnv.status !== 'suspended' && activeEnv.status !== 'terminated'"
-                    type="button"
-                    class="btn"
-                    :disabled="busy"
-                    @click="suspendEnv(activeEnv.id)"
-                  >
-                    Suspend
-                  </button>
-                  <button
-                    v-if="activeEnv.status === 'suspended'"
-                    type="button"
-                    class="btn ok"
-                    :disabled="busy"
-                    @click="restoreEnv(activeEnv.id)"
-                  >
-                    Restore
-                  </button>
-                  <button
-                    v-if="canTerminate && activeEnv.status !== 'terminated'"
-                    type="button"
-                    class="btn danger"
-                    :disabled="busy"
-                    @click="terminateEnv(activeEnv.id, activeEnv.domain)"
-                  >
-                    Terminate
-                  </button>
-                </div>
-
-                <UiTabBar
-                  :items="envTabs"
-                  :model-value="envTab"
-                  variant="flat"
-                  aria-label="Environment detail"
-                  @update:model-value="envTab = $event as typeof envTab"
-                />
-
-                <div v-if="envTab === 'overview'" class="tab-body">
-                  <p v-if="usage" class="wrap">
-                    Storage
-                    <strong>{{ usage.storage_used_gb.toFixed(2) }}</strong>
-                    / {{ usage.storage_limit_gb }} GB ({{ usage.storage_pct.toFixed(0) }}%) ·
-                    {{ usage.file_count }} files · {{ usage.storage_status }}
-                  </p>
-                  <p v-if="usage?.hard_exceeded" class="cust-err">Disk hard limit exceeded — suspend if they threaten the host.</p>
-                  <p v-else-if="usage?.soft_warning" class="cust-warn">Disk soft warning — ask them to clean up or upgrade.</p>
-                  <p v-if="usage?.message" class="cust-muted wrap">{{ usage.message }}</p>
-                  <p class="cust-muted wrap">
-                    Isolation {{ activeEnv.isolation_type }}
-                    <span v-if="activeEnv.container_id"> · container {{ activeEnv.container_id.slice(0, 12) }}</span>
-                  </p>
-                </div>
-
-                <div v-else-if="envTab === 'health'" class="tab-body">
-                  <p v-if="!health" class="cust-muted">Run Live health to probe HTTP, docroot, and isolation.</p>
-                  <template v-else>
-                    <p class="wrap"><strong>{{ health.health_status }}</strong> — {{ health.summary }}</p>
-                    <ul class="checks">
-                      <li v-for="(val, key) in health.checks" :key="String(key)">
-                        <span class="check-key">{{ key }}</span>
-                        <span class="check-val">{{ checkValue(val) }}</span>
-                      </li>
-                    </ul>
-                  </template>
-                </div>
-
-                <div v-else-if="envTab === 'stacks'" class="tab-body">
-                  <p>Current: <strong>{{ currentStackName() }}</strong></p>
-                  <pre v-if="stacks?.progress" class="progress-box">{{ JSON.stringify(stacks.progress, null, 2) }}</pre>
-                  <div v-if="canOps" class="install-row">
-                    <label>
-                      Install stack
-                      <select v-model="installStackId">
-                        <option
-                          v-for="s in stacks?.stacks || []"
-                          :key="s.id"
-                          :value="s.id"
-                          :disabled="s.allowed === false"
-                        >
-                          {{ s.name }}
-                        </option>
-                      </select>
-                    </label>
-                    <button type="button" class="btn-primary" :disabled="busy" @click="installStack">Install</button>
-                  </div>
-                </div>
-
-                <div v-else-if="envTab === 'logs'" class="tab-body">
-                  <p v-if="!logs" class="cust-muted">Click Logs to load nginx/app output for this tenant only.</p>
-                  <div v-else class="log-box">
-                    <p v-for="(line, i) in logs.entries" :key="i">
-                      <span class="log-src">[{{ line.source }}]</span> {{ line.message }}
-                    </p>
-                    <p v-if="!logs.entries.length" class="cust-muted">{{ logs.message || 'No log lines.' }}</p>
-                  </div>
-                </div>
-
-                <div v-else class="tab-body">
-                  <ul class="audit">
-                    <li v-for="a in envAuditRows" :key="a.id">
-                      <span class="when">{{ new Date(a.occurred_at).toLocaleString() }}</span>
-                      <span class="wrap">{{ a.action }} · {{ a.result }}</span>
-                    </li>
-                    <li v-if="!envAuditRows.length" class="cust-muted">No audit events yet.</li>
-                  </ul>
-                </div>
-              </div>
-            </div>
-
-            <div class="card">
-              <h3>Customer activity</h3>
-              <ul class="audit">
-                <li v-for="a in auditRows" :key="a.id">
-                  <span class="when">{{ new Date(a.occurred_at).toLocaleString() }}</span>
-                  <span class="wrap">
-                    <strong>{{ a.action }}</strong>
-                    <template v-if="a.target_type"> · {{ a.target_type }}</template>
-                    · {{ a.result }}
-                  </span>
-                </li>
-                <li v-if="!auditRows.length" class="cust-muted">No activity recorded.</li>
-              </ul>
             </div>
           </template>
-        </section>
+        </div>
       </div>
     </div>
   </DashboardLayout>
@@ -1196,836 +1487,975 @@ watch(
 
 <style scoped>
 .cust {
-  flex: 1 1 auto;
+  width: 100%;
+  max-width: 100%;
+  min-height: 100%;
   display: flex;
   flex-direction: column;
-  width: 100%;
-  min-width: 0;
-  min-height: 0;
+  overflow-x: hidden !important;
   box-sizing: border-box;
-  padding: 1.15rem clamp(1.35rem, 3vw, 2.5rem) 1.75rem;
-  gap: 0.85rem;
+  background: #f8fafc;
 }
 
+/* HEADER & CONTROLS */
 .cust-head-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 0.85rem 1.25rem;
-  padding: 0 0 0.85rem;
+  padding: 0.85rem 1.25rem 0.5rem;
   border-bottom: 1px solid #e2e8f0;
-  background: transparent;
-  flex-shrink: 0;
-}
-.dark .cust-head-bar {
-  border-bottom-color: #334155;
-}
-.cust-head-bar :deep(.ui-page-header) {
-  margin: 0;
-}
-.cust-head-bar :deep(h1) {
-  font-size: 1.15rem;
+  background: #ffffff;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-x: hidden !important;
 }
 
-.cust-head-actions {
-  display: flex;
+.head-btn-group {
+  display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.35rem 0.45rem;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
-.btn-new-cust {
-  background: #1e3a5f;
-  color: #fff;
-  border: none;
-  padding: 0.5rem 1rem;
-  border-radius: 0.5rem;
-  font-weight: 600;
-  font-size: 0.85rem;
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.55rem;
+  background: #ffffff;
+  color: #334155;
+  font-size: 0.76rem;
+  font-weight: 650;
+  padding: 0.38rem 0.65rem;
   cursor: pointer;
+  transition: all 0.15s ease;
   white-space: nowrap;
-  transition: background 0.15s;
+  flex-shrink: 0;
 }
 
-.btn-new-cust:hover {
-  background: #2b5182;
+.action-btn:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+  color: #0f172a;
 }
 
-.cust-modal-backdrop {
+.action-btn.primary {
+  background: #1e3a5f;
+  color: #ffffff;
+  border-color: #1e3a5f;
+}
+
+.action-btn.primary:hover {
+  background: #0f243e;
+}
+
+/* BODY */
+.cust-body {
+  flex: 1;
+  width: 100%;
+  max-width: 100%;
+  padding: 1rem 1.25rem 2.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  overflow-x: hidden !important;
+  box-sizing: border-box;
+}
+
+/* KPI STATS GRID */
+.stats-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.stat-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.75rem;
+  background: #ffffff;
+  padding: 0.85rem 1rem;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03);
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.stat-card:hover {
+  border-color: #94a3b8;
+  transform: translateY(-1px);
+}
+
+.stat-card.active {
+  border-color: #1e3a5f;
+  box-shadow: 0 0 0 2px rgba(30, 58, 95, 0.15);
+}
+
+.stat-icon {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.7rem;
+  display: grid;
+  place-items: center;
+  font-size: 1.05rem;
+  flex-shrink: 0;
+}
+
+.stat-body {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.stat-k-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+}
+
+.stat-k {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stat-v {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 1.25rem;
+  font-weight: 850;
+  color: #0f172a;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stat-s {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.72rem;
+  color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge-pulse {
+  font-size: 0.62rem;
+  font-weight: 800;
+  background: #f59e0b;
+  color: #ffffff;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  animation: pulse 2s infinite;
+  flex-shrink: 0;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.tone-total .stat-icon { background: #e0f2fe; color: #0369a1; }
+.tone-live .stat-icon { background: #d1fae5; color: #047857; }
+.tone-await .stat-icon { background: #fef3c7; color: #b45309; }
+.tone-env .stat-icon { background: #ede9fe; color: #6d28d9; }
+.tone-ai .stat-icon { background: #fef9c3; color: #a16207; }
+
+/* PANEL & FILTER CARDS */
+.panel-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 0.75rem;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03);
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+}
+
+.filters-card {
+  padding: 0.75rem 1rem;
+}
+
+.filters-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.filter-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.filter-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid transparent;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 0.74rem;
+  font-weight: 650;
+  padding: 0.3rem 0.6rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.filter-tab:hover {
+  color: #0f172a;
+  background: #e2e8f0;
+}
+
+.filter-tab.active {
+  background: #1e3a5f;
+  color: #ffffff;
+  font-weight: 750;
+}
+
+.search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 240px;
+  max-width: 320px;
+  flex: 1;
+}
+
+.search-icon {
+  position: absolute;
+  left: 0.65rem;
+  color: #94a3b8;
+  font-size: 0.78rem;
+  pointer-events: none;
+}
+
+.search-input {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.55rem;
+  padding: 0.35rem 1.8rem 0.35rem 2rem;
+  font-size: 0.76rem;
+  color: #0f172a;
+  background: #ffffff;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.search-input:focus {
+  border-color: #2563eb;
+}
+
+.btn-clear-search {
+  position: absolute;
+  right: 0.5rem;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+
+/* TABLE CARD */
+.table-card {
+  padding: 0.85rem 1rem;
+}
+
+.card-head-compact {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid #f1f5f9;
+  margin-bottom: 0.5rem;
+}
+
+.head-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.panel-title {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.count-badge {
+  font-size: 0.68rem;
+  font-weight: 700;
+  background: #f1f5f9;
+  color: #475569;
+  padding: 0.15rem 0.45rem;
+  border-radius: 0.4rem;
+}
+
+.pagination-sub-info {
+  font-size: 0.72rem;
+  color: #64748b;
+  font-weight: 600;
+}
+
+/* TABLE CONTAINER & ROWS */
+.cust-table-wrap {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  max-height: calc(100vh - 280px);
+  min-height: 320px;
+  width: 100% !important;
+  max-width: 100% !important;
+  position: relative;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+  box-sizing: border-box;
+}
+
+.cust-table-wrap::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.cust-table-wrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.cust-table-wrap::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+.cust-table {
+  width: 100% !important;
+  max-width: 100% !important;
+  table-layout: fixed !important;
+  border-collapse: collapse;
+  font-size: 0.76rem;
+  text-align: left;
+  box-sizing: border-box;
+}
+
+.cust-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #f8fafc;
+}
+
+.cust-table th {
+  padding: 0.5rem 0.65rem;
+  font-size: 0.65rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  border-bottom: 1.5px solid #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-sizing: border-box;
+}
+
+.col-cust { width: 34%; }
+.col-hosting { width: 28%; }
+.col-status { width: 18%; }
+.col-ai { width: 8%; text-align: center; }
+.col-actions { width: 12%; text-align: right; }
+
+.cust-table td {
+  padding: 0.45rem 0.65rem;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 0;
+  box-sizing: border-box;
+}
+
+.cust-row {
+  transition: background 0.1s ease;
+}
+
+.cust-row:hover {
+  background: #f1f5f9;
+}
+
+.cust-name {
+  font-size: 0.8rem;
+  color: #0f172a;
+}
+
+.company-badge {
+  font-size: 0.65rem;
+  background: #e0e7ff;
+  color: #3730a3;
+  padding: 0.05rem 0.35rem;
+  border-radius: 0.3rem;
+  font-weight: 600;
+}
+
+.cust-sub-details {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.7rem;
+  color: #64748b;
+  margin-top: 0.15rem;
+}
+
+.cust-email-link {
+  color: #2563eb;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cust-email-link:hover {
+  text-decoration: underline;
+}
+
+.dot-sep {
+  color: #94a3b8;
+}
+
+.domain-tag-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: #1e3a5f;
+  font-size: 0.76rem;
+}
+
+.domain-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.env-count-sub {
+  font-size: 0.68rem;
+  color: #64748b;
+  margin-top: 0.15rem;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.68rem;
+  font-weight: 750;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.status-pill[data-s="live"], .status-pill[data-s="active"] {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status-pill[data-s="awaiting_payment"] {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-pill[data-s="setting_up"] {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+
+.status-pill[data-s="suspended"] {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.badge-micro {
+  font-size: 0.62rem;
+  padding: 0.05rem 0.3rem;
+  border-radius: 0.25rem;
+  font-weight: 600;
+}
+
+.badge-micro.verified {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.badge-micro.unverified {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.badge-micro.awaiting-tag {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.verif-sub {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 0.15rem;
+}
+
+.ai-credits-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  background: #fffbeb;
+  border: 1px solid #fef3c7;
+  padding: 0.15rem 0.45rem;
+  border-radius: 0.45rem;
+}
+
+.ai-val {
+  font-weight: 800;
+  color: #b45309;
+  font-size: 0.74rem;
+}
+
+.actions-group {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.25rem;
+}
+
+.btn-tbl-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: #1e3a5f;
+  color: #ffffff;
+  border: none;
+  font-size: 0.7rem;
+  font-weight: 750;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.4rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.btn-tbl-primary:hover {
+  background: #0f243e;
+}
+
+.btn-tbl-subdomain {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: #eff6ff;
+  color: #2563eb;
+  border: 1px solid #bfdbfe;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.25rem 0.45rem;
+  border-radius: 0.4rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.btn-tbl-subdomain:hover {
+  background: #dbeafe;
+}
+
+/* PAGINATION FOOTER */
+.pagination-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 0.75rem;
+  border-top: 1px solid #f1f5f9;
+  margin-top: 0.5rem;
+}
+
+.pagination-summary {
+  font-size: 0.74rem;
+  color: #64748b;
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.btn-page {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  color: #334155;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.25rem 0.55rem;
+  border-radius: 0.4rem;
+  cursor: pointer;
+}
+
+.btn-page:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.page-indicator {
+  font-size: 0.74rem;
+  color: #475569;
+  font-weight: 700;
+  padding: 0 0.35rem;
+}
+
+/* MODALS */
+.modal-backdrop {
   position: fixed;
   inset: 0;
   background: rgba(15, 23, 42, 0.6);
-  backdrop-filter: blur(2px);
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1.5rem;
+  backdrop-filter: blur(4px);
+  z-index: 999;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
 }
 
-.cust-modal-card {
-  background: #fff;
-  border-radius: 0.85rem;
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+.modal-card {
+  background: #ffffff;
+  border-radius: 1rem;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
   width: 100%;
-  max-width: 32rem;
-  padding: 1.75rem;
-  color: #1e293b;
-  max-height: 90vh;
-  overflow-y: auto;
+  max-width: 540px;
+  padding: 1.5rem;
+  position: relative;
+  border: 1px solid #e2e8f0;
+  box-sizing: border-box;
 }
 
-.dark .cust-modal-card {
-  background: #0f172a;
-  color: #f1f5f9;
-  border: 1px solid #334155;
+.modal-card.wide {
+  max-width: 820px;
 }
 
 .modal-head {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.25rem;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
 }
 
-.modal-head h3 {
-  font-size: 1.25rem;
-  font-weight: 700;
+.modal-title-group {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.modal-title-group h3 {
   margin: 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #0f172a;
 }
 
 .btn-close {
   background: transparent;
   border: none;
   font-size: 1.1rem;
+  color: #94a3b8;
   cursor: pointer;
-  color: #64748b;
+  padding: 0.2rem;
+}
+
+.btn-close:hover {
+  color: #0f172a;
 }
 
 .modal-sub {
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   color: #64748b;
-  margin-bottom: 1.25rem;
+  margin: 0 0 1rem;
+  line-height: 1.35;
 }
 
 .modal-form {
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  gap: 0.75rem;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
 }
 
 .form-group {
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
-  flex: 1;
+  gap: 0.25rem;
 }
 
 .form-group label {
-  font-size: 0.8rem;
-  font-weight: 600;
+  font-size: 0.72rem;
+  font-weight: 750;
   color: #475569;
-}
-
-.dark .form-group label {
-  color: #94a3b8;
 }
 
 .form-group input,
 .form-group select {
   border: 1px solid #cbd5e1;
   border-radius: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
-  background: #fff;
-  color: inherit;
+  padding: 0.45rem 0.65rem;
+  font-size: 0.78rem;
+  color: #0f172a;
+  background: #ffffff;
+  outline: none;
 }
 
-.dark .form-group input,
-.dark .form-group select {
-  background: #1e293b;
-  border-color: #334155;
-}
-
-.form-row {
-  display: flex;
-  gap: 0.75rem;
+.form-group input:focus,
+.form-group select:focus {
+  border-color: #2563eb;
 }
 
 .form-section-title {
-  font-size: 0.85rem;
-  font-weight: 700;
-  color: #1e3a5f;
-  border-top: 1px solid #e2e8f0;
-  padding-top: 0.75rem;
-  margin-top: 0.25rem;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid #f1f5f9;
 }
 
-.dark .form-section-title {
-  color: #38bdf8;
-  border-top-color: #334155;
+.field-hint {
+  font-size: 0.7rem;
+  color: #64748b;
+  margin: 0.2rem 0 0;
 }
 
 .modal-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
-  gap: 0.75rem;
-  margin-top: 0.5rem;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
 }
 
-.btn-submit-cust {
-  background: #0284c7;
-  color: #fff;
-  border: none;
-  padding: 0.55rem 1.25rem;
+.btn-ghost {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #475569;
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 0.4rem 0.75rem;
   border-radius: 0.5rem;
-  font-weight: 600;
-  font-size: 0.875rem;
   cursor: pointer;
 }
 
-.btn-submit-cust:hover {
-  background: #0369a1;
+.btn-submit-primary {
+  border: none;
+  background: #1e3a5f;
+  color: #ffffff;
+  font-size: 0.76rem;
+  font-weight: 750;
+  padding: 0.45rem 0.9rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
 }
 
-.btn-submit-cust:disabled {
-  opacity: 0.6;
+.btn-submit-primary:hover {
+  background: #0f243e;
+}
+
+.btn-action-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: #1e3a5f;
+  color: #ffffff;
+  border: none;
+  font-size: 0.72rem;
+  font-weight: 750;
+  padding: 0.3rem 0.6rem;
+  border-radius: 0.45rem;
+  cursor: pointer;
+}
+
+.btn-action-primary:hover {
+  background: #0f243e;
+}
+
+.btn-micro {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #334155;
+  padding: 0.25rem 0.45rem;
+  border-radius: 0.35rem;
+  cursor: pointer;
+}
+
+.btn-micro:hover {
+  background: #f1f5f9;
+}
+
+.btn-danger {
+  border: none;
+  background: #e11d48;
+  color: #ffffff;
+  font-size: 0.76rem;
+  font-weight: 750;
+  padding: 0.45rem 0.9rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.btn-danger:hover {
+  background: #be123c;
+}
+
+.btn-danger:disabled {
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
-.cust-search {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  width: 100%;
-  flex: 1 1 18rem;
-  max-width: 36rem;
-}
-.cust-search input,
-.cust-search button,
-.provision-row select,
-.provision-row input,
-.install-row select {
-  border: 1px solid #cbd5e1;
-  border-radius: 0.5rem;
-  padding: 0.45rem 0.7rem;
-  font-size: 0.875rem;
-  background: #fff;
-  color: inherit;
-  min-width: 0;
-}
-.dark .cust-search input,
-.dark .cust-search button,
-.dark .provision-row select,
-.dark .provision-row input,
-.dark .install-row select,
-.dark .card,
-.dark .mini-card,
-.dark .cust-toast {
-  background: #0f172a;
-  border-color: #334155;
-}
-.cust-search input { flex: 1 1 10rem; }
-.cust-search button {
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.cust-layout {
-  flex: 1 1 auto;
-  display: grid;
-  gap: 0;
-  grid-template-columns: minmax(0, 1fr);
-  align-items: stretch;
-  min-width: 0;
-  min-height: 0;
+.metric-mini-box {
+  background: #ffffff;
   border: 1px solid #e2e8f0;
-  border-radius: 1rem;
-  overflow: hidden;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-}
-.dark .cust-layout {
-  border-color: #334155;
-  background: #0f172a;
-}
-@media (min-width: 1100px) {
-  .cust-layout {
-    grid-template-columns: minmax(22rem, 30rem) minmax(0, 1fr);
-  }
-  .cust-back { display: none !important; }
-  .cust-list.is-hidden-mobile,
-  .cust-detail.is-hidden-mobile { display: flex !important; }
-}
-@media (min-width: 1400px) {
-  .cust-layout {
-    grid-template-columns: minmax(24rem, 34rem) minmax(0, 1fr);
-  }
-}
-@media (max-width: 1099px) {
-  .cust-list.is-hidden-mobile { display: none; }
-  .cust-detail.is-hidden-mobile { display: none; }
-}
-
-.cust-list,
-.cust-detail {
-  min-width: 0;
-  max-width: none;
-}
-.cust-list {
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.6rem;
   display: flex;
   flex-direction: column;
-  border: none;
-  border-radius: 0;
-  border-right: 1px solid #e2e8f0;
-  background: #fff;
-  overflow: hidden;
-  min-height: 0;
-}
-.dark .cust-list {
-  border-right-color: #334155;
-  background: #0f172a;
-}
-.cust-detail {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  min-height: 0;
-  overflow: auto;
-  padding: 1.15rem 1.35rem 1.65rem;
-  background: var(--if-paper, #f8fafc);
-}
-.dark .cust-detail {
-  background: #0b1120;
 }
 
-.list-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  padding: 0.75rem 0.85rem;
-  border-bottom: 1px solid #e2e8f0;
-  background: #f8fafc;
-}
-.dark .list-filters {
-  background: #1e293b;
-  border-bottom-color: #334155;
-}
-.filter-chip {
-  border: 1px solid #cbd5e1;
-  border-radius: 999px;
-  background: #fff;
-  color: #475569;
-  font-size: 0.7rem;
-  font-weight: 650;
-  padding: 0.28rem 0.65rem;
-  cursor: pointer;
-}
-.filter-chip.on {
-  background: #2563eb;
-  border-color: #2563eb;
-  color: #fff;
-}
-.dark .filter-chip {
-  background: #0f172a;
-  border-color: #475569;
-  color: #cbd5e1;
-}
-.dark .filter-chip.on {
-  background: #2563eb;
-  border-color: #2563eb;
-  color: #fff;
-}
-
-.cust-status {
-  padding: 0;
-}
-
-.cust-table-wrap {
-  flex: 1 1 auto;
-  overflow: auto;
-  min-height: 0;
-  max-height: none;
-}
-.cust-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.85rem;
-}
-.cust-table th {
-  text-align: left;
-  font-size: 0.65rem;
+.metric-mini-label {
+  font-size: 0.62rem;
+  font-weight: 750;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
   color: #64748b;
-  font-weight: 700;
-  padding: 0.55rem 0.85rem;
+}
+
+/* MODAL NAV TABS */
+.modal-nav-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
   border-bottom: 1px solid #e2e8f0;
-  position: sticky;
-  top: 0;
-  background: #fff;
-  z-index: 1;
+  padding-bottom: 0.5rem;
+  margin-bottom: 1rem;
+  overflow-x: auto;
 }
-.dark .cust-table th {
-  background: #0f172a;
-  border-bottom-color: #334155;
-}
-.cust-table td {
-  padding: 0.7rem 0.85rem;
-  border-bottom: 1px solid #f1f5f9;
-  vertical-align: top;
-}
-.dark .cust-table td { border-bottom-color: #1e293b; }
-.cust-table tbody tr {
-  cursor: pointer;
-  transition: background 0.12s ease;
-}
-.cust-table tbody tr:hover,
-.cust-table tbody tr.on { background: #f8fafc; }
-.dark .cust-table tbody tr:hover,
-.dark .cust-table tbody tr.on { background: #1e293b; }
-.cust-table .num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  color: #334155;
-}
-.t-name {
-  margin: 0;
-  font-weight: 650;
-  color: #0f172a;
-  font-size: 0.9rem;
-}
-.dark .t-name { color: #f8fafc; }
-.t-email,
-.t-meta,
-.t-domain {
-  margin: 0.15rem 0 0;
-  font-size: 0.75rem;
-  color: #64748b;
-  overflow-wrap: anywhere;
-}
-.t-domain { color: #334155; font-weight: 500; }
-.dark .t-domain { color: #cbd5e1; }
-.t-meta.warn { color: #b45309; font-weight: 600; }
-.status-pill {
+
+.modal-tab-btn {
   display: inline-flex;
   align-items: center;
-  border-radius: 999px;
-  padding: 0.15rem 0.5rem;
-  font-size: 0.68rem;
-  font-weight: 700;
-  background: #f1f5f9;
-  color: #334155;
-  white-space: nowrap;
-}
-.status-pill[data-s='live'] { background: #d1fae5; color: #065f46; }
-.status-pill[data-s='awaiting_payment'] { background: #fef3c7; color: #92400e; }
-.status-pill[data-s='setting_up'] { background: #ffedd5; color: #9a3412; }
-.status-pill[data-s='suspended'] { background: #fee2e2; color: #991b1b; }
-.status-pill[data-s='none'],
-.status-pill[data-s='inactive'] { background: #e2e8f0; color: #475569; }
-@media (max-width: 640px) {
-  .hide-sm { display: none; }
-}
-.pick-hint {
-  padding: 2rem 1rem;
-  text-align: center;
-  border: 1px dashed #cbd5e1;
-  border-radius: 0.85rem;
-}
-.danger-zone {
-  border-color: #fecaca !important;
-  background: #fff7f7;
-}
-.dark .danger-zone {
-  background: rgba(127, 29, 29, 0.15);
-  border-color: #7f1d1d !important;
-}
-.btn-danger {
-  border: 0;
-  border-radius: 0.5rem;
-  background: #dc2626;
-  color: #fff;
-  font-size: 0.85rem;
-  font-weight: 650;
-  padding: 0.45rem 0.85rem;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }
-
-.title,
-.email-line,
-.env-domain,
-.env-title,
-.env-stack,
-.env-stack-line,
-.mini-title,
-.path,
-.wrap,
-.check-val,
-.log-box p {
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-.title,
-.env-domain,
-.env-title,
-.mini-title,
-.email-line {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cust-back {
-  align-self: flex-start;
-  border: 0;
-  background: transparent;
-  color: #1e3a5f;
-  font-size: 0.85rem;
-  font-weight: 650;
-  cursor: pointer;
-  padding: 0;
-}
-.cust-toast {
-  margin: 0;
-  padding: 0.65rem 0.85rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 0.65rem;
-  background: #fff;
-  font-size: 0.875rem;
-  overflow-wrap: anywhere;
-}
-.cust-muted { margin: 0; font-size: 0.84rem; color: #64748b; }
-.cust-err { margin: 0; font-size: 0.84rem; color: #b42318; }
-.cust-warn { margin: 0; font-size: 0.84rem; color: #b54708; }
-.cust-empty { padding: 1rem; font-size: 0.875rem; color: #64748b; text-align: center; }
-
-.card {
-  border: 1px solid #e2e8f0;
-  border-radius: 0.85rem;
-  background: #fff;
-  padding: 1rem;
-  overflow: hidden;
-}
-.dark .card { border-color: #334155; }
-.card-top {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.75rem;
-}
-.min0 { min-width: 0; }
-.title { margin: 0; font-size: 1.1rem; font-weight: 650; max-width: 100%; }
-.email-line { margin: 0.2rem 0 0; font-size: 0.8rem; color: #64748b; max-width: 100%; }
-.submeta { margin: 0.45rem 0 0; font-size: 0.8rem; color: #64748b; overflow-wrap: anywhere; }
-
-.chips {
-  display: flex;
-  flex-wrap: wrap;
   gap: 0.35rem;
-  max-width: 100%;
-}
-.chips.tight { margin-top: 0.55rem; }
-.chip {
-  display: inline-block;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 0.18rem 0.55rem;
-  border-radius: 999px;
-  background: #f1f5f9;
-  color: #334155;
-  font-size: 0.72rem;
-  font-weight: 650;
-}
-.dark .chip { background: #1e293b; color: #cbd5e1; }
-
-.split {
-  display: grid;
-  gap: 1rem;
-  margin-top: 1rem;
-  grid-template-columns: minmax(0, 1fr);
-}
-@media (min-width: 720px) {
-  .split { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-h3 {
-  margin: 0 0 0.55rem;
-  font-size: 0.82rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: #64748b;
-}
-.stack-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-}
-.mini-card {
-  border: 1px solid #e2e8f0;
-  border-radius: 0.65rem;
-  padding: 0.55rem 0.7rem;
-  min-width: 0;
-  overflow: hidden;
-}
-.dark .mini-card { border-color: #334155; }
-.mini-title { margin: 0; font-size: 0.88rem; font-weight: 650; }
-.mini-meta { margin: 0.2rem 0 0; font-size: 0.78rem; color: #64748b; }
-
-.provision {
-  margin-top: 1rem;
-  padding-top: 0.85rem;
-  border-top: 1px solid #e2e8f0;
-}
-.dark .provision { border-top-color: #334155; }
-.provision-row,
-.install-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 0.55rem;
-  align-items: flex-end;
-}
-.provision-row select,
-.provision-row input { flex: 1 1 10rem; max-width: 100%; }
-
-.profile-grid {
-  display: grid;
-  gap: 0.65rem;
-  margin-top: 0.55rem;
-  grid-template-columns: minmax(0, 1fr);
-}
-@media (min-width: 640px) {
-  .profile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-.profile-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.78rem;
-  color: #64748b;
-}
-.profile-field-wide { grid-column: 1 / -1; }
-.profile-field input {
-  width: 100%;
-  padding: 0.45rem 0.55rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 0.5rem;
-  font-size: 0.88rem;
-  color: inherit;
-  background: #fff;
-}
-.dark .profile-field input {
-  background: #0f172a;
-  border-color: #334155;
-}
-
-.env-layout {
-  display: grid;
-  gap: 1rem;
-  grid-template-columns: minmax(0, 1fr);
-  width: 100%;
-}
-@media (min-width: 900px) {
-  .env-layout {
-    grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr);
-    align-items: start;
-  }
-}
-.env-picker ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-.env-item {
-  width: 100%;
-  text-align: left;
-  border: 1px solid #e2e8f0;
-  border-radius: 0.65rem;
+  border: none;
   background: transparent;
-  padding: 0.55rem 0.65rem;
-  cursor: pointer;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-.dark .env-item { border-color: #334155; }
-.env-item.on,
-.env-item:hover {
-  border-color: #94a3b8;
-  background: #f8fafc;
-}
-.dark .env-item.on,
-.dark .env-item:hover { background: #1e293b; }
-.env-meta,
-.env-stack { font-size: 0.72rem; color: #64748b; }
-.env-stack {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.env-title { margin: 0; font-size: 1.05rem; font-weight: 650; }
-.env-sub { margin: 0.2rem 0 0; font-size: 0.86rem; color: #5c6670; }
-.env-tech { margin: 0.35rem 0 0; font-size: 0.72rem; font-family: ui-monospace, monospace; word-break: break-all; }
-.env-stack-line { margin: 0.45rem 0 0; font-size: 0.8rem; color: #64748b; }
-.path {
-  margin: 0.35rem 0 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.7rem;
-  color: #94a3b8;
-  line-height: 1.35;
-}
-
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-top: 0.85rem;
-}
-.btn,
-.btn-primary {
-  border: 1px solid #cbd5e1;
+  color: #64748b;
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 0.35rem 0.6rem;
   border-radius: 0.45rem;
-  background: #fff;
-  padding: 0.35rem 0.65rem;
-  font-size: 0.75rem;
-  font-weight: 650;
   cursor: pointer;
   white-space: nowrap;
 }
-.dark .btn { background: #0f172a; border-color: #475569; color: #e2e8f0; }
-.btn:disabled,
-.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn.warn { border-color: #f59e0b; color: #92400e; }
-.btn.ok { border-color: #34d399; color: #065f46; }
-.btn.danger { border-color: #f87171; color: #b91c1c; }
-.btn-primary {
-  border: 0;
-  background: #1e3a5f;
-  color: #fff;
-}
 
-.tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  margin-top: 0.9rem;
-  padding-bottom: 0.65rem;
-  border-bottom: 1px solid #e2e8f0;
-}
-.dark .tabs { border-bottom-color: #334155; }
-.tabs button {
-  border: 0;
-  background: transparent;
-  border-radius: 0.4rem;
-  padding: 0.3rem 0.55rem;
-  font-size: 0.75rem;
-  font-weight: 650;
-  color: #64748b;
-  cursor: pointer;
-}
-.tabs button.on {
-  background: #0f172a;
-  color: #fff;
-}
-.dark .tabs button.on {
-  background: #f8fafc;
+.modal-tab-btn:hover {
+  background: #f1f5f9;
   color: #0f172a;
 }
 
-.tab-body {
-  margin-top: 0.85rem;
-  font-size: 0.875rem;
-  min-width: 0;
+.modal-tab-btn.active {
+  background: #eff6ff;
+  color: #2563eb;
 }
-.checks {
-  list-style: none;
-  margin: 0.55rem 0 0;
-  padding: 0;
+
+.modal-tab-btn.danger.active {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.input-eye-wrap {
+  position: relative;
   display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
+  align-items: center;
 }
-.checks li {
-  display: grid;
-  grid-template-columns: minmax(5rem, 8rem) minmax(0, 1fr);
+
+.input-eye-wrap input {
+  width: 100%;
+  padding-right: 2.2rem;
+}
+
+.eye-btn {
+  position: absolute;
+  right: 0.5rem;
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.state-msg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   gap: 0.5rem;
-  font-size: 0.78rem;
-}
-@media (max-width: 520px) {
-  .checks li { grid-template-columns: minmax(0, 1fr); }
-}
-.check-key { font-weight: 650; color: #475569; }
-.check-val {
+  padding: 3rem 1rem;
   color: #64748b;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+  font-weight: 600;
 }
-.progress-box,
-.log-box {
-  margin: 0.55rem 0 0;
-  max-height: 16rem;
-  overflow: auto;
-  border-radius: 0.55rem;
-  background: #020617;
-  color: #e2e8f0;
-  padding: 0.65rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.7rem;
-  line-height: 1.4;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.log-box p { margin: 0 0 0.25rem; }
-.log-src { color: #94a3b8; }
-.install-row label {
+
+.empty-box {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.75rem;
-  color: #64748b;
-  min-width: 0;
-  flex: 1 1 12rem;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 1.5rem;
+  text-align: center;
 }
-.audit {
-  list-style: none;
+
+.empty-title {
+  margin: 0.75rem 0 0.25rem;
+  font-size: 0.88rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.empty-desc {
   margin: 0;
-  padding: 0;
-  max-height: 14rem;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
+  font-size: 0.74rem;
+  color: #64748b;
+  max-width: 360px;
 }
-.audit li {
-  display: grid;
-  grid-template-columns: minmax(7rem, 9.5rem) minmax(0, 1fr);
-  gap: 0.5rem;
-  font-size: 0.75rem;
-  color: #475569;
-  padding-bottom: 0.35rem;
-  border-bottom: 1px solid #f1f5f9;
-}
-.dark .audit li { border-bottom-color: #1e293b; color: #94a3b8; }
-@media (max-width: 560px) {
-  .audit li { grid-template-columns: minmax(0, 1fr); }
-}
-.when { color: #94a3b8; white-space: nowrap; }
 </style>
