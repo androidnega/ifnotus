@@ -1260,15 +1260,23 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
 <style scoped>
 .orders {
   width: 100%;
+  max-width: 100%;
   min-height: 100%;
   display: flex;
   flex-direction: column;
+  overflow-x: hidden !important;
+  box-sizing: border-box;
+  background: #f8fafc;
 }
 
 .orders-head {
   padding: 0.85rem 1.25rem 0;
   border-bottom: 1px solid #e2e8f0;
   background: #ffffff;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-x: hidden !important;
 }
 
 .head-btn {
@@ -1284,6 +1292,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   padding: 0.45rem 0.75rem;
   cursor: pointer;
   transition: all 0.15s ease;
+  white-space: nowrap;
 }
 
 .head-btn:hover {
@@ -1295,10 +1304,13 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
 .orders-body {
   flex: 1;
   width: 100%;
+  max-width: 100%;
   padding: 1rem 1.25rem 2rem;
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
+  overflow-x: hidden !important;
+  box-sizing: border-box;
 }
 
 /* STATS BAR */
@@ -1306,6 +1318,9 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   display: grid;
   gap: 0.75rem;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .stat-card {
@@ -1316,7 +1331,9 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   border-radius: 0.75rem;
   background: #ffffff;
   padding: 0.8rem 1rem;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.02);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03);
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .stat-icon {
@@ -1332,6 +1349,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
 .stat-body {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
 }
 
 .stat-k {
@@ -1341,6 +1359,9 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stat-v {
@@ -1356,6 +1377,9 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   display: block;
   font-size: 0.72rem;
   color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tone-await .stat-icon { background: #fef3c7; color: #b45309; }
@@ -1371,6 +1395,10 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   display: flex;
   flex-direction: column;
   gap: 0.65rem;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-x: hidden !important;
 }
 
 /* LIVE SEARCH BAR */
@@ -1378,11 +1406,15 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .search-input-box {
   position: relative;
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
 }
@@ -1402,9 +1434,10 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   border-radius: 0.6rem;
   background: #f8fafc;
   color: #0f172a;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
   font-weight: 500;
   transition: all 0.15s ease;
+  box-sizing: border-box;
 }
 
 .search-input:focus {
@@ -1430,13 +1463,14 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
 }
 
 .search-match-tag {
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   color: #4f46e5;
   background: #eef2ff;
   border: 1px solid #e0e7ff;
   border-radius: 0.45rem;
-  padding: 0.35rem 0.65rem;
+  padding: 0.3rem 0.55rem;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .filters-row {
@@ -1445,27 +1479,32 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   justify-content: space-between;
   gap: 0.75rem;
   flex-wrap: wrap;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .filter-tabs {
   display: flex;
   align-items: center;
   gap: 0.35rem;
-  overflow-x: auto;
-  padding-bottom: 0.1rem;
+  flex-wrap: wrap !important;
+  overflow-x: hidden !important;
+  width: 100%;
+  max-width: 100%;
 }
 
 .filter-tab {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.35rem;
   border: 1px solid #e2e8f0;
   border-radius: 0.55rem;
   background: #f8fafc;
   color: #64748b;
-  font-size: 0.76rem;
+  font-size: 0.74rem;
   font-weight: 650;
-  padding: 0.4rem 0.7rem;
+  padding: 0.35rem 0.65rem;
   cursor: pointer;
   white-space: nowrap;
   transition: all 0.15s ease;
@@ -1484,9 +1523,9 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
 
 .tab-badge {
   display: inline-block;
-  font-size: 0.65rem;
+  font-size: 0.62rem;
   font-weight: 800;
-  padding: 0.1rem 0.35rem;
+  padding: 0.08rem 0.35rem;
   border-radius: 999px;
   background: #334155;
   color: #f8fafc;
@@ -1496,15 +1535,16 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
 .badge-unpaid { background: #6366f1; color: #ffffff; }
 
 .flow-count {
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   color: #b45309;
   background: #fef3c7;
   border: 1px solid #fde68a;
   border-radius: 0.45rem;
-  padding: 0.35rem 0.65rem;
+  padding: 0.3rem 0.55rem;
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+  white-space: nowrap;
 }
 
 /* ORDERS PANEL */
@@ -1515,26 +1555,34 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03);
   display: flex;
   flex-direction: column;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden !important;
+  box-sizing: border-box;
 }
 
 .panel-head {
-  padding: 0.85rem 1rem;
+  padding: 0.75rem 1rem;
   border-bottom: 1px solid #f1f5f9;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+  flex-wrap: wrap;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .panel-head-text h2 {
-  font-size: 0.95rem;
+  font-size: 0.92rem;
   font-weight: 750;
   color: #0f172a;
   margin: 0;
 }
 
 .panel-sub {
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   color: #64748b;
   margin: 0.1rem 0 0;
 }
@@ -1543,13 +1591,13 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  font-size: 0.75rem;
+  font-size: 0.74rem;
   color: #64748b;
 }
 
 .page-size-select {
   padding: 0.2rem 0.4rem;
-  font-size: 0.75rem;
+  font-size: 0.74rem;
   font-weight: 600;
   border: 1px solid #cbd5e1;
   border-radius: 0.4rem;
@@ -1557,16 +1605,18 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   color: #0f172a;
 }
 
-/* TABLE & SCROLL WRAPPER (STRICTLY VERTICAL SCROLL) */
+/* TABLE & SCROLL WRAPPER (STRICTLY VERTICAL SCROLL ONLY) */
 .orders-table-wrap {
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
   max-height: calc(100vh - 280px);
-  min-height: 340px;
-  width: 100%;
+  min-height: 320px;
+  width: 100% !important;
+  max-width: 100% !important;
   position: relative;
   scrollbar-width: thin;
   scrollbar-color: #cbd5e1 transparent;
+  box-sizing: border-box;
 }
 
 .orders-table-wrap::-webkit-scrollbar {
@@ -1580,11 +1630,13 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
 }
 
 .orders-table {
-  width: 100%;
-  table-layout: fixed;
+  width: 100% !important;
+  max-width: 100% !important;
+  table-layout: fixed !important;
   border-collapse: collapse;
-  font-size: 0.78rem;
+  font-size: 0.76rem;
   text-align: left;
+  box-sizing: border-box;
 }
 
 .orders-table th {
@@ -1601,14 +1653,17 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   border-bottom: 1px solid #e2e8f0;
   white-space: nowrap;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-sizing: border-box;
 }
 
 .col-order {
-  width: 33%;
+  width: 32%;
 }
 
 .col-plan {
-  width: 27%;
+  width: 26%;
 }
 
 .col-payment {
@@ -1616,13 +1671,18 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
 }
 
 .col-actions {
-  width: 16%;
+  width: 18%;
+  text-align: right;
 }
 
 .orders-table td {
   padding: 0.45rem 0.65rem;
   border-bottom: 1px solid #f1f5f9;
   vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 0;
+  box-sizing: border-box;
 }
 
 .order-row {
@@ -1641,11 +1701,24 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   background: rgba(254, 243, 199, 0.45);
 }
 
+.cell-order-cust,
+.cell-plan-domain,
+.cell-payment-ref,
+.cell-actions {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .row-top-info {
   display: flex;
   align-items: center;
   gap: 0.35rem;
   flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .inv-badge {
@@ -1656,7 +1729,8 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   background: #f1f5f9;
   border: 1px solid #e2e8f0;
   border-radius: 0.35rem;
-  padding: 0.1rem 0.35rem;
+  padding: 0.08rem 0.32rem;
+  flex-shrink: 0;
 }
 
 .kind-badge {
@@ -1668,12 +1742,14 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   background: #eef2ff;
   border: 1px solid #e0e7ff;
   border-radius: 0.35rem;
-  padding: 0.08rem 0.3rem;
+  padding: 0.06rem 0.28rem;
+  flex-shrink: 0;
 }
 
 .date-sub {
   font-size: 0.68rem;
   color: #94a3b8;
+  white-space: nowrap;
 }
 
 .date-badge {
@@ -1693,6 +1769,10 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   cursor: pointer;
   text-align: left;
   font-size: 0.76rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cust-name-link:hover {
@@ -1704,10 +1784,13 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   color: #64748b;
-  margin-top: 0.15rem;
+  margin-top: 0.12rem;
   flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .dot-sep {
@@ -1718,7 +1801,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
 .cust-email-link {
   color: #64748b;
   text-decoration: none;
-  max-width: 140px;
+  max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1733,16 +1816,18 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   display: inline-flex;
   align-items: center;
   gap: 0.2rem;
+  white-space: nowrap;
 }
 
 .btn-copy-micro {
   background: none;
   border: none;
-  padding: 0.1rem 0.2rem;
+  padding: 0.08rem 0.18rem;
   color: #94a3b8;
   cursor: pointer;
-  font-size: 0.68rem;
+  font-size: 0.66rem;
   border-radius: 0.25rem;
+  flex-shrink: 0;
 }
 
 .btn-copy-micro:hover {
@@ -1758,19 +1843,26 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   background: #f1f5f9;
   border: 1px solid #e2e8f0;
   border-radius: 0.35rem;
-  padding: 0.1rem 0.35rem;
+  padding: 0.08rem 0.32rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .domain-tag-inline {
   display: flex;
   align-items: center;
   gap: 0.3rem;
-  margin-top: 0.15rem;
+  margin-top: 0.12rem;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .domain-text {
   font-family: ui-monospace, monospace;
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   font-weight: 600;
   color: #1e293b;
   overflow: hidden;
@@ -1786,32 +1878,39 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 0.35rem;
-  padding: 0.1rem 0.35rem;
-  margin-top: 0.15rem;
+  padding: 0.08rem 0.32rem;
+  margin-top: 0.12rem;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .momo-lbl {
-  font-size: 0.6rem;
+  font-size: 0.58rem;
   font-weight: 800;
   text-transform: uppercase;
   color: #047857;
+  flex-shrink: 0;
 }
 
 .momo-code {
   font-family: ui-monospace, monospace;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   font-weight: 700;
   color: #047857;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .amount-tag {
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   font-weight: 750;
   color: #0f172a;
+  white-space: nowrap;
 }
 
 .comp-badge-pill {
-  font-size: 0.65rem;
+  font-size: 0.62rem;
   font-weight: 750;
   color: #b45309;
   background: #fef3c7;
@@ -1942,6 +2041,9 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   gap: 0.75rem;
   flex-wrap: wrap;
   background: #ffffff;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .pagination-info {

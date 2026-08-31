@@ -85,12 +85,17 @@ onUnmounted(() => {
 <style scoped>
 .control-main {
   width: 100%;
+  max-width: 100%;
+  overflow-x: hidden !important;
   padding: 1rem 1rem 1.5rem;
+  box-sizing: border-box;
 }
 .control-main-inner {
   width: 100%;
-  max-width: none;
+  max-width: 100%;
+  overflow-x: hidden !important;
   margin: 0;
+  box-sizing: border-box;
 }
 @media (min-width: 768px) {
   .control-main {
@@ -114,9 +119,13 @@ onUnmounted(() => {
 }
 .control-main--flush {
   padding: 0 !important;
+  overflow-x: hidden !important;
 }
 .control-main-inner--flush {
   min-height: 100%;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden !important;
   display: flex;
   flex-direction: column;
 }
