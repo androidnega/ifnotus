@@ -1048,7 +1048,7 @@ async def get_sms_balance(
     excluded_cust_res = await session.execute(
         select(Customer.id).join(CustomerEnvironment, CustomerEnvironment.customer_id == Customer.id, isouter=True).where(
             or_(
-                Customer.account_code.in_(["IFADE5", "IF2ACB", "ifade5", "if2acb"]),
+                Customer.storage_slug.in_(["IFADE5", "IF2ACB", "ifade5", "if2acb"]),
                 CustomerEnvironment.hosting_name.in_(["ifade5", "if2acb", "IFADE5", "IF2ACB"]),
             )
         )
@@ -1078,7 +1078,7 @@ async def get_sms_balance(
             "id": str(notif.id),
             "customer_id": str(notif.customer_id),
             "customer_name": cust.full_name if cust else "Unknown",
-            "account_code": getattr(cust, "account_code", None) if cust else None,
+            "account_code": getattr(cust, "storage_slug", None) if cust else None,
             "title": notif.title,
             "body": notif.body,
             "created_at": notif.created_at.isoformat() if notif.created_at else None,
