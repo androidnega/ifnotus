@@ -3543,7 +3543,7 @@ async def env_list_domain_items(
         )
         for child in child_res.scalars().all():
             c_name = (child.name or "").strip().lower()
-            if not c_name or c_name in seen_names:
+            if not c_name or c_name in seen_names or c_name.startswith("cpanel."):
                 continue
             seen_names.add(c_name)
             custom_count += 1
