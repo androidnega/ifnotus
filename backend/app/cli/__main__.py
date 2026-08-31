@@ -39,6 +39,7 @@ async def run_reconciliation(target_domain: str | None = None) -> None:
                 nginx_res = await service._nginx.provision(
                     hostname=target_domain,
                     document_root=f"/var/www/{target_domain}",
+                    proxy_port=None,
                     force_https=has_ssl,
                     enabled=True,
                     create_docroot=True,

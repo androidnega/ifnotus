@@ -59,6 +59,7 @@ class EnvironmentReconciliationService:
                     nginx_res = await self._nginx.provision(
                         hostname=d_name,
                         document_root=f"/var/www/{d_name}",
+                        proxy_port=None,
                         force_https=has_ssl,
                         enabled=True,
                         create_docroot=True,
