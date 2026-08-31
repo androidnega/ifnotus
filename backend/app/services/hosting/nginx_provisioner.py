@@ -84,22 +84,31 @@ class DomainNginxProvisioner:
         """
         site_names = [hostname] + [a for a in (aliases or []) if a and a != hostname]
         from app.services.platform.panel_access import control_panel_hostname, is_platform_hostname, webmail_hostname
+        from app.services.platform.student_hostname import is_student_hostname
 
         cpanel_host = None
         webmail_host = None
         mail_host = None
-        if not is_platform_hostname(hostname):
-            cpanel_host = control_panel_hostname(hostname)
+        is_sub_or_student = is_platform_hostname(hostname) or is_student_hostname(hostname, settings=self._settings)
+
+        if not is_sub_or_student:
+            c_host = control_panel_hostname(hostname, settings=self._settings)
+            if c_host and c_host != hostname and not is_platform_hostname(c_host):
+                cpanel_host = c_host
             if "." in hostname and not hostname.startswith("www."):
                 mail_host = f"mail.{hostname}"
-                webmail_host = webmail_hostname(hostname)
+                w_host = webmail_hostname(hostname, settings=self._settings)
+                if w_host and w_host != hostname and not is_platform_hostname(w_host):
+                    webmail_host = w_host
+
         # www for apex custom domains (not for platform / student zones)
         if (
-            not is_platform_hostname(hostname)
+            not is_sub_or_student
             and not hostname.startswith("www.")
             and f"www.{hostname}" not in site_names
         ):
             site_names.append(f"www.{hostname}")
+
         # Never put panel/mail aliases on the site server_name (HTTP or HTTPS).
         site_names = [
             n
@@ -798,6 +807,8 @@ class DomainNginxProvisioner:
         if not self._available.is_dir():
             return OperationResult(success=False, message="nginx sites-available missing")
         skip_hosts = {
+            "00-default-catchall.conf",
+            "00-default-catchall",
             "fpanel.ifnotus.space",
             "cpanel.ifnotus.space",
             "ifnotus.space",
