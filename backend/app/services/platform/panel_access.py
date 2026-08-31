@@ -250,5 +250,18 @@ def find_letsencrypt_cert(hostname: str) -> tuple[str | None, str | None]:
         if fullchain.exists() and privkey.exists():
             return str(fullchain), str(privkey)
 
+    # Fallback for platform/student subdomains to ensure HTTPS is always enabled
+    if clean.endswith(".ifnotus.space"):
+        p_full = live_dir / "ifnotus.space" / "fullchain.pem"
+        p_key = live_dir / "ifnotus.space" / "privkey.pem"
+        if p_full.exists() and p_key.exists():
+            return str(p_full), str(p_key)
+
+    if clean.endswith(".serverlabsttu.space"):
+        p_full = live_dir / "serverlabsttu.space" / "fullchain.pem"
+        p_key = live_dir / "serverlabsttu.space" / "privkey.pem"
+        if p_full.exists() and p_key.exists():
+            return str(p_full), str(p_key)
+
     return None, None
 
