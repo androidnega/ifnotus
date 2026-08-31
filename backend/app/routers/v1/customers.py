@@ -201,6 +201,38 @@ def _require_customer_user(user) -> None:
     raise AuthorizationError("Customer account required.")
 
 
+def _is_staff_user(user) -> bool:
+    roles = set(getattr(user, "roles", None) or [])
+    return bool(
+        getattr(user, "is_superuser", False)
+        or (
+            roles
+            & {
+                Role.PLATFORM_OWNER.value,
+                Role.PLATFORM_ADMIN.value,
+                Role.ADMIN.value,
+                Role.SUPERADMIN.value,
+                Role.HOSTING_OPERATOR.value,
+                Role.OPERATOR.value,
+                Role.SUPPORT_AGENT.value,
+                Role.BILLING_AGENT.value,
+            }
+        )
+    )
+
+
+async def _resolve_env_for_user(
+    session: DbSession,
+    settings: SettingsDep,
+    user: CurrentUser,
+    environment_id: UUID,
+) -> CustomerEnvironment:
+    if _is_staff_user(user):
+        return await TenantService(session).get_owned_environment(None, environment_id)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    return await TenantService(session).get_owned_environment(customer.id, environment_id)
+
+
 def _env_response(env, plan=None) -> EnvironmentResponse:
     from app.services.platform.entitlements import effective_entitlements
     from app.services.platform.plan_matrix import capabilities_for
@@ -807,6 +839,21 @@ async def list_environments(
         plan = await tenant.plan_for_environment(e)
         out.append(_env_response(e, plan))
     return out
+
+
+@router.get("/environments/{environment_id}", response_model=EnvironmentResponse)
+async def get_environment_by_id(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> EnvironmentResponse:
+    """Retrieve environment metadata for active customer or staff."""
+    _require_customer_user(user)
+    env = await _resolve_env_for_user(session, settings, user, environment_id)
+    tenant = TenantService(session)
+    plan = await tenant.plan_for_environment(env)
+    return _env_response(env, plan)
 
 
 @router.get(
@@ -3722,8 +3769,7 @@ async def env_update_domain_item(
 ) -> EnvironmentDomainEntry:
     """Update document root, force HTTPS, or redirection for a domain."""
     _require_customer_user(user)
-    customer = await CustomerService(settings, session).require_for_user(user.id)
-    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    env = await _resolve_env_for_user(session, settings, user, environment_id)
 
     from pathlib import Path
     from sqlalchemy import func
@@ -3747,7 +3793,7 @@ async def env_update_domain_item(
         pass
 
     dom_name = None
-    if cd_row and cd_row.customer_id == customer.id:
+    if cd_row:
         dom_name = cd_row.domain_name
     elif domain_id == str(env.hosting_domain_id) or domain_id == str(env.id):
         dom_name = primary_name
@@ -3830,8 +3876,7 @@ async def env_delete_domain_item(
 ) -> MessageResponse:
     """Remove a domain or subdomain from this hosting account (preserves files on disk)."""
     _require_customer_user(user)
-    customer = await CustomerService(settings, session).require_for_user(user.id)
-    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    env = await _resolve_env_for_user(session, settings, user, environment_id)
 
     from sqlalchemy import func
     from app.models.hosting import Domain
@@ -3849,7 +3894,7 @@ async def env_delete_domain_item(
 
     target_name = None
     if cd_row:
-        if cd_row.customer_id != customer.id or cd_row.environment_id != env.id:
+        if cd_row.environment_id != env.id:
             raise AuthorizationError("Domain does not belong to this environment.")
         target_name = cd_row.domain_name
     else:
@@ -5026,30 +5071,31 @@ async def resolve_panel_alias(
     if lookup.startswith("www."):
         lookup = lookup[4:]
 
-    customer = await CustomerService(settings, session).require_for_user(user.id)
+    is_staff = _is_staff_user(user)
+    customer = await CustomerService(settings, session).get_by_user_id(user.id)
+
+    # 1. Match environment by domain
     env = (
         await session.execute(
             select(CustomerEnvironment).where(
-                CustomerEnvironment.customer_id == customer.id,
                 func.lower(CustomerEnvironment.domain) == lookup,
             )
         )
     ).scalar_one_or_none()
+
+    # 2. Match environment by CustomerDomain
     if env is None:
         owned = (
             await session.execute(
                 select(CustomerDomain).where(
-                    CustomerDomain.customer_id == customer.id,
                     func.lower(CustomerDomain.domain_name) == lookup,
                 )
             )
         ).scalar_one_or_none()
-        if owned is not None:
-            env = (
-                await session.execute(
-                    select(CustomerEnvironment).where(CustomerEnvironment.id == owned.environment_id)
-                )
-            ).scalar_one_or_none()
+        if owned is not None and owned.environment_id:
+            env = await session.get(CustomerEnvironment, owned.environment_id)
+
+    # 3. Match environment by Domain table
     if env is None:
         from app.models.hosting import Domain
 
@@ -5061,29 +5107,29 @@ async def resolve_panel_alias(
             )
         ).scalar_one_or_none()
         if domain_row is not None:
-            env = (
-                await session.execute(
-                    select(CustomerEnvironment).where(
-                        CustomerEnvironment.customer_id == customer.id,
-                        CustomerEnvironment.hosting_domain_id == domain_row.id,
+            if domain_row.parent_domain_id:
+                env = (
+                    await session.execute(
+                        select(CustomerEnvironment).where(
+                            CustomerEnvironment.hosting_domain_id == domain_row.parent_domain_id,
+                        )
                     )
-                )
-            ).scalar_one_or_none()
+                ).scalar_one_or_none()
+            if env is None:
+                env = (
+                    await session.execute(
+                        select(CustomerEnvironment).where(
+                            CustomerEnvironment.hosting_domain_id == domain_row.id,
+                        )
+                    )
+                ).scalar_one_or_none()
+
     if env is None:
-        # Exists for someone else?
-        other = (
-            await session.execute(
-                select(CustomerEnvironment.id).where(func.lower(CustomerEnvironment.domain) == lookup)
-            )
-        ).scalar_one_or_none()
-        other_dom = (
-            await session.execute(
-                select(CustomerDomain.id).where(func.lower(CustomerDomain.domain_name) == lookup)
-            )
-        ).scalar_one_or_none()
-        if other is not None or other_dom is not None:
-            raise AuthorizationError("You do not have access to that site.")
         raise NotFoundError("No hosting environment for that hostname.")
+
+    # Validate access
+    if not is_staff and (customer is None or env.customer_id != customer.id):
+        raise AuthorizationError("You do not have access to that site.")
     if env.status in {"terminated", "terminating"}:
         raise AppException("That hosting service is no longer available.", code="env_terminated")
     return PanelAliasResolveResponse(

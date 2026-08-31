@@ -49,7 +49,7 @@ class PhpFpmPoolService:
         name = self.pool_name(hostname)
         sock = self.socket_for(hostname)
         root = Path(document_root).resolve()
-        base = root.parent if root.name == "public" else root
+        base = root.parent if root.name in ("public", "public_html", "web", "httpdocs") else root
         children = max(2, min(12, int(round(float(ram_gb or 0.5) * 4)) or 2))
         conf = self._pool_dir / f"{name}.conf"
         run_user = (unix_user or "").strip()

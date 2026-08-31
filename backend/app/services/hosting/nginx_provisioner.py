@@ -652,18 +652,11 @@ class DomainNginxProvisioner:
                 for line in lines
             ]
 
-        if php_index.is_file():
-            lines += [
-                "    location / {",
-                "        try_files $uri $uri/ /index.php?$args;",
-                "    }",
-            ]
-        else:
-            lines += [
-                "    location / {",
-                "        try_files $uri $uri/ /index.html;",
-                "    }",
-            ]
+        lines += [
+            "    location / {",
+            "        try_files $uri $uri/ /index.php?$args;",
+            "    }",
+        ]
         # PHP-FPM for WordPress / Laravel / PHP apps
         sock = self._resolve_php_fpm_socket(hostname)
         if sock and Path("/etc/nginx/snippets/fastcgi-php.conf").exists():
@@ -689,7 +682,7 @@ class DomainNginxProvisioner:
         except (OSError, ValueError):
             return None
         base = path
-        if base.name == "public":
+        if base.name in {"public", "public_html", "web", "httpdocs"}:
             base = base.parent
         return f"{base}:/tmp:/var/tmp"
 

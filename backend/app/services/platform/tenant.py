@@ -152,17 +152,15 @@ class TenantService:
 
     async def get_owned_environment(
         self,
-        customer_id: UUID,
+        customer_id: UUID | None,
         environment_id: UUID,
         *,
         allow_suspended: bool = True,
     ) -> CustomerEnvironment:
-        result = await self._session.execute(
-            select(CustomerEnvironment).where(
-                CustomerEnvironment.id == environment_id,
-                CustomerEnvironment.customer_id == customer_id,
-            )
-        )
+        query = select(CustomerEnvironment).where(CustomerEnvironment.id == environment_id)
+        if customer_id is not None:
+            query = query.where(CustomerEnvironment.customer_id == customer_id)
+        result = await self._session.execute(query)
         env = result.scalar_one_or_none()
         if env is None:
             raise NotFoundError("Environment not found.")

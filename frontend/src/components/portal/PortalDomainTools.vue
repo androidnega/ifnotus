@@ -201,6 +201,12 @@ async function load() {
       customDomainsLimit.value = data.custom_domains_limit ?? null
       customDomainsCount.value = data.custom_domains_count ?? 0
       domainItems.value = data.items || []
+    } else if (dRes.status === 'rejected') {
+      const err = dRes.reason as { response?: { data?: { error?: { message?: string } } }; message?: string }
+      msg.value = {
+        type: 'err',
+        text: err?.response?.data?.error?.message ?? err?.message ?? 'Could not load domain list.',
+      }
     }
 
     if (rRes.status === 'fulfilled' && rRes.value.data) {

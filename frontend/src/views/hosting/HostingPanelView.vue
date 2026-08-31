@@ -534,7 +534,20 @@ async function load() {
       localStorage.setItem('tenant_env_id', targetEnvId)
     }
 
-    const owned = data.environments.find((e) => e.id === targetEnvId)
+    let owned = data.environments.find((e) => e.id === targetEnvId)
+    if (!owned && targetEnvId) {
+      try {
+        const { data: envData } = await customersApi.getEnvironment(targetEnvId)
+        if (envData && envData.id) {
+          owned = envData
+          if (dash.value) {
+            dash.value.environments = [...(dash.value.environments || []), envData]
+          }
+        }
+      } catch {
+        // Fallback
+      }
+    }
     if (!owned) {
       error.value = 'This hosting service is not on your account.'
       return

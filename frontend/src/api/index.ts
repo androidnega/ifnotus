@@ -1920,6 +1920,9 @@ export const customersApi = {
   deleteEnvMailAlias: (environmentId: string, aliasId: string) =>
     apiClient.delete(`/customers/environments/${environmentId}/mail/aliases/${aliasId}`),
 
+  getEnvironment: (environmentId: string) =>
+    apiClient.get<CustomerEnvironment>(`/customers/environments/${environmentId}`),
+
   listEnvDomainItems: (environmentId: string) =>
     apiClient.get<{
       primary_domain: string
