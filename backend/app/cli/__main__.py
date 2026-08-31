@@ -10,11 +10,12 @@ from app.core.config import get_settings
 from app.core.container import create_container
 from app.core.logging import get_logger, setup_logging
 from app.services.platform.reconciliation import EnvironmentReconciliationService
+from sqlalchemy import select
 
 logger = get_logger(__name__)
 
 
-async def run_reconciliation() -> None:
+async def run_reconciliation(target_domain: str | None = None) -> None:
     settings = get_settings()
     setup_logging(settings)
     container = create_container()
@@ -23,7 +24,35 @@ async def run_reconciliation() -> None:
     async with session_factory() as session:
         service = EnvironmentReconciliationService(settings, session)
         print("Starting IFNOTUS Hosting Environment Reconciliation...")
-        results = await service.reconcile_all_active_environments()
+        if target_domain:
+            from app.models.platform import CustomerEnvironment
+            stmt = select(CustomerEnvironment).where(CustomerEnvironment.domain == target_domain)
+            res = await session.execute(stmt)
+            env = res.scalar_one_or_none()
+            if env:
+                results = [await service.reconcile_environment(env)]
+            else:
+                # Direct domain provision
+                from pathlib import Path
+                cert_path = Path(f"/etc/letsencrypt/live/{target_domain}/fullchain.pem")
+                has_ssl = cert_path.exists()
+                nginx_res = await service._nginx.provision(
+                    hostname=target_domain,
+                    document_root=f"/var/www/{target_domain}",
+                    force_https=has_ssl,
+                    enabled=True,
+                    create_docroot=True,
+                    force_takeover=True,
+                    ssl_certificate=str(cert_path) if has_ssl else None,
+                )
+                results = [{
+                    "domain": target_domain,
+                    "fpanel_host": f"fpanel.{target_domain}",
+                    "nginx_vhost_rendered": nginx_res.success,
+                    "ssl_active": has_ssl,
+                }]
+        else:
+            results = await service.reconcile_all_active_environments()
         print(f"Reconciled {len(results)} active hosting environments:")
         for res in results:
             domain = res.get("domain")
@@ -43,13 +72,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="IFNOTUS Infrastructure Management CLI")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    subparsers.add_parser("reconcile-hosting", help="Reconcile DNS zones, Nginx fPanel vhosts, and document roots")
+    p_recon = subparsers.add_parser("reconcile-hosting", help="Reconcile DNS zones, Nginx fPanel vhosts, and document roots")
+    p_recon.add_argument("--domain", help="Optional specific domain to reconcile", default=None)
     subparsers.add_parser("reconcile-zones", help="Alias for reconcile-hosting")
 
     args = parser.parse_args()
 
     if args.command in {"reconcile-hosting", "reconcile-zones"}:
-        asyncio.run(run_reconciliation())
+        domain = getattr(args, "domain", None)
+        asyncio.run(run_reconciliation(target_domain=domain))
     else:
         parser.print_help()
         sys.exit(1)

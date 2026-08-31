@@ -31,15 +31,48 @@ class EnvironmentReconciliationService:
     async def reconcile_all_active_environments(self) -> list[dict[str, Any]]:
         """Reconcile DNS zones, fPanel Nginx vhosts, and document roots for all active environments."""
         stmt = select(CustomerEnvironment).where(
-            CustomerEnvironment.status.in_(["active", "provisioning", "degraded"])
+            CustomerEnvironment.status.in_(["active", "provisioning", "degraded", "pending", "ready"])
         )
         result = await self._session.execute(stmt)
         environments = list(result.scalars().all())
 
         reports: list[dict[str, Any]] = []
+        seen_domains = set()
         for env in environments:
             rep = await self.reconcile_environment(env)
             reports.append(rep)
+            if env.domain:
+                seen_domains.add(env.domain.strip().lower())
+
+        # Also check custom domains from Domain table if any
+        stmt_dom = select(Domain)
+        res_dom = await self._session.execute(stmt_dom)
+        domains = list(res_dom.scalars().all())
+        for d in domains:
+            d_name = (d.name or "").strip().lower()
+            if d_name and d_name not in seen_domains and not is_platform_hostname(d_name, settings=self._settings):
+                seen_domains.add(d_name)
+                # Look up certificate
+                cert_path = Path(f"/etc/letsencrypt/live/{d_name}/fullchain.pem")
+                has_ssl = cert_path.exists()
+                try:
+                    nginx_res = await self._nginx.provision(
+                        hostname=d_name,
+                        document_root=f"/var/www/{d_name}",
+                        force_https=has_ssl,
+                        enabled=True,
+                        create_docroot=True,
+                        force_takeover=True,
+                        ssl_certificate=str(cert_path) if has_ssl else None,
+                    )
+                    reports.append({
+                        "domain": d_name,
+                        "fpanel_host": control_panel_hostname(d_name, settings=self._settings),
+                        "nginx_vhost_rendered": nginx_res.success,
+                        "ssl_active": has_ssl,
+                    })
+                except Exception as exc:
+                    reports.append({"domain": d_name, "error": str(exc)})
 
         return reports
 
