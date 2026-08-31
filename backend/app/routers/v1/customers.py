@@ -60,6 +60,7 @@ from app.schemas.platform import (
     StaffCapacityDashboardResponse,
     ChangePlanRequest,
     CreateDomainOrderRequest,
+    CreateEnvironmentDomainRequest,
     CustomerDomainItemResponse,
     CustomerDomainListResponse,
     CreateOrderRequest,
@@ -67,9 +68,12 @@ from app.schemas.platform import (
     CreditTopUpRequest,
     CreditTopUpResponse,
     EnvironmentDnsRecordCreateRequest,
+    EnvironmentDomainEntry,
+    EnvironmentDomainListResponse,
     EnvironmentGitCloneRequest,
     EnvironmentRedirectCreateRequest,
     HostingPlanSchema,
+    UpdateEnvironmentDomainRequest,
     CustomerCompleteProfileRequest,
     CustomerDashboardResponse,
     CustomerFileMkdirRequest,
@@ -3341,6 +3345,541 @@ async def env_unassign_custom_domain(
     response = EnvironmentDnsResponse.model_validate(payload)
     response.message = str(result.get("message") or response.message)
     return response
+
+
+@router.get(
+    "/environments/{environment_id}/domain-items",
+    response_model=EnvironmentDomainListResponse,
+)
+async def env_list_domain_items(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> EnvironmentDomainListResponse:
+    """List domains, subdomains, and addon domains attached to this hosting environment."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+
+    from pathlib import Path
+    from sqlalchemy import func
+    from app.models.hosting import Domain
+    from app.models.platform import CustomerDomain, Subscription, HostingPlan
+
+    primary_name = (env.domain or "").strip().lower()
+    unix_username = (env.unix_username or env.hosting_name or "").strip().lower()
+    if not unix_username and env.domain:
+        unix_username = env.domain.split(".")[0].replace("-", "").lower()[:8]
+    if not unix_username:
+        unix_username = "user"
+    home_dir = f"/home3/{unix_username}"
+
+    # Plan checks
+    plan = None
+    if env.subscription_id:
+        sub = await session.get(Subscription, env.subscription_id)
+        if sub and sub.plan_id:
+            plan = await session.get(HostingPlan, sub.plan_id)
+
+    custom_domains_limit = None
+    if plan and isinstance(plan.features, dict) and "custom_domains" in plan.features:
+        try:
+            custom_domains_limit = int(plan.features["custom_domains"])
+        except (ValueError, TypeError):
+            pass
+    package_supported = custom_domains_limit != 0
+
+    items: list[EnvironmentDomainEntry] = []
+
+    # 1. Primary domain entry
+    primary_doc_root = "/public_html"
+    primary_redirect = None
+    primary_force_https = True
+    primary_ssl = bool(env.ssl_status == "active" or env.ssl_expiry)
+    primary_created = env.created_at
+
+    if env.hosting_domain_id:
+        h_dom = await session.get(Domain, env.hosting_domain_id)
+        if h_dom:
+            primary_redirect = h_dom.redirect_url
+            primary_force_https = h_dom.force_https
+    elif primary_name:
+        h_dom = (
+            await session.execute(
+                select(Domain).where(func.lower(Domain.name) == primary_name)
+            )
+        ).scalar_one_or_none()
+        if h_dom:
+            primary_redirect = h_dom.redirect_url
+            primary_force_https = h_dom.force_https
+
+    items.append(
+        EnvironmentDomainEntry(
+            id=str(env.hosting_domain_id or env.id),
+            domain_name=primary_name,
+            domain_type="primary",
+            document_root=primary_doc_root,
+            full_document_root=f"{home_dir}{primary_doc_root}",
+            redirects_to=primary_redirect,
+            force_https=primary_force_https,
+            is_primary=True,
+            ssl_active=primary_ssl,
+            can_delete=False,
+            created_at=primary_created,
+        )
+    )
+
+    # 2. Addon and Subdomain entries from CustomerDomain and Domain tables
+    cd_res = await session.execute(
+        select(CustomerDomain).where(
+            CustomerDomain.customer_id == customer.id,
+            CustomerDomain.environment_id == env.id,
+        ).order_by(CustomerDomain.created_at.desc())
+    )
+    seen_names = {primary_name}
+    custom_count = 0
+
+    for cd in cd_res.scalars().all():
+        cd_name = (cd.domain_name or "").strip().lower()
+        if not cd_name or cd_name in seen_names:
+            continue
+        seen_names.add(cd_name)
+        custom_count += 1
+
+        d_row = (
+            await session.execute(
+                select(Domain).where(func.lower(Domain.name) == cd_name)
+            )
+        ).scalar_one_or_none()
+
+        d_root = "/public_html"
+        d_redirect = None
+        d_force = True
+        if d_row:
+            d_redirect = d_row.redirect_url
+            d_force = d_row.force_https
+            if d_row.document_root:
+                raw_p = Path(d_row.document_root)
+                if raw_p.name in {"public", "public_html", "web"} and raw_p.parent.name == cd_name:
+                    d_root = f"/{cd_name}/{raw_p.name}"
+                elif raw_p.name == "public_html":
+                    d_root = "/public_html"
+                elif raw_p.is_absolute():
+                    d_root = f"/{raw_p.name}"
+                else:
+                    d_root = f"/{d_row.document_root.lstrip('/')}"
+        else:
+            d_root = f"/{cd_name}"
+
+        is_sub = cd_name.endswith(f".{primary_name}")
+        items.append(
+            EnvironmentDomainEntry(
+                id=str(cd.id),
+                domain_name=cd_name,
+                domain_type="subdomain" if is_sub else "addon",
+                document_root=d_root,
+                full_document_root=f"{home_dir}{d_root}",
+                redirects_to=d_redirect,
+                force_https=d_force,
+                is_primary=False,
+                ssl_active=bool(cd.ssl_status == "active" or cd.ssl_expiry),
+                can_delete=True,
+                created_at=cd.created_at,
+            )
+        )
+
+    # 3. Check child Domain rows in Domain table
+    if env.hosting_domain_id:
+        child_res = await session.execute(
+            select(Domain).where(Domain.parent_domain_id == env.hosting_domain_id)
+        )
+        for child in child_res.scalars().all():
+            c_name = (child.name or "").strip().lower()
+            if not c_name or c_name in seen_names:
+                continue
+            seen_names.add(c_name)
+            custom_count += 1
+
+            c_root = f"/{c_name}"
+            if child.document_root:
+                raw_p = Path(child.document_root)
+                if raw_p.name in {"public", "public_html", "web"} and raw_p.parent.name == c_name:
+                    c_root = f"/{c_name}/{raw_p.name}"
+                elif raw_p.name == "public_html":
+                    c_root = "/public_html"
+                elif raw_p.is_absolute():
+                    c_root = f"/{raw_p.name}"
+                else:
+                    c_root = f"/{child.document_root.lstrip('/')}"
+
+            is_sub = c_name.endswith(f".{primary_name}")
+            items.append(
+                EnvironmentDomainEntry(
+                    id=str(child.id),
+                    domain_name=c_name,
+                    domain_type="subdomain" if is_sub else "addon",
+                    document_root=c_root,
+                    full_document_root=f"{home_dir}{c_root}",
+                    redirects_to=child.redirect_url,
+                    force_https=child.force_https,
+                    is_primary=False,
+                    ssl_active=False,
+                    can_delete=True,
+                    created_at=child.created_at,
+                )
+            )
+
+    return EnvironmentDomainListResponse(
+        primary_domain=primary_name,
+        unix_username=unix_username,
+        home_dir=home_dir,
+        default_doc_root=primary_doc_root,
+        package_supported=package_supported,
+        custom_domains_limit=custom_domains_limit,
+        custom_domains_count=custom_count,
+        items=items,
+    )
+
+
+@router.post(
+    "/environments/{environment_id}/domain-items",
+    response_model=EnvironmentDomainEntry,
+)
+async def env_create_domain_item(
+    environment_id: UUID,
+    body: CreateEnvironmentDomainRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> EnvironmentDomainEntry:
+    """Create a new registered/addon domain or subdomain with a customized document root."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+
+    from pathlib import Path
+    from sqlalchemy import func
+    from app.models.hosting import Domain
+    from app.models.platform import CustomerDomain, Subscription, HostingPlan
+    from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
+    from app.services.platform.tenant import ensure_cpanel_directory_layout
+
+    # Check plan limit
+    if env.subscription_id:
+        sub = await session.get(Subscription, env.subscription_id)
+        if sub and sub.plan_id:
+            plan = await session.get(HostingPlan, sub.plan_id)
+            if plan and isinstance(plan.features, dict) and "custom_domains" in plan.features:
+                try:
+                    limit = int(plan.features["custom_domains"])
+                    if limit == 0:
+                        raise AppException(
+                            "Your current package does not support adding additional domains or subdomains. Please upgrade your plan.",
+                            code="plan_unsupported",
+                        )
+                    current_count = (
+                        await session.execute(
+                            select(func.count(CustomerDomain.id)).where(
+                                CustomerDomain.customer_id == customer.id,
+                                CustomerDomain.environment_id == env.id,
+                            )
+                        )
+                    ).scalar() or 0
+                    if current_count >= limit:
+                        raise AppException(
+                            f"Your package limit of {limit} domain(s) has been reached. Please upgrade to add more domains.",
+                            code="plan_limit_reached",
+                        )
+                except (ValueError, TypeError):
+                    pass
+
+    clean_name = body.domain_name.strip().lower()
+    if clean_name.startswith("http://"):
+        clean_name = clean_name[7:]
+    if clean_name.startswith("https://"):
+        clean_name = clean_name[8:]
+    clean_name = clean_name.strip("/")
+
+    if not clean_name or len(clean_name) < 3:
+        raise AppException("Invalid domain name.", code="invalid_domain")
+
+    # Document root resolution
+    primary_name = (env.domain or "").strip().lower()
+    unix_username = (env.unix_username or env.hosting_name or "user").strip().lower()
+    home_dir = f"/home3/{unix_username}"
+
+    if not env.document_root:
+        raise AppException("Environment has no root path.", code="no_docroot")
+    raw_env_root = Path(env.document_root).resolve()
+    site_home = raw_env_root.parent if raw_env_root.name in {"public", "public_html", "web"} else raw_env_root
+
+    if body.share_document_root:
+        target_doc_root = site_home / "public_html"
+        display_doc_root = "/public_html"
+    else:
+        req_root = (body.document_root or clean_name).strip().lstrip("/")
+        if not req_root:
+            req_root = clean_name
+        target_doc_root = site_home / req_root
+        display_doc_root = f"/{req_root}"
+
+    target_doc_root.mkdir(parents=True, exist_ok=True)
+    try:
+        target_doc_root.chmod(0o755)
+    except OSError:
+        pass
+
+    # Ensure cpanel layout update
+    ensure_cpanel_directory_layout(site_home, web_dir=site_home / "public_html", hostname=primary_name, subdomains=[clean_name])
+
+    # Save to CustomerDomain
+    cd_row = (
+        await session.execute(
+            select(CustomerDomain).where(func.lower(CustomerDomain.domain_name) == clean_name)
+        )
+    ).scalar_one_or_none()
+    if cd_row is None:
+        cd_row = CustomerDomain(
+            customer_id=customer.id,
+            environment_id=env.id,
+            domain_name=clean_name,
+            status="active",
+        )
+        session.add(cd_row)
+    else:
+        cd_row.customer_id = customer.id
+        cd_row.environment_id = env.id
+        cd_row.status = "active"
+
+    # Save to Domain
+    is_sub = clean_name.endswith(f".{primary_name}")
+    dom_row = (
+        await session.execute(
+            select(Domain).where(func.lower(Domain.name) == clean_name)
+        )
+    ).scalar_one_or_none()
+    if dom_row is None:
+        dom_row = Domain(
+            name=clean_name,
+            domain_type="subdomain" if is_sub else "addon",
+            parent_domain_id=env.hosting_domain_id,
+            document_root=str(target_doc_root),
+            force_https=body.force_https,
+            enabled=True,
+        )
+        session.add(dom_row)
+    else:
+        dom_row.parent_domain_id = env.hosting_domain_id
+        dom_row.document_root = str(target_doc_root)
+        dom_row.force_https = body.force_https
+        dom_row.enabled = True
+
+    await session.commit()
+    await session.refresh(cd_row)
+    await session.refresh(dom_row)
+
+    # Provision Nginx vhost safely
+    try:
+        prov = DomainNginxProvisioner(settings)
+        await prov.provision(
+            hostname=clean_name,
+            document_root=str(target_doc_root),
+            force_https=body.force_https,
+            enabled=True,
+            create_docroot=True,
+            unix_user=env.unix_username or env.hosting_name,
+        )
+    except Exception:
+        pass
+
+    return EnvironmentDomainEntry(
+        id=str(cd_row.id),
+        domain_name=clean_name,
+        domain_type="subdomain" if is_sub else "addon",
+        document_root=display_doc_root,
+        full_document_root=f"{home_dir}{display_doc_root}",
+        redirects_to=None,
+        force_https=body.force_https,
+        is_primary=False,
+        ssl_active=False,
+        can_delete=True,
+        created_at=cd_row.created_at,
+    )
+
+
+@router.patch(
+    "/environments/{environment_id}/domain-items/{domain_id}",
+    response_model=EnvironmentDomainEntry,
+)
+async def env_update_domain_item(
+    environment_id: UUID,
+    domain_id: str,
+    body: UpdateEnvironmentDomainRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> EnvironmentDomainEntry:
+    """Update document root, force HTTPS, or redirection for a domain."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+
+    from pathlib import Path
+    from sqlalchemy import func
+    from app.models.hosting import Domain
+    from app.models.platform import CustomerDomain
+    from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
+
+    primary_name = (env.domain or "").strip().lower()
+    unix_username = (env.unix_username or env.hosting_name or "user").strip().lower()
+    home_dir = f"/home3/{unix_username}"
+
+    raw_env_root = Path(env.document_root or ".").resolve()
+    site_home = raw_env_root.parent if raw_env_root.name in {"public", "public_html", "web"} else raw_env_root
+
+    # Find the domain entry
+    cd_row = None
+    try:
+        cd_uuid = UUID(domain_id)
+        cd_row = await session.get(CustomerDomain, cd_uuid)
+    except (ValueError, TypeError):
+        pass
+
+    dom_name = None
+    if cd_row and cd_row.customer_id == customer.id:
+        dom_name = cd_row.domain_name
+    elif domain_id == str(env.hosting_domain_id) or domain_id == str(env.id):
+        dom_name = primary_name
+    else:
+        dom_name = domain_id
+
+    dom_name = (dom_name or "").strip().lower()
+    dom_row = (
+        await session.execute(
+            select(Domain).where(func.lower(Domain.name) == dom_name)
+        )
+    ).scalar_one_or_none()
+
+    if dom_row is None and dom_name == primary_name and env.hosting_domain_id:
+        dom_row = await session.get(Domain, env.hosting_domain_id)
+
+    display_root = "/public_html"
+    if body.document_root is not None:
+        req_root = body.document_root.strip().lstrip("/")
+        if not req_root:
+            req_root = "public_html"
+        new_dir = site_home / req_root
+        new_dir.mkdir(parents=True, exist_ok=True)
+        display_root = f"/{req_root}"
+        if dom_row:
+            dom_row.document_root = str(new_dir)
+    elif dom_row and dom_row.document_root:
+        raw_p = Path(dom_row.document_root)
+        display_root = f"/{raw_p.name}" if raw_p.is_absolute() else f"/{dom_row.document_root.lstrip('/')}"
+
+    if body.force_https is not None and dom_row:
+        dom_row.force_https = body.force_https
+
+    if body.redirects_to is not None and dom_row:
+        dom_row.redirect_url = body.redirects_to.strip() if body.redirects_to.strip() else None
+
+    await session.commit()
+
+    # Re-apply Nginx
+    if dom_row and dom_row.name:
+        try:
+            prov = DomainNginxProvisioner(settings)
+            await prov.provision(
+                hostname=dom_row.name,
+                document_root=dom_row.document_root,
+                force_https=dom_row.force_https,
+                redirect_url=dom_row.redirect_url,
+                enabled=True,
+                unix_user=env.unix_username or env.hosting_name,
+            )
+        except Exception:
+            pass
+
+    is_primary = dom_name == primary_name
+    return EnvironmentDomainEntry(
+        id=domain_id,
+        domain_name=dom_name,
+        domain_type="primary" if is_primary else ("subdomain" if dom_name.endswith(f".{primary_name}") else "addon"),
+        document_root=display_root,
+        full_document_root=f"{home_dir}{display_root}",
+        redirects_to=dom_row.redirect_url if dom_row else None,
+        force_https=dom_row.force_https if dom_row else True,
+        is_primary=is_primary,
+        ssl_active=bool(cd_row.ssl_status == "active" if cd_row else (env.ssl_status == "active")),
+        can_delete=not is_primary,
+        created_at=cd_row.created_at if cd_row else env.created_at,
+    )
+
+
+@router.delete(
+    "/environments/{environment_id}/domain-items/{domain_id}",
+    response_model=MessageResponse,
+)
+async def env_delete_domain_item(
+    environment_id: UUID,
+    domain_id: str,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> MessageResponse:
+    """Remove a domain or subdomain from this hosting account (preserves files on disk)."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+
+    from sqlalchemy import func
+    from app.models.hosting import Domain
+    from app.models.platform import CustomerDomain
+    from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
+
+    primary_name = (env.domain or "").strip().lower()
+
+    cd_row = None
+    try:
+        cd_uuid = UUID(domain_id)
+        cd_row = await session.get(CustomerDomain, cd_uuid)
+    except (ValueError, TypeError):
+        pass
+
+    target_name = None
+    if cd_row:
+        if cd_row.customer_id != customer.id or cd_row.environment_id != env.id:
+            raise AuthorizationError("Domain does not belong to this environment.")
+        target_name = cd_row.domain_name
+    else:
+        target_name = domain_id
+
+    target_name = (target_name or "").strip().lower()
+    if target_name == primary_name:
+        raise AppException("Cannot delete the primary domain of this hosting service.", code="primary_domain_protected")
+
+    if cd_row:
+        await session.delete(cd_row)
+
+    dom_row = (
+        await session.execute(
+            select(Domain).where(func.lower(Domain.name) == target_name)
+        )
+    ).scalar_one_or_none()
+    if dom_row:
+        await session.delete(dom_row)
+
+    await session.commit()
+
+    # Remove Nginx vhost
+    try:
+        prov = DomainNginxProvisioner(settings)
+        await prov.remove(target_name)
+    except Exception:
+        pass
+
+    return MessageResponse(message=f"Domain '{target_name}' was removed from your account.")
 
 
 @router.get(

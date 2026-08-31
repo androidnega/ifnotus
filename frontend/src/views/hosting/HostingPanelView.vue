@@ -5,6 +5,7 @@ import { customersApi } from '@/api'
 import PortalSitePanel from '@/components/portal/PortalSitePanel.vue'
 import PortalFilesView from '@/views/portal/PortalFilesView.vue'
 import PortalAiPanel from '@/components/ai/PortalAiPanel.vue'
+import PortalDomainTools from '@/components/portal/PortalDomainTools.vue'
 import { usePortalSiteTools, type PortalSiteTab } from '@/composables/usePortalSiteTools'
 import { getApiErrorMessage } from '@/lib/apiError'
 import { formatCpu, formatRamGb } from '@/lib/planResources'
@@ -455,12 +456,12 @@ const procsPct = computed(() => processPct(usageSnapshot.value))
 const rs = computed(() => usageSnapshot.value?.resource_statuses || null)
 
 const siteInitialTab = computed<PortalSiteTab>(() => {
-  if (tab.value === 'overview' || tab.value === 'backups' || tab.value === 'files' || tab.value === 'ai') return ''
+  if (tab.value === 'overview' || tab.value === 'backups' || tab.value === 'files' || tab.value === 'domains' || tab.value === 'ai') return ''
   return HOSTING_TO_SITE[tab.value] || 'stack'
 })
 
 const showSitePanel = computed(
-  () => tab.value !== 'overview' && tab.value !== 'backups' && tab.value !== 'files' && tab.value !== 'ai',
+  () => tab.value !== 'overview' && tab.value !== 'backups' && tab.value !== 'files' && tab.value !== 'domains' && tab.value !== 'ai',
 )
 
 function resolveTabFromRoute(): HostingTab {
@@ -1002,6 +1003,24 @@ onMounted(() => {
             :embedded="true"
             @back="goTab('overview')"
           />
+        </section>
+
+        <section v-else-if="tab === 'domains'" class="hp-domains-embed">
+          <div v-if="loading && !env && !environmentId && !resolvedEnvId" class="hp-ai-loading">
+            <i class="fa-solid fa-spinner fa-spin" aria-hidden="true" />
+            <p>Loading domain management…</p>
+          </div>
+          <PortalDomainTools
+            v-else-if="env?.id || environmentId || resolvedEnvId"
+            :environment-id="env?.id || environmentId || resolvedEnvId"
+            :can-redirects="env ? envCan(env, 'redirects') : true"
+            :can-git="env ? envCan(env, 'git') : true"
+            :repos-limit="Number(env?.capabilities?.repos ?? 1)"
+            :mailboxes-limit="env?.capabilities?.mailboxes == null ? null : Number(env.capabilities.mailboxes)"
+          />
+          <div v-else class="hp-ai-loading">
+            <p>No hosting environment active on this domain.</p>
+          </div>
         </section>
 
         <section v-else-if="tab === 'ai'" class="hp-ai-embed">
@@ -2339,6 +2358,15 @@ h2 { margin: 0.2rem 0 0.45rem; font-family: Sora, sans-serif; font-size: 1.1rem;
   max-height: 880px;
   display: flex;
   flex-direction: column;
+}
+.hp-domains-embed {
+  min-width: 0;
+  width: 100%;
+  background: var(--hp-surface, #ffffff);
+  border: 1px solid var(--hp-border, #cbd5e1);
+  border-radius: 0.85rem;
+  padding: 1.5rem;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.05);
 }
 .hp-ai-embed :deep(.agent) {
   height: 100%;

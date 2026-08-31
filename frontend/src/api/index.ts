@@ -1920,6 +1920,54 @@ export const customersApi = {
   deleteEnvMailAlias: (environmentId: string, aliasId: string) =>
     apiClient.delete(`/customers/environments/${environmentId}/mail/aliases/${aliasId}`),
 
+  listEnvDomainItems: (environmentId: string) =>
+    apiClient.get<{
+      primary_domain: string
+      unix_username: string
+      home_dir: string
+      default_doc_root: string
+      package_supported: boolean
+      custom_domains_limit?: number | null
+      custom_domains_count: number
+      items: Array<{
+        id: string
+        domain_name: string
+        domain_type: string
+        document_root: string
+        full_document_root: string
+        redirects_to?: string | null
+        force_https: boolean
+        is_primary: boolean
+        ssl_active: boolean
+        can_delete: boolean
+        created_at?: string | null
+      }>
+    }>(`/customers/environments/${environmentId}/domain-items`),
+
+  createEnvDomainItem: (
+    environmentId: string,
+    body: {
+      domain_name: string
+      domain_type?: string
+      share_document_root?: boolean
+      document_root?: string | null
+      force_https?: boolean
+    },
+  ) => apiClient.post(`/customers/environments/${environmentId}/domain-items`, body),
+
+  updateEnvDomainItem: (
+    environmentId: string,
+    domainId: string,
+    body: {
+      document_root?: string | null
+      force_https?: boolean
+      redirects_to?: string | null
+    },
+  ) => apiClient.patch(`/customers/environments/${environmentId}/domain-items/${encodeURIComponent(domainId)}`, body),
+
+  deleteEnvDomainItem: (environmentId: string, domainId: string) =>
+    apiClient.delete(`/customers/environments/${environmentId}/domain-items/${encodeURIComponent(domainId)}`),
+
   listEnvRedirects: (environmentId: string) =>
     apiClient.get<
       Array<{ id: string; source_path: string; target_url: string; status_code: number; enabled: boolean }>

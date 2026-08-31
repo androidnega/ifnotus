@@ -309,6 +309,46 @@ class CustomerDomainListResponse(SchemaBase):
     )
 
 
+class EnvironmentDomainEntry(SchemaBase):
+    id: str
+    domain_name: str
+    domain_type: str = "primary"
+    document_root: str = "/public_html"
+    full_document_root: str = ""
+    redirects_to: str | None = None
+    force_https: bool = False
+    is_primary: bool = False
+    ssl_active: bool = False
+    can_delete: bool = True
+    created_at: datetime | None = None
+
+
+class EnvironmentDomainListResponse(SchemaBase):
+    primary_domain: str
+    unix_username: str
+    home_dir: str
+    default_doc_root: str = "/public_html"
+    package_supported: bool = True
+    custom_domains_limit: int | None = None
+    custom_domains_count: int = 0
+    items: list[EnvironmentDomainEntry]
+
+
+class CreateEnvironmentDomainRequest(SchemaBase):
+    domain_name: str = Field(min_length=3, max_length=255)
+    domain_type: str = Field(default="registered", max_length=32)
+    share_document_root: bool = False
+    document_root: str | None = Field(default=None, max_length=512)
+    force_https: bool = True
+
+
+class UpdateEnvironmentDomainRequest(SchemaBase):
+    document_root: str | None = Field(default=None, max_length=512)
+    force_https: bool | None = None
+    redirects_to: str | None = Field(default=None, max_length=1024)
+
+
+
 class CreateOrderResponse(SchemaBase):
     order: OrderResponse
     authorization_url: str | None = None
