@@ -676,7 +676,7 @@ onMounted(() => {
             <article class="hp-metric tone-blue">
               <div class="hp-metric-icon"><i class="fas fa-microchip" /></div>
               <div>
-                <p class="lbl">CPU Usage <em class="rs-badge" :class="resourceStatusClass(rs?.cpu)">{{ resourceStatusLabel(rs?.cpu) }}</em></p>
+                <p class="lbl"><span>CPU Usage</span> <em class="rs-badge" :class="resourceStatusClass(rs?.cpu)">{{ resourceStatusLabel(rs?.cpu) }}</em></p>
                 <p class="val">{{ cpuPct != null ? Math.round(cpuPct) + '%' : '—' }}</p>
                 <p class="hint">{{ usageSnapshot?.cpu_usage_vcpu != null ? Number(usageSnapshot.cpu_usage_vcpu).toFixed(2) : '—' }} / {{ spec.cpu }}</p>
               </div>
@@ -684,7 +684,7 @@ onMounted(() => {
             <article class="hp-metric tone-green">
               <div class="hp-metric-icon"><i class="fas fa-memory" /></div>
               <div>
-                <p class="lbl">RAM Usage <em class="rs-badge" :class="resourceStatusClass(rs?.memory)">{{ resourceStatusLabel(rs?.memory) }}</em></p>
+                <p class="lbl"><span>RAM Usage</span> <em class="rs-badge" :class="resourceStatusClass(rs?.memory)">{{ resourceStatusLabel(rs?.memory) }}</em></p>
                 <p class="val">{{ memPct != null ? Math.round(memPct) + '%' : '—' }}</p>
                 <p class="hint">{{ Math.round(usageSnapshot?.memory_usage_mb || 0) }} / {{ Math.round(usageSnapshot?.memory_limit_mb || 0) || spec.ram }} MB</p>
               </div>
@@ -692,7 +692,7 @@ onMounted(() => {
             <article class="hp-metric tone-purple">
               <div class="hp-metric-icon"><i class="fas fa-hdd" /></div>
               <div>
-                <p class="lbl">Disk Usage <em class="rs-badge" :class="resourceStatusClass(rs?.disk)">{{ resourceStatusLabel(rs?.disk) }}</em></p>
+                <p class="lbl"><span>Disk Usage</span> <em class="rs-badge" :class="resourceStatusClass(rs?.disk)">{{ resourceStatusLabel(rs?.disk) }}</em></p>
                 <p class="val">{{ Math.round(diskPct) }}%</p>
                 <p class="hint">{{ usageSnapshot?.storage_used_gb ?? '—' }} / {{ usageSnapshot?.storage_limit_gb ?? spec.disk }} GB</p>
               </div>
@@ -700,7 +700,7 @@ onMounted(() => {
             <article class="hp-metric tone-orange">
               <div class="hp-metric-icon"><i class="fas fa-network-wired" /></div>
               <div>
-                <p class="lbl">Processes <em class="rs-badge" :class="resourceStatusClass(rs?.processes)">{{ resourceStatusLabel(rs?.processes) }}</em></p>
+                <p class="lbl"><span>Processes</span> <em class="rs-badge" :class="resourceStatusClass(rs?.processes)">{{ resourceStatusLabel(rs?.processes) }}</em></p>
                 <p class="val">{{ procsPct != null ? Math.round(procsPct) + '%' : '—' }}</p>
                 <p class="hint">{{ usageSnapshot?.process_count ?? '—' }} / {{ usageSnapshot?.process_limit ?? '—' }}</p>
               </div>
@@ -1424,8 +1424,8 @@ onMounted(() => {
 .hp-btn.ghost { background: var(--hp-surface); color: var(--hp-ink); border-color: var(--hp-border); }
 .hp-overview { display: flex; flex-direction: column; gap: 1rem; }
 .hp-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; width: 100%; }
-@media (max-width: 960px) { .hp-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 520px) { .hp-metrics { grid-template-columns: 1fr; } }
+@media (max-width: 1200px) { .hp-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 540px) { .hp-metrics { grid-template-columns: 1fr; } }
 .hp-metric {
   display: flex; gap: 0.75rem; align-items: center; min-width: 0;
   background: var(--hp-surface); border: 1px solid var(--hp-border);
@@ -1442,11 +1442,27 @@ onMounted(() => {
 .tone-purple .hp-metric-icon { background: #8b5cf6; }
 .tone-orange .hp-metric-icon { background: #f59e0b; }
 .hp-metric .lbl {
-  margin: 0; font-size: 0.7rem; font-weight: 700; color: var(--hp-muted);
-  text-transform: uppercase; letter-spacing: 0.04em;
-  display: flex; align-items: center; justify-content: space-between; gap: 0.35rem;
+  margin: 0; font-size: 0.68rem; font-weight: 700; color: var(--hp-muted);
+  text-transform: uppercase; letter-spacing: 0.03em;
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.2rem 0.35rem;
+  min-width: 0;
 }
-.hp-metric .lbl em.rs-badge { font-style: normal; font-size: 0.62rem; padding: 0.05rem 0.35rem; border-radius: 0.25rem; flex-shrink: 0; }
+.hp-metric .lbl span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.hp-metric .lbl em.rs-badge {
+  font-style: normal;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 0.08rem 0.32rem;
+  border-radius: 0.25rem;
+  flex-shrink: 0;
+  line-height: 1.2;
+}
 .hp-metric .val { margin: 0.15rem 0 0; font-size: 1.25rem; font-weight: 800; font-family: Sora, sans-serif; line-height: 1.2; }
 .hp-metric .hint {
   margin: 0.15rem 0 0; font-size: 0.73rem; color: var(--hp-muted);
