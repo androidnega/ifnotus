@@ -115,10 +115,12 @@ class DomainNginxProvisioner:
         cert = ssl_certificate
         key = ssl_certificate_key
         if not cert or not key:
-            le = Path(f"/etc/letsencrypt/live/{hostname}")
-            if (le / "fullchain.pem").exists() and (le / "privkey.pem").exists():
-                cert = str(le / "fullchain.pem")
-                key = str(le / "privkey.pem")
+            from app.services.platform.panel_access import find_letsencrypt_cert
+
+            f_cert, f_key = find_letsencrypt_cert(hostname)
+            if f_cert and f_key:
+                cert = f_cert
+                key = f_key
         try:
             Path(ACME_WEBROOT).mkdir(parents=True, exist_ok=True)
         except OSError:
@@ -998,23 +1000,30 @@ class DomainNginxProvisioner:
             except OSError:
                 pass
 
-        # Preserve existing SSL paths from prior config if present
-        if available.exists() and not ssl_certificate:
-            try:
-                old = available.read_text(encoding="utf-8", errors="replace")
-                m_cert = re.search(r"ssl_certificate\s+([^;]+);", old)
-                m_key = re.search(r"ssl_certificate_key\s+([^;]+);", old)
-                if m_cert and m_key:
-                    ssl_certificate = m_cert.group(1).strip()
-                    ssl_key = m_key.group(1).strip()
-                else:
+        # Discover certificate if not explicitly passed
+        if not ssl_certificate:
+            from app.services.platform.panel_access import find_letsencrypt_cert
+
+            f_cert, f_key = find_letsencrypt_cert(hostname)
+            if f_cert and f_key:
+                ssl_certificate = f_cert
+                ssl_key = f_key
+                force_https = True
+            elif available.exists():
+                try:
+                    old = available.read_text(encoding="utf-8", errors="replace")
+                    m_cert = re.search(r"ssl_certificate\s+([^;]+);", old)
+                    m_key = re.search(r"ssl_certificate_key\s+([^;]+);", old)
+                    if m_cert and m_key:
+                        ssl_certificate = m_cert.group(1).strip()
+                        ssl_key = m_key.group(1).strip()
+                    else:
+                        ssl_key = None
+                except OSError:
                     ssl_key = None
-            except OSError:
-                ssl_key = None
         else:
             ssl_key = None
             if ssl_certificate:
-                # derive key path conventionally
                 p = Path(ssl_certificate)
                 ssl_key = str(p.parent / "privkey.pem") if p.name == "fullchain.pem" else None
 

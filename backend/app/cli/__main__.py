@@ -33,8 +33,7 @@ async def run_reconciliation(target_domain: str | None = None) -> None:
                 results = [await service.reconcile_environment(env)]
             else:
                 # Direct domain provision
-                from pathlib import Path
-                from app.services.platform.panel_access import is_platform_hostname
+                from app.services.platform.panel_access import find_letsencrypt_cert, is_platform_hostname
                 dns_updated = False
                 dns_err = None
                 try:
@@ -44,8 +43,8 @@ async def run_reconciliation(target_domain: str | None = None) -> None:
                 except Exception as exc:
                     dns_err = str(exc)
 
-                cert_path = Path(f"/etc/letsencrypt/live/{target_domain}/fullchain.pem")
-                has_ssl = cert_path.exists()
+                cert_path, _ = find_letsencrypt_cert(target_domain)
+                has_ssl = bool(cert_path)
                 nginx_res = await service._nginx.provision(
                     hostname=target_domain,
                     document_root=f"/var/www/{target_domain}",
@@ -54,7 +53,7 @@ async def run_reconciliation(target_domain: str | None = None) -> None:
                     enabled=True,
                     create_docroot=True,
                     force_takeover=True,
-                    ssl_certificate=str(cert_path) if has_ssl else None,
+                    ssl_certificate=cert_path if has_ssl else None,
                 )
                 results = [{
                     "domain": target_domain,

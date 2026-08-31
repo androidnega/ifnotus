@@ -217,3 +217,45 @@ def panel_sso_url(
     if tab and tab != "overview":
         url = f"https://{cpanel}/{tab.lstrip('/')}"
     return url
+
+
+def find_letsencrypt_cert(hostname: str) -> tuple[str | None, str | None]:
+    """Find valid/latest fullchain.pem and privkey.pem for a given hostname, supporting -0001 suffixes."""
+    from pathlib import Path
+
+    live_dir = Path("/etc/letsencrypt/live")
+    if not live_dir.exists():
+        return None, None
+
+    clean = (hostname or "").strip().lower().rstrip(".")
+    if clean.startswith("www."):
+        clean = clean[4:]
+    if clean.startswith("fpanel."):
+        clean = clean[7:]
+    if clean.startswith("cpanel."):
+        clean = clean[7:]
+
+    # Check candidate directories
+    candidates: list[Path] = []
+    exact = live_dir / clean
+    if exact.exists():
+        candidates.append(exact)
+    try:
+        candidates.extend(
+            sorted(
+                live_dir.glob(f"{clean}-*"),
+                key=lambda p: p.stat().st_mtime if p.exists() else 0,
+                reverse=True,
+            )
+        )
+    except Exception:
+        pass
+
+    for cand in candidates:
+        fullchain = cand / "fullchain.pem"
+        privkey = cand / "privkey.pem"
+        if fullchain.exists() and privkey.exists():
+            return str(fullchain), str(privkey)
+
+    return None, None
+

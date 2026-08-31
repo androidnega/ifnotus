@@ -65,8 +65,9 @@ class EnvironmentReconciliationService:
                     pass
 
                 # Look up certificate
-                cert_path = Path(f"/etc/letsencrypt/live/{d_name}/fullchain.pem")
-                has_ssl = cert_path.exists()
+                from app.services.platform.panel_access import find_letsencrypt_cert
+                cert_path, _ = find_letsencrypt_cert(d_name)
+                has_ssl = bool(cert_path)
                 try:
                     nginx_res = await self._nginx.provision(
                         hostname=d_name,
@@ -76,7 +77,7 @@ class EnvironmentReconciliationService:
                         enabled=True,
                         create_docroot=True,
                         force_takeover=True,
-                        ssl_certificate=str(cert_path) if has_ssl else None,
+                        ssl_certificate=cert_path if has_ssl else None,
                     )
                     reports.append({
                         "domain": d_name,
@@ -107,8 +108,9 @@ class EnvironmentReconciliationService:
                 except Exception:
                     pass
 
-                cert_path = Path(f"/etc/letsencrypt/live/{cd_name}/fullchain.pem")
-                has_ssl = cert_path.exists()
+                from app.services.platform.panel_access import find_letsencrypt_cert
+                cert_path, _ = find_letsencrypt_cert(cd_name)
+                has_ssl = bool(cert_path)
                 try:
                     nginx_res = await self._nginx.provision(
                         hostname=cd_name,
@@ -118,7 +120,7 @@ class EnvironmentReconciliationService:
                         enabled=True,
                         create_docroot=True,
                         force_takeover=True,
-                        ssl_certificate=str(cert_path) if has_ssl else None,
+                        ssl_certificate=cert_path if has_ssl else None,
                     )
                     reports.append({
                         "domain": cd_name,
@@ -139,8 +141,9 @@ class EnvironmentReconciliationService:
             return {"environment_id": str(env.id), "status": "skipped", "reason": "no_domain"}
 
         fpanel_host = control_panel_hostname(domain, settings=self._settings)
-        cert_path = Path(f"/etc/letsencrypt/live/{domain}/fullchain.pem")
-        has_ssl = cert_path.exists()
+        from app.services.platform.panel_access import find_letsencrypt_cert
+        cert_path, _ = find_letsencrypt_cert(domain)
+        has_ssl = bool(cert_path)
 
         results: dict[str, Any] = {
             "environment_id": str(env.id),
