@@ -1231,44 +1231,58 @@ watch([dateFrom, dateTo, ledgerFilter], load)
 <style scoped>
 .acct {
   width: 100%;
+  max-width: 100%;
   min-height: 100%;
   display: flex;
   flex-direction: column;
+  overflow-x: hidden !important;
+  box-sizing: border-box;
+  background: #f8fafc;
 }
 
 /* HEADER & CONTROLS */
 .acct-head {
-  padding: 0.85rem 1.25rem 0;
+  padding: 0.85rem 1.25rem 0.5rem;
   border-bottom: 1px solid #e2e8f0;
   background: #ffffff;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-x: hidden !important;
 }
 
 .head-controls {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.65rem;
+  gap: 0.5rem 0.65rem;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .preset-group {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
   background: #f1f5f9;
   border-radius: 0.55rem;
   padding: 0.18rem;
   gap: 0.15rem;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .preset-btn {
   border: none;
   background: transparent;
   color: #475569;
-  font-size: 0.76rem;
+  font-size: 0.74rem;
   font-weight: 650;
-  padding: 0.28rem 0.6rem;
+  padding: 0.25rem 0.55rem;
   border-radius: 0.4rem;
   cursor: pointer;
   transition: all 0.12s ease;
+  white-space: nowrap;
 }
 
 .preset-btn:hover {
@@ -1283,29 +1297,35 @@ watch([dateFrom, dateTo, ledgerFilter], load)
 }
 
 .date-pickers {
-  display: flex;
+  display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.4rem;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .date-label {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.72rem;
+  gap: 0.3rem;
+  font-size: 0.7rem;
   font-weight: 700;
   color: #64748b;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .date-input {
   border: 1px solid #cbd5e1;
   border-radius: 0.45rem;
-  padding: 0.28rem 0.55rem;
-  font-size: 0.78rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.76rem;
   color: #0f172a;
   background: #ffffff;
   outline: none;
+  max-width: 8.5rem;
+  box-sizing: border-box;
 }
 
 .date-input:focus {
@@ -1313,24 +1333,29 @@ watch([dateFrom, dateTo, ledgerFilter], load)
 }
 
 .head-btn-group {
-  display: flex;
+  display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.35rem 0.45rem;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .action-btn {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.35rem;
   border: 1px solid #cbd5e1;
   border-radius: 0.55rem;
   background: #ffffff;
   color: #334155;
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   font-weight: 650;
-  padding: 0.45rem 0.75rem;
+  padding: 0.38rem 0.65rem;
   cursor: pointer;
   transition: all 0.15s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .action-btn:hover {
@@ -1359,10 +1384,13 @@ watch([dateFrom, dateTo, ledgerFilter], load)
 .acct-body {
   flex: 1;
   width: 100%;
+  max-width: 100%;
   padding: 1rem 1.25rem 2.5rem;
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  overflow-x: hidden !important;
+  box-sizing: border-box;
 }
 
 /* BILLING GUIDE CARD */
@@ -1702,6 +1730,9 @@ watch([dateFrom, dateTo, ledgerFilter], load)
   display: flex;
   flex-direction: column;
   gap: 0.65rem;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 @media (min-width: 680px) {
@@ -1729,7 +1760,10 @@ watch([dateFrom, dateTo, ledgerFilter], load)
   position: relative;
   display: flex;
   align-items: center;
-  min-width: 18rem;
+  width: 100%;
+  max-width: 18rem;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .search-icon {
