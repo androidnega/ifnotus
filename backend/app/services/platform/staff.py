@@ -432,11 +432,14 @@ class StaffPlatformService:
         limit: int = 100,
         mask_financials: bool = False,
     ) -> list[dict]:
+        from app.models.user import User
+
         limit = max(1, min(limit, 500))
         stmt = (
-            select(Order, Customer, HostingPlan)
+            select(Order, Customer, HostingPlan, User)
             .outerjoin(Customer, Customer.id == Order.customer_id)
             .outerjoin(HostingPlan, HostingPlan.id == Order.plan_id)
+            .outerjoin(User, User.id == Order.payment_confirmed_by)
             .order_by(Order.created_at.desc())
             .limit(limit)
         )
@@ -468,10 +471,13 @@ class StaffPlatformService:
                 "payment_amount_received": None if mask_financials else order.payment_amount_received,
                 "payment_notes": order.payment_notes,
                 "payment_confirmed_at": order.payment_confirmed_at,
+                "payment_confirmed_by": order.payment_confirmed_by,
+                "payment_confirmed_by_name": staff_user.full_name or staff_user.username if staff_user else None,
+                "payment_confirmed_by_email": staff_user.email if staff_user else None,
                 "paid_at": order.paid_at,
                 "created_at": order.created_at,
             }
-            for order, customer, plan in rows
+            for order, customer, plan, staff_user in rows
         ]
 
     async def ops_inbox(self, *, paid_within_hours: int = 48, mask_financials: bool = False) -> dict:

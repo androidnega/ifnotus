@@ -1011,8 +1011,8 @@ onMounted(load)
                     <span>Modify The Redirects</span>
                     <i class="fas fa-external-link-alt" />
                   </a>
-                </li>
-              </ul>
+        </li>
+      </ul>
             </div>
           </div>
         </div>
@@ -1044,8 +1044,8 @@ onMounted(load)
               <li v-for="r in redirects" :key="r.id" class="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg border border-slate-200 dark:border-slate-700 flex justify-between items-center">
                 <span><strong>{{ r.status_code }}</strong>: <code>{{ r.source_path }}</code> &rarr; <a :href="r.target_url" target="_blank" class="text-sky-600 underline">{{ r.target_url }}</a></span>
                 <button type="button" class="cp-btn cp-btn-danger cp-btn-sm" @click="removeRedirect(r.id)">Remove</button>
-              </li>
-            </ul>
+        </li>
+      </ul>
             <p v-else class="text-slate-500 text-sm italic">No redirects configured yet.</p>
           </div>
         </div>
@@ -1063,16 +1063,16 @@ onMounted(load)
 
           <form v-if="zone?.editable" class="form-row mt-4" @submit.prevent="addZone">
             <select v-model="zoneType" class="cp-text-input">
-              <option>A</option>
-              <option>AAAA</option>
-              <option>CNAME</option>
-              <option>MX</option>
-              <option>TXT</option>
-            </select>
+          <option>A</option>
+          <option>AAAA</option>
+          <option>CNAME</option>
+          <option>MX</option>
+          <option>TXT</option>
+        </select>
             <input v-model="zoneHost" class="cp-text-input" placeholder="host (e.g. www, mail, @)" />
             <input v-model="zoneValue" class="cp-text-input grow" placeholder="record value" required />
             <button type="submit" class="cp-btn cp-btn-primary" :disabled="busy">Add Record</button>
-          </form>
+      </form>
 
           <div class="mt-6">
             <h4 class="font-bold text-slate-700 dark:text-slate-200 mb-2">Active DNS Records</h4>
@@ -1108,13 +1108,13 @@ onMounted(load)
           <h2 class="cp-card-title">Git™ Version Control</h2>
         </div>
         <div class="cp-card-body">
-          <p class="muted">
-            <template v-if="reposLimit === 1">This package includes 1 Git repository for this site.</template>
-            <template v-else-if="reposLimit">This package includes up to {{ reposLimit }} Git repositories.</template>
+      <p class="muted">
+        <template v-if="reposLimit === 1">This package includes 1 Git repository for this site.</template>
+        <template v-else-if="reposLimit">This package includes up to {{ reposLimit }} Git repositories.</template>
             <template v-else>Clone a public repository into your site document root, then pull updates easily.</template>
-          </p>
+      </p>
 
-          <template v-if="git?.configured">
+      <template v-if="git?.configured">
             <div class="p-4 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 mt-4">
               <p class="text-sm"><strong>Remote:</strong> <code>{{ git.remote }}</code></p>
               <p class="text-sm mt-1"><strong>Branch:</strong> <code>{{ git.branch }}</code></p>
@@ -1123,13 +1123,13 @@ onMounted(load)
                 <i class="fas fa-code-branch mr-1" /> Pull Updates
               </button>
             </div>
-          </template>
+      </template>
 
           <form v-else class="form-row mt-4" @submit.prevent="cloneGit">
             <input v-model="gitUrl" class="cp-text-input grow" placeholder="https://github.com/username/repository.git" required />
             <input v-model="gitBranch" class="cp-text-input" placeholder="main" />
             <button type="submit" class="cp-btn cp-btn-primary" :disabled="busy">Clone Repository</button>
-          </form>
+      </form>
         </div>
       </div>
     </div>

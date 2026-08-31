@@ -243,19 +243,23 @@ class SubmitMomoRequest(SchemaBase):
 class OrderResponse(SchemaBase):
     id: UUID
     customer_id: UUID
-    plan_id: UUID
+    plan_id: UUID | None = None
     domain_name: str | None = None
     domain_extension: str | None = None
-    plan_price: Decimal
-    domain_price: Decimal
-    total_price: Decimal
-    currency: str
-    payment_status: str
-    provisioning_status: str
+    plan_price: Decimal | None = None
+    domain_price: Decimal | None = None
+    total_price: Decimal = Decimal("0.00")
+    currency: str = "GHS"
+    payment_status: str = "pending"
+    provisioning_status: str = "pending"
     paystack_reference: str | None = None
     invoice_number: str | None = None
     payment_method: str | None = None
     momo_transaction_id: str | None = None
+    payment_amount_received: Decimal | None = None
+    payment_notes: str | None = None
+    payment_confirmed_at: datetime | None = None
+    payment_confirmed_by: UUID | None = None
     paid_at: datetime | None = None
     expires_at: datetime | None = None
     created_at: datetime

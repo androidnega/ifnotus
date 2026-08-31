@@ -10,18 +10,37 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.models.platform import Customer, HostingPlan, Order
+from app.models.user import User
 
 
-def _money(order: Order) -> Decimal:
+def _is_cash(order: Order) -> bool:
+    """Real money in (MoMo / card / physical cash / bank). Staff comps are not cash."""
+    method = (order.payment_method or "momo").lower()
+    return method not in {"staff", "comp", "complimentary", "free"}
+
+
+def _cash_amount(order: Order) -> Decimal:
+    """Cash money collected from customer."""
+    if not _is_cash(order):
+        return Decimal("0")
     if order.payment_amount_received is not None:
         return Decimal(str(order.payment_amount_received))
     return Decimal(str(order.total_price or 0))
 
 
-def _is_cash(order: Order) -> bool:
-    """Real money in (MoMo / card). Staff comps are not cash."""
-    method = (order.payment_method or "momo").lower()
-    return method not in {"staff", "comp", "complimentary", "free"}
+def _comp_value(order: Order) -> Decimal:
+    """Face value of complimentary grant (invoiced price)."""
+    if _is_cash(order):
+        return Decimal("0")
+    return Decimal(str(order.total_price or 0))
+
+
+def _money(order: Order) -> Decimal:
+    if not _is_cash(order):
+        return Decimal("0")
+    if order.payment_amount_received is not None:
+        return Decimal(str(order.payment_amount_received))
+    return Decimal(str(order.total_price or 0))
 
 
 def _entry_type(order: Order) -> str:
@@ -90,10 +109,10 @@ class AccountingService:
             .all()
         )
 
-        cash_period = sum((_money(o) for o in paid_in_period if _is_cash(o)), Decimal("0"))
-        comp_period = sum((_money(o) for o in paid_in_period if not _is_cash(o)), Decimal("0"))
-        cash_all = sum((_money(o) for o in all_paid if _is_cash(o)), Decimal("0"))
-        comp_all = sum((_money(o) for o in all_paid if not _is_cash(o)), Decimal("0"))
+        cash_period = sum((_cash_amount(o) for o in paid_in_period if _is_cash(o)), Decimal("0"))
+        comp_period = sum((_comp_value(o) for o in paid_in_period if not _is_cash(o)), Decimal("0"))
+        cash_all = sum((_cash_amount(o) for o in all_paid if _is_cash(o)), Decimal("0"))
+        comp_all = sum((_comp_value(o) for o in all_paid if not _is_cash(o)), Decimal("0"))
         invoiced_period = sum((Decimal(str(o.total_price or 0)) for o in paid_in_period), Decimal("0"))
         receivables = sum((Decimal(str(o.total_price or 0)) for o in pending), Decimal("0"))
         awaiting = sum((Decimal(str(o.total_price or 0)) for o in submitted), Decimal("0"))
@@ -104,7 +123,7 @@ class AccountingService:
             if not _is_cash(o):
                 continue
             kind = (o.order_kind or "hosting").lower()
-            by_kind[kind] = by_kind.get(kind, Decimal("0")) + _money(o)
+            by_kind[kind] = by_kind.get(kind, Decimal("0")) + _cash_amount(o)
             method = (o.payment_method or "momo").lower()
             if method in {"physical_cash", "cash_in_hand", "office_cash"}:
                 method = "cash"
@@ -113,9 +132,9 @@ class AccountingService:
             elif method in {"bank", "bank_transfer", "direct_deposit"}:
                 method = "bank"
             if method in by_channel:
-                by_channel[method] += _money(o)
+                by_channel[method] += _cash_amount(o)
             else:
-                by_channel["other"] += _money(o)
+                by_channel["other"] += _cash_amount(o)
 
 
         day_map: dict[str, dict] = {}
@@ -140,9 +159,9 @@ class AccountingService:
                     "count": 0,
                 }
             if _is_cash(o):
-                day_map[key]["collected"] += _money(o)
+                day_map[key]["collected"] += _cash_amount(o)
             else:
-                day_map[key]["complimentary"] += _money(o)
+                day_map[key]["complimentary"] += _comp_value(o)
             day_map[key]["count"] += 1
 
         recent = await self.ledger(
@@ -230,9 +249,10 @@ class AccountingService:
     ) -> list[dict]:
         limit = max(1, min(limit, 500))
         stmt = (
-            select(Order, Customer, HostingPlan)
+            select(Order, Customer, HostingPlan, User)
             .join(Customer, Customer.id == Order.customer_id)
             .outerjoin(HostingPlan, HostingPlan.id == Order.plan_id)
+            .outerjoin(User, User.id == Order.payment_confirmed_by)
             .where(Order.payment_status != "cancelled")
             .order_by(
                 Order.paid_at.desc().nullslast(),
@@ -265,11 +285,10 @@ class AccountingService:
 
         rows = (await self._session.execute(stmt)).all()
         out: list[dict] = []
-        for order, customer, plan in rows:
+        for order, customer, plan, staff_user in rows:
             entry = _entry_type(order)
-            amount = _money(order) if order.payment_status == "paid" else None
-            cash_amount = float(amount) if amount is not None and entry == "cash" else None
-            comp_amount = float(amount) if amount is not None and entry == "complimentary" else None
+            cash_amount = float(_cash_amount(order)) if order.payment_status == "paid" and entry == "cash" else None
+            comp_amount = float(_comp_value(order)) if order.payment_status == "paid" and entry == "complimentary" else None
             out.append(
                 {
                     "id": order.id,
@@ -285,11 +304,13 @@ class AccountingService:
                     "complimentary": comp_amount,
                     "entry_type": entry,
                     "payment_status": order.payment_status,
-                    "payment_method": order.payment_method or ("staff" if entry == "complimentary" else "momo"),
+                    "payment_method": order.payment_method or ("complimentary" if entry == "complimentary" else "momo"),
                     "momo_transaction_id": order.momo_transaction_id,
                     "payment_notes": order.payment_notes,
                     "paid_at": order.paid_at,
                     "payment_confirmed_at": order.payment_confirmed_at,
+                    "payment_confirmed_by": order.payment_confirmed_by,
+                    "payment_confirmed_by_name": staff_user.full_name or staff_user.username if staff_user else None,
                     "created_at": order.created_at,
                 }
             )

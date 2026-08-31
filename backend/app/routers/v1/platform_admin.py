@@ -455,6 +455,14 @@ async def update_order_payment_status(
         order.payment_method = new_m
         if new_m in {"complimentary", "free", "staff", "comp"}:
             order.payment_amount_received = Decimal("0")
+            order.payment_status = "paid"
+            order.paid_at = order.paid_at or datetime.now(UTC)
+            order.payment_confirmed_at = datetime.now(UTC)
+            order.payment_confirmed_by = user.id
+            if not order.payment_notes:
+                order.payment_notes = "Complimentary Free Grant (0.00 GHS)"
+            if order.provisioning_status == "pending":
+                order.provisioning_status = "ready_for_activation"
         elif body.amount_received is not None:
             order.payment_amount_received = Decimal(str(body.amount_received))
 
@@ -469,6 +477,29 @@ async def update_order_payment_status(
     if body.notes is not None:
         order.payment_notes = body.notes.strip()[:2000]
 
+    # Always track the specific staff/owner ID on the order
+    order.payment_confirmed_by = user.id
+
+    meta = dict(order.meta_json or {})
+    actions = list(meta.get("audit_history") or [])
+    actions.append({
+        "action": "payment_status_updated",
+        "actor_id": str(user.id),
+        "actor_name": getattr(user, "full_name", None) or getattr(user, "username", None) or "Staff",
+        "actor_email": getattr(user, "email", None),
+        "timestamp": datetime.now(UTC).isoformat(),
+        "old_method": old_method,
+        "new_method": order.payment_method,
+        "old_status": old_status,
+        "new_status": order.payment_status,
+        "amount_received": str(order.payment_amount_received or "0"),
+        "notes": order.payment_notes,
+    })
+    meta["audit_history"] = actions
+    meta["last_action_by_id"] = str(user.id)
+    meta["last_action_by_name"] = getattr(user, "full_name", None) or getattr(user, "username", None)
+    order.meta_json = meta
+
     session.add(
         PlatformAuditLog(
             customer_id=order.customer_id,
@@ -476,19 +507,22 @@ async def update_order_payment_status(
             action="order.payment_status_updated",
             target_type="order",
             target_id=str(order.id),
-            details={
+            result="success",
+            metadata_json={
                 "old_method": old_method,
                 "new_method": order.payment_method,
                 "old_status": old_status,
                 "new_status": order.payment_status,
                 "amount_received": str(order.payment_amount_received or "0"),
                 "notes": order.payment_notes,
+                "staff_id": str(user.id),
+                "staff_name": getattr(user, "full_name", None) or getattr(user, "username", None),
             },
         )
     )
     await session.commit()
     await session.refresh(order)
-    return OrderService.to_response(order)
+    return OrderResponse.model_validate(order)
 
 
 @router.post(

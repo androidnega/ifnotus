@@ -408,10 +408,18 @@ async function toggleRowComplimentary(row: StaffAccountingLedgerItem) {
     row.payment_method === 'free'
   const newMethod = isComp ? 'momo' : 'complimentary'
   const newStatus = isComp ? row.payment_status || 'pending' : 'paid'
-  const promptText = isComp
-    ? `Revert transaction #${row.invoice_number || row.id.slice(0, 8)} from Complimentary back to regular paid/MoMo?`
-    : `Convert transaction #${row.invoice_number || row.id.slice(0, 8)} to COMPLIMENTARY Free Grant (0.00 GHS collected)? This will deduct it from cash totals.`
-  if (!confirm(promptText)) return
+
+  const defaultNote = isComp
+    ? 'Reverted from complimentary grant to standard payment'
+    : 'Complimentary Free Grant (0.00 GHS) approved by billing'
+
+  const enteredNote = prompt(
+    isComp
+      ? `Revert transaction #${row.invoice_number || row.id.slice(0, 8)} from Complimentary back to regular paid/MoMo? Enter note:`
+      : `Convert transaction #${row.invoice_number || row.id.slice(0, 8)} to COMPLIMENTARY Free Grant (0.00 GHS)? Enter approval note:`,
+    defaultNote,
+  )
+  if (enteredNote === null) return
 
   busyRowId.value = row.id
   try {
@@ -419,9 +427,7 @@ async function toggleRowComplimentary(row: StaffAccountingLedgerItem) {
       payment_method: newMethod,
       payment_status: newStatus,
       amount_received: isComp ? Number(row.invoiced || 0) : 0,
-      notes: isComp
-        ? 'Reverted from complimentary grant'
-        : 'Converted to complimentary grant by billing agent',
+      notes: enteredNote.trim() || defaultNote,
     })
     await load()
   } catch (e: unknown) {

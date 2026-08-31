@@ -84,6 +84,9 @@ export interface StaffOrderItem {
   payment_amount_received?: string | number | null
   payment_notes?: string | null
   payment_confirmed_at?: string | null
+  payment_confirmed_by?: string | null
+  payment_confirmed_by_name?: string | null
+  payment_confirmed_by_email?: string | null
   paid_at?: string | null
   created_at: string
 }
@@ -135,6 +138,8 @@ export interface StaffAccountingLedgerItem {
   payment_notes?: string | null
   paid_at?: string | null
   payment_confirmed_at?: string | null
+  payment_confirmed_by?: string | null
+  payment_confirmed_by_name?: string | null
   created_at: string
 }
 

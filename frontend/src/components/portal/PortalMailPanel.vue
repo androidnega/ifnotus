@@ -192,12 +192,12 @@ async function load() {
 
     if (mailRes.status === 'fulfilled' && mailRes.value.data) {
       const data = mailRes.value.data
-      mailboxes.value = data.mailboxes || []
-      aliases.value = data.aliases || []
+    mailboxes.value = data.mailboxes || []
+    aliases.value = data.aliases || []
       primaryDomain.value = data.domain?.name || props.domain || ''
       const fallbackWebmail = primaryDomain.value ? tenantMailUrl(primaryDomain.value) : 'https://mail.ifnotus.space/'
       webmailUrl.value = data.webmail_url || data.clients?.webmail_url || fallbackWebmail || 'https://mail.ifnotus.space/'
-      clients.value = data.clients || null
+    clients.value = data.clients || null
     }
 
     if (domRes.status === 'fulfilled' && domRes.value.data) {
@@ -645,13 +645,13 @@ onMounted(load)
               <p class="form-sub-hint">
                 Missing a domain? Check the <em>Missing a domain?</em> section to find out how you can create one.
               </p>
-            </div>
+              </div>
 
             <!-- Username Input -->
             <div class="form-group">
               <label class="form-label">
                 Username <i class="fas fa-question-circle text-sky-600 cursor-pointer ml-1" />
-              </label>
+            </label>
               <div class="cp-addon-input-wrap">
                 <input
                   v-model="newUsername"
@@ -698,18 +698,18 @@ onMounted(load)
                 <div class="password-input-group">
                   <input
                     v-model="newPassword"
-                    :type="showPassword ? 'text' : 'password'"
+                  :type="showPassword ? 'text' : 'password'"
                     class="cp-input"
                     placeholder="Enter Password"
-                    minlength="8"
-                    required
-                  />
-                  <button
-                    type="button"
+                  minlength="8"
+                  required
+                />
+                <button
+                  type="button"
                     class="btn-eye-toggle"
-                    :title="showPassword ? 'Hide password' : 'Show password'"
-                    @click="showPassword = !showPassword"
-                  >
+                  :title="showPassword ? 'Hide password' : 'Show password'"
+                  @click="showPassword = !showPassword"
+                >
                     <IconEyeOff v-if="showPassword" :size="16" />
                     <IconEye v-else :size="16" />
                   </button>
@@ -719,8 +719,8 @@ onMounted(load)
                     @click="generatePassword"
                   >
                     Generate <i class="fas fa-caret-down ml-1" />
-                  </button>
-                </div>
+                </button>
+              </div>
 
                 <!-- Strength Meter -->
                 <div class="strength-meter-wrap mt-2">
@@ -770,7 +770,7 @@ onMounted(load)
                         value="250"
                       />
                       <span>250 MB (Default)</span>
-                    </label>
+            </label>
                     <label class="radio-item">
                       <input
                         v-model="storageQuotaType"
@@ -817,7 +817,7 @@ onMounted(load)
                 <i v-if="creating" class="fas fa-spinner fa-spin mr-1" />
                 <i v-else class="fas fa-plus mr-1" />
                 + Create
-              </button>
+            </button>
               <button
                 type="button"
                 class="cp-btn cp-btn-default ml-2"
@@ -827,7 +827,7 @@ onMounted(load)
               </button>
             </div>
           </form>
-        </div>
+          </div>
 
         <!-- Right Help / Navigation Sidebar (Image 7) -->
         <div class="cp-create-sidebar">
@@ -837,14 +837,14 @@ onMounted(load)
             <p class="side-card-text">
               Navigate to a full list of the account's domains to create a new addon domain or subdomain.
             </p>
-            <button
-              type="button"
+                <button
+                  type="button"
               class="side-card-btn"
               @click="navigateToDomains"
-            >
+                >
               <i class="fas fa-wrench mr-1 text-sky-600" /> Manage Domains
-            </button>
-          </div>
+                </button>
+              </div>
 
           <!-- Need Help Card -->
           <div class="sidebar-info-card mt-4">
@@ -898,7 +898,7 @@ onMounted(load)
                 Generate
               </button>
             </div>
-          </div>
+      </div>
 
           <div class="form-group mb-4">
             <label class="form-label">Storage Quota</label>
@@ -906,7 +906,7 @@ onMounted(load)
               <label class="radio-item">
                 <input v-model="manageQuotaType" type="radio" value="250" />
                 <span>250 MB</span>
-              </label>
+          </label>
               <label class="radio-item">
                 <input v-model="manageQuotaType" type="radio" value="custom" />
                 <span>Custom:</span>
@@ -918,7 +918,7 @@ onMounted(load)
                   class="cp-input cp-input-sm w-24 ml-2"
                 />
                 <span v-if="manageQuotaType === 'custom'" class="ml-1 text-xs text-slate-500">MB</span>
-              </label>
+          </label>
               <label class="radio-item">
                 <input v-model="manageQuotaType" type="radio" value="unlimited" />
                 <span>Unlimited (∞)</span>
@@ -935,7 +935,7 @@ onMounted(load)
           >
             <i v-if="manageBusy" class="fas fa-spinner fa-spin mr-1" />
             Save Changes
-          </button>
+            </button>
           <button
             type="button"
             class="cp-btn cp-btn-default ml-2"
@@ -982,10 +982,10 @@ onMounted(load)
             @click="connectTarget = null"
           >
             Done
-          </button>
-        </div>
-      </div>
-    </div>
+        </button>
+            </div>
+            </div>
+          </div>
   </div>
 </template>
 

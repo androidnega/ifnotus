@@ -140,10 +140,18 @@ async function toggleComplimentary() {
   const isComp = isComplimentary.value
   const newMethod = isComp ? 'momo' : 'complimentary'
   const newStatus = isComp ? 'pending' : 'paid'
-  const promptText = isComp
-    ? `Revert receipt #${invoiceNo.value} from Complimentary back to regular paid?`
-    : `Grant receipt #${invoiceNo.value} as COMPLIMENTARY (0.00 GHS collected)? This will deduct it from collected cash revenue and mark it as complimentary.`
-  if (!confirm(promptText)) return
+
+  const defaultNote = isComp
+    ? 'Reverted from complimentary grant to standard payment'
+    : 'Complimentary Free Grant (0.00 GHS) approved by billing'
+
+  const enteredNote = prompt(
+    isComp
+      ? `Revert receipt #${invoiceNo.value} from Complimentary back to regular payment? Enter note:`
+      : `Grant receipt #${invoiceNo.value} as COMPLIMENTARY (0.00 GHS collected)? Enter approval note:`,
+    defaultNote,
+  )
+  if (enteredNote === null) return
 
   busyAction.value = true
   actionMsg.value = ''
@@ -152,9 +160,7 @@ async function toggleComplimentary() {
       payment_method: newMethod,
       payment_status: newStatus,
       amount_received: isComp ? Number(order.value.total_price) : 0,
-      notes: isComp
-        ? 'Reverted from complimentary grant'
-        : 'Converted to complimentary grant by billing agent',
+      notes: enteredNote.trim() || defaultNote,
     })
     actionMsg.value = isComp
       ? 'Reverted to regular invoice/receipt.'
@@ -302,6 +308,7 @@ watch(() => route.params.id, load)
               <div v-if="order.domain_name"><dt>Site</dt><dd>{{ order.domain_name }}</dd></div>
               <div><dt>Payment method</dt><dd class="font-semibold">{{ isComplimentary ? 'Complimentary Free Grant' : (order.payment_method?.toUpperCase() || 'MoMo') }}</dd></div>
               <div><dt>Currency</dt><dd>{{ order.currency }}</dd></div>
+              <div v-if="order.payment_confirmed_by"><dt>Staff ID</dt><dd class="font-mono text-xs">{{ order.payment_confirmed_by }}</dd></div>
             </dl>
           </div>
         </div>

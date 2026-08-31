@@ -367,12 +367,9 @@ class OrderService:
         elif amount_received is not None:
             expected = Decimal(str(order.total_price))
             got = Decimal(str(amount_received))
-            if abs(expected - got) > Decimal("0.01"):
-                raise ValidationError(
-                    f"Amount received ({got}) does not match invoice {expected}. Do not activate.",
-                    code="momo_amount_mismatch",
-                )
             order.payment_amount_received = got
+            if got < expected and not notes and not order.payment_notes:
+                order.payment_notes = f"Partial collection / debt clearance: {got:.2f} GHS received of {expected:.2f} GHS"
 
         if notes:
             order.payment_notes = notes[:2000]
@@ -400,6 +397,22 @@ class OrderService:
             await self._notify_payment_confirmed(order, activating="hosting")
 
         collected = order.payment_amount_received or order.total_price
+        meta = dict(order.meta_json or {})
+        actions = list(meta.get("audit_history") or [])
+        actions.append({
+            "action": "payment_confirmed",
+            "actor_id": str(actor_id) if actor_id else None,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "amount": str(collected),
+            "payment_method": order.payment_method or "momo",
+            "notes": order.payment_notes,
+        })
+        meta["audit_history"] = actions
+        if actor_id:
+            meta["last_action_by_id"] = str(actor_id)
+            meta["confirmed_by_id"] = str(actor_id)
+        order.meta_json = meta
+
         self._session.add(
             PlatformAuditLog(
                 customer_id=order.customer_id,
@@ -415,6 +428,7 @@ class OrderService:
                     "momo_transaction_id": order.momo_transaction_id,
                     "order_kind": order.order_kind or "hosting",
                     "payment_method": order.payment_method or "momo",
+                    "staff_id": str(actor_id) if actor_id else None,
                 },
             )
         )
@@ -447,6 +461,20 @@ class OrderService:
             await self._activate_hosting(order, prefer_inline=True)
             order.provisioning_status = "active"
 
+            meta = dict(order.meta_json or {})
+            actions = list(meta.get("audit_history") or [])
+            actions.append({
+                "action": "hosting_activated",
+                "actor_id": str(actor_id) if actor_id else None,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "domain": order.domain_name,
+            })
+            meta["audit_history"] = actions
+            if actor_id:
+                meta["last_action_by_id"] = str(actor_id)
+                meta["hosting_activated_by_id"] = str(actor_id)
+            order.meta_json = meta
+
             self._session.add(
                 PlatformAuditLog(
                     customer_id=order.customer_id,
@@ -459,6 +487,7 @@ class OrderService:
                         "domain": order.domain_name,
                         "plan_id": str(order.plan_id),
                         "invoice_number": order.invoice_number,
+                        "operator_id": str(actor_id) if actor_id else None,
                     },
                 )
             )

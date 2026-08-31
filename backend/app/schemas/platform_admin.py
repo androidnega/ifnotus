@@ -124,6 +124,9 @@ class StaffOrderItem(SchemaBase):
     payment_amount_received: Decimal | None = None
     payment_notes: str | None = None
     payment_confirmed_at: datetime | None = None
+    payment_confirmed_by: UUID | None = None
+    payment_confirmed_by_name: str | None = None
+    payment_confirmed_by_email: str | None = None
     paid_at: datetime | None = None
     created_at: datetime
 
@@ -154,6 +157,8 @@ class StaffAccountingLedgerItem(SchemaBase):
     payment_notes: str | None = None
     paid_at: datetime | None = None
     payment_confirmed_at: datetime | None = None
+    payment_confirmed_by: UUID | None = None
+    payment_confirmed_by_name: str | None = None
     created_at: datetime
 
 

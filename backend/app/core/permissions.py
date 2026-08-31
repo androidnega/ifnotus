@@ -153,6 +153,7 @@ _BILLING_AGENT_PERMISSIONS = frozenset(
         Permission.SUPPORT_READ,
         Permission.BILLING_VIEW,
         Permission.BILLING_MANAGE,
+        Permission.MONITORING_READ,
     }
 )
 
@@ -162,6 +163,7 @@ _SUPPORT_AGENT_PERMISSIONS = frozenset(
         Permission.CUSTOMERS_MANAGE,
         Permission.SUPPORT_READ,
         Permission.SUPPORT_WRITE,
+        Permission.MONITORING_READ,
     }
 )
 
