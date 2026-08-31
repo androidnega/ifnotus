@@ -504,6 +504,9 @@ async function saveApiIntegrations() {
       ok: true,
       text: 'API integrations saved. Keys are stored encrypted on the server — no code edit needed.',
     }
+    if (smsProvider.value !== 'none') {
+      void loadSmsBalance()
+    }
   } catch (e) {
     apiIntMessage.value = {
       ok: false,
@@ -524,6 +527,9 @@ async function importApiIntegrationsFromEnv() {
     apiIntegrations.value = data
     await loadApiIntegrations()
     apiIntMessage.value = { ok: true, text: 'Imported from server environment into Settings store.' }
+    if (smsProvider.value !== 'none') {
+      void loadSmsBalance()
+    }
   } catch (e) {
     apiIntMessage.value = {
       ok: false,
@@ -905,17 +911,34 @@ watch(settingsTab, (tab) => {
 
           <div class="grid gap-4 lg:grid-cols-2">
             <div class="space-y-3 rounded-lg border border-surface-border p-3">
-              <p class="text-sm font-semibold">Namecheap</p>
-              <p v-if="apiIntegrations?.namecheap.api_key_masked" class="font-mono text-xs text-surface-muted">
-                Key {{ apiIntegrations.namecheap.api_key_masked }}
-              </p>
+              <div class="flex items-center justify-between">
+                <p class="text-sm font-semibold">Namecheap</p>
+                <span
+                  v-if="apiIntegrations?.namecheap.configured"
+                  class="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
+                >
+                  <i class="fa-solid fa-circle-check text-emerald-500" /> Ready
+                </span>
+              </div>
               <label class="block text-sm">
                 <span class="text-surface-muted">API user</span>
                 <input v-model="ncUser" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm" />
               </label>
               <label class="block text-sm">
-                <span class="text-surface-muted">API key (leave blank to keep)</span>
-                <input v-model="ncKey" type="password" autocomplete="off" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 font-mono text-sm" />
+                <div class="flex items-center justify-between">
+                  <span class="text-surface-muted">API key</span>
+                  <span v-if="apiIntegrations?.namecheap.api_key_masked" class="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                    <i class="fa-solid fa-circle-check" /> Key Saved: {{ apiIntegrations.namecheap.api_key_masked }}
+                  </span>
+                  <span v-else class="text-xs text-amber-600 dark:text-amber-400">Not set</span>
+                </div>
+                <input
+                  v-model="ncKey"
+                  type="password"
+                  autocomplete="off"
+                  class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 font-mono text-sm"
+                  :placeholder="apiIntegrations?.namecheap.api_key_masked ? '••••••••  (Saved: ' + apiIntegrations.namecheap.api_key_masked + ' — leave blank to keep)' : 'Enter Namecheap API key'"
+                />
               </label>
               <label class="block text-sm">
                 <span class="text-surface-muted">Client IP (must be whitelisted at Namecheap)</span>
@@ -924,17 +947,40 @@ watch(settingsTab, (tab) => {
             </div>
 
             <div class="space-y-3 rounded-lg border border-surface-border p-3">
-              <p class="text-sm font-semibold">Paystack</p>
-              <p v-if="apiIntegrations?.paystack.secret_key_masked" class="font-mono text-xs text-surface-muted">
-                Secret {{ apiIntegrations.paystack.secret_key_masked }}
-              </p>
+              <div class="flex items-center justify-between">
+                <p class="text-sm font-semibold">Paystack</p>
+                <span
+                  v-if="apiIntegrations?.paystack.configured"
+                  class="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
+                >
+                  <i class="fa-solid fa-circle-check text-emerald-500" /> Live
+                </span>
+                <span
+                  v-else
+                  class="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
+                >
+                  Demo mode
+                </span>
+              </div>
               <label class="block text-sm">
                 <span class="text-surface-muted">Public key</span>
-                <input v-model="psPublic" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 font-mono text-sm" />
+                <input v-model="psPublic" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 font-mono text-sm" placeholder="pk_live_... or pk_test_..." />
               </label>
               <label class="block text-sm">
-                <span class="text-surface-muted">Secret key (leave blank to keep)</span>
-                <input v-model="psSecret" type="password" autocomplete="off" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 font-mono text-sm" />
+                <div class="flex items-center justify-between">
+                  <span class="text-surface-muted">Secret key</span>
+                  <span v-if="apiIntegrations?.paystack.secret_key_masked" class="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                    <i class="fa-solid fa-circle-check" /> Secret Saved: {{ apiIntegrations.paystack.secret_key_masked }}
+                  </span>
+                  <span v-else class="text-xs text-amber-600 dark:text-amber-400">Not set</span>
+                </div>
+                <input
+                  v-model="psSecret"
+                  type="password"
+                  autocomplete="off"
+                  class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 font-mono text-sm"
+                  :placeholder="apiIntegrations?.paystack.secret_key_masked ? '••••••••  (Saved: ' + apiIntegrations.paystack.secret_key_masked + ' — leave blank to keep)' : 'sk_live_... or sk_test_...'"
+                />
               </label>
             </div>
 
@@ -956,7 +1002,15 @@ watch(settingsTab, (tab) => {
             </div>
 
             <div class="space-y-3 rounded-lg border border-surface-border p-3">
-              <p class="text-sm font-semibold">SMTP email</p>
+              <div class="flex items-center justify-between">
+                <p class="text-sm font-semibold">SMTP email</p>
+                <span
+                  v-if="apiIntegrations?.smtp.configured"
+                  class="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
+                >
+                  <i class="fa-solid fa-circle-check text-emerald-500" /> Ready
+                </span>
+              </div>
               <label class="block text-sm">
                 <span class="text-surface-muted">Host</span>
                 <input v-model="smtpHost" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm" placeholder="smtp.example.com" />
@@ -976,8 +1030,20 @@ watch(settingsTab, (tab) => {
                 <input v-model="smtpUser" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm" />
               </label>
               <label class="block text-sm">
-                <span class="text-surface-muted">Password (leave blank to keep)</span>
-                <input v-model="smtpPass" type="password" autocomplete="off" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm" />
+                <div class="flex items-center justify-between">
+                  <span class="text-surface-muted">Password</span>
+                  <span v-if="apiIntegrations?.smtp.password_masked || apiIntegrations?.smtp.password_set" class="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                    <i class="fa-solid fa-circle-check" /> Password Saved
+                  </span>
+                  <span v-else class="text-xs text-amber-600 dark:text-amber-400">Not set</span>
+                </div>
+                <input
+                  v-model="smtpPass"
+                  type="password"
+                  autocomplete="off"
+                  class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm"
+                  :placeholder="apiIntegrations?.smtp.password_set ? '••••••••  (Saved — leave blank to keep)' : 'Enter SMTP password'"
+                />
               </label>
               <label class="block text-sm">
                 <span class="text-surface-muted">From address</span>
@@ -986,53 +1052,99 @@ watch(settingsTab, (tab) => {
             </div>
 
             <div class="space-y-3 rounded-lg border border-surface-border p-3">
-              <p class="text-sm font-semibold">SMS</p>
-              <p v-if="apiIntegrations?.sms.api_key_masked" class="font-mono text-xs text-surface-muted">
-                Key {{ apiIntegrations.sms.api_key_masked }}
-              </p>
+              <div class="flex items-center justify-between">
+                <p class="text-sm font-semibold">SMS Gateway</p>
+                <span
+                  v-if="apiIntegrations?.sms.configured"
+                  class="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
+                >
+                  <i class="fa-solid fa-circle-check text-emerald-500" /> Active ({{ apiIntegrations.sms.provider }})
+                </span>
+                <span
+                  v-else
+                  class="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-400"
+                >
+                  <i class="fa-solid fa-circle-xmark text-slate-400" /> Not configured
+                </span>
+              </div>
+
               <label class="block text-sm">
                 <span class="text-surface-muted">Provider</span>
-                <select v-model="smsProvider" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm">
+                <select v-model="smsProvider" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm font-medium">
                   <option value="none">none</option>
                   <option value="log">log (dev)</option>
-                  <option value="arkasel">Arkasel</option>
+                  <option value="arkasel">Arkasel (Arkesel)</option>
                   <option value="moolre">Moolre</option>
                   <option value="hubtel">Hubtel</option>
                 </select>
               </label>
+
               <label class="block text-sm">
-                <span class="text-surface-muted">API key (leave blank to keep)</span>
-                <input v-model="smsKey" type="password" autocomplete="off" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm" />
+                <div class="flex items-center justify-between">
+                  <span class="text-surface-muted">API key</span>
+                  <span v-if="apiIntegrations?.sms.api_key_masked" class="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                    <i class="fa-solid fa-circle-check" /> Key Saved: {{ apiIntegrations.sms.api_key_masked }}
+                  </span>
+                  <span v-else class="text-xs text-amber-600 dark:text-amber-400">No key saved</span>
+                </div>
+                <div class="relative mt-1">
+                  <input
+                    v-model="smsKey"
+                    type="password"
+                    autocomplete="off"
+                    class="w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm font-mono pr-10"
+                    :placeholder="apiIntegrations?.sms.api_key_masked ? '••••••••  (Saved: ' + apiIntegrations.sms.api_key_masked + ' — leave blank to keep)' : 'Paste Arkasel / SMS API key here'"
+                  />
+                  <span v-if="apiIntegrations?.sms.api_key_masked && !smsKey" class="absolute right-3 top-2.5 text-xs text-emerald-600" title="API key is active and saved">
+                    <i class="fa-solid fa-shield-halved" />
+                  </span>
+                </div>
               </label>
+
               <label v-if="smsProvider === 'hubtel'" class="block text-sm">
-                <span class="text-surface-muted">API secret (Hubtel only; leave blank to keep)</span>
-                <input v-model="smsSecret" type="password" autocomplete="off" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm" />
+                <div class="flex items-center justify-between">
+                  <span class="text-surface-muted">API secret (Hubtel only)</span>
+                  <span v-if="apiIntegrations?.sms.api_secret_set" class="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                    <i class="fa-solid fa-circle-check" /> Secret Saved
+                  </span>
+                </div>
+                <input
+                  v-model="smsSecret"
+                  type="password"
+                  autocomplete="off"
+                  class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm font-mono"
+                  :placeholder="apiIntegrations?.sms.api_secret_set ? '••••••••  (Saved — leave blank to keep)' : 'Hubtel client secret'"
+                />
               </label>
+
               <label v-if="smsProvider === 'arkasel' || smsProvider === 'hubtel'" class="block text-sm">
-                <span class="text-surface-muted">
-                  Moolre fallback API key
-                  <span v-if="apiIntegrations?.sms.fallback_api_key_set" class="text-emerald-600"> (saved)</span>
-                </span>
+                <div class="flex items-center justify-between">
+                  <span class="text-surface-muted">Moolre fallback API key</span>
+                  <span v-if="apiIntegrations?.sms.fallback_api_key_set" class="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                    <i class="fa-solid fa-circle-check" /> Fallback Saved
+                  </span>
+                </div>
                 <input
                   v-model="smsFallbackKey"
                   type="password"
                   autocomplete="off"
-                  class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm"
-                  placeholder="Used automatically if Arkasel fails"
+                  class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm font-mono"
+                  :placeholder="apiIntegrations?.sms.fallback_api_key_set ? '••••••••  (Saved — leave blank to keep)' : 'Used automatically if Arkasel fails'"
                 />
               </label>
+
               <label class="block text-sm">
                 <span class="text-surface-muted">Sender ID</span>
-                <input v-model="smsSender" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm" />
+                <input v-model="smsSender" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm font-medium" placeholder="IFNOTUS" />
               </label>
 
               <!-- Live SMS Balance & Spend Tracking -->
               <div v-if="smsProvider !== 'none'" class="mt-3 space-y-2 rounded-lg bg-slate-50 p-3 dark:bg-slate-900/60 border border-surface-border">
                 <div class="flex items-center justify-between">
-                  <span class="text-xs font-semibold uppercase tracking-wider text-surface-muted">SMS Balance & Usage</span>
+                  <span class="text-xs font-semibold uppercase tracking-wider text-surface-muted">SMS Balance &amp; Usage</span>
                   <button
                     type="button"
-                    class="text-xs text-brand-600 hover:underline dark:text-brand-400 font-medium disabled:opacity-50"
+                    class="text-xs text-brand-600 hover:underline dark:text-brand-400 font-semibold disabled:opacity-50"
                     :disabled="smsBalanceLoading"
                     @click="loadSmsBalance"
                   >
@@ -1041,16 +1153,21 @@ watch(settingsTab, (tab) => {
                 </div>
 
                 <div class="grid grid-cols-2 gap-2 text-xs">
-                  <div class="rounded bg-white p-2 border border-surface-border dark:bg-slate-800">
+                  <div class="rounded bg-white p-2.5 border border-surface-border dark:bg-slate-800">
                     <p class="text-surface-muted">Live Balance</p>
                     <p class="mt-0.5 text-sm font-bold text-slate-900 dark:text-white">
                       <span v-if="smsBalanceData?.sms_balance != null">{{ smsBalanceData.sms_balance }} SMS</span>
-                      <span v-else-if="smsBalanceData?.main_balance != null">GHS {{ Number(smsBalanceData.main_balance).toFixed(2) }}</span>
+                      <span v-else-if="smsBalanceData?.main_balance != null">
+                        {{ typeof smsBalanceData.main_balance === 'string' && smsBalanceData.main_balance.startsWith('GHS') ? smsBalanceData.main_balance : 'GHS ' + Number(smsBalanceData.main_balance).toFixed(2) }}
+                      </span>
                       <span v-else-if="smsBalanceLoading" class="text-surface-muted text-xs">Loading…</span>
                       <span v-else class="text-surface-muted text-xs">Not checked</span>
                     </p>
+                    <span v-if="smsBalanceData?.sms_balance != null && smsBalanceData?.main_balance != null" class="text-[10px] text-surface-muted block mt-0.5">
+                      Credit: {{ smsBalanceData.main_balance }}
+                    </span>
                   </div>
-                  <div class="rounded bg-white p-2 border border-surface-border dark:bg-slate-800">
+                  <div class="rounded bg-white p-2.5 border border-surface-border dark:bg-slate-800">
                     <p class="text-surface-muted">SMS Sent (Ledger)</p>
                     <p class="mt-0.5 text-sm font-bold text-slate-900 dark:text-white">
                       {{ smsBalanceData?.total_sms_sent ?? '—' }}
@@ -1061,7 +1178,8 @@ watch(settingsTab, (tab) => {
                   </div>
                 </div>
 
-                <p v-if="smsBalanceData?.message" class="text-[11px]" :class="smsBalanceData.ok ? 'text-surface-muted' : 'text-amber-600 dark:text-amber-400'">
+                <p v-if="smsBalanceData?.message" class="text-[11px]" :class="smsBalanceData.ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'">
+                  <i class="fa-solid" :class="smsBalanceData.ok ? 'fa-check-circle mr-1' : 'fa-circle-exclamation mr-1'" />
                   {{ smsBalanceData.message }}
                 </p>
               </div>

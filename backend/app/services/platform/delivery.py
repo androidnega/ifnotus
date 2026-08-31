@@ -365,7 +365,7 @@ class MessageDelivery:
         if provider == "log":
             return {"ok": True, "provider": "log", "sms_balance": 999999, "main_balance": 0.0, "currency": "SMS (dev stub)"}
 
-        if provider == "arkasel":
+        if provider in {"arkasel", "arkesel"}:
             api_key = self._settings.sms_api_key or ""
             if not api_key:
                 return {"ok": False, "provider": "arkasel", "message": "Arkasel API key is not set."}
@@ -415,4 +415,7 @@ class MessageDelivery:
                 return {"ok": False, "provider": "moolre", "message": f"Failed to connect to Moolre: {exc}"}
 
         return {"ok": False, "provider": provider, "message": f"Live balance lookup not supported for provider '{provider}'."}
+
+
+DeliveryService = MessageDelivery
 
