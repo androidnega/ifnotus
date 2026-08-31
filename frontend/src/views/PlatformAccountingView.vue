@@ -1817,11 +1817,25 @@ watch([dateFrom, dateTo, ledgerFilter], load)
   border-radius: 999px;
 }
 
-/* LEDGER TABLE */
 .ledger-table-wrap {
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: 34rem;
   border: 1px solid #e2e8f0;
   border-radius: 0.65rem;
+  position: relative;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+.ledger-table-wrap::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.ledger-table-wrap::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
 }
 
 .ledger-table {
@@ -1832,6 +1846,9 @@ watch([dateFrom, dateTo, ledgerFilter], load)
 }
 
 .ledger-table th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   padding: 0.65rem 0.85rem;
   font-size: 0.68rem;
   font-weight: 750;
@@ -1841,6 +1858,7 @@ watch([dateFrom, dateTo, ledgerFilter], load)
   background: #f8fafc;
   border-bottom: 1px solid #e2e8f0;
   white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
 .ledger-table td {

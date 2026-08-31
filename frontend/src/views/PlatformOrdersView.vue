@@ -37,6 +37,15 @@ const editingDomainId = ref<string | null>(null)
 
 const showNoteHelp = ref(false)
 
+// Modal state
+const selectedOrder = ref<StaffOrderItem | null>(null)
+const showDetailModal = ref(false)
+
+// Pagination state
+const currentPage = ref(1)
+const pageSize = ref(20)
+const pageSizeOptions = [10, 20, 50, 100]
+
 // Provisioning progress simulation
 const progressPercent = ref(0)
 const progressStage = ref('')
@@ -105,6 +114,43 @@ const filteredOrders = computed(() => {
   })
 })
 
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredOrders.value.length / pageSize.value)))
+
+const paginatedOrders = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return filteredOrders.value.slice(start, start + pageSize.value)
+})
+
+const showingStart = computed(() => {
+  if (filteredOrders.value.length === 0) return 0
+  return (currentPage.value - 1) * pageSize.value + 1
+})
+
+const showingEnd = computed(() => {
+  return Math.min(currentPage.value * pageSize.value, filteredOrders.value.length)
+})
+
+watch([searchQuery, paymentFilter, pageSize], () => {
+  currentPage.value = 1
+})
+
+function goToPage(p: number) {
+  if (p >= 1 && p <= totalPages.value) {
+    currentPage.value = p
+  }
+}
+
+function openOrderModal(o: StaffOrderItem) {
+  selectedOrder.value = o
+  showDetailModal.value = true
+}
+
+function closeOrderModal() {
+  showDetailModal.value = false
+  selectedOrder.value = null
+  editingDomainId.value = null
+}
+
 function money(n: number | string, currency = 'GHS') {
   return `${currency} ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
@@ -133,6 +179,11 @@ async function load() {
       if (domainByOrder.value[o.id] == null) {
         domainByOrder.value[o.id] = o.domain_name || ''
       }
+    }
+    // Update selectedOrder if modal is open
+    if (selectedOrder.value) {
+      const found = data.find((x) => x.id === selectedOrder.value?.id)
+      if (found) selectedOrder.value = found
     }
   } catch (e: unknown) {
     const err = e as { response?: { data?: { error?: { message?: string } } } }
@@ -226,6 +277,11 @@ function provisionIcon(status: string) {
 function isStudentPlan(o: StaffOrderItem) {
   const name = (o.plan_name || '').toLowerCase()
   return name.includes('student') || name.includes('starter') || name.includes('free')
+}
+
+function isCompOrder(o: StaffOrderItem) {
+  const m = (o.payment_method || '').toLowerCase()
+  return m === 'staff' || m === 'complimentary' || m === 'free'
 }
 
 function startProgressSimulation() {
@@ -367,26 +423,18 @@ async function activateHosting(o: StaffOrderItem) {
 }
 
 async function retryProvision(o: StaffOrderItem) {
-  if (!confirm(`Retry hosting setup for ${o.invoice_number || o.customer_email}?`)) {
-    return
-  }
   busyId.value = o.id
   error.value = ''
-  success.value = ''
   startProgressSimulation()
   try {
-    const { data } = await platformAdminApi.retryOrderProvision(o.id)
+    await platformAdminApi.retryOrderProvisioning(o.id)
     stopProgressSimulation(true)
-    const status = (data?.provisioning_status || '').toLowerCase()
-    success.value =
-      status === 'active'
-        ? `Hosting is live for ${o.customer_name || o.customer_email}.`
-        : `Retry finished with status: ${data?.provisioning_status}.`
+    success.value = 'Provisioning retry dispatched successfully.'
     await load()
   } catch (e: unknown) {
     stopProgressSimulation(false)
     const errObj = e as { response?: { data?: { error?: { message?: string } } } }
-    error.value = errObj.response?.data?.error?.message ?? 'Could not retry setup.'
+    error.value = errObj.response?.data?.error?.message ?? 'Retry failed.'
   } finally {
     setTimeout(() => {
       busyId.value = ''
@@ -396,7 +444,9 @@ async function retryProvision(o: StaffOrderItem) {
 }
 
 async function rejectPay(o: StaffOrderItem) {
-  if (!confirm(`Reject payment for ${o.invoice_number || o.customer_email}?`)) return
+  if (!confirm(`Reject submitted payment for order ${o.invoice_number || o.id.slice(0, 8)}? Customer will be asked to resubmit.`)) {
+    return
+  }
   busyId.value = o.id
   error.value = ''
   try {
@@ -553,7 +603,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
         <UiAlert v-if="error" tone="err">{{ error }}</UiAlert>
         <UiAlert v-else-if="success" tone="ok">{{ success }}</UiAlert>
 
-        <!-- ORDERS LIST -->
+        <!-- ORDERS PANEL -->
         <section class="panel-card orders-panel">
           <header class="panel-head">
             <div class="panel-head-text">
@@ -563,6 +613,17 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
                 <span v-if="searchQuery && orders.length !== filteredOrders.length"> (filtered from {{ orders.length }})</span>
               </p>
             </div>
+
+            <!-- TOP CONTROLS: PAGE SIZE SELECTOR -->
+            <div v-if="filteredOrders.length > 0" class="panel-head-ctrls">
+              <label class="page-size-label">
+                <span>Show</span>
+                <select v-model.number="pageSize" class="page-size-select">
+                  <option v-for="sz in pageSizeOptions" :key="sz" :value="sz">{{ sz }}</option>
+                </select>
+                <span>per page</span>
+              </label>
+            </div>
           </header>
 
           <div v-if="loading" class="state-msg">
@@ -570,367 +631,159 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
             <span>Fetching order records…</span>
           </div>
 
-          <div v-else-if="filteredOrders.length" class="order-list">
-            <article
-              v-for="o in filteredOrders"
-              :key="o.id"
-              class="order-card-slim"
-              :class="{ 'is-paid': o.payment_status === 'paid', 'is-active': o.provisioning_status === 'active' }"
-            >
-              <!-- TOP STRIP: INVOICE & CUSTOMER INFO + AMOUNT -->
-              <div class="card-main-row">
-                <!-- CUSTOMER & INVOICE -->
-                <div class="customer-info-block">
-                  <div class="inv-chip-row">
-                    <span class="inv-badge">{{ o.invoice_number || o.id.slice(0, 8) }}</span>
-                    <span class="kind-badge">{{ o.order_kind || 'hosting' }}</span>
-                    <span class="date-badge">
-                      <i class="fa-regular fa-clock" aria-hidden="true" />
+          <!-- CLEAN DATA TABLE WITH SCROLL -->
+          <div v-else-if="filteredOrders.length" class="orders-table-wrap">
+            <table class="orders-table">
+              <thead>
+                <tr>
+                  <th>Invoice &amp; Date</th>
+                  <th>Customer</th>
+                  <th>Plan &amp; Domain</th>
+                  <th>MoMo Tx ID</th>
+                  <th v-if="canSeeBilling" class="text-right">Amount</th>
+                  <th>Payment</th>
+                  <th>Hosting</th>
+                  <th class="text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="o in paginatedOrders"
+                  :key="o.id"
+                  class="order-row cursor-pointer"
+                  :class="{ 'row-awaiting': o.payment_status === 'submitted', 'row-paid': o.payment_status === 'paid' }"
+                  @click="openOrderModal(o)"
+                >
+                  <!-- INVOICE & DATE -->
+                  <td class="cell-inv">
+                    <div class="inv-chip-row">
+                      <span class="inv-badge">{{ o.invoice_number || o.id.slice(0, 8) }}</span>
+                      <span class="kind-badge">{{ o.order_kind || 'hosting' }}</span>
+                    </div>
+                    <span class="date-sub">
                       {{ new Date(o.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) }}
                     </span>
-                  </div>
+                  </td>
 
-                  <div class="customer-details">
-                    <button type="button" class="customer-name-btn" @click="openCustomer(o.customer_id)">
-                      <i class="fa-solid fa-user-circle" aria-hidden="true" />
-                      <span>{{ o.customer_name || 'Customer' }}</span>
+                  <!-- CUSTOMER -->
+                  <td class="cell-cust" @click.stop>
+                    <button type="button" class="cust-name-link" @click="openCustomer(o.customer_id)">
+                      {{ o.customer_name || 'Customer' }}
                     </button>
-                    <span class="divider">·</span>
-                    <a :href="`mailto:${o.customer_email}`" class="customer-email">
-                      <i class="fa-solid fa-envelope" aria-hidden="true" />
-                      {{ o.customer_email }}
-                    </a>
-                    <span v-if="o.customer_phone" class="divider">·</span>
-                    <div v-if="o.customer_phone" class="customer-phone-wrap">
-                      <a :href="`tel:${o.customer_phone}`" class="customer-phone">
-                        <i class="fa-solid fa-phone" aria-hidden="true" />
-                        {{ o.customer_phone }}
+                    <div class="cust-sub-details">
+                      <a :href="`mailto:${o.customer_email}`" class="cust-email-link" :title="o.customer_email">
+                        {{ o.customer_email }}
                       </a>
+                      <span v-if="o.customer_phone" class="cust-phone-inline">
+                        · {{ o.customer_phone }}
+                        <button
+                          type="button"
+                          class="btn-copy-micro"
+                          :title="copiedPhoneId === o.id ? 'Copied' : 'Copy Phone'"
+                          @click="copyPhone(o.id, o.customer_phone)"
+                        >
+                          <i class="fa-solid" :class="copiedPhoneId === o.id ? 'fa-check text-green-600' : 'fa-copy'" />
+                        </button>
+                      </span>
+                    </div>
+                  </td>
+
+                  <!-- PLAN & DOMAIN -->
+                  <td class="cell-plan">
+                    <span class="plan-tag">{{ o.plan_name || 'Hosting' }}</span>
+                    <div class="domain-tag-inline">
+                      <i class="fa-solid fa-globe text-slate-400" />
+                      <span class="font-mono text-xs text-slate-800 dark:text-slate-200">
+                        {{ domainByOrder[o.id] || o.domain_name || 'No domain assigned' }}
+                      </span>
+                    </div>
+                  </td>
+
+                  <!-- MOMO TX ID -->
+                  <td class="cell-momo" @click.stop>
+                    <div v-if="o.momo_transaction_id" class="momo-inline-box">
+                      <code class="momo-code">{{ o.momo_transaction_id }}</code>
                       <button
                         type="button"
-                        class="btn-mini-copy"
-                        :title="copiedPhoneId === o.id ? 'Copied' : 'Copy Phone'"
-                        @click="copyPhone(o.id, o.customer_phone)"
+                        class="btn-copy-micro"
+                        :title="copiedId === o.id ? 'Copied' : 'Copy MoMo ID'"
+                        @click="copyMomo(o.id, o.momo_transaction_id)"
                       >
-                        <i class="fa-solid" :class="copiedPhoneId === o.id ? 'fa-check text-green-600' : 'fa-copy'" aria-hidden="true" />
+                        <i class="fa-solid" :class="copiedId === o.id ? 'fa-check text-green-600' : 'fa-copy'" />
                       </button>
                     </div>
-                  </div>
-                </div>
+                    <span v-else class="text-surface-muted text-xs">—</span>
+                  </td>
 
-                <!-- PRICE & STATUS PILLS -->
-                <div class="amount-status-block">
-                  <div v-if="canSeeBilling" class="price-box">
-                    <span class="price-val">{{ o.currency }} {{ o.total_price }}</span>
-                    <button
-                      v-if="canConfirm"
-                      type="button"
-                      class="btn-comp-tag"
-                      :class="{ 'is-comp': ['staff', 'complimentary', 'free'].includes((o.payment_method || '').toLowerCase()) }"
-                      :disabled="busyId === o.id"
-                      :title="['staff', 'complimentary', 'free'].includes((o.payment_method || '').toLowerCase()) ? 'Complimentary Grant (Click to revert)' : 'Click to make Complimentary Grant'"
-                      @click="toggleComplimentaryStatus(o)"
+                  <!-- AMOUNT -->
+                  <td v-if="canSeeBilling" class="cell-amount text-right">
+                    <span class="font-bold text-slate-900 dark:text-white">
+                      {{ o.currency }} {{ Number(o.total_price).toFixed(2) }}
+                    </span>
+                    <span
+                      v-if="isCompOrder(o)"
+                      class="comp-badge-pill block text-right"
                     >
-                      <i class="fa-solid" :class="['staff', 'complimentary', 'free'].includes((o.payment_method || '').toLowerCase()) ? 'fa-gift' : 'fa-hand-holding-heart'" />
-                      <span>{{ ['staff', 'complimentary', 'free'].includes((o.payment_method || '').toLowerCase()) ? 'Comp' : 'Make Comp' }}</span>
-                    </button>
-                    <button type="button" class="btn-receipt-view" @click="openReceipt(o.id)">
-                      <i class="fa-solid fa-file-invoice" aria-hidden="true" />
-                      {{ o.payment_status === 'paid' ? 'Receipt' : 'Invoice' }}
-                    </button>
-                  </div>
-                  <div v-else class="price-box">
-                    <span class="price-val" style="font-size: 0.85rem; color: #475569; font-weight: 600;">{{ o.plan_name || 'Hosting Order' }}</span>
-                  </div>
-                  <div class="status-pills">
+                      Comp Grant
+                    </span>
+                  </td>
+
+                  <!-- PAYMENT STATUS -->
+                  <td class="cell-status">
                     <span class="status-pill" :data-s="o.payment_status">
                       <i class="fa-solid" :class="paymentIcon(o.payment_status)" aria-hidden="true" />
                       {{ paymentLabel(o.payment_status) }}
                     </span>
+                  </td>
+
+                  <!-- PROVISIONING STATUS -->
+                  <td class="cell-status">
                     <span class="status-pill" :data-p="o.provisioning_status">
                       <i class="fa-solid" :class="provisionIcon(o.provisioning_status)" aria-hidden="true" />
                       {{ provisionLabel(o.provisioning_status) }}
                     </span>
-                  </div>
-                </div>
-              </div>
+                  </td>
 
-              <!-- MIDDLE STRIP: PLAN & DOMAIN + CONDITIONAL REFERENCES -->
-              <div class="card-meta-row">
-                <!-- LEFT SIDE: PLAN & DOMAIN/SUBDOMAIN -->
-                <div class="meta-item-group">
-                  <span class="plan-tag">
-                    <i class="fa-solid fa-box-archive" aria-hidden="true" />
-                    {{ o.plan_name || 'Hosting Plan' }}
-                  </span>
-
-                  <!-- SUBDOMAIN / DOMAIN TAG + EDIT CONTROLS (HOSTING OPERATOR / OWNER ONLY) -->
-                  <div class="domain-manager-wrap">
-                    <div v-if="editingDomainId !== o.id" class="domain-pill">
-                      <i class="fa-solid fa-globe" aria-hidden="true" />
-                      <span class="domain-text">{{ domainByOrder[o.id] || o.domain_name || 'No domain assigned' }}</span>
+                  <!-- ACTIONS -->
+                  <td class="cell-actions text-right" @click.stop>
+                    <div class="actions-group">
                       <button
-                        v-if="canEditSubdomain && o.payment_status !== 'paid'"
                         type="button"
-                        class="btn-edit-subdomain"
-                        :title="isStudentPlan(o) ? 'Customize student subdomain' : 'Edit domain name'"
-                        @click="toggleDomainEdit(o.id)"
+                        class="btn-tbl-primary"
+                        title="View Full Details & Action Controls"
+                        @click="openOrderModal(o)"
                       >
-                        <i class="fa-solid fa-pen" aria-hidden="true" />
-                        <span>Edit</span>
+                        <i class="fa-solid fa-eye" />
+                        <span>Details</span>
+                      </button>
+
+                      <button
+                        v-if="canConfirm"
+                        type="button"
+                        class="btn-tbl-comp"
+                        :class="{ 'is-comp': isCompOrder(o) }"
+                        :disabled="busyId === o.id"
+                        :title="isCompOrder(o) ? 'Complimentary Grant (Click to revert)' : 'Click to make Complimentary Grant'"
+                        @click="toggleComplimentaryStatus(o)"
+                      >
+                        <i class="fa-solid" :class="isCompOrder(o) ? 'fa-gift' : 'fa-hand-holding-heart'" />
+                        <span>{{ isCompOrder(o) ? 'Comp' : 'Make Comp' }}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        class="btn-tbl-receipt"
+                        title="View Invoice / Receipt"
+                        @click="openReceipt(o.id)"
+                      >
+                        <i class="fa-solid fa-file-invoice" />
+                        <span>{{ o.payment_status === 'paid' ? 'Receipt' : 'Invoice' }}</span>
                       </button>
                     </div>
-
-                    <!-- INLINE SUBDOMAIN EDITOR -->
-                    <div v-else class="domain-edit-form">
-                      <div class="domain-input-wrap">
-                        <i class="fa-solid fa-pen-nib" aria-hidden="true" />
-                        <input
-                          v-model="domainByOrder[o.id]"
-                          type="text"
-                          class="domain-input"
-                          placeholder="e.g. kwame.ifnotus.space or domain.com"
-                          @keyup.enter="editingDomainId = null"
-                        />
-                      </div>
-                      <button type="button" class="btn-domain-done" @click="editingDomainId = null">
-                        <i class="fa-solid fa-check" aria-hidden="true" /> Save
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- RIGHT SIDE: REFERENCES (SHOWN CLEANLY ONLY WHEN RELEVANT OR EXPANDED) -->
-                <div class="references-cluster">
-                  <!-- SENDING REFERENCE (SHOWN ONLY IF UNPAID/SUBMITTED TO AVOID CLUTTER ON PAID LIST) -->
-                  <div
-                    v-if="o.payment_status !== 'paid'"
-                    class="sending-ref-card"
-                    :title="'Expected Mobile Money transfer reference code: ' + (o.invoice_number || o.id.slice(0, 8))"
-                  >
-                    <span class="ref-k">
-                      <i class="fa-solid fa-key" aria-hidden="true" />
-                      Ref:
-                    </span>
-                    <code class="ref-v">{{ o.invoice_number || o.id.slice(0, 8) }}</code>
-                    <button
-                      type="button"
-                      class="btn-copy-ref"
-                      :title="copiedRefId === o.id ? 'Copied to clipboard' : 'Copy Sending Reference'"
-                      @click="copyRef(o.id, o.invoice_number || o.id.slice(0, 8))"
-                    >
-                      <i class="fa-solid" :class="copiedRefId === o.id ? 'fa-check text-green-500' : 'fa-copy'" aria-hidden="true" />
-                      <span>{{ copiedRefId === o.id ? 'Copied' : 'Copy' }}</span>
-                    </button>
-                  </div>
-
-                  <!-- RECEIVED MOMO TRANSACTION ID -->
-                  <div v-if="o.momo_transaction_id" class="momo-pill">
-                    <span class="momo-k"><i class="fa-solid fa-mobile-screen-button" aria-hidden="true" /> MoMo Tx:</span>
-                    <code class="momo-v">{{ o.momo_transaction_id }}</code>
-                    <button
-                      type="button"
-                      class="btn-copy-momo"
-                      :title="copiedId === o.id ? 'Copied to clipboard' : 'Copy MoMo ID'"
-                      @click="copyMomo(o.id, o.momo_transaction_id)"
-                    >
-                      <i class="fa-solid" :class="copiedId === o.id ? 'fa-check text-green-500' : 'fa-copy'" aria-hidden="true" />
-                      <span>{{ copiedId === o.id ? 'Copied' : 'Copy' }}</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <!-- ACTION PANEL: CONFIRM & ACTIVATE (WHEN SUBMITTED / PENDING) -->
-              <div
-                v-if="canConfirm && o.payment_status !== 'paid' && o.payment_status !== 'failed'"
-                class="action-box"
-              >
-                <!-- LIVE PROGRESS BAR LOADING (SHOWN DURING ACTIVATION) -->
-                <div v-if="busyId === o.id" class="activation-progress-box">
-                  <div class="progress-meta">
-                    <span class="progress-title">
-                      <i class="fa-solid fa-arrows-rotate fa-spin" aria-hidden="true" />
-                      {{ progressStage || 'Provisioning hosting environment…' }}
-                    </span>
-                    <span class="progress-num">{{ progressPercent }}%</span>
-                  </div>
-                  <div class="progress-track">
-                    <div class="progress-fill" :style="{ width: `${progressPercent}%` }" />
-                  </div>
-                  <p class="progress-sub">Creating ISPConfig webroot, assigning database, issuing SSL SANs and mapping fPanel.</p>
-                </div>
-
-                <!-- CONTROLS WHEN IDLE -->
-                <div v-else class="action-box-inner">
-                  <div class="action-inputs-grid">
-                    <!-- PAYMENT CHANNEL / PHYSICAL CASH SELECTION -->
-                    <div class="input-col">
-                      <label class="compact-label">
-                        <span><i class="fa-solid fa-money-bill-transfer" aria-hidden="true" /> Payment Method</span>
-                        <select
-                          v-model="paymentMethodByOrder[o.id]"
-                          class="compact-input compact-select"
-                        >
-                          <option :value="undefined">Mobile Money (MTN / Telecel)</option>
-                          <option value="momo">Mobile Money (MTN / Telecel)</option>
-                          <option value="physical_cash">Physical Cash (In-Person / Desk)</option>
-                          <option value="bank">Direct Bank Deposit / Transfer</option>
-                          <option value="complimentary">Complimentary / Free Grant (0.00 GHS)</option>
-                        </select>
-
-                      </label>
-                    </div>
-
-                    <!-- AMOUNT RECEIVED -->
-                    <div class="input-col">
-                      <label class="compact-label">
-                        <span><i class="fa-solid fa-coins" aria-hidden="true" /> Amount Received (GHS)</span>
-                        <input
-                          v-model="amountByOrder[o.id]"
-                          type="text"
-                          inputmode="decimal"
-                          class="compact-input"
-                          :placeholder="String(o.total_price)"
-                        />
-                      </label>
-                    </div>
-
-                    <!-- STAFF NOTE WITH EXPLANATION TRIGGER -->
-                    <div class="input-col span-full">
-                      <label class="compact-label">
-                        <span class="label-with-help">
-                          <i class="fa-solid fa-clipboard-check" aria-hidden="true" /> Staff Note (Optional)
-                          <button
-                            type="button"
-                            class="help-btn"
-                            title="What is a Staff Note?"
-                            @click="showNoteHelp = !showNoteHelp"
-                          >
-                            <i class="fa-regular fa-circle-question" aria-hidden="true" />
-                          </button>
-                        </span>
-                        <input
-                          v-model="confirmNotes"
-                          type="text"
-                          class="compact-input"
-                          :placeholder="paymentMethodByOrder[o.id] === 'physical_cash' ? 'e.g. Received GHS cash in hand at front desk' : 'e.g. Verified in MTN MoMo app tx#5820'"
-                        />
-                      </label>
-                    </div>
-                  </div>
-
-
-                  <!-- STAFF NOTE EXPLANATION CALLOUT -->
-                  <div v-if="showNoteHelp" class="note-help-box">
-                    <div class="note-help-content">
-                      <i class="fa-solid fa-info-circle text-blue-500" aria-hidden="true" />
-                      <div>
-                        <strong>What is a Staff Note?</strong>
-                        <p>
-                          A Staff Note is an internal audit entry recorded on this transaction. It is only visible to
-                          operators and administrators (e.g., recording the phone agent name or MoMo statement ID). It is
-                          <strong>never visible to the customer</strong>.
-                        </p>
-                      </div>
-                    </div>
-                    <button type="button" class="close-help-btn" @click="showNoteHelp = false">Dismiss</button>
-                  </div>
-
-                  <!-- ACTION BUTTONS (BILLING AGENT / OWNER) -->
-                  <div class="action-buttons-row">
-                    <button
-                      type="button"
-                      class="btn-action-activate"
-                      :disabled="busyId === o.id"
-                      @click="confirmPay(o)"
-                    >
-                      <i class="fa-solid fa-check-double" aria-hidden="true" />
-                      Accept Billing &amp; Confirm Payment
-                    </button>
-                    <button
-                      type="button"
-                      class="btn-action-reject"
-                      :disabled="busyId === o.id"
-                      @click="rejectPay(o)"
-                    >
-                      <i class="fa-solid fa-xmark" aria-hidden="true" />
-                      Reject
-                    </button>
-                    <span v-if="isStudentPlan(o)" class="student-helper-tip">
-                      <i class="fa-solid fa-graduation-cap" aria-hidden="true" />
-                      Student plan: billing acceptance will queue for hosting operator activation.
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <!-- ACTION: ACTIVATE HOSTING (FOR HOSTING OPERATOR / OPS ONCE BILLING IS ACCEPTED) -->
-              <div
-                v-else-if="canOps && o.payment_status === 'paid' && o.provisioning_status !== 'active' && o.provisioning_status !== 'n/a'"
-                class="action-box ok"
-              >
-                <div v-if="busyId === o.id" class="activation-progress-box">
-                  <div class="progress-meta">
-                    <span class="progress-title">
-                      <i class="fa-solid fa-arrows-rotate fa-spin" aria-hidden="true" />
-                      Activating server infrastructure &amp; domain…
-                    </span>
-                    <span class="progress-num">{{ progressPercent }}%</span>
-                  </div>
-                  <div class="progress-track">
-                    <div class="progress-fill" :style="{ width: `${progressPercent}%` }" />
-                  </div>
-                </div>
-                <div v-else class="retry-row" style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
-                  <div class="retry-text">
-                    <i class="fa-solid fa-circle-check text-emerald-500" aria-hidden="true" />
-                    <span><strong>Billing Accepted &amp; Verified.</strong> Ready for server infrastructure &amp; domain activation.</span>
-                  </div>
-                  <div style="display: flex; gap: 0.5rem; align-items: center;">
-                    <button
-                      type="button"
-                      class="btn-action-activate"
-                      :disabled="busyId === o.id"
-                      @click="activateHosting(o)"
-                    >
-                      <i class="fa-solid fa-rocket" aria-hidden="true" />
-                      {{ o.order_kind === 'domain' ? 'Activate Domain' : 'Activate Hosting' }}
-                    </button>
-                    <button
-                      v-if="o.provisioning_status === 'failed'"
-                      type="button"
-                      class="btn-action-retry"
-                      :disabled="busyId === o.id"
-                      @click="retryProvision(o)"
-                    >
-                      <i class="fa-solid fa-arrows-rotate" aria-hidden="true" />
-                      Retry Setup
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <!-- STATUS: PAID & ACTIVE -->
-              <div v-else-if="o.payment_status === 'paid' && o.provisioning_status === 'active'" class="active-footer">
-                <div class="active-left">
-                  <i class="fa-solid fa-circle-check" aria-hidden="true" />
-                  <span>Hosting environment live on <strong>{{ o.domain_name || 'assigned domain' }}</strong></span>
-                </div>
-                <div class="active-right">
-                  <button v-if="canSeeBilling" type="button" class="btn-micro-link" :disabled="busyId === o.id" title="Toggle Complimentary Grant status" @click="toggleComplimentaryStatus(o)">
-                    <i class="fa-solid fa-gift" aria-hidden="true" />
-                    {{ ['staff', 'complimentary', 'free'].includes((o.payment_method || '').toLowerCase()) ? 'Comp Active' : 'Make Comp' }}
-                  </button>
-                  <button type="button" class="btn-micro-link" @click="openReceipt(o.id)">
-                    <i class="fa-solid fa-receipt" aria-hidden="true" /> Receipt
-                  </button>
-                  <button type="button" class="btn-micro-link" @click="openCustomer(o.customer_id)">
-                    <i class="fa-solid fa-user" aria-hidden="true" /> Customer
-                  </button>
-                </div>
-              </div>
-            </article>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
 
           <!-- EMPTY STATE -->
@@ -949,7 +802,435 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
               View all orders
             </button>
           </div>
+
+          <!-- PAGINATION FOOTER -->
+          <footer v-if="filteredOrders.length > 0" class="panel-foot-pagination">
+            <div class="pagination-info">
+              Showing <strong>{{ showingStart }}</strong> – <strong>{{ showingEnd }}</strong> of <strong>{{ filteredOrders.length }}</strong> orders
+            </div>
+
+            <div v-if="totalPages > 1" class="pagination-controls">
+              <button
+                type="button"
+                class="btn-page-nav"
+                :disabled="currentPage === 1"
+                @click="goToPage(currentPage - 1)"
+              >
+                <i class="fa-solid fa-chevron-left" /> Previous
+              </button>
+
+              <div class="page-numbers">
+                <button
+                  v-for="p in totalPages"
+                  :key="p"
+                  type="button"
+                  class="btn-page-num"
+                  :class="{ active: p === currentPage }"
+                  @click="goToPage(p)"
+                >
+                  {{ p }}
+                </button>
+              </div>
+
+              <button
+                type="button"
+                class="btn-page-nav"
+                :disabled="currentPage === totalPages"
+                @click="goToPage(currentPage + 1)"
+              >
+                Next <i class="fa-solid fa-chevron-right" />
+              </button>
+            </div>
+          </footer>
         </section>
+      </div>
+    </div>
+
+    <!-- CLEAN ORDER DETAILS MODAL -->
+    <div v-if="showDetailModal && selectedOrder" class="modal-backdrop" @click.self="closeOrderModal">
+      <div class="modal-dialog">
+        <!-- MODAL HEADER -->
+        <header class="modal-header">
+          <div class="modal-title-wrap">
+            <div class="modal-chips">
+              <span class="inv-badge text-sm">{{ selectedOrder.invoice_number || selectedOrder.id.slice(0, 8) }}</span>
+              <span class="kind-badge">{{ selectedOrder.order_kind || 'hosting' }}</span>
+              <span class="date-badge">
+                <i class="fa-regular fa-clock" />
+                {{ new Date(selectedOrder.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) }}
+              </span>
+            </div>
+            <div class="modal-status-pills mt-1.5">
+              <span class="status-pill" :data-s="selectedOrder.payment_status">
+                <i class="fa-solid" :class="paymentIcon(selectedOrder.payment_status)" />
+                {{ paymentLabel(selectedOrder.payment_status) }}
+              </span>
+              <span class="status-pill" :data-p="selectedOrder.provisioning_status">
+                <i class="fa-solid" :class="provisionIcon(selectedOrder.provisioning_status)" />
+                {{ provisionLabel(selectedOrder.provisioning_status) }}
+              </span>
+              <span v-if="isCompOrder(selectedOrder)" class="comp-badge-pill">
+                <i class="fa-solid fa-gift" /> Complimentary Grant
+              </span>
+            </div>
+          </div>
+          <button type="button" class="modal-close-btn" title="Close modal (Esc)" @click="closeOrderModal">
+            <i class="fa-solid fa-xmark" />
+          </button>
+        </header>
+
+        <!-- MODAL BODY -->
+        <div class="modal-body">
+          <!-- GRID OF CARDS -->
+          <div class="modal-grid">
+            <!-- CUSTOMER INFO CARD -->
+            <div class="modal-card">
+              <h4 class="card-title">
+                <i class="fa-solid fa-user-circle text-brand-600" /> Customer Information
+              </h4>
+              <div class="detail-rows">
+                <div class="detail-row">
+                  <span class="row-label">Full Name</span>
+                  <span class="row-val font-semibold">{{ selectedOrder.customer_name || 'Customer' }}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="row-label">Email</span>
+                  <div class="row-val-group">
+                    <a :href="`mailto:${selectedOrder.customer_email}`" class="link-blue">{{ selectedOrder.customer_email }}</a>
+                  </div>
+                </div>
+                <div v-if="selectedOrder.customer_phone" class="detail-row">
+                  <span class="row-label">Phone</span>
+                  <div class="row-val-group">
+                    <a :href="`tel:${selectedOrder.customer_phone}`" class="link-blue">{{ selectedOrder.customer_phone }}</a>
+                    <button
+                      type="button"
+                      class="btn-copy-micro"
+                      :title="copiedPhoneId === selectedOrder.id ? 'Copied' : 'Copy Phone'"
+                      @click="copyPhone(selectedOrder.id, selectedOrder.customer_phone)"
+                    >
+                      <i class="fa-solid" :class="copiedPhoneId === selectedOrder.id ? 'fa-check text-green-600' : 'fa-copy'" />
+                    </button>
+                  </div>
+                </div>
+                <div class="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                  <button type="button" class="btn-sub-link" @click="openCustomer(selectedOrder.customer_id)">
+                    <i class="fa-solid fa-arrow-up-right-from-square" /> Open Customer Profile
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- HOSTING & DOMAIN DETAILS CARD -->
+            <div class="modal-card">
+              <h4 class="card-title">
+                <i class="fa-solid fa-server text-indigo-600" /> Plan &amp; Domain
+              </h4>
+              <div class="detail-rows">
+                <div class="detail-row">
+                  <span class="row-label">Hosting Plan</span>
+                  <span class="plan-tag">{{ selectedOrder.plan_name || 'Hosting Plan' }}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="row-label">Assigned Domain</span>
+                  <div class="domain-manager-wrap">
+                    <div v-if="editingDomainId !== selectedOrder.id" class="domain-pill">
+                      <i class="fa-solid fa-globe" />
+                      <span class="domain-text">{{ domainByOrder[selectedOrder.id] || selectedOrder.domain_name || 'No domain assigned' }}</span>
+                      <button
+                        v-if="canEditSubdomain && selectedOrder.payment_status !== 'paid'"
+                        type="button"
+                        class="btn-edit-subdomain"
+                        :title="isStudentPlan(selectedOrder) ? 'Customize student subdomain' : 'Edit domain name'"
+                        @click="toggleDomainEdit(selectedOrder.id)"
+                      >
+                        <i class="fa-solid fa-pen" />
+                        <span>Edit</span>
+                      </button>
+                    </div>
+
+                    <!-- INLINE SUBDOMAIN EDITOR -->
+                    <div v-else class="domain-edit-form">
+                      <div class="domain-input-wrap">
+                        <input
+                          v-model="domainByOrder[selectedOrder.id]"
+                          type="text"
+                          class="domain-input"
+                          placeholder="e.g. kwame.ifnotus.space"
+                          @keyup.enter="editingDomainId = null"
+                        />
+                      </div>
+                      <button type="button" class="btn-domain-done" @click="editingDomainId = null">
+                        <i class="fa-solid fa-check" /> Save
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div class="detail-row">
+                  <span class="row-label">Order Type</span>
+                  <span class="kind-badge">{{ selectedOrder.order_kind || 'hosting' }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- PAYMENT & TRANSACTION DATA CARD -->
+            <div class="modal-card span-full">
+              <h4 class="card-title">
+                <i class="fa-solid fa-money-bill-wave text-emerald-600" /> Payment &amp; Reference Verification
+              </h4>
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                <!-- AMOUNT -->
+                <div class="metric-mini-box">
+                  <span class="metric-mini-label">Total Invoiced</span>
+                  <span class="metric-mini-val">{{ selectedOrder.currency }} {{ Number(selectedOrder.total_price).toFixed(2) }}</span>
+                </div>
+
+                <!-- EXPECTED SENDING REF -->
+                <div class="metric-mini-box">
+                  <span class="metric-mini-label">Expected Sending Ref</span>
+                  <div class="flex items-center justify-between gap-1 mt-0.5">
+                    <code class="font-mono font-bold text-slate-800 dark:text-slate-200">{{ selectedOrder.invoice_number || selectedOrder.id.slice(0, 8) }}</code>
+                    <button
+                      type="button"
+                      class="btn-copy-micro"
+                      :title="copiedRefId === selectedOrder.id ? 'Copied' : 'Copy Ref'"
+                      @click="copyRef(selectedOrder.id, selectedOrder.invoice_number || selectedOrder.id.slice(0, 8))"
+                    >
+                      <i class="fa-solid" :class="copiedRefId === selectedOrder.id ? 'fa-check text-green-600' : 'fa-copy'" />
+                    </button>
+                  </div>
+                </div>
+
+                <!-- RECEIVED MOMO TX ID -->
+                <div class="metric-mini-box">
+                  <span class="metric-mini-label">Customer Submitted MoMo Tx</span>
+                  <div v-if="selectedOrder.momo_transaction_id" class="flex items-center justify-between gap-1 mt-0.5">
+                    <code class="font-mono font-bold text-emerald-700 dark:text-emerald-400">{{ selectedOrder.momo_transaction_id }}</code>
+                    <button
+                      type="button"
+                      class="btn-copy-micro"
+                      :title="copiedId === selectedOrder.id ? 'Copied' : 'Copy MoMo ID'"
+                      @click="copyMomo(selectedOrder.id, selectedOrder.momo_transaction_id)"
+                    >
+                      <i class="fa-solid" :class="copiedId === selectedOrder.id ? 'fa-check text-green-600' : 'fa-copy'" />
+                    </button>
+                  </div>
+                  <span v-else class="text-surface-muted block mt-0.5">—</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ACTION / WORKFLOW SECTION -->
+          <div class="modal-action-section mt-4">
+            <!-- AWAITING PAYMENT CONFIRMATION (BILLING AGENT / OWNER) -->
+            <div
+              v-if="canConfirm && selectedOrder.payment_status !== 'paid' && selectedOrder.payment_status !== 'failed'"
+              class="action-box"
+            >
+              <div v-if="busyId === selectedOrder.id" class="activation-progress-box">
+                <div class="progress-meta">
+                  <span class="progress-title">
+                    <i class="fa-solid fa-arrows-rotate fa-spin" />
+                    {{ progressStage || 'Processing billing confirmation…' }}
+                  </span>
+                  <span class="progress-num">{{ progressPercent }}%</span>
+                </div>
+                <div class="progress-track">
+                  <div class="progress-fill" :style="{ width: `${progressPercent}%` }" />
+                </div>
+              </div>
+
+              <div v-else class="action-box-inner">
+                <h4 class="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-2">
+                  <i class="fa-solid fa-check-double text-indigo-500 mr-1" /> Clear Billing &amp; Confirm Payment
+                </h4>
+                <div class="action-inputs-grid">
+                  <!-- PAYMENT METHOD -->
+                  <div class="input-col">
+                    <label class="compact-label">
+                      <span><i class="fa-solid fa-money-bill-transfer" /> Payment Method</span>
+                      <select
+                        v-model="paymentMethodByOrder[selectedOrder.id]"
+                        class="compact-input compact-select"
+                      >
+                        <option :value="undefined">Mobile Money (MTN / Telecel)</option>
+                        <option value="momo">Mobile Money (MTN / Telecel)</option>
+                        <option value="physical_cash">Physical Cash (In-Person / Desk)</option>
+                        <option value="bank">Direct Bank Deposit / Transfer</option>
+                        <option value="complimentary">Complimentary / Free Grant (0.00 GHS)</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <!-- AMOUNT RECEIVED -->
+                  <div class="input-col">
+                    <label class="compact-label">
+                      <span><i class="fa-solid fa-coins" /> Amount Received (GHS)</span>
+                      <input
+                        v-model="amountByOrder[selectedOrder.id]"
+                        type="text"
+                        inputmode="decimal"
+                        class="compact-input"
+                        :placeholder="String(selectedOrder.total_price)"
+                      />
+                    </label>
+                  </div>
+
+                  <!-- STAFF NOTE -->
+                  <div class="input-col span-full">
+                    <label class="compact-label">
+                      <span class="label-with-help">
+                        <i class="fa-solid fa-clipboard-check" /> Staff Note (Optional)
+                        <button
+                          type="button"
+                          class="help-btn"
+                          title="What is a Staff Note?"
+                          @click="showNoteHelp = !showNoteHelp"
+                        >
+                          <i class="fa-regular fa-circle-question" />
+                        </button>
+                      </span>
+                      <input
+                        v-model="confirmNotes"
+                        type="text"
+                        class="compact-input"
+                        :placeholder="paymentMethodByOrder[selectedOrder.id] === 'physical_cash' ? 'e.g. Received GHS cash in hand at desk' : 'e.g. Verified in MTN MoMo app tx#5820'"
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                <!-- HELP CALLOUT -->
+                <div v-if="showNoteHelp" class="note-help-box">
+                  <div class="note-help-content">
+                    <i class="fa-solid fa-info-circle text-blue-500" />
+                    <div>
+                      <strong>What is a Staff Note?</strong>
+                      <p>
+                        A Staff Note is an internal audit entry recorded on this transaction. It is only visible to
+                        staff operators and is never displayed to the customer.
+                      </p>
+                    </div>
+                  </div>
+                  <button type="button" class="close-help-btn" @click="showNoteHelp = false">Dismiss</button>
+                </div>
+
+                <!-- BUTTONS -->
+                <div class="action-buttons-row mt-3">
+                  <button
+                    type="button"
+                    class="btn-action-activate"
+                    :disabled="busyId === selectedOrder.id"
+                    @click="confirmPay(selectedOrder)"
+                  >
+                    <i class="fa-solid fa-check-double" />
+                    Accept Billing &amp; Confirm Payment
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-action-reject"
+                    :disabled="busyId === selectedOrder.id"
+                    @click="rejectPay(selectedOrder)"
+                  >
+                    <i class="fa-solid fa-xmark" />
+                    Reject
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- READY FOR HOSTING ACTIVATION (HOSTING OPS) -->
+            <div
+              v-else-if="canOps && selectedOrder.payment_status === 'paid' && selectedOrder.provisioning_status !== 'active' && selectedOrder.provisioning_status !== 'n/a'"
+              class="action-box ok"
+            >
+              <div v-if="busyId === selectedOrder.id" class="activation-progress-box">
+                <div class="progress-meta">
+                  <span class="progress-title">
+                    <i class="fa-solid fa-arrows-rotate fa-spin" />
+                    Activating server infrastructure &amp; domain…
+                  </span>
+                  <span class="progress-num">{{ progressPercent }}%</span>
+                </div>
+                <div class="progress-track">
+                  <div class="progress-fill" :style="{ width: `${progressPercent}%` }" />
+                </div>
+              </div>
+              <div v-else class="flex items-center justify-between gap-3 flex-wrap">
+                <div class="text-xs">
+                  <i class="fa-solid fa-circle-check text-emerald-500 mr-1" />
+                  <strong>Billing Accepted &amp; Verified.</strong> Ready for server infrastructure &amp; domain activation.
+                </div>
+                <div class="flex items-center gap-2">
+                  <button
+                    type="button"
+                    class="btn-action-activate"
+                    :disabled="busyId === selectedOrder.id"
+                    @click="activateHosting(selectedOrder)"
+                  >
+                    <i class="fa-solid fa-rocket" />
+                    {{ selectedOrder.order_kind === 'domain' ? 'Activate Domain' : 'Activate Hosting' }}
+                  </button>
+                  <button
+                    v-if="selectedOrder.provisioning_status === 'failed'"
+                    type="button"
+                    class="btn-action-retry"
+                    :disabled="busyId === selectedOrder.id"
+                    @click="retryProvision(selectedOrder)"
+                  >
+                    <i class="fa-solid fa-arrows-rotate" />
+                    Retry Setup
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- LIVE & ACTIVE BANNER -->
+            <div v-else-if="selectedOrder.payment_status === 'paid' && selectedOrder.provisioning_status === 'active'" class="active-banner">
+              <div class="flex items-center gap-2">
+                <i class="fa-solid fa-circle-check text-emerald-500 text-base" />
+                <span class="text-xs font-medium text-slate-800 dark:text-slate-200">
+                  Hosting environment live on <strong>{{ selectedOrder.domain_name || 'assigned domain' }}</strong>
+                </span>
+              </div>
+              <div class="flex items-center gap-2">
+                <button
+                  v-if="canConfirm"
+                  type="button"
+                  class="btn-tbl-comp"
+                  :class="{ 'is-comp': isCompOrder(selectedOrder) }"
+                  :disabled="busyId === selectedOrder.id"
+                  @click="toggleComplimentaryStatus(selectedOrder)"
+                >
+                  <i class="fa-solid" :class="isCompOrder(selectedOrder) ? 'fa-gift' : 'fa-hand-holding-heart'" />
+                  <span>{{ isCompOrder(selectedOrder) ? 'Comp Active' : 'Make Comp' }}</span>
+                </button>
+                <a
+                  v-if="selectedOrder.domain_name"
+                  :href="`https://${selectedOrder.domain_name}`"
+                  target="_blank"
+                  rel="noopener"
+                  class="btn-tbl-primary"
+                >
+                  <i class="fa-solid fa-arrow-up-right-from-square" />
+                  <span>Visit Website</span>
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- MODAL FOOTER -->
+        <footer class="modal-footer">
+          <button type="button" class="btn-footer-receipt" @click="openReceipt(selectedOrder.id)">
+            <i class="fa-solid fa-file-invoice" />
+            <span>Open Receipt / Invoice</span>
+          </button>
+          <button type="button" class="btn-footer-close" @click="closeOrderModal">
+            Close
+          </button>
+        </footer>
       </div>
     </div>
   </DashboardLayout>
@@ -1087,7 +1368,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
 
 .search-icon {
   position: absolute;
-  left: 0.75rem;
+  left: 0.85rem;
   color: #94a3b8;
   font-size: 0.85rem;
   pointer-events: none;
@@ -1095,129 +1376,114 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
 
 .search-input {
   width: 100%;
-  border-radius: 0.55rem;
+  padding: 0.55rem 2.2rem 0.55rem 2.35rem;
   border: 1px solid #cbd5e1;
+  border-radius: 0.6rem;
   background: #f8fafc;
   color: #0f172a;
   font-size: 0.85rem;
-  padding: 0.48rem 2.25rem 0.48rem 2.25rem;
-  outline: none;
+  font-weight: 500;
   transition: all 0.15s ease;
 }
 
 .search-input:focus {
+  outline: none;
+  border-color: #6366f1;
   background: #ffffff;
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
-}
-
-.search-input::placeholder {
-  color: #94a3b8;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
 }
 
 .search-clear-btn {
   position: absolute;
-  right: 0.65rem;
+  right: 0.75rem;
+  background: none;
   border: none;
-  background: transparent;
   color: #94a3b8;
   cursor: pointer;
   padding: 0.2rem;
-  border-radius: 0.3rem;
-  display: grid;
-  place-items: center;
+  font-size: 0.8rem;
 }
 
 .search-clear-btn:hover {
-  color: #0f172a;
-  background: #e2e8f0;
+  color: #ef4444;
 }
 
 .search-match-tag {
-  font-size: 0.76rem;
-  color: #1e40af;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  padding: 0.25rem 0.6rem;
+  font-size: 0.75rem;
+  color: #4f46e5;
+  background: #eef2ff;
+  border: 1px solid #e0e7ff;
   border-radius: 0.45rem;
+  padding: 0.35rem 0.65rem;
   white-space: nowrap;
 }
 
 .filters-row {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 0.65rem;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
 .filter-tabs {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 0.35rem;
+  overflow-x: auto;
+  padding-bottom: 0.1rem;
 }
 
 .filter-tab {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  padding: 0.38rem 0.75rem;
-  border-radius: 0.5rem;
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
-  color: #475569;
-  font-size: 0.78rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.55rem;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 0.76rem;
   font-weight: 650;
+  padding: 0.4rem 0.7rem;
   cursor: pointer;
-  transition: all 0.12s ease;
+  white-space: nowrap;
+  transition: all 0.15s ease;
 }
 
 .filter-tab:hover {
-  background: #f8fafc;
-  color: #0f172a;
-  border-color: #94a3b8;
+  background: #f1f5f9;
+  color: #1e293b;
 }
 
 .filter-tab.on {
-  background: #1e3a5f;
+  background: #0f172a;
+  border-color: #0f172a;
   color: #ffffff;
-  border-color: #1e3a5f;
 }
 
 .tab-badge {
-  background: #64748b;
-  color: #ffffff;
-  font-size: 0.62rem;
+  display: inline-block;
+  font-size: 0.65rem;
   font-weight: 800;
-  padding: 0.08rem 0.38rem;
+  padding: 0.1rem 0.35rem;
   border-radius: 999px;
+  background: #334155;
+  color: #f8fafc;
 }
 
-.tab-badge.badge-sub {
-  background: #f59e0b;
-  color: #ffffff;
-}
-
-.tab-badge.badge-unpaid {
-  background: #3b82f6;
-  color: #ffffff;
-}
-
-.filter-tab.on .tab-badge {
-  background: #ffffff;
-  color: #1e3a5f;
-}
+.badge-sub { background: #d97706; color: #ffffff; }
+.badge-unpaid { background: #6366f1; color: #ffffff; }
 
 .flow-count {
-  margin: 0;
-  padding: 0.3rem 0.65rem;
+  font-size: 0.75rem;
+  color: #b45309;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
   border-radius: 0.45rem;
-  background: #f1f5f9;
-  color: #334155;
-  font-size: 0.78rem;
+  padding: 0.35rem 0.65rem;
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.35rem;
 }
 
 /* ORDERS PANEL */
@@ -1225,351 +1491,648 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   border: 1px solid #e2e8f0;
   border-radius: 0.75rem;
   background: #ffffff;
-  padding: 0.9rem 1.1rem;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03);
+  display: flex;
+  flex-direction: column;
 }
 
 .panel-head {
-  margin-bottom: 0.75rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid #f1f5f9;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
 }
 
 .panel-head-text h2 {
-  margin: 0;
   font-size: 0.95rem;
   font-weight: 750;
   color: #0f172a;
+  margin: 0;
 }
 
 .panel-sub {
-  margin: 0.15rem 0 0;
-  font-size: 0.76rem;
+  font-size: 0.72rem;
   color: #64748b;
+  margin: 0.1rem 0 0;
 }
 
-.state-msg {
-  padding: 2.5rem 1rem;
-  text-align: center;
-  color: #64748b;
-  font-size: 0.88rem;
-  display: flex;
+.page-size-label {
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 0.55rem;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  color: #64748b;
 }
 
-/* SLIM CLEAN ORDER CARDS */
-.order-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.65rem;
-}
-
-.order-card-slim {
-  border: 1px solid #e2e8f0;
-  border-radius: 0.75rem;
+.page-size-select {
+  padding: 0.2rem 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.4rem;
   background: #ffffff;
-  padding: 0.85rem 1rem;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.02);
-  display: flex;
-  flex-direction: column;
-  gap: 0.55rem;
-  transition: all 0.15s ease;
+  color: #0f172a;
 }
 
-.order-card-slim:hover {
-  border-color: #cbd5e1;
-  box-shadow: 0 3px 8px rgba(15, 23, 42, 0.04);
+/* TABLE & SCROLL WRAPPER */
+.orders-table-wrap {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: calc(100vh - 280px);
+  min-height: 380px;
+  position: relative;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
 }
 
-.order-card-slim.is-paid {
-  border-color: #e2e8f0;
-  background: #ffffff;
+.orders-table-wrap::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
 }
 
-.order-card-slim.is-active {
-  border-left: 3.5px solid #10b981;
+.orders-table-wrap::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
 }
 
-/* TOP STRIP */
-.card-main-row {
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
+.orders-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  text-align: left;
 }
 
-@media (min-width: 680px) {
-  .card-main-row {
-    flex-direction: row;
-    align-items: flex-start;
-    justify-content: space-between;
-  }
+.orders-table th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 0.65rem 0.85rem;
+  font-size: 0.68rem;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
-.customer-info-block {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  min-width: 0;
+.orders-table td {
+  padding: 0.65rem 0.85rem;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: middle;
+}
+
+.order-row {
+  transition: background 0.1s ease;
+}
+
+.order-row:hover {
+  background: #f8fafc;
+}
+
+.order-row.row-awaiting {
+  background: rgba(254, 243, 199, 0.25);
+}
+
+.order-row.row-awaiting:hover {
+  background: rgba(254, 243, 199, 0.45);
+}
+
+.cell-inv {
+  white-space: nowrap;
 }
 
 .inv-chip-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.inv-badge {
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+  font-weight: 750;
+  color: #1e293b;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.35rem;
+  padding: 0.12rem 0.4rem;
+}
+
+.kind-badge {
+  font-size: 0.65rem;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6366f1;
+  background: #eef2ff;
+  border: 1px solid #e0e7ff;
+  border-radius: 0.35rem;
+  padding: 0.1rem 0.35rem;
+}
+
+.date-sub {
+  display: block;
+  font-size: 0.7rem;
+  color: #94a3b8;
+  margin-top: 0.15rem;
+}
+
+.date-badge {
+  font-size: 0.7rem;
+  color: #64748b;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.cell-cust {
+  min-width: 180px;
+}
+
+.cust-name-link {
+  font-weight: 700;
+  color: #0f172a;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.8rem;
+}
+
+.cust-name-link:hover {
+  color: #4f46e5;
+  text-decoration: underline;
+}
+
+.cust-sub-details {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  color: #64748b;
+  margin-top: 0.1rem;
+  flex-wrap: wrap;
+}
+
+.cust-email-link {
+  color: #64748b;
+  text-decoration: none;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cust-email-link:hover {
+  color: #0f172a;
+  text-decoration: underline;
+}
+
+.cust-phone-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.btn-copy-micro {
+  background: none;
+  border: none;
+  padding: 0.1rem 0.2rem;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 0.7rem;
+  border-radius: 0.25rem;
+}
+
+.btn-copy-micro:hover {
+  color: #4f46e5;
+  background: #eef2ff;
+}
+
+.cell-plan {
+  min-width: 160px;
+}
+
+.plan-tag {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #0f172a;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.35rem;
+  padding: 0.15rem 0.45rem;
+}
+
+.domain-tag-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.15rem;
+}
+
+.cell-momo {
+  white-space: nowrap;
+}
+
+.momo-inline-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.35rem;
+  padding: 0.15rem 0.4rem;
+}
+
+.momo-code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #047857;
+}
+
+.comp-badge-pill {
+  font-size: 0.65rem;
+  font-weight: 750;
+  color: #b45309;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  border-radius: 0.35rem;
+  padding: 0.08rem 0.35rem;
+  display: inline-block;
+  margin-top: 0.15rem;
+}
+
+/* STATUS PILLS */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.18rem 0.5rem;
+  border-radius: 0.45rem;
+  font-size: 0.68rem;
+  font-weight: 750;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.status-pill[data-s="submitted"] { background: #fef3c7; color: #b45309; border-color: #fde68a; }
+.status-pill[data-s="paid"] { background: #d1fae5; color: #047857; border-color: #a7f3d0; }
+.status-pill[data-s="pending"] { background: #e0e7ff; color: #4338ca; border-color: #c7d2fe; }
+.status-pill[data-s="failed"] { background: #fee2e2; color: #b91c1c; border-color: #fecaca; }
+
+.status-pill[data-p="active"] { background: #d1fae5; color: #047857; border-color: #a7f3d0; }
+.status-pill[data-p="queued"],
+.status-pill[data-p="pending"],
+.status-pill[data-p="running"] { background: #e0e7ff; color: #4338ca; border-color: #c7d2fe; }
+.status-pill[data-p="failed"] { background: #fee2e2; color: #b91c1c; border-color: #fecaca; }
+.status-pill[data-p="n/a"] { background: #f1f5f9; color: #64748b; border-color: #e2e8f0; }
+
+/* ACTIONS GROUP */
+.actions-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.btn-tbl-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.35rem 0.6rem;
+  border-radius: 0.45rem;
+  background: #4f46e5;
+  color: #ffffff;
+  border: 1px solid #4338ca;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.btn-tbl-primary:hover {
+  background: #4338ca;
+}
+
+.btn-tbl-comp {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.35rem 0.55rem;
+  border-radius: 0.45rem;
+  background: #ffffff;
+  color: #b45309;
+  border: 1px solid #fde68a;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.btn-tbl-comp:hover {
+  background: #fef3c7;
+}
+
+.btn-tbl-comp.is-comp {
+  background: #fef3c7;
+  color: #b45309;
+  border-color: #f59e0b;
+}
+
+.btn-tbl-receipt {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.7rem;
+  font-weight: 650;
+  padding: 0.35rem 0.55rem;
+  border-radius: 0.45rem;
+  background: #ffffff;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.btn-tbl-receipt:hover {
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+/* PAGINATION FOOTER */
+.panel-foot-pagination {
+  padding: 0.75rem 1rem;
+  border-top: 1px solid #f1f5f9;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.pagination-info {
+  font-size: 0.75rem;
+  color: #64748b;
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.btn-page-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  font-weight: 650;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.45rem;
+  background: #ffffff;
+  color: #334155;
+  cursor: pointer;
+}
+
+.btn-page-nav:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-page-nav:not(:disabled):hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+}
+
+.page-numbers {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.btn-page-num {
+  width: 1.85rem;
+  height: 1.85rem;
+  display: grid;
+  place-items: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.4rem;
+  background: #ffffff;
+  color: #475569;
+  cursor: pointer;
+}
+
+.btn-page-num:hover {
+  background: #f8fafc;
+}
+
+.btn-page-num.active {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #ffffff;
+}
+
+/* MODAL */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(4px);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+.modal-dialog {
+  width: 100%;
+  max-width: 680px;
+  background: #ffffff;
+  border-radius: 0.85rem;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  border: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+  overflow: hidden;
+  animation: modalScale 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes modalScale {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.modal-header {
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid #f1f5f9;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.modal-chips {
   display: flex;
   align-items: center;
   gap: 0.4rem;
   flex-wrap: wrap;
 }
 
-.inv-badge {
-  font-family: ui-monospace, monospace;
-  font-size: 0.78rem;
-  font-weight: 750;
-  color: #1e293b;
-  background: #f1f5f9;
-  padding: 0.12rem 0.45rem;
+.modal-status-pills {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.modal-close-btn {
+  background: none;
+  border: none;
+  font-size: 1.1rem;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 0.2rem;
   border-radius: 0.35rem;
 }
 
-.kind-badge {
-  font-size: 0.65rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 0.1rem 0.4rem;
-  border-radius: 0.3rem;
-  background: #e2e8f0;
-  color: #475569;
-}
-
-.date-badge {
-  font-size: 0.72rem;
-  color: #94a3b8;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.customer-details {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  flex-wrap: wrap;
-  font-size: 0.84rem;
-}
-
-.customer-name-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  font-size: 0.92rem;
-  font-weight: 750;
+.modal-close-btn:hover {
   color: #0f172a;
-}
-
-.customer-name-btn:hover {
-  color: #2563eb;
-  text-decoration: underline;
-}
-
-.customer-email {
-  color: #475569;
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.28rem;
-  font-size: 0.8rem;
-}
-
-.customer-email:hover {
-  color: #2563eb;
-  text-decoration: underline;
-}
-
-.customer-phone-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-}
-
-.customer-phone {
-  color: #047857;
-  text-decoration: none;
-  font-weight: 650;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.28rem;
-  font-size: 0.8rem;
-}
-
-.customer-phone:hover {
-  text-decoration: underline;
-}
-
-.btn-mini-copy {
-  border: none;
   background: #f1f5f9;
-  color: #64748b;
-  cursor: pointer;
-  padding: 0.12rem 0.3rem;
-  border-radius: 0.25rem;
-  font-size: 0.68rem;
-  display: inline-flex;
-  align-items: center;
 }
 
-.btn-mini-copy:hover {
-  background: #e2e8f0;
-  color: #0f172a;
+.modal-body {
+  padding: 1.25rem;
+  overflow-y: auto;
+  flex: 1;
 }
 
-.divider {
-  color: #cbd5e1;
+.modal-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.85rem;
 }
 
-/* AMOUNT & STATUS */
-.amount-status-block {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-}
-
-@media (min-width: 680px) {
-  .amount-status-block {
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 0.35rem;
+@media (min-width: 600px) {
+  .modal-grid {
+    grid-template-columns: 1fr 1fr;
   }
 }
 
-.price-box {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
+.span-full {
+  grid-column: 1 / -1;
 }
 
-.price-val {
-  font-size: 1.15rem;
-  font-weight: 850;
-  color: #0f172a;
-  font-variant-numeric: tabular-nums;
-}
-
-.btn-comp-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.24rem 0.5rem;
-  border-radius: 0.4rem;
-  border: 1px solid #c084fc;
-  background: #fdf4ff;
-  color: #7e22ce;
-  font-size: 0.72rem;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.12s ease;
-}
-
-.btn-comp-tag:hover {
-  background: #f3e8ff;
-  border-color: #a855f7;
-}
-
-.btn-comp-tag.is-comp {
-  border-color: #818cf8;
-  background: #e0e7ff;
-  color: #3730a3;
-}
-
-.btn-receipt-view {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.24rem 0.55rem;
-  border-radius: 0.4rem;
-  border: 1px solid #cbd5e1;
+.modal-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 0.65rem;
   background: #f8fafc;
-  color: #334155;
-  font-size: 0.74rem;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.12s ease;
+  padding: 0.85rem;
 }
 
-.btn-receipt-view:hover {
-  background: #f1f5f9;
-  border-color: #94a3b8;
+.card-title {
+  font-size: 0.78rem;
+  font-weight: 750;
   color: #0f172a;
-}
-
-.status-pills {
+  margin: 0 0 0.65rem;
   display: flex;
   align-items: center;
-  gap: 0.3rem;
+  gap: 0.4rem;
 }
 
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.14rem 0.48rem;
-  border-radius: 999px;
-  font-size: 0.66rem;
-  font-weight: 750;
-  background: #f1f5f9;
-  color: #475569;
-}
-
-.status-pill[data-s='submitted'] { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
-.status-pill[data-s='paid'] { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
-.status-pill[data-s='failed'] { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
-.status-pill[data-s='pending'] { background: #f8fafc; color: #64748b; border: 1px solid #e2e8f0; }
-
-.status-pill[data-p='active'] { background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }
-.status-pill[data-p='failed'] { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
-.status-pill[data-p='queued'],
-.status-pill[data-p='pending'],
-.status-pill[data-p='running'] { background: #fff7ed; color: #9a3412; border: 1px solid #fed7aa; }
-
-/* MIDDLE STRIP: PLAN & DOMAIN/MOMO & KEYED OUT SENDING REF */
-.card-meta-row {
+.detail-rows {
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
-  padding: 0.5rem 0.75rem;
-  border-radius: 0.5rem;
-  background: #f8fafc;
-  border: 1px solid #f1f5f9;
 }
 
-@media (min-width: 768px) {
-  .card-meta-row {
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-  }
-}
-
-.meta-item-group {
+.detail-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 0.5rem;
-  flex-wrap: wrap;
+  font-size: 0.76rem;
 }
 
-.plan-tag {
-  display: inline-flex;
+.row-label {
+  color: #64748b;
+  font-weight: 500;
+}
+
+.row-val {
+  color: #0f172a;
+}
+
+.row-val-group {
+  display: flex;
   align-items: center;
   gap: 0.35rem;
-  font-size: 0.8rem;
-  font-weight: 750;
-  color: #1e293b;
 }
 
-.domain-manager-wrap {
+.link-blue {
+  color: #4f46e5;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.link-blue:hover {
+  text-decoration: underline;
+}
+
+.btn-sub-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.72rem;
+  font-weight: 650;
+  color: #4f46e5;
+  cursor: pointer;
   display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.btn-sub-link:hover {
+  text-decoration: underline;
+}
+
+.metric-mini-box {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.5rem;
+  padding: 0.6rem 0.75rem;
+}
+
+.metric-mini-label {
+  display: block;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.metric-mini-val {
+  display: block;
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #0f172a;
+  margin-top: 0.1rem;
+}
+
+/* DOMAIN PILL & INLINE EDIT */
+.domain-manager-wrap {
+  display: flex;
   align-items: center;
 }
 
@@ -1577,283 +2140,127 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  font-size: 0.8rem;
-  font-weight: 700;
-  color: #2563eb;
-  background: #eff6ff;
-  border: 1px solid #dbeafe;
-  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  color: #0f172a;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
   border-radius: 0.4rem;
+  padding: 0.2rem 0.5rem;
 }
 
 .domain-text {
   font-family: ui-monospace, monospace;
+  font-weight: 600;
 }
 
 .btn-edit-subdomain {
+  background: none;
   border: none;
-  background: transparent;
-  color: #64748b;
+  color: #4f46e5;
   cursor: pointer;
+  font-size: 0.68rem;
+  font-weight: 700;
   padding: 0.1rem 0.3rem;
   border-radius: 0.25rem;
-  font-size: 0.7rem;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.2rem;
-  margin-left: 0.2rem;
 }
 
 .btn-edit-subdomain:hover {
-  background: #dbeafe;
-  color: #1e40af;
+  background: #eef2ff;
 }
 
 .domain-edit-form {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 0.35rem;
 }
 
-.domain-input-wrap {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-
-.domain-input-wrap i {
-  position: absolute;
-  left: 0.45rem;
-  font-size: 0.7rem;
-  color: #64748b;
-  pointer-events: none;
-}
-
 .domain-input {
-  border: 1px solid #2563eb;
-  border-radius: 0.4rem;
-  padding: 0.22rem 0.5rem 0.22rem 1.45rem;
-  font-size: 0.78rem;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.75rem;
+  border: 1px solid #4f46e5;
+  border-radius: 0.35rem;
   font-family: ui-monospace, monospace;
-  color: #0f172a;
-  outline: none;
-  width: 14rem;
-  background: #ffffff;
-}
-
-.domain-input:focus {
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
 }
 
 .btn-domain-done {
-  border: none;
-  background: #2563eb;
-  color: #ffffff;
-  border-radius: 0.4rem;
-  padding: 0.25rem 0.55rem;
+  padding: 0.2rem 0.45rem;
   font-size: 0.72rem;
   font-weight: 700;
+  background: #4f46e5;
+  color: #ffffff;
+  border: none;
+  border-radius: 0.35rem;
   cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
 }
 
-.btn-domain-done:hover {
-  background: #1d4ed8;
+/* MODAL ACTION BOX */
+.action-box {
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+  border-radius: 0.65rem;
+  padding: 0.85rem;
 }
 
-/* REFERENCES CLUSTER: KEYED OUT SENDING REF & MOMO TX */
-.references-cluster {
+.action-box.ok {
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+}
+
+.active-banner {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  justify-content: space-between;
+  gap: 0.75rem;
   flex-wrap: wrap;
-}
-
-.sending-ref-card {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  padding: 0.15rem 0.45rem;
-  border-radius: 0.35rem;
-}
-
-.ref-k {
-  font-size: 0.68rem;
-  font-weight: 800;
-  color: #1e40af;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.2rem;
-}
-
-.ref-v {
-  font-family: ui-monospace, monospace;
-  font-size: 0.78rem;
-  font-weight: 800;
-  color: #1e3a8a;
-  background: #ffffff;
-  padding: 0.05rem 0.3rem;
-  border-radius: 0.25rem;
-  border: 1px solid #dbeafe;
-}
-
-.btn-copy-ref {
-  border: none;
-  background: #dbeafe;
-  color: #1e40af;
-  cursor: pointer;
-  padding: 0.1rem 0.3rem;
-  border-radius: 0.25rem;
-  font-size: 0.68rem;
-  font-weight: 750;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.2rem;
-  transition: all 0.12s ease;
-}
-
-.btn-copy-ref:hover {
-  background: #bfdbfe;
-  color: #172554;
-}
-
-.momo-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  padding: 0.15rem 0.45rem;
-  border-radius: 0.35rem;
-}
-
-.momo-k {
-  font-size: 0.68rem;
-  font-weight: 700;
-  color: #64748b;
-}
-
-.momo-v {
-  font-family: ui-monospace, monospace;
-  font-size: 0.76rem;
-  font-weight: 800;
-  color: #0f172a;
-}
-
-.btn-copy-momo {
-  border: none;
-  background: transparent;
-  color: #64748b;
-  cursor: pointer;
-  padding: 0.08rem 0.25rem;
-  border-radius: 0.25rem;
-  font-size: 0.68rem;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.2rem;
-}
-
-.btn-copy-momo:hover {
-  background: #f1f5f9;
-  color: #0f172a;
-}
-
-/* ACTION BOX */
-.action-box {
   padding: 0.75rem 0.85rem;
   border-radius: 0.65rem;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-}
-
-.action-box.warn {
-  background: #fff7ed;
-  border-color: #fed7aa;
-}
-
-.action-box-inner {
-  display: flex;
-  flex-direction: column;
-  gap: 0.65rem;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
 }
 
 .action-inputs-grid {
   display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 0.65rem;
-  grid-template-columns: 1fr;
 }
-
-@media (min-width: 680px) {
-  .action-inputs-grid {
-    grid-template-columns: 1.2fr 1fr;
-  }
-  .action-inputs-grid .span-full {
-    grid-column: 1 / -1;
-  }
-}
-
-.compact-select {
-  cursor: pointer;
-}
-
 
 .compact-label {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  color: #475569;
 }
 
-.compact-label span {
-  font-size: 0.72rem;
-  font-weight: 700;
-  color: #475569;
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
+.compact-input {
+  padding: 0.4rem 0.6rem;
+  font-size: 0.78rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.45rem;
+  background: #ffffff;
+}
+
+.compact-select {
+  font-weight: 500;
 }
 
 .label-with-help {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.3rem;
 }
 
 .help-btn {
+  background: none;
   border: none;
-  background: transparent;
-  color: #64748b;
+  color: #6366f1;
   cursor: pointer;
   padding: 0;
-  font-size: 0.8rem;
-}
-
-.help-btn:hover {
-  color: #2563eb;
-}
-
-.compact-input {
-  width: 100%;
-  border: 1px solid #cbd5e1;
-  border-radius: 0.45rem;
-  background: #ffffff;
-  padding: 0.42rem 0.65rem;
-  font-size: 0.82rem;
-  color: #0f172a;
-  outline: none;
-}
-
-.compact-input:focus {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
 }
 
 .note-help-box {
+  margin-top: 0.5rem;
   padding: 0.55rem 0.75rem;
   border-radius: 0.5rem;
   background: #eff6ff;
@@ -1861,830 +2268,362 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 0.65rem;
+  gap: 0.5rem;
 }
 
 .note-help-content {
   display: flex;
   align-items: flex-start;
-  gap: 0.5rem;
-  font-size: 0.75rem;
+  gap: 0.45rem;
+  font-size: 0.72rem;
   color: #1e3a8a;
 }
 
-.note-help-content strong {
-  display: block;
-  font-size: 0.78rem;
-  margin-bottom: 0.15rem;
-}
-
-.note-help-content p {
-  margin: 0;
-  line-height: 1.35;
-}
-
 .close-help-btn {
-  border: none;
-  background: transparent;
-  color: #1e40af;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 700;
+  color: #2563eb;
+  background: none;
+  border: none;
   cursor: pointer;
-  white-space: nowrap;
-}
-
-.close-help-btn:hover {
-  text-decoration: underline;
 }
 
 .action-buttons-row {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
 .btn-action-activate {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  padding: 0.52rem 1.1rem;
-  border: none;
-  border-radius: 0.5rem;
-  background: #059669;
-  color: #ffffff;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   font-weight: 750;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.btn-action-activate:hover:not(:disabled) {
+  padding: 0.5rem 0.85rem;
+  border-radius: 0.55rem;
   background: #047857;
-  transform: translateY(-1px);
+  color: #ffffff;
+  border: 1px solid #065f46;
+  cursor: pointer;
+  transition: all 0.12s ease;
 }
 
-.btn-action-activate:disabled {
-  opacity: 0.65;
-  cursor: not-allowed;
+.btn-action-activate:hover {
+  background: #065f46;
 }
 
 .btn-action-reject {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  padding: 0.52rem 0.95rem;
-  border: 1px solid #cbd5e1;
-  border-radius: 0.5rem;
-  background: #ffffff;
-  color: #dc2626;
-  font-size: 0.82rem;
+  gap: 0.4rem;
+  font-size: 0.78rem;
   font-weight: 700;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.btn-action-reject:hover:not(:disabled) {
-  background: #fee2e2;
-  border-color: #fca5a5;
-}
-
-.student-helper-tip {
-  font-size: 0.74rem;
-  color: #475569;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-/* PROGRESS BAR LOADING COMPONENT */
-.activation-progress-box {
-  padding: 0.75rem 0.85rem;
+  padding: 0.5rem 0.85rem;
   border-radius: 0.55rem;
   background: #ffffff;
-  border: 1px solid #93c5fd;
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08);
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  cursor: pointer;
+}
+
+.btn-action-reject:hover {
+  background: #fef2f2;
+}
+
+.btn-action-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 0.5rem 0.85rem;
+  border-radius: 0.55rem;
+  background: #f59e0b;
+  color: #ffffff;
+  border: 1px solid #d97706;
+  cursor: pointer;
+}
+
+.activation-progress-box {
+  padding: 0.5rem 0;
 }
 
 .progress-meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 0.82rem;
-  font-weight: 750;
-  color: #1e3a8a;
-}
-
-.progress-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-}
-
-.progress-num {
-  font-family: ui-monospace, monospace;
-  font-size: 0.88rem;
-  color: #2563eb;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #0f172a;
 }
 
 .progress-track {
-  width: 100%;
-  height: 0.55rem;
-  border-radius: 999px;
+  height: 6px;
   background: #e2e8f0;
+  border-radius: 999px;
   overflow: hidden;
-  position: relative;
+  margin-top: 0.35rem;
 }
 
 .progress-fill {
   height: 100%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #2563eb, #7c3aed, #059669);
-  transition: width 0.35s ease-out;
+  background: #4f46e5;
+  transition: width 0.3s ease;
 }
 
-.progress-sub {
-  margin: 0;
-  font-size: 0.72rem;
-  color: #64748b;
-}
-
-/* RETRY ROW */
-.retry-row {
+/* MODAL FOOTER */
+.modal-footer {
+  padding: 0.85rem 1.25rem;
+  border-top: 1px solid #f1f5f9;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 0.65rem;
+  gap: 0.75rem;
+  background: #f8fafc;
 }
 
-.retry-text {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-size: 0.8rem;
-  font-weight: 650;
-  color: #9a3412;
-}
-
-.btn-action-retry {
+.btn-footer-receipt {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  padding: 0.45rem 0.95rem;
-  border: none;
-  border-radius: 0.5rem;
-  background: #d97706;
-  color: #ffffff;
-  font-size: 0.8rem;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.btn-action-retry:hover:not(:disabled) {
-  background: #b45309;
-}
-
-/* ACTIVE FOOTER */
-.active-footer {
-  display: flex;
-  flex-direction: column;
   gap: 0.4rem;
-  padding-top: 0.35rem;
-  border-top: 1px solid #f1f5f9;
   font-size: 0.78rem;
-  color: #059669;
-}
-
-@media (min-width: 600px) {
-  .active-footer {
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-  }
-}
-
-.active-left {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-.active-right {
-  display: flex;
-  gap: 0.35rem;
-}
-
-.btn-micro-link {
-  border: 1px solid #cbd5e1;
+  font-weight: 700;
+  padding: 0.45rem 0.85rem;
+  border-radius: 0.55rem;
   background: #ffffff;
   color: #334155;
-  padding: 0.18rem 0.48rem;
-  border-radius: 0.35rem;
-  font-size: 0.72rem;
-  font-weight: 650;
+  border: 1px solid #cbd5e1;
   cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  transition: all 0.12s ease;
 }
 
-.btn-micro-link:hover {
-  background: #f8fafc;
-  border-color: #94a3b8;
+.btn-footer-receipt:hover {
+  background: #f1f5f9;
   color: #0f172a;
+}
+
+.btn-footer-close {
+  padding: 0.45rem 1rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  border-radius: 0.55rem;
+  background: #0f172a;
+  color: #ffffff;
+  border: 1px solid #0f172a;
+  cursor: pointer;
+}
+
+.btn-footer-close:hover {
+  background: #1e293b;
 }
 
 /* EMPTY STATE */
 .empty-state {
-  padding: 3rem 1.5rem;
+  padding: 3.5rem 1.5rem;
   text-align: center;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.5rem;
 }
 
 .empty-icon-wrap {
-  width: 3rem;
-  height: 3rem;
-  border-radius: 0.75rem;
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 999px;
   background: #f1f5f9;
-  color: #64748b;
   display: grid;
   place-items: center;
-  font-size: 1.35rem;
-  margin-bottom: 0.35rem;
+  font-size: 1.5rem;
+  color: #94a3b8;
+  margin-bottom: 0.5rem;
 }
 
 .empty-state h3 {
-  margin: 0;
-  font-size: 1rem;
+  font-size: 1.05rem;
   font-weight: 750;
   color: #0f172a;
+  margin: 0;
 }
 
 .empty-state p {
-  margin: 0;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   color: #64748b;
+  margin: 0;
+  max-width: 320px;
 }
 
 .btn-clear-filter {
-  margin-top: 0.65rem;
-  padding: 0.45rem 1rem;
-  border-radius: 0.5rem;
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
-  color: #1e3a5f;
-  font-size: 0.8rem;
+  margin-top: 0.5rem;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.78rem;
   font-weight: 700;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.5rem;
+  color: #334155;
   cursor: pointer;
 }
 
-.btn-clear-filter:hover {
-  background: #f8fafc;
-  border-color: #1e3a5f;
-}
-
-/* ================= DARK THEME OVERRIDES ================= */
-:global(.dark) .orders {
-  background: #0b1120;
-}
-
-:global(.dark) .orders-head {
-  background: #0f172a;
-  border-bottom-color: #1e293b;
-}
-
-:global(.dark) .orders-body {
-  background: #0b1120;
-}
-
-:global(.dark) .compact-select {
-  background: #0f172a;
-  border-color: #334155;
-  color: #f8fafc;
-  color-scheme: dark;
-}
-
-
-:global(.dark) .head-btn {
-  background: #1e293b;
-  border-color: #334155;
-  color: #cbd5e1;
-}
-
-:global(.dark) .head-btn:hover {
-  background: #334155;
-  color: #ffffff;
-}
-
-:global(.dark) .stat-card,
-:global(.dark) .filters-card,
-:global(.dark) .orders-panel {
-  background: #0f172a;
-  border-color: #1e293b;
-}
-
-:global(.dark) .stat-k {
-  color: #94a3b8;
-}
-
-:global(.dark) .stat-v {
-  color: #f8fafc;
-}
-
-:global(.dark) .stat-s {
+.state-msg {
+  padding: 3rem;
+  text-align: center;
   color: #64748b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
 }
 
-:global(.dark) .search-input {
-  background: #1e293b;
-  border-color: #334155;
-  color: #f8fafc;
-}
-
-:global(.dark) .search-input:focus {
-  background: #0b1329;
-  border-color: #3b82f6;
-}
-
-:global(.dark) .search-match-tag {
-  background: #1e3a8a;
-  border-color: #3b82f6;
-  color: #bfdbfe;
-}
-
-:global(.dark) .filter-tab {
-  background: #1e293b;
-  border-color: #334155;
-  color: #94a3b8;
-}
-
-:global(.dark) .filter-tab:hover {
-  background: #334155;
-  color: #ffffff;
-}
-
-:global(.dark) .filter-tab.on {
-  background: #2563eb;
-  border-color: #2563eb;
-  color: #ffffff;
-}
-
-:global(.dark) .flow-count {
-  background: #1e293b;
-  color: #cbd5e1;
-}
-
-:global(.dark) .panel-head-text h2 {
-  color: #f8fafc;
-}
-
-:global(.dark) .panel-sub {
-  color: #94a3b8;
-}
-
-:global(.dark) .order-card-slim {
-  background: #0f172a;
-  border-color: #1e293b;
-}
-
-:global(.dark) .order-card-slim:hover {
-  border-color: #334155;
-}
-
-:global(.dark) .inv-badge {
-  background: #1e293b;
-  color: #93c5fd;
-  border: 1px solid #334155;
-}
-
-:global(.dark) .kind-badge {
-  background: #1e293b;
-  color: #94a3b8;
-}
-
-:global(.dark) .customer-name-btn {
-  color: #f8fafc;
-}
-
-:global(.dark) .customer-name-btn:hover {
-  color: #60a5fa;
-}
-
-:global(.dark) .customer-email {
-  color: #94a3b8;
-}
-
-:global(.dark) .btn-mini-copy {
-  background: #1e293b;
-  color: #94a3b8;
-}
-
-:global(.dark) .btn-mini-copy:hover {
-  background: #334155;
-  color: #ffffff;
-}
-
-:global(.dark) .price-val {
-  color: #f8fafc;
-}
-
-:global(.dark) .btn-receipt-view {
-  background: #1e293b;
-  border-color: #334155;
-  color: #cbd5e1;
-}
-
-:global(.dark) .btn-receipt-view:hover {
-  background: #334155;
-  color: #ffffff;
-}
-
-:global(.dark) .card-meta-row {
-  background: #0b1329;
-  border-color: #1e293b;
-}
-
-:global(.dark) .plan-tag {
-  color: #f8fafc;
-}
-
-:global(.dark) .domain-pill {
-  background: #1e3a8a;
-  border-color: #2563eb;
-  color: #93c5fd;
-}
-
-:global(.dark) .domain-input {
-  background: #0f172a;
-  color: #f8fafc;
-  border-color: #3b82f6;
-}
-
-:global(.dark) .sending-ref-card {
-  background: #172554;
-  border-color: #2563eb;
-}
-
-:global(.dark) .ref-k {
-  color: #93c5fd;
-}
-
-:global(.dark) .ref-v {
-  background: #0f172a;
-  color: #60a5fa;
-  border-color: #1d4ed8;
-}
-
-:global(.dark) .btn-copy-ref {
-  background: #1e3a8a;
-  color: #bfdbfe;
-}
-
-:global(.dark) .btn-copy-ref:hover {
-  background: #2563eb;
-  color: #ffffff;
-}
-
-:global(.dark) .momo-pill {
-  background: #0f172a;
-  border-color: #334155;
-}
-
-:global(.dark) .momo-k {
-  color: #94a3b8;
-}
-
-:global(.dark) .momo-v {
-  color: #f8fafc;
-}
-
-:global(.dark) .action-box {
-  background: #0b1329;
-  border-color: #1e293b;
-}
-
-:global(.dark) .compact-label span {
-  color: #94a3b8;
-}
-
-:global(.dark) .compact-input {
-  background: #0f172a;
-  border-color: #334155;
-  color: #f8fafc;
-}
-
-:global(.dark) .compact-input:focus {
-  border-color: #3b82f6;
-}
-
-:global(.dark) .note-help-box {
-  background: #0c192c;
-  border-color: #1e3a8a;
-}
-
-:global(.dark) .note-help-content {
-  color: #bfdbfe;
-}
-
-:global(.dark) .btn-action-reject {
-  background: #1e293b;
-  border-color: #7f1d1d;
-  color: #f87171;
-}
-
-:global(.dark) .student-helper-tip {
-  color: #94a3b8;
-}
-
-:global(.dark) .btn-micro-link {
-  background: #1e293b;
-  border-color: #334155;
-  color: #cbd5e1;
-}
-
-:global(.dark) .btn-micro-link:hover {
-  background: #334155;
-  color: #ffffff;
-}
-
-:global(.dark) .empty-icon-wrap {
-  background: #1e293b;
-  color: #94a3b8;
-}
-
-:global(.dark) .empty-state h3 {
-  color: #f8fafc;
-}
-
-:global(.dark) .empty-state p {
-  color: #94a3b8;
-}
-
-:global(.dark) .btn-clear-filter {
-  background: #1e293b;
-  border-color: #334155;
-  color: #93c5fd;
-}
-</style>
-
-<style>
-/* Unscoped global dark theme overrides to guarantee complete dark mode styling on Orders */
-html.dark .orders,
-html.control-ui.dark .orders {
-  background: #0b1120 !important;
-  color: #f8fafc !important;
-}
-
+/* DARK MODE SUPPORT */
 html.dark .orders-head,
 html.control-ui.dark .orders-head {
-  background: #0f172a !important;
-  border-bottom-color: #1e293b !important;
-}
-
-html.dark .orders-body,
-html.control-ui.dark .orders-body {
-  background: #0b1120 !important;
-}
-
-html.dark .compact-select,
-html.control-ui.dark .compact-select {
-  background: #0f172a !important;
-  border-color: #334155 !important;
-  color: #f8fafc !important;
-  color-scheme: dark !important;
+  background: #0b1329;
+  border-color: #1e293b;
 }
 
 html.dark .head-btn,
 html.control-ui.dark .head-btn {
-  background: #1e293b !important;
-  border-color: #334155 !important;
-  color: #cbd5e1 !important;
-}
-
-html.dark .head-btn:hover,
-html.control-ui.dark .head-btn:hover {
-  background: #334155 !important;
-  color: #ffffff !important;
+  background: #1e293b;
+  border-color: #334155;
+  color: #cbd5e1;
 }
 
 html.dark .stat-card,
-html.control-ui.dark .stat-card,
-html.dark .filters-card,
-html.control-ui.dark .filters-card,
-html.dark .orders-panel,
-html.control-ui.dark .orders-panel {
-  background: #0f172a !important;
-  border-color: #1e293b !important;
-}
-
-html.dark .stat-k,
-html.control-ui.dark .stat-k {
-  color: #94a3b8 !important;
+html.control-ui.dark .stat-card {
+  background: #0f172a;
+  border-color: #1e293b;
 }
 
 html.dark .stat-v,
 html.control-ui.dark .stat-v {
-  color: #f8fafc !important;
+  color: #f8fafc;
 }
 
-html.dark .stat-s,
-html.control-ui.dark .stat-s {
-  color: #64748b !important;
+html.dark .filters-card,
+html.dark .orders-panel,
+html.control-ui.dark .filters-card,
+html.control-ui.dark .orders-panel {
+  background: #0f172a;
+  border-color: #1e293b;
 }
 
-html.dark .search-input,
-html.control-ui.dark .search-input {
-  background: #1e293b !important;
-  border-color: #334155 !important;
-  color: #f8fafc !important;
-}
-
-html.dark .search-input:focus,
-html.control-ui.dark .search-input:focus {
-  background: #0b1329 !important;
-  border-color: #3b82f6 !important;
-}
-
-html.dark .filter-tab,
-html.control-ui.dark .filter-tab {
-  background: #1e293b !important;
-  border-color: #334155 !important;
-  color: #94a3b8 !important;
-}
-
-html.dark .filter-tab:hover,
-html.control-ui.dark .filter-tab:hover {
-  background: #334155 !important;
-  color: #ffffff !important;
-}
-
-html.dark .filter-tab.on,
-html.control-ui.dark .filter-tab.on {
-  background: #2563eb !important;
-  border-color: #2563eb !important;
-  color: #ffffff !important;
+html.dark .panel-head,
+html.dark .panel-foot-pagination,
+html.control-ui.dark .panel-head,
+html.control-ui.dark .panel-foot-pagination {
+  border-color: #1e293b;
 }
 
 html.dark .panel-head-text h2,
 html.control-ui.dark .panel-head-text h2 {
-  color: #f8fafc !important;
+  color: #f8fafc;
 }
 
-html.dark .panel-sub,
-html.control-ui.dark .panel-sub {
-  color: #94a3b8 !important;
+html.dark .search-input,
+html.control-ui.dark .search-input {
+  background: #1e293b;
+  border-color: #334155;
+  color: #f8fafc;
 }
 
-html.dark .order-card-slim,
-html.control-ui.dark .order-card-slim {
-  background: #0f172a !important;
-  border-color: #1e293b !important;
+html.dark .filter-tab,
+html.control-ui.dark .filter-tab {
+  background: #1e293b;
+  border-color: #334155;
+  color: #94a3b8;
 }
 
-html.dark .order-card-slim:hover,
-html.control-ui.dark .order-card-slim:hover {
-  border-color: #334155 !important;
+html.dark .filter-tab.on,
+html.control-ui.dark .filter-tab.on {
+  background: #38bdf8;
+  border-color: #38bdf8;
+  color: #0f172a;
+}
+
+html.dark .orders-table th,
+html.control-ui.dark .orders-table th {
+  background: #1e293b;
+  border-color: #334155;
+  color: #94a3b8;
+}
+
+html.dark .orders-table td,
+html.control-ui.dark .orders-table td {
+  border-color: #1e293b;
+}
+
+html.dark .order-row:hover,
+html.control-ui.dark .order-row:hover {
+  background: #1e293b;
 }
 
 html.dark .inv-badge,
-html.control-ui.dark .inv-badge {
-  background: #1e293b !important;
-  color: #93c5fd !important;
-  border: 1px solid #334155 !important;
-}
-
-html.dark .customer-name-btn,
-html.control-ui.dark .customer-name-btn {
-  color: #f8fafc !important;
-}
-
-html.dark .customer-email,
-html.control-ui.dark .customer-email {
-  color: #94a3b8 !important;
-}
-
-html.dark .price-val,
-html.control-ui.dark .price-val {
-  color: #f8fafc !important;
-}
-
-html.dark .card-meta-row,
-html.control-ui.dark .card-meta-row {
-  background: #0b1329 !important;
-  border-color: #1e293b !important;
-}
-
 html.dark .plan-tag,
-html.control-ui.dark .plan-tag {
-  color: #e2e8f0 !important;
+html.dark .momo-inline-box,
+html.control-ui.dark .inv-badge,
+html.control-ui.dark .plan-tag,
+html.control-ui.dark .momo-inline-box {
+  background: #1e293b;
+  border-color: #334155;
+  color: #f8fafc;
 }
 
-html.dark .sending-ref-card,
-html.control-ui.dark .sending-ref-card,
-.dark .sending-ref-card {
-  background: #172554 !important;
-  border-color: #1d4ed8 !important;
+html.dark .cust-name-link,
+html.control-ui.dark .cust-name-link {
+  color: #f8fafc;
 }
 
-html.dark .ref-k,
-html.control-ui.dark .ref-k,
-.dark .ref-k {
-  color: #bfdbfe !important;
+html.dark .btn-tbl-comp,
+html.dark .btn-tbl-receipt,
+html.dark .btn-page-nav,
+html.dark .btn-page-num,
+html.control-ui.dark .btn-tbl-comp,
+html.control-ui.dark .btn-tbl-receipt,
+html.control-ui.dark .btn-page-nav,
+html.control-ui.dark .btn-page-num {
+  background: #1e293b;
+  border-color: #334155;
+  color: #cbd5e1;
 }
 
-html.dark .ref-v,
-html.control-ui.dark .ref-v,
-.dark .ref-v,
-html.dark code.ref-v,
-html.control-ui.dark code.ref-v,
-.dark code.ref-v {
-  background: #0f172a !important;
-  color: #60a5fa !important;
-  border: 1.5px solid #1d4ed8 !important;
-  text-shadow: none !important;
+html.dark .modal-dialog,
+html.control-ui.dark .modal-dialog {
+  background: #0f172a;
+  border-color: #334155;
 }
 
-html.dark .btn-copy-ref,
-html.control-ui.dark .btn-copy-ref,
-.dark .btn-copy-ref {
-  background: #1e3a8a !important;
-  color: #bfdbfe !important;
+html.dark .modal-header,
+html.dark .modal-footer,
+html.control-ui.dark .modal-header,
+html.control-ui.dark .modal-footer {
+  border-color: #1e293b;
+  background: #0b1329;
 }
 
-html.dark .btn-copy-ref:hover,
-html.control-ui.dark .btn-copy-ref:hover,
-.dark .btn-copy-ref:hover {
-  background: #2563eb !important;
-  color: #ffffff !important;
+html.dark .modal-card,
+html.dark .metric-mini-box,
+html.control-ui.dark .modal-card,
+html.control-ui.dark .metric-mini-box {
+  background: #1e293b;
+  border-color: #334155;
 }
 
-html.dark .momo-pill,
-html.control-ui.dark .momo-pill,
-.dark .momo-pill {
-  background: #0f172a !important;
-  border-color: #334155 !important;
-}
-
-html.dark .momo-k,
-html.control-ui.dark .momo-k,
-.dark .momo-k {
-  color: #94a3b8 !important;
-}
-
-html.dark .momo-v,
-html.control-ui.dark .momo-v,
-.dark .momo-v,
-html.dark code.momo-v,
-html.control-ui.dark code.momo-v,
-.dark code.momo-v {
-  background: #1e293b !important;
-  color: #f8fafc !important;
-  border: 1px solid #334155 !important;
-}
-
-html.dark .btn-copy-momo,
-html.control-ui.dark .btn-copy-momo,
-.dark .btn-copy-momo {
-  background: #1e293b !important;
-  color: #94a3b8 !important;
-}
-
-html.dark .btn-copy-momo:hover,
-html.control-ui.dark .btn-copy-momo:hover,
-.dark .btn-copy-momo:hover {
-  background: #334155 !important;
-  color: #f8fafc !important;
-}
-
-html.dark .action-box,
-html.control-ui.dark .action-box {
-  background: #0b1329 !important;
-  border-color: #1e293b !important;
+html.dark .card-title,
+html.dark .row-val,
+html.dark .metric-mini-val,
+html.control-ui.dark .card-title,
+html.control-ui.dark .row-val,
+html.control-ui.dark .metric-mini-val {
+  color: #f8fafc;
 }
 
 html.dark .compact-input,
 html.control-ui.dark .compact-input {
-  background: #0f172a !important;
-  border-color: #334155 !important;
-  color: #f8fafc !important;
-}
-
-html.dark .note-help-box,
-html.control-ui.dark .note-help-box {
-  background: #0f172a !important;
-  border-color: #1e3a8a !important;
-}
-
-html.dark .note-help-content,
-html.control-ui.dark .note-help-content {
-  color: #94a3b8 !important;
+  background: #0f172a;
+  border-color: #334155;
+  color: #f8fafc;
 }
 </style>
