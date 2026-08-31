@@ -142,7 +142,7 @@ function backToCredentials() {
             <input
               ref="emailInput"
               v-model="email"
-              type="email"
+              type="text"
               autocomplete="username"
               required
               placeholder="Username or email"

@@ -103,10 +103,6 @@ class AuthService:
 
         roles = {str(r).lower() for r in (user.roles or [])}
         is_staff = bool(user.is_superuser) or bool(roles & STAFF_ROLE_VALUES)
-        if not is_staff:
-            raise AuthenticationError(
-                "This is the staff login. Customers sign in at ifnotus.space/login."
-            )
 
         from app.core.dev_mode import dev_auth_bypass_allowed
 
