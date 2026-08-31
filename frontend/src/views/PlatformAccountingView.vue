@@ -7,16 +7,28 @@ import UiAlert from '@/components/ui/UiAlert.vue'
 import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import { platformAdminApi } from '@/api'
 import { useThemeStore } from '@/stores/theme'
+import { useAuthStore } from '@/stores/auth'
+import { usePermissions } from '@/composables/usePermissions'
+import { Permission } from '@/lib/permissions'
+import { isPlatformOwner, isBillingAgent } from '@/lib/roles'
 import type { StaffAccountingLedgerItem, StaffAccountingSummary } from '@/types/staffPlatform'
 
 const router = useRouter()
 const theme = useThemeStore()
+const auth = useAuthStore()
+const { can } = usePermissions()
+
+const canManageBilling = computed(
+  () => isPlatformOwner(auth.user) || isBillingAgent(auth.user) || can(Permission.BILLING_MANAGE),
+)
+
 const loading = ref(true)
 const error = ref('')
 const summary = ref<StaffAccountingSummary | null>(null)
 const ledger = ref<StaffAccountingLedgerItem[]>([])
 const ledgerFilter = ref<'all' | 'cash' | 'all_paid' | 'submitted' | 'pending' | 'comp' | 'rejected'>('all')
 const searchQuery = ref('')
+const busyRowId = ref<string | null>(null)
 const copiedTxId = ref<string | null>(null)
 const copiedInvId = ref<string | null>(null)
 const showBillingAgentGuide = ref(false)
@@ -385,6 +397,39 @@ function openCustomer(id: string) {
 
 function openReceipt(id: string) {
   router.push({ name: 'platform-order-receipt', params: { id } })
+}
+
+async function toggleRowComplimentary(row: StaffAccountingLedgerItem) {
+  if (!canManageBilling.value) return
+  const isComp =
+    row.entry_type === 'complimentary' ||
+    row.payment_method === 'staff' ||
+    row.payment_method === 'complimentary' ||
+    row.payment_method === 'free'
+  const newMethod = isComp ? 'momo' : 'complimentary'
+  const newStatus = isComp ? row.payment_status || 'pending' : 'paid'
+  const promptText = isComp
+    ? `Revert transaction #${row.invoice_number || row.id.slice(0, 8)} from Complimentary back to regular paid/MoMo?`
+    : `Convert transaction #${row.invoice_number || row.id.slice(0, 8)} to COMPLIMENTARY Free Grant (0.00 GHS collected)? This will deduct it from cash totals.`
+  if (!confirm(promptText)) return
+
+  busyRowId.value = row.id
+  try {
+    await platformAdminApi.updateOrderPaymentStatus(row.id, {
+      payment_method: newMethod,
+      payment_status: newStatus,
+      amount_received: isComp ? Number(row.invoiced || 0) : 0,
+      notes: isComp
+        ? 'Reverted from complimentary grant'
+        : 'Converted to complimentary grant by billing agent',
+    })
+    await load()
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { error?: { message?: string } } } }
+    alert(err.response?.data?.error?.message ?? 'Failed to update complimentary status.')
+  } finally {
+    busyRowId.value = null
+  }
 }
 
 function setLedgerBucket(bucket: typeof ledgerFilter.value) {
@@ -991,10 +1036,25 @@ watch([dateFrom, dateTo, ledgerFilter], load)
 
                     <!-- ACTIONS -->
                     <td class="text-right">
-                      <button type="button" class="btn-receipt-view" @click="openReceipt(row.id)">
-                        <i class="fa-solid fa-receipt" aria-hidden="true" />
-                        {{ row.payment_status === 'paid' ? 'Receipt' : 'Invoice' }}
-                      </button>
+                      <div class="flex items-center justify-end gap-1.5">
+                        <button
+                          v-if="canManageBilling"
+                          type="button"
+                          class="btn-row-comp"
+                          :class="{ 'is-comp': row.entry_type === 'complimentary' || row.payment_method === 'complimentary' || row.payment_method === 'staff' || row.payment_method === 'free' }"
+                          :disabled="busyRowId === row.id"
+                          :title="(row.entry_type === 'complimentary' || row.payment_method === 'complimentary' || row.payment_method === 'staff' || row.payment_method === 'free') ? 'Revert from complimentary' : 'Grant as complimentary (0.00 GHS)'"
+                          @click="toggleRowComplimentary(row)"
+                        >
+                          <i class="fa-solid" :class="(row.entry_type === 'complimentary' || row.payment_method === 'complimentary' || row.payment_method === 'staff' || row.payment_method === 'free') ? 'fa-rotate-left' : 'fa-gift'" />
+                          <span>{{ (row.entry_type === 'complimentary' || row.payment_method === 'complimentary' || row.payment_method === 'staff' || row.payment_method === 'free') ? 'Revert' : 'Comp' }}</span>
+                        </button>
+
+                        <button type="button" class="btn-receipt-view" @click="openReceipt(row.id)">
+                          <i class="fa-solid fa-receipt" aria-hidden="true" />
+                          {{ row.payment_status === 'paid' ? 'Receipt' : 'Invoice' }}
+                        </button>
+                      </div>
                     </td>
                   </tr>
 
@@ -1930,6 +1990,32 @@ watch([dateFrom, dateTo, ledgerFilter], load)
 .entry-pill[data-type='complimentary'] { background: #f3e8ff; color: #6b21a8; }
 .entry-pill[data-type='rejected'],
 .entry-pill[data-type='failed'] { background: #fee2e2; color: #991b1b; }
+
+.btn-row-comp {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.22rem 0.5rem;
+  border-radius: 0.4rem;
+  border: 1px solid #c084fc;
+  background: #fdf4ff;
+  color: #7e22ce;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.btn-row-comp:hover {
+  background: #f3e8ff;
+  border-color: #a855f7;
+}
+
+.btn-row-comp.is-comp {
+  border-color: #cbd5e1;
+  background: #f1f5f9;
+  color: #475569;
+}
 
 .btn-receipt-view {
   display: inline-flex;

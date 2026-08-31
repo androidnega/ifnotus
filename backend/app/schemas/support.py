@@ -20,6 +20,7 @@ class SupportTicketCreateRequest(SchemaBase):
 
 class SupportTicketMessageCreateRequest(SchemaBase):
     body: str = Field(min_length=1, max_length=20000)
+    send_direct_message: bool = False
 
 
 class SupportTicketMessageResponse(SchemaBase):

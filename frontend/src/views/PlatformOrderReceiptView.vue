@@ -6,9 +6,20 @@ import UiAlert from '@/components/ui/UiAlert.vue'
 import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import { platformAdminApi } from '@/api'
 import type { CustomerOrder } from '@/types/platform'
+import { useAuthStore } from '@/stores/auth'
+import { usePermissions } from '@/composables/usePermissions'
+import { Permission } from '@/lib/permissions'
+import { isPlatformOwner, isBillingAgent } from '@/lib/roles'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
+const { can } = usePermissions()
+
+const canManageBilling = computed(
+  () => isPlatformOwner(auth.user) || isBillingAgent(auth.user) || can(Permission.BILLING_MANAGE),
+)
+
 const loading = ref(true)
 const error = ref('')
 const order = ref<CustomerOrder | null>(null)
@@ -20,11 +31,27 @@ const documentKind = ref<'invoice' | 'receipt'>('invoice')
 const supportHours = ref('Monday–Saturday, 08:00–20:00 GMT')
 const supportWhatsapp = ref('+233541069241')
 
+const busyAction = ref(false)
+const actionMsg = ref('')
+const showPaymentModal = ref(false)
+const editForm = ref({
+  payment_status: 'paid',
+  payment_method: 'complimentary',
+  amount_received: 0,
+  notes: '',
+})
+
+const isComplimentary = computed(() => {
+  const m = (order.value?.payment_method || '').toLowerCase()
+  return ['staff', 'complimentary', 'free', 'comp'].includes(m)
+})
+
 const isPaid = computed(() => (order.value?.payment_status || '').toLowerCase() === 'paid')
 const isReceipt = computed(() => documentKind.value === 'receipt' || isPaid.value)
 
 const statusLabel = computed(() => {
   const s = (order.value?.payment_status || 'pending').toLowerCase()
+  if (isComplimentary.value && s === 'paid') return 'Complimentary (Free Grant)'
   if (s === 'submitted') return 'Awaiting confirmation'
   if (s === 'paid') return 'Paid'
   if (s === 'pending') return 'Pending payment'
@@ -68,6 +95,78 @@ function money(value: number | string | undefined | null) {
 
 function printDoc() {
   window.print()
+}
+
+function openPaymentModal() {
+  if (!order.value) return
+  editForm.value = {
+    payment_status: order.value.payment_status || 'paid',
+    payment_method: order.value.payment_method || (isComplimentary.value ? 'complimentary' : 'momo'),
+    amount_received: Number(
+      order.value.payment_amount_received ??
+        (isComplimentary.value ? 0 : order.value.total_price),
+    ),
+    notes: order.value.payment_notes || '',
+  }
+  showPaymentModal.value = true
+}
+
+async function savePaymentSettings() {
+  if (!order.value) return
+  busyAction.value = true
+  try {
+    await platformAdminApi.updateOrderPaymentStatus(order.value.id, {
+      payment_status: editForm.value.payment_status,
+      payment_method: editForm.value.payment_method,
+      amount_received:
+        editForm.value.payment_method === 'complimentary'
+          ? 0
+          : editForm.value.amount_received,
+      notes: editForm.value.notes,
+    })
+    showPaymentModal.value = false
+    actionMsg.value = 'Payment details & receipt status updated.'
+    await load()
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { error?: { message?: string } } } }
+    alert(err.response?.data?.error?.message ?? 'Failed to update payment status.')
+  } finally {
+    busyAction.value = false
+  }
+}
+
+async function toggleComplimentary() {
+  if (!order.value || !canManageBilling.value) return
+  const isComp = isComplimentary.value
+  const newMethod = isComp ? 'momo' : 'complimentary'
+  const newStatus = isComp ? 'pending' : 'paid'
+  const promptText = isComp
+    ? `Revert receipt #${invoiceNo.value} from Complimentary back to regular paid?`
+    : `Grant receipt #${invoiceNo.value} as COMPLIMENTARY (0.00 GHS collected)? This will deduct it from collected cash revenue and mark it as complimentary.`
+  if (!confirm(promptText)) return
+
+  busyAction.value = true
+  actionMsg.value = ''
+  try {
+    await platformAdminApi.updateOrderPaymentStatus(order.value.id, {
+      payment_method: newMethod,
+      payment_status: newStatus,
+      amount_received: isComp ? Number(order.value.total_price) : 0,
+      notes: isComp
+        ? 'Reverted from complimentary grant'
+        : 'Converted to complimentary grant by billing agent',
+    })
+    actionMsg.value = isComp
+      ? 'Reverted to regular invoice/receipt.'
+      : 'Updated to Complimentary Grant (0.00 GHS).'
+    await load()
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { error?: { message?: string } } } }
+    actionMsg.value =
+      err.response?.data?.error?.message ?? 'Failed to update complimentary status.'
+  } finally {
+    busyAction.value = false
+  }
 }
 
 async function load() {
@@ -118,6 +217,55 @@ watch(() => route.params.id, load)
         </template>
       </UiPageHeader>
 
+      <!-- Billing Agent Actions Bar (Billing Agent only) -->
+      <div v-if="order && canManageBilling" class="billing-mgmt-bar no-print">
+        <div class="billing-mgmt-info">
+          <div class="billing-mgmt-title">
+            <i class="fa-solid fa-file-invoice-dollar text-indigo-500" />
+            <span>Billing &amp; Receipt Controls</span>
+            <span v-if="isComplimentary" class="pill-comp-badge">
+              <i class="fa-solid fa-gift" /> Complimentary Grant
+            </span>
+            <span v-else class="pill-paid-badge">
+              <i class="fa-solid fa-credit-card" /> {{ order.payment_method?.toUpperCase() || 'MOMO' }}
+            </span>
+          </div>
+          <p class="billing-mgmt-desc">
+            {{ isComplimentary
+              ? 'This receipt is recorded as a 100% complimentary grant (0.00 GHS collected cash).'
+              : `Current collection status: ${statusLabel}. You can update payment status or grant as complimentary.`
+            }}
+          </p>
+        </div>
+
+        <div class="billing-mgmt-actions">
+          <button
+            type="button"
+            class="btn-comp-toggle"
+            :class="{ 'is-comp': isComplimentary }"
+            :disabled="busyAction"
+            @click="toggleComplimentary"
+          >
+            <i class="fa-solid" :class="isComplimentary ? 'fa-rotate-left' : 'fa-gift'" />
+            <span>{{ isComplimentary ? 'Revert from Comp' : 'Grant as Complimentary' }}</span>
+          </button>
+
+          <button
+            type="button"
+            class="btn-edit-pay"
+            :disabled="busyAction"
+            @click="openPaymentModal"
+          >
+            <i class="fa-solid fa-pen-to-square" />
+            <span>Edit Payment &amp; Status</span>
+          </button>
+        </div>
+      </div>
+
+      <UiAlert v-if="actionMsg" variant="success" class="no-print mt-2" @close="actionMsg = ''">
+        {{ actionMsg }}
+      </UiAlert>
+
       <UiAlert v-if="error" variant="error" class="no-print">{{ error }}</UiAlert>
       <p v-else-if="loading" class="state no-print">Loading…</p>
 
@@ -152,6 +300,7 @@ watch(() => route.params.id, load)
               <div><dt>Issue date</dt><dd>{{ issuedOn }}</dd></div>
               <div v-if="paidOn"><dt>Paid on</dt><dd>{{ paidOn }}</dd></div>
               <div v-if="order.domain_name"><dt>Site</dt><dd>{{ order.domain_name }}</dd></div>
+              <div><dt>Payment method</dt><dd class="font-semibold">{{ isComplimentary ? 'Complimentary Free Grant' : (order.payment_method?.toUpperCase() || 'MoMo') }}</dd></div>
               <div><dt>Currency</dt><dd>{{ order.currency }}</dd></div>
             </dl>
           </div>
@@ -194,12 +343,21 @@ watch(() => route.params.id, load)
               <span>Subtotal</span>
               <span>{{ order.currency }} {{ money(order.total_price) }}</span>
             </div>
+            <div v-if="isComplimentary" class="totals-line comp-discount-line">
+              <span>Complimentary grant (100%)</span>
+              <span>- {{ order.currency }} {{ money(order.total_price) }}</span>
+            </div>
             <div class="totals-line totals-grand">
               <span>{{ isReceipt ? 'Amount paid' : 'Total due' }}</span>
-              <strong>{{ order.currency }} {{ money(order.total_price) }}</strong>
+              <strong>{{ order.currency }} {{ isComplimentary ? '0.00 (Comp)' : money(order.payment_amount_received ?? order.total_price) }}</strong>
             </div>
           </div>
         </div>
+
+        <p v-if="isComplimentary" class="sheet-comp-notice">
+          <i class="fa-solid fa-gift mr-1 text-purple-600" />
+          <strong>COMPLIMENTARY GRANT:</strong> This invoice was fulfilled as a complimentary courtesy by IFNOTUS Billing. Cash due is 0.00 GHS.
+        </p>
 
         <p v-if="order.momo_transaction_id" class="sheet-note">
           MoMo transaction ID: <code>{{ order.momo_transaction_id }}</code>
@@ -216,6 +374,57 @@ watch(() => route.params.id, load)
           </p>
         </footer>
       </article>
+
+      <!-- Edit Payment Modal for Billing Agents -->
+      <div v-if="showPaymentModal" class="modal-backdrop no-print" @click.self="showPaymentModal = false">
+        <div class="modal-card">
+          <div class="modal-head">
+            <h3><i class="fa-solid fa-pen-to-square text-indigo-500 mr-1.5" /> Update Receipt &amp; Payment Status</h3>
+            <button type="button" class="btn-close-modal" @click="showPaymentModal = false">✕</button>
+          </div>
+          <form class="modal-form" @submit.prevent="savePaymentSettings">
+            <label class="form-label">
+              Payment Status
+              <select v-model="editForm.payment_status" class="form-select">
+                <option value="paid">Paid (Accepted / Valid Receipt)</option>
+                <option value="submitted">Submitted (Awaiting Staff Confirmation)</option>
+                <option value="pending">Pending (Unpaid Invoice)</option>
+                <option value="failed">Rejected / Failed</option>
+              </select>
+            </label>
+
+            <label class="form-label">
+              Payment Method
+              <select v-model="editForm.payment_method" class="form-select">
+                <option value="complimentary">Complimentary Free Grant (0.00 GHS)</option>
+                <option value="momo">MTN Mobile Money / MoMo</option>
+                <option value="telecel">Telecel Cash</option>
+                <option value="bank">Bank Transfer</option>
+                <option value="cash">Direct Cash</option>
+                <option value="card">Card / Online Payment</option>
+                <option value="staff">Staff Manual Credit</option>
+              </select>
+            </label>
+
+            <label v-if="editForm.payment_method !== 'complimentary'" class="form-label">
+              Amount Received (GHS)
+              <input v-model.number="editForm.amount_received" type="number" step="0.01" class="form-input" />
+            </label>
+
+            <label class="form-label">
+              Internal Billing Notes
+              <textarea v-model="editForm.notes" rows="2" class="form-input" placeholder="e.g. Student grant approved by billing manager"></textarea>
+            </label>
+
+            <div class="modal-actions">
+              <button type="button" class="btn-ghost" @click="showPaymentModal = false">Cancel</button>
+              <button type="submit" class="btn-primary" :disabled="busyAction">
+                {{ busyAction ? 'Saving…' : 'Save Payment Changes' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
     </div>
   </DashboardLayout>
 </template>
@@ -401,6 +610,174 @@ watch(() => route.params.id, load)
   .sheet-title-block { text-align: left; }
   .meta-dl > div { justify-content: flex-start; }
 }
+.sheet-comp-notice {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  background: #fdf4ff;
+  border: 1px solid #f0abfc;
+  border-radius: 0.6rem;
+  font-size: 0.8rem;
+  color: #701a75;
+}
+.comp-discount-line {
+  color: #9333ea !important;
+  font-weight: 600;
+}
+.billing-mgmt-bar {
+  margin-top: 1rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.75rem;
+  padding: 0.85rem 1.1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.billing-mgmt-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  font-size: 0.88rem;
+  color: #0f172a;
+}
+.pill-comp-badge {
+  background: #f3e8ff;
+  color: #6b21a8;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.pill-paid-badge {
+  background: #e0e7ff;
+  color: #3730a3;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+}
+.billing-mgmt-desc {
+  margin: 0.2rem 0 0;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+.billing-mgmt-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.btn-comp-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: #7c3aed;
+  color: #fff;
+  border: none;
+  border-radius: 0.6rem;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn-comp-toggle:hover {
+  background: #6d28d9;
+}
+.btn-comp-toggle.is-comp {
+  background: #64748b;
+}
+.btn-comp-toggle.is-comp:hover {
+  background: #475569;
+}
+.btn-edit-pay {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  color: #334155;
+  border-radius: 0.6rem;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn-edit-pay:hover {
+  background: #f1f5f9;
+}
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(2px);
+  z-index: 999;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+.modal-card {
+  background: #fff;
+  border-radius: 1rem;
+  width: 100%;
+  max-width: 28rem;
+  box-shadow: 0 20px 25px -5px rgba(0,0,0,0.2);
+  padding: 1.25rem;
+}
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+.modal-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+.btn-close-modal {
+  background: none;
+  border: none;
+  font-size: 1.1rem;
+  cursor: pointer;
+  color: #64748b;
+}
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+.form-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #334155;
+}
+.form-select,
+.form-input {
+  border: 1px solid #cbd5e1;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  background: #fff;
+  color: #0f172a;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
 @media print {
   .no-print { display: none !important; }
   .receipt-page { padding: 0; max-width: none; }

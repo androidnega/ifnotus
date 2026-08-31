@@ -23,6 +23,7 @@ const searchQuery = ref('')
 const loading = ref(true)
 const error = ref('')
 const reply = ref('')
+const sendDirectMessage = ref(false)
 const busy = ref(false)
 const msg = ref('')
 const copiedEmail = ref(false)
@@ -243,8 +244,9 @@ async function sendReply() {
   busy.value = true
   msg.value = ''
   try {
-    await supportApi.replyTicket(selected.value.id, reply.value.trim())
+    await supportApi.replyTicket(selected.value.id, reply.value.trim(), sendDirectMessage.value)
     reply.value = ''
+    sendDirectMessage.value = false
     await openTicket(selected.value.id)
     await loadList(true)
     msg.value = 'Reply sent successfully.'
@@ -832,17 +834,31 @@ watch([statusFilter, priorityFilter], () => {
                 </div>
 
                 <div class="flex flex-wrap items-center justify-between gap-2">
-                  <p class="text-[11px] text-slate-400">
-                    Shortcut: <kbd class="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-[10px] font-mono">Ctrl</kbd> + <kbd class="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-[10px] font-mono">Enter</kbd> to send
-                  </p>
-                  <button
-                    type="submit"
-                    class="flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2 text-xs md:text-sm font-semibold text-white shadow hover:bg-slate-800 disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white transition"
-                    :disabled="busy || !reply.trim()"
-                  >
-                    <span v-if="busy" class="animate-spin">⌛</span>
-                    <span>{{ selected.status === 'closed' ? 'Reopen & Send Reply' : 'Send Support Reply' }}</span>
-                  </button>
+                  <label class="inline-flex items-center gap-2 cursor-pointer select-none text-xs text-slate-700 dark:text-slate-300 font-medium hover:text-slate-900 dark:hover:text-white bg-slate-100/80 dark:bg-slate-800/80 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700">
+                    <input
+                      v-model="sendDirectMessage"
+                      type="checkbox"
+                      class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-700"
+                    />
+                    <span class="inline-flex items-center gap-1.5">
+                      <i class="fa-solid fa-paper-plane text-indigo-500" />
+                      <span>Send direct SMS &amp; alert notification to customer phone</span>
+                    </span>
+                  </label>
+
+                  <div class="flex items-center gap-3">
+                    <p class="text-[11px] text-slate-400 hidden sm:block">
+                      Shortcut: <kbd class="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-[10px] font-mono">Ctrl</kbd> + <kbd class="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-[10px] font-mono">Enter</kbd>
+                    </p>
+                    <button
+                      type="submit"
+                      class="flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2 text-xs md:text-sm font-semibold text-white shadow hover:bg-slate-800 disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white transition"
+                      :disabled="busy || !reply.trim()"
+                    >
+                      <span v-if="busy" class="animate-spin">⌛</span>
+                      <span>{{ selected.status === 'closed' ? 'Reopen & Send Reply' : 'Send Support Reply' }}</span>
+                    </button>
+                  </div>
                 </div>
               </form>
             </div>

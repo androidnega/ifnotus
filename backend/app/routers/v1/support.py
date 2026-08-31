@@ -96,6 +96,7 @@ async def reply_ticket(
         author_user_id=user.id,
         author_role="staff",
         body=body.body,
+        send_direct_message=body.send_direct_message,
     )
     return SupportTicketMessageResponse.model_validate(msg)
 

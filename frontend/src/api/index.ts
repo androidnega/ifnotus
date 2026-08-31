@@ -2400,10 +2400,10 @@ export const supportApi = {
   getTicket: (ticketId: string) =>
     apiClient.get<import('@/types/support').SupportTicket>(`/support/tickets/${ticketId}`),
 
-  replyTicket: (ticketId: string, body: string) =>
+  replyTicket: (ticketId: string, body: string, send_direct_message: boolean = false) =>
     apiClient.post<import('@/types/support').SupportTicketMessage>(
       `/support/tickets/${ticketId}/messages`,
-      { body },
+      { body, send_direct_message },
     ),
 
   closeTicket: (ticketId: string) =>

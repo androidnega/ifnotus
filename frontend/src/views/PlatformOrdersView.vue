@@ -622,6 +622,18 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
                 <div class="amount-status-block">
                   <div v-if="canSeeBilling" class="price-box">
                     <span class="price-val">{{ o.currency }} {{ o.total_price }}</span>
+                    <button
+                      v-if="canConfirm"
+                      type="button"
+                      class="btn-comp-tag"
+                      :class="{ 'is-comp': ['staff', 'complimentary', 'free'].includes((o.payment_method || '').toLowerCase()) }"
+                      :disabled="busyId === o.id"
+                      :title="['staff', 'complimentary', 'free'].includes((o.payment_method || '').toLowerCase()) ? 'Complimentary Grant (Click to revert)' : 'Click to make Complimentary Grant'"
+                      @click="toggleComplimentaryStatus(o)"
+                    >
+                      <i class="fa-solid" :class="['staff', 'complimentary', 'free'].includes((o.payment_method || '').toLowerCase()) ? 'fa-gift' : 'fa-hand-holding-heart'" />
+                      <span>{{ ['staff', 'complimentary', 'free'].includes((o.payment_method || '').toLowerCase()) ? 'Comp' : 'Make Comp' }}</span>
+                    </button>
                     <button type="button" class="btn-receipt-view" @click="openReceipt(o.id)">
                       <i class="fa-solid fa-file-invoice" aria-hidden="true" />
                       {{ o.payment_status === 'paid' ? 'Receipt' : 'Invoice' }}
@@ -1443,6 +1455,32 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
   font-weight: 850;
   color: #0f172a;
   font-variant-numeric: tabular-nums;
+}
+
+.btn-comp-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.24rem 0.5rem;
+  border-radius: 0.4rem;
+  border: 1px solid #c084fc;
+  background: #fdf4ff;
+  color: #7e22ce;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.btn-comp-tag:hover {
+  background: #f3e8ff;
+  border-color: #a855f7;
+}
+
+.btn-comp-tag.is-comp {
+  border-color: #818cf8;
+  background: #e0e7ff;
+  color: #3730a3;
 }
 
 .btn-receipt-view {

@@ -145,6 +145,7 @@ class SupportTicketService:
         author_role: str,
         body: str,
         customer_id: UUID | None = None,
+        send_direct_message: bool = False,
     ) -> SupportTicketMessage:
         body = body.strip()
         if len(body) < 1:
@@ -179,11 +180,19 @@ class SupportTicketService:
 
         if author_role == "staff":
             try:
+                channels = ["panel", "email", "sms"] if send_direct_message else ["panel"]
+                clean_preview = body.strip()
+                if len(clean_preview) > 220:
+                    clean_preview = clean_preview[:217] + "…"
+                sms_snippet = f"IFNOTUS Support: {clean_preview}"
                 await NotificationService(self._session, self._settings).notify(
                     ticket.customer_id,
                     title=f"Support reply: {ticket.subject}",
                     body=body[:500],
                     kind="support",
+                    channels=channels,
+                    sms_body=sms_snippet,
+                    deliver=True if send_direct_message else False,
                 )
             except Exception:
                 pass
