@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from app.core.exceptions import ValidationError
@@ -11,14 +12,24 @@ WARN_PCT = 80.0
 HIGH_PCT = 90.0
 HARD_PCT = 95.0  # critical for customer plan; block writes at 100% still
 
+_PATH_USAGE_CACHE: dict[str, tuple[float, tuple[int, int]]] = {}
+_PATH_USAGE_CACHE_TTL = 30.0  # cache file scan for 30s to prevent CPU spikes
 
-def measure_path_usage(root: str | Path | None) -> tuple[int, int]:
+
+def measure_path_usage(root: str | Path | None, *, max_age_seconds: float = _PATH_USAGE_CACHE_TTL) -> tuple[int, int]:
     """Return (total_bytes, file_count) under root. Missing path → (0, 0)."""
     if not root:
         return 0, 0
     base = Path(root)
     if not base.exists():
         return 0, 0
+
+    key = str(base)
+    now = time.monotonic()
+    cached = _PATH_USAGE_CACHE.get(key)
+    if cached and (now - cached[0]) < max_age_seconds:
+        return cached[1]
+
     total = 0
     count = 0
     try:
@@ -30,7 +41,9 @@ def measure_path_usage(root: str | Path | None) -> tuple[int, int]:
             except OSError:
                 continue
     except OSError:
-        return total, count
+        pass
+
+    _PATH_USAGE_CACHE[key] = (now, (total, count))
     return total, count
 
 

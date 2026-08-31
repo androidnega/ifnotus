@@ -38,19 +38,29 @@ def _user_process_stats(username: str | None) -> dict[str, Any]:
     return environment_live_stats(unix_username=username)
 
 
+_ENV_STATS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_ENV_STATS_TTL = 10.0
+
+
 def environment_live_stats(
     *,
     unix_username: str | None = None,
     unix_uid: int | None = None,
     document_root: str | None = None,
     domain: str | None = None,
-    sample_seconds: float = 0.2,
+    sample_seconds: float = 0.0,
 ) -> dict[str, Any]:
     """Live CPU/RAM/process sample for one tenant environment.
 
     Attributes work even when PHP-FPM pools run as www-data: workers are matched by
     ``php-fpm: pool <name>`` cmdline, and app processes by cwd under the site root.
     """
+    cache_key = f"{unix_username}:{unix_uid}:{document_root}:{domain}"
+    now_mono = time.monotonic()
+    cached = _ENV_STATS_CACHE.get(cache_key)
+    if cached and (now_mono - cached[0]) < _ENV_STATS_TTL:
+        return cached[1]
+
     empty = {"process_count": 0, "memory_rss_mb": 0.0, "cpu_percent": 0.0, "available": False, "source": None}
     try:
         import psutil
@@ -102,41 +112,26 @@ def environment_live_stats(
                 return True
         return False
 
-    matched: list[Any] = []
+    rss = 0
+    cpu = 0.0
+    alive = 0
     try:
-        for proc in psutil.process_iter(["pid"]):
+        for proc in psutil.process_iter(["pid", "memory_info", "cpu_percent"]):
             try:
                 if _matches(proc):
-                    # Prime cpu counters (first cpu_percent call is usually 0).
-                    try:
-                        proc.cpu_percent(interval=None)
-                    except (psutil.Error, AttributeError):
-                        pass
-                    matched.append(proc)
+                    mem = proc.memory_info()
+                    rss += int(getattr(mem, "rss", 0) or 0)
+                    cpu += float(proc.cpu_percent(interval=None) or 0.0)
+                    alive += 1
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
     except Exception:
         return {"process_count": 0, "memory_rss_mb": 0.0, "cpu_percent": 0.0, "available": False}
 
-    if sample_seconds > 0:
-        time.sleep(min(1.0, max(0.05, float(sample_seconds))))
-
-    rss = 0
-    cpu = 0.0
-    alive = 0
-    for proc in matched:
-        try:
-            mem = proc.memory_info()
-            rss += int(getattr(mem, "rss", 0) or 0)
-            cpu += float(proc.cpu_percent(interval=None) or 0.0)
-            alive += 1
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            continue
-
     source = "psutil"
-    if pool and any(True for _ in matched):
+    if pool and alive > 0:
         source = "psutil+pool"
-    return {
+    res = {
         "process_count": alive,
         "memory_rss_mb": round(rss / (1024 * 1024), 1),
         "cpu_percent": round(min(cpu, 999.0), 1),
@@ -144,6 +139,8 @@ def environment_live_stats(
         "source": source,
         "pool": pool,
     }
+    _ENV_STATS_CACHE[cache_key] = (now_mono, res)
+    return res
 
 
 def _ssl_summary(env: CustomerEnvironment) -> dict[str, Any]:
