@@ -34,6 +34,16 @@ async def run_reconciliation(target_domain: str | None = None) -> None:
             else:
                 # Direct domain provision
                 from pathlib import Path
+                from app.services.platform.panel_access import is_platform_hostname
+                dns_updated = False
+                dns_err = None
+                try:
+                    if not is_platform_hostname(target_domain, settings=settings) and not target_domain.endswith(".customers.ifnotus.space"):
+                        service._auth_dns.ensure_zone(target_domain)
+                        dns_updated = True
+                except Exception as exc:
+                    dns_err = str(exc)
+
                 cert_path = Path(f"/etc/letsencrypt/live/{target_domain}/fullchain.pem")
                 has_ssl = cert_path.exists()
                 nginx_res = await service._nginx.provision(
@@ -50,6 +60,8 @@ async def run_reconciliation(target_domain: str | None = None) -> None:
                     "domain": target_domain,
                     "fpanel_host": f"fpanel.{target_domain}",
                     "nginx_vhost_rendered": nginx_res.success,
+                    "dns_updated": dns_updated,
+                    "dns_error": dns_err,
                     "ssl_active": has_ssl,
                 }]
         else:
