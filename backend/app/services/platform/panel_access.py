@@ -49,6 +49,7 @@ def is_platform_hostname(domain: str | None, *, settings: object | None = None) 
 def control_panel_hostname(domain: str | None, *, settings: object | None = None) -> str | None:
     """Canonical customer fPanel hostname: fpanel.<domain> (e.g. fpanel.yalleydadzie.online).
     Customer subdomains (e.g. blog.yalleydadzie.online) remain managed through fpanel.<primary-domain>.
+    Student project subdomains (*.ifnotus.space) never generate double fpanel subdomains.
     """
     host = (domain or "").lower().rstrip(".")
     if host.startswith("www."):
@@ -61,9 +62,9 @@ def control_panel_hostname(domain: str | None, *, settings: object | None = None
         return host
     if host.endswith(".customers.ifnotus.space"):
         return f"fpanel.{host}"
-    if is_student_hostname(host, settings=settings):
-        # Student hostnames stay on student subdomain
-        return host
+    if is_student_hostname(host, settings=settings) or is_platform_hostname(host, settings=settings):
+        # Student hostnames are subdomains; their panel is the main platform panel
+        return STAFF_PANEL_HOST
 
     parts = host.split(".")
     if len(parts) > 2:

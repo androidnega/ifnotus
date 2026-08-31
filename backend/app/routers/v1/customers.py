@@ -4746,6 +4746,7 @@ async def create_ticket(
         subject=body.subject,
         body=body.body,
         priority=body.priority,
+        department=body.department,
         environment_id=body.environment_id,
     )
     messages = await svc.list_messages(ticket.id)

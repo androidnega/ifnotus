@@ -2377,6 +2377,7 @@ export const customersApi = {
     subject: string
     body: string
     priority?: string
+    department?: string
     environment_id?: string
   }) => apiClient.post<import('@/types/support').SupportTicket>('/customers/tickets', body),
 
@@ -2550,6 +2551,44 @@ export const platformAdminApi = {
   confirmOrderPayment: (orderId: string, body?: { amount_received?: number; notes?: string; domain_name?: string; payment_method?: string }) =>
     apiClient.post(`/platform/orders/${orderId}/confirm-payment`, body || {}),
 
+  updateOrderPaymentStatus: (
+    orderId: string,
+    body: {
+      payment_status?: string
+      payment_method?: string
+      amount_received?: number
+      notes?: string
+    },
+  ) => apiClient.patch(`/platform/orders/${orderId}/payment-status`, body),
+
+  sendCustomNotification: (body: {
+    recipient_type: string
+    customer_id?: string
+    channel: string
+    title: string
+    message: string
+  }) => apiClient.post<{ success: boolean; recipients_count: number; message: string }>('/platform/notifications/send-custom', body),
+
+  getSmsBalance: () =>
+    apiClient.get<{
+      ok: boolean
+      provider: string
+      message?: string
+      balance?: number | string
+      total_sms_sent: number
+      estimated_spent_ghs: number
+      unit_rate_ghs: number
+      recent_logs?: Array<{
+        id: string
+        customer_id: string
+        customer_name: string
+        account_code?: string | null
+        title: string
+        body: string
+        created_at?: string | null
+      }>
+    }>('/platform/integrations/sms-balance'),
+
   activateOrderHosting: (orderId: string) =>
     apiClient.post(`/platform/orders/${orderId}/activate-hosting`, {}),
 
@@ -2676,18 +2715,6 @@ export const platformAdminApi = {
 
   getIntegrations: () =>
     apiClient.get<import('@/types/integrations').IntegrationsStatus>('/platform/integrations'),
-
-  getSmsBalance: () =>
-    apiClient.get<{
-      ok: boolean
-      provider: string
-      sms_balance?: number | null
-      main_balance?: number | null
-      total_sms_sent?: number
-      estimated_spent_ghs?: number
-      unit_rate_ghs?: number
-      message?: string
-    }>('/platform/integrations/sms-balance'),
 
   updateIntegrations: (body: import('@/types/integrations').IntegrationsUpdatePayload) =>
     apiClient.put<import('@/types/integrations').IntegrationsStatus>('/platform/integrations', body),

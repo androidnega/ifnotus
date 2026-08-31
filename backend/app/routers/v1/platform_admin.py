@@ -31,6 +31,8 @@ from app.schemas.platform_admin import (
     StaffAccountingSummaryResponse,
     StaffAccountingLedgerItem,
     StaffConfirmPaymentRequest,
+    StaffUpdatePaymentStatusRequest,
+    StaffSendCustomMessageRequest,
     StaffCustomerDetailResponse,
     StaffCustomerListItem,
     StaffCustomerUpdateRequest,
@@ -420,6 +422,73 @@ async def reject_order_payment(
         actor_id=user.id,
         notes=payload.notes,
     )
+
+
+@router.patch(
+    "/orders/{order_id}/payment-status",
+    response_model=OrderResponse,
+    dependencies=[Depends(RequirePermission(Permission.BILLING_MANAGE))],
+)
+async def update_order_payment_status(
+    order_id: UUID,
+    body: StaffUpdatePaymentStatusRequest,
+    session: DbSession,
+    settings: SettingsDep,
+    user: CurrentUser,
+) -> OrderResponse:
+    """Allow billing agents to change payment method (e.g. complimentary vs cash) and payment status."""
+    from datetime import datetime, UTC
+    from decimal import Decimal
+    from app.core.exceptions import NotFoundError
+    from app.models.platform import Order, PlatformAuditLog
+    from app.services.platform.orders import OrderService
+
+    order = await session.get(Order, order_id)
+    if order is None:
+        raise NotFoundError("Order not found.")
+
+    old_method = order.payment_method
+    old_status = order.payment_status
+
+    if body.payment_method is not None:
+        new_m = body.payment_method.strip().lower()
+        order.payment_method = new_m
+        if new_m in {"complimentary", "free", "staff", "comp"}:
+            order.payment_amount_received = Decimal("0")
+        elif body.amount_received is not None:
+            order.payment_amount_received = Decimal(str(body.amount_received))
+
+    if body.payment_status is not None:
+        new_s = body.payment_status.strip().lower()
+        order.payment_status = new_s
+        if new_s == "paid":
+            order.paid_at = order.paid_at or datetime.now(UTC)
+            order.payment_confirmed_at = datetime.now(UTC)
+            order.payment_confirmed_by = user.id
+
+    if body.notes is not None:
+        order.payment_notes = body.notes.strip()[:2000]
+
+    session.add(
+        PlatformAuditLog(
+            customer_id=order.customer_id,
+            actor_id=user.id,
+            action="order.payment_status_updated",
+            target_type="order",
+            target_id=str(order.id),
+            details={
+                "old_method": old_method,
+                "new_method": order.payment_method,
+                "old_status": old_status,
+                "new_status": order.payment_status,
+                "amount_received": str(order.payment_amount_received or "0"),
+                "notes": order.payment_notes,
+            },
+        )
+    )
+    await session.commit()
+    await session.refresh(order)
+    return OrderService.to_response(order)
 
 
 @router.post(
@@ -967,24 +1036,159 @@ async def get_sms_balance(
     session: DbSession,
     settings: SettingsDep,
 ) -> dict:
-    """Get live balance from Arkasel/SMS provider + total SMS sent & cost tracking."""
-    from app.models.platform import Notification
+    """Get live balance from Arkasel/SMS provider + total SMS sent & cost tracking, excluding test accounts IFADE5 & IF2ACB."""
+    from app.models.platform import Notification, Customer, CustomerEnvironment
     from app.services.platform.delivery import DeliveryService
-    from sqlalchemy import func, select
+    from sqlalchemy import func, select, or_
 
     delivery = DeliveryService(settings)
     bal = delivery.check_sms_balance()
 
+    # Find customer IDs for test accounts IFADE5 & IF2ACB to exclude from paid SMS totals
+    excluded_cust_res = await session.execute(
+        select(Customer.id).join(CustomerEnvironment, CustomerEnvironment.customer_id == Customer.id, isouter=True).where(
+            or_(
+                Customer.account_code.in_(["IFADE5", "IF2ACB", "ifade5", "if2acb"]),
+                CustomerEnvironment.hosting_name.in_(["ifade5", "if2acb", "IFADE5", "IF2ACB"]),
+            )
+        )
+    )
+    excluded_cust_ids = set(excluded_cust_res.scalars().all())
+
     stmt = select(func.count(Notification.id)).where(Notification.channel == "sms")
+    if excluded_cust_ids:
+        stmt = stmt.where(Notification.customer_id.notin_(excluded_cust_ids))
     res = await session.execute(stmt)
     total_sent = int(res.scalar() or 0)
-    estimated_spent = round(total_sent * 0.04, 2)
+    unit_rate = 0.04
+    estimated_spent = round(total_sent * unit_rate, 2)
+
+    # Recent SMS logs for system administrator / hosting operator transparency
+    recent_stmt = (
+        select(Notification, Customer)
+        .join(Customer, Customer.id == Notification.customer_id, isouter=True)
+        .where(Notification.channel == "sms")
+        .order_by(Notification.created_at.desc())
+        .limit(30)
+    )
+    recent_res = await session.execute(recent_stmt)
+    logs = []
+    for notif, cust in recent_res.all():
+        logs.append({
+            "id": str(notif.id),
+            "customer_id": str(notif.customer_id),
+            "customer_name": cust.full_name if cust else "Unknown",
+            "account_code": getattr(cust, "account_code", None) if cust else None,
+            "title": notif.title,
+            "body": notif.body,
+            "created_at": notif.created_at.isoformat() if notif.created_at else None,
+        })
 
     return {
         **bal,
         "total_sms_sent": total_sent,
         "estimated_spent_ghs": estimated_spent,
-        "unit_rate_ghs": 0.04,
+        "unit_rate_ghs": unit_rate,
+        "recent_logs": logs,
+    }
+
+
+@router.post(
+    "/notifications/send-custom",
+    dependencies=[Depends(RequirePermission(Permission.BILLING_MANAGE))],
+)
+async def send_custom_notification(
+    body: StaffSendCustomMessageRequest,
+    session: DbSession,
+    settings: SettingsDep,
+    user: CurrentUser,
+) -> dict:
+    """Allow billing agents & admins to send custom broadcast or individual SMS/email/in-app messages."""
+    import asyncio
+    from app.core.exceptions import AppException, NotFoundError
+    from app.models.platform import Customer, CustomerEnvironment, Notification, PlatformAuditLog
+    from app.services.platform.delivery import DeliveryService
+    from sqlalchemy import select
+
+    delivery = DeliveryService(settings)
+    target_customers: list[Customer] = []
+
+    rec_type = body.recipient_type.strip().lower()
+    if rec_type == "individual":
+        if not body.customer_id:
+            raise AppException("customer_id is required for individual messages.")
+        c = await session.get(Customer, body.customer_id)
+        if not c:
+            raise NotFoundError("Customer not found.")
+        target_customers = [c]
+    elif rec_type == "active_subscribers":
+        res = await session.execute(
+            select(Customer)
+            .join(CustomerEnvironment, CustomerEnvironment.customer_id == Customer.id)
+            .where(CustomerEnvironment.status.in_(["active", "provisioning"]))
+            .distinct()
+        )
+        target_customers = list(res.scalars().all())
+    else:  # "all"
+        res = await session.execute(select(Customer).order_by(Customer.created_at.desc()))
+        target_customers = list(res.scalars().all())
+
+    sent_count = 0
+    channel = body.channel.strip().lower()
+
+    for cust in target_customers:
+        # Create in-app notification record
+        notif = Notification(
+            customer_id=cust.id,
+            title=body.title.strip()[:255],
+            body=body.message.strip()[:2000],
+            kind="billing" if "bill" in body.title.lower() else "info",
+            channel=channel if channel in {"sms", "email", "panel"} else "panel",
+            is_read=False,
+        )
+        session.add(notif)
+
+        # Deliver SMS if requested and phone available
+        if channel in {"sms", "both"} and cust.phone:
+            try:
+                await asyncio.to_thread(delivery.send_sms, to=cust.phone, body=body.message.strip()[:320])
+            except Exception:
+                pass
+
+        # Deliver Email if requested and email available
+        if channel in {"email", "both"} and cust.email:
+            try:
+                await asyncio.to_thread(
+                    delivery.send_email,
+                    to=cust.email,
+                    subject=body.title.strip(),
+                    html=f"<p>{body.message.strip()}</p>",
+                    text=body.message.strip(),
+                )
+            except Exception:
+                pass
+
+        sent_count += 1
+
+    session.add(
+        PlatformAuditLog(
+            actor_id=user.id,
+            action="notification.custom_broadcast",
+            target_type="notification",
+            details={
+                "recipient_type": rec_type,
+                "channel": channel,
+                "title": body.title,
+                "recipients_count": sent_count,
+            },
+        )
+    )
+    await session.commit()
+
+    return {
+        "success": True,
+        "recipients_count": sent_count,
+        "message": f"Message dispatched to {sent_count} recipient(s) via {channel}.",
     }
 
 

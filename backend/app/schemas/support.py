@@ -14,6 +14,7 @@ class SupportTicketCreateRequest(SchemaBase):
     subject: str = Field(min_length=3, max_length=255)
     body: str = Field(min_length=3, max_length=20000)
     priority: str = Field(default="normal", max_length=16)
+    department: str | None = Field(default=None, max_length=64)
     environment_id: UUID | None = None
 
 

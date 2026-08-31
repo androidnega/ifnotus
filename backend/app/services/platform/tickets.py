@@ -28,6 +28,7 @@ class SupportTicketService:
         subject: str,
         body: str,
         priority: str = "normal",
+        department: str | None = None,
         environment_id: UUID | None = None,
     ) -> SupportTicket:
         subject = subject.strip()
@@ -39,14 +40,35 @@ class SupportTicketService:
         priority = (priority or "normal").lower()
         if priority not in {"low", "normal", "high"}:
             raise AppException("priority must be low, normal, or high.")
+
+        # Enforce single active ticket per customer
+        active_res = await self._session.execute(
+            select(SupportTicket).where(
+                SupportTicket.customer_id == customer_id,
+                SupportTicket.status.in_(["open", "pending", "in_progress"]),
+            ).order_by(SupportTicket.updated_at.desc())
+        )
+        active_ticket = active_res.scalars().first()
+        if active_ticket is not None:
+            raise AppException(
+                f"You already have an active support ticket (#{str(active_ticket.id)[:8]} - '{active_ticket.subject}'). "
+                "Please reply in your open ticket or wait for it to be resolved before opening a new one.",
+                code="active_ticket_exists",
+            )
+
         if environment_id:
             await TenantService(self._session).get_owned_environment(customer_id, environment_id)
+
+        # Include department in subject tag if provided
+        final_subject = subject
+        if department and department.strip() and not subject.startswith("["):
+            final_subject = f"[{department.strip()}] {subject}"
 
         now = datetime.now(UTC)
         ticket = SupportTicket(
             customer_id=customer_id,
             environment_id=environment_id,
-            subject=subject[:255],
+            subject=final_subject[:255],
             status="open",
             priority=priority,
             created_at=now,

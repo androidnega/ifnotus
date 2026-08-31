@@ -21,6 +21,37 @@ const copiedTxId = ref<string | null>(null)
 const copiedInvId = ref<string | null>(null)
 const showBillingAgentGuide = ref(false)
 
+// SMS Telemetry & Messaging state
+const smsData = ref<{
+  ok: boolean
+  provider: string
+  message?: string
+  balance?: number | string
+  total_sms_sent: number
+  estimated_spent_ghs: number
+  unit_rate_ghs: number
+  recent_logs?: Array<{
+    id: string
+    customer_id: string
+    customer_name: string
+    account_code?: string | null
+    title: string
+    body: string
+    created_at?: string | null
+  }>
+} | null>(null)
+const showSmsLogsModal = ref(false)
+const showBroadcastModal = ref(false)
+const broadcastForm = ref({
+  recipient_type: 'all',
+  customer_id: '',
+  channel: 'both',
+  title: 'Billing & Account Notice',
+  message: '',
+})
+const broadcastBusy = ref(false)
+const broadcastFeedback = ref('')
+
 const today = new Date()
 const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
 const dateFrom = ref(monthStart.toISOString().slice(0, 10))
@@ -308,6 +339,44 @@ async function load() {
   } finally {
     loading.value = false
   }
+
+  // Load SMS telemetry separately so it doesn't block accounting load
+  try {
+    const { data: smsRes } = await platformAdminApi.getSmsBalance()
+    smsData.value = smsRes
+  } catch {
+    // Non-critical
+  }
+}
+
+async function dispatchCustomMessage() {
+  if (!broadcastForm.value.message.trim()) return
+  broadcastBusy.value = true
+  broadcastFeedback.value = ''
+  try {
+    const { data } = await platformAdminApi.sendCustomNotification({
+      recipient_type: broadcastForm.value.recipient_type,
+      customer_id: broadcastForm.value.recipient_type === 'individual' ? broadcastForm.value.customer_id || undefined : undefined,
+      channel: broadcastForm.value.channel,
+      title: broadcastForm.value.title.trim() || 'Billing & Account Notice',
+      message: broadcastForm.value.message.trim(),
+    })
+    broadcastFeedback.value = data.message || 'Message sent successfully.'
+    broadcastForm.value.message = ''
+    try {
+      const { data: smsRes } = await platformAdminApi.getSmsBalance()
+      smsData.value = smsRes
+    } catch {}
+    setTimeout(() => {
+      showBroadcastModal.value = false
+      broadcastFeedback.value = ''
+    }, 2500)
+  } catch (e: unknown) {
+    const errObj = e as { response?: { data?: { error?: { message?: string } } } }
+    broadcastFeedback.value = errObj.response?.data?.error?.message ?? 'Failed to send message.'
+  } finally {
+    broadcastBusy.value = false
+  }
 }
 
 function openCustomer(id: string) {
@@ -463,6 +532,14 @@ watch([dateFrom, dateTo, ledgerFilter], load)
 
               <!-- ACTIONS: REFRESH & EXPORT CSV -->
               <div class="head-btn-group">
+                <button type="button" class="action-btn" title="Send SMS / Email Notice" @click="showBroadcastModal = true">
+                  <i class="fa-solid fa-paper-plane" aria-hidden="true" />
+                  Custom Message
+                </button>
+                <button type="button" class="action-btn" title="SMS Telemetry & Logs" @click="showSmsLogsModal = true">
+                  <i class="fa-solid fa-comment-sms" aria-hidden="true" />
+                  SMS Logs ({{ smsData?.total_sms_sent ?? 0 }})
+                </button>
                 <button type="button" class="action-btn" title="Export Ledger to CSV" @click="exportCsv">
                   <i class="fa-solid fa-file-csv" aria-hidden="true" />
                   CSV Export
@@ -613,6 +690,22 @@ watch([dateFrom, dateTo, ledgerFilter], load)
                 <span class="stat-k">Complimentary Grants</span>
                 <span class="stat-v">{{ money(complimentaryPeriod, summary.currency) }}</span>
                 <span class="stat-s">Staff/free grants (zero cash impact)</span>
+              </div>
+            </button>
+
+            <!-- 6. SMS USAGE & BALANCE TELEMETRY -->
+            <button
+              type="button"
+              class="stat-card tone-sms"
+              @click="showSmsLogsModal = true"
+            >
+              <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-comment-sms" /></span>
+              <div class="stat-body">
+                <span class="stat-k">SMS Balance &amp; Cost</span>
+                <span class="stat-v">{{ smsData?.balance != null ? `${smsData.balance} SMS` : 'Active' }}</span>
+                <span class="stat-s">
+                  {{ smsData?.total_sms_sent ?? 0 }} sent · Cost: GHS {{ smsData?.estimated_spent_ghs ?? 0 }}
+                </span>
               </div>
             </button>
           </div>
@@ -928,6 +1021,142 @@ watch([dateFrom, dateTo, ledgerFilter], load)
             </footer>
           </section>
         </template>
+      </div>
+
+      <!-- BROADCAST / CUSTOM MESSAGE MODAL -->
+      <div v-if="showBroadcastModal" class="modal-backdrop" @click.self="showBroadcastModal = false">
+        <div class="modal-card">
+          <header class="modal-head">
+            <div class="head-with-icon">
+              <span class="panel-icon tone-cash"><i class="fa-solid fa-paper-plane" /></span>
+              <div>
+                <h3>Send Custom Message</h3>
+                <p class="modal-sub">Dispatch custom SMS, Email, or In-App announcements to clients</p>
+              </div>
+            </div>
+            <button type="button" class="modal-close" @click="showBroadcastModal = false">
+              <i class="fa-solid fa-xmark" />
+            </button>
+          </header>
+
+          <form class="modal-form" @submit.prevent="dispatchCustomMessage">
+            <label class="form-group">
+              <span>Recipients</span>
+              <select v-model="broadcastForm.recipient_type" class="form-control">
+                <option value="all">All Registered Customers</option>
+                <option value="active_subscribers">Active Subscribers (with Live Hosting)</option>
+                <option value="individual">Individual Customer</option>
+              </select>
+            </label>
+
+            <label v-if="broadcastForm.recipient_type === 'individual'" class="form-group">
+              <span>Customer ID / Select</span>
+              <select v-model="broadcastForm.customer_id" class="form-control" required>
+                <option value="" disabled>Select a customer…</option>
+                <option v-for="c in ledger.slice(0, 50)" :key="c.id" :value="c.customer_id">
+                  {{ c.customer_name || 'Customer' }} ({{ c.customer_email }})
+                </option>
+              </select>
+            </label>
+
+            <label class="form-group">
+              <span>Delivery Channel</span>
+              <select v-model="broadcastForm.channel" class="form-control">
+                <option value="both">SMS &amp; Email + In-App (Recommended)</option>
+                <option value="sms">SMS Only (Arkasel)</option>
+                <option value="email">Email Only</option>
+                <option value="in_app">In-App Notice Only</option>
+              </select>
+            </label>
+
+            <label class="form-group">
+              <span>Subject / Header</span>
+              <input v-model="broadcastForm.title" type="text" class="form-control" placeholder="e.g. Account Maintenance or Billing Reminder" required />
+            </label>
+
+            <label class="form-group">
+              <span>Message Body</span>
+              <textarea v-model="broadcastForm.message" class="form-control" rows="4" placeholder="Type your custom notification here…" required />
+            </label>
+
+            <p v-if="broadcastFeedback" class="feedback-msg" :class="{ err: broadcastFeedback.includes('Fail') }">
+              {{ broadcastFeedback }}
+            </p>
+
+            <div class="modal-actions">
+              <button type="button" class="action-btn" @click="showBroadcastModal = false">Cancel</button>
+              <button type="submit" class="action-btn primary" :disabled="broadcastBusy">
+                <i class="fa-solid fa-paper-plane" :class="{ 'fa-spin': broadcastBusy }" />
+                Send Message
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- SMS TELEMETRY & DELIVERY LOGS MODAL -->
+      <div v-if="showSmsLogsModal" class="modal-backdrop" @click.self="showSmsLogsModal = false">
+        <div class="modal-card wide">
+          <header class="modal-head">
+            <div class="head-with-icon">
+              <span class="panel-icon tone-sms"><i class="fa-solid fa-comment-sms" /></span>
+              <div>
+                <h3>SMS Gateway Telemetry &amp; Delivery Logs</h3>
+                <p class="modal-sub">Real-time status from Arkasel Gateway (Excluding test accounts IFADE5 &amp; IF2ACB)</p>
+              </div>
+            </div>
+            <button type="button" class="modal-close" @click="showSmsLogsModal = false">
+              <i class="fa-solid fa-xmark" />
+            </button>
+          </header>
+
+          <div class="sms-stat-row">
+            <div class="sms-metric">
+              <span class="sms-k">Arkasel Balance</span>
+              <span class="sms-v">{{ smsData?.balance != null ? smsData.balance : '—' }} SMS</span>
+            </div>
+            <div class="sms-metric">
+              <span class="sms-k">Total Sent (Billable)</span>
+              <span class="sms-v">{{ smsData?.total_sms_sent ?? 0 }}</span>
+            </div>
+            <div class="sms-metric">
+              <span class="sms-k">Unit Rate</span>
+              <span class="sms-v">GHS {{ smsData?.unit_rate_ghs ?? 0.04 }}</span>
+            </div>
+            <div class="sms-metric">
+              <span class="sms-k">Estimated Total Cost</span>
+              <span class="sms-v">GHS {{ smsData?.estimated_spent_ghs ?? 0 }}</span>
+            </div>
+          </div>
+
+          <div class="table-wrap mt-4" style="max-height: 20rem; overflow-y: auto;">
+            <table class="acct-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Recipient</th>
+                  <th>Title</th>
+                  <th>Message Body</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="log in smsData?.recent_logs || []" :key="log.id">
+                  <td>{{ log.created_at ? new Date(log.created_at).toLocaleString() : '—' }}</td>
+                  <td><strong>{{ log.customer_name }}</strong></td>
+                  <td>{{ log.title }}</td>
+                  <td class="text-xs">{{ log.body }}</td>
+                </tr>
+                <tr v-if="!smsData?.recent_logs?.length">
+                  <td colspan="4" class="empty-row">No recent SMS logs found.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="modal-actions mt-4">
+            <button type="button" class="action-btn primary" @click="showSmsLogsModal = false">Close</button>
+          </div>
+        </div>
       </div>
     </div>
   </DashboardLayout>
@@ -2423,5 +2652,161 @@ html.control-ui.dark .ledger-foot {
   background: #0f172a !important;
   border-top-color: #1e293b !important;
   color: #94a3b8 !important;
+}
+
+/* SMS & MODAL STYLES */
+.tone-sms {
+  background: #fdf4ff !important;
+  border-color: #f0abfc !important;
+}
+.tone-sms .stat-icon {
+  background: #fae8ff !important;
+  color: #c026d3 !important;
+}
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 999;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+.modal-card {
+  background: #ffffff;
+  border-radius: 1rem;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  width: 100%;
+  max-width: 520px;
+  padding: 1.5rem;
+  position: relative;
+  border: 1px solid #e2e8f0;
+}
+.modal-card.wide {
+  max-width: 800px;
+}
+:root.dark .modal-card,
+html.dark .modal-card {
+  background: #1e293b;
+  border-color: #334155;
+}
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 1.25rem;
+}
+.modal-head h3 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #0f172a;
+  margin: 0;
+}
+:root.dark .modal-head h3,
+html.dark .modal-head h3 {
+  color: #f8fafc;
+}
+.modal-sub {
+  font-size: 0.78rem;
+  color: #64748b;
+  margin: 0.15rem 0 0;
+}
+.modal-close {
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 0.25rem;
+}
+.modal-close:hover {
+  color: #0f172a;
+}
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 650;
+  color: #334155;
+}
+:root.dark .form-group,
+html.dark .form-group {
+  color: #cbd5e1;
+}
+.form-control {
+  border: 1px solid #cbd5e1;
+  border-radius: 0.55rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  background: #ffffff;
+  color: #0f172a;
+  outline: none;
+}
+:root.dark .form-control,
+html.dark .form-control {
+  background: #0f172a;
+  border-color: #334155;
+  color: #f8fafc;
+}
+.form-control:focus {
+  border-color: #2563eb;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  margin-top: 0.5rem;
+}
+.sms-stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.sms-metric {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.65rem;
+  padding: 0.75rem;
+  text-align: center;
+}
+:root.dark .sms-metric,
+html.dark .sms-metric {
+  background: #0f172a;
+  border-color: #334155;
+}
+.sms-k {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #64748b;
+}
+.sms-v {
+  display: block;
+  font-size: 1.1rem;
+  font-weight: 750;
+  color: #0f172a;
+  margin-top: 0.2rem;
+}
+:root.dark .sms-v,
+html.dark .sms-v {
+  color: #f8fafc;
+}
+.feedback-msg {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #16a34a;
+  margin: 0;
+}
+.feedback-msg.err {
+  color: #dc2626;
 }
 </style>

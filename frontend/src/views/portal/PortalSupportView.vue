@@ -18,6 +18,7 @@ const tickets = ref<SupportTicket[]>([])
 const selected = ref<SupportTicket | null>(null)
 const loading = ref(true)
 const error = ref('')
+const department = ref('Technical Support')
 const subject = ref('')
 const body = ref('')
 const priority = ref('normal')
@@ -27,6 +28,10 @@ const msg = ref('')
 const planAccent = ref('#1e3a5f')
 const expandedMessages = ref<Set<string>>(new Set())
 const copiedMsgId = ref<string | null>(null)
+
+const activeOpenTicket = computed(() =>
+  tickets.value.find((t) => ['open', 'pending', 'in_progress'].includes((t.status || '').toLowerCase())),
+)
 
 function toggleExpand(id: string) {
   if (expandedMessages.value.has(id)) {
@@ -86,10 +91,15 @@ async function openTicket(id: string) {
 
 async function createTicket() {
   if (!subject.value.trim() || !body.value.trim()) return
+  if (activeOpenTicket.value) {
+    msg.value = 'You already have an active support ticket. Please reply to your existing ticket.'
+    return
+  }
   busy.value = true
   msg.value = ''
   try {
     const { data } = await customersApi.createTicket({
+      department: department.value,
       subject: subject.value.trim(),
       body: body.value.trim(),
       priority: priority.value,
@@ -97,6 +107,7 @@ async function createTicket() {
     subject.value = ''
     body.value = ''
     priority.value = 'normal'
+    department.value = 'Technical Support'
     await loadList()
     if (data?.id) await openTicket(data.id)
     else selected.value = data
@@ -170,14 +181,42 @@ onMounted(async () => {
         <section class="stack">
           <div class="p-card">
             <h2>New ticket</h2>
-            <form class="form" @submit.prevent="createTicket">
-              <input v-model="subject" type="text" placeholder="Subject" required />
-              <select v-model="priority">
-                <option value="low">Low</option>
-                <option value="normal">Normal</option>
-                <option value="high">High</option>
-              </select>
-              <textarea v-model="body" rows="4" placeholder="Describe the issue…" required />
+            <div v-if="activeOpenTicket" class="active-ticket-notice">
+              <p class="notice-title">Active Ticket in Progress</p>
+              <p class="notice-desc">
+                You already have an active ticket open: <strong>{{ activeOpenTicket.subject }}</strong>. Our team is working on your request. Please reply inside that ticket.
+              </p>
+              <button type="button" class="btn-primary mt" @click="openTicket(activeOpenTicket.id)">
+                Open Active Ticket
+              </button>
+            </div>
+            <form v-else class="form" @submit.prevent="createTicket">
+              <label class="form-label">
+                Department
+                <select v-model="department">
+                  <option value="Technical Support">Technical Support (DNS, SSL, Error 500/403)</option>
+                  <option value="Billing Support">Billing & Payment Support (MoMo, Invoices)</option>
+                  <option value="Hosting Support">Hosting & File Manager Support</option>
+                  <option value="Domain & DNS Support">Domain Registration & DNS Setup</option>
+                  <option value="General Inquiry">General Inquiry</option>
+                </select>
+              </label>
+              <label class="form-label">
+                Subject
+                <input v-model="subject" type="text" placeholder="e.g. Need assistance with WordPress database" required />
+              </label>
+              <label class="form-label">
+                Priority
+                <select v-model="priority">
+                  <option value="low">Low (General question)</option>
+                  <option value="normal">Normal (Standard assistance)</option>
+                  <option value="high">High (Site down / Urgent)</option>
+                </select>
+              </label>
+              <label class="form-label">
+                Message
+                <textarea v-model="body" rows="4" placeholder="Describe what is happening, error messages or steps to reproduce…" required />
+              </label>
               <button type="submit" class="btn-primary" :disabled="busy">Submit ticket</button>
             </form>
           </div>
@@ -403,6 +442,42 @@ onMounted(async () => {
   font: inherit;
   background: #fff;
   color: var(--p-ink, var(--if-ink));
+}
+.form-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--p-ink, var(--if-ink));
+}
+.active-ticket-notice {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 0.75rem;
+  padding: 1rem;
+}
+:root.dark .active-ticket-notice {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.25);
+}
+.notice-title {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: #166534;
+  margin: 0 0 0.35rem;
+}
+:root.dark .notice-title {
+  color: #4ade80;
+}
+.notice-desc {
+  font-size: 0.82rem;
+  color: #15803d;
+  line-height: 1.4;
+  margin: 0;
+}
+:root.dark .notice-desc {
+  color: #86efac;
 }
 .btn-primary {
   border: none;

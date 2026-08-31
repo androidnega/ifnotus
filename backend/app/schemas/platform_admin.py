@@ -289,6 +289,21 @@ class HostingPlanPatchRequest(SchemaBase):
     size_from_price: bool | None = None
 
 
+class StaffUpdatePaymentStatusRequest(SchemaBase):
+    payment_status: str | None = Field(default=None, max_length=32)
+    payment_method: str | None = Field(default=None, max_length=64)
+    amount_received: Decimal | float | None = None
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class StaffSendCustomMessageRequest(SchemaBase):
+    recipient_type: str = Field(default="individual", max_length=32)  # "individual" | "all" | "active_subscribers"
+    customer_id: UUID | None = None
+    channel: str = Field(default="both", max_length=16)  # "sms" | "email" | "both" | "in_app"
+    title: str = Field(default="Account Notice", max_length=255)
+    message: str = Field(min_length=2, max_length=2000)
+
+
 class SiteThemeOption(SchemaBase):
     id: str
     name: str

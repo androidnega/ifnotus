@@ -412,6 +412,34 @@ async function rejectPay(o: StaffOrderItem) {
     busyId.value = ''
   }
 }
+
+async function toggleComplimentaryStatus(o: StaffOrderItem) {
+  const currentMethod = (o.payment_method || '').toLowerCase()
+  const isComp = currentMethod === 'staff' || currentMethod === 'complimentary' || currentMethod === 'free'
+  const newMethod = isComp ? 'momo' : 'complimentary'
+  const promptText = isComp
+    ? `Switch invoice ${o.invoice_number || o.id.slice(0, 8)} from Complimentary back to regular paid?`
+    : `Grant invoice ${o.invoice_number || o.id.slice(0, 8)} as Complimentary Free Grant? This will remove it from cash revenue and track it under complimentary accounting.`
+
+  if (!confirm(promptText)) return
+  busyId.value = o.id
+  error.value = ''
+  try {
+    await platformAdminApi.updateOrderPaymentStatus(o.id, {
+      payment_method: newMethod,
+      amount_received: isComp ? Number(o.total_price) : 0,
+      notes: isComp ? 'Reverted from complimentary grant' : 'Converted to complimentary grant by billing agent',
+    })
+    success.value = `Order payment method updated to ${newMethod}.`
+    await load()
+    await loadSummary()
+  } catch (e: unknown) {
+    const errObj = e as { response?: { data?: { error?: { message?: string } } } }
+    error.value = errObj.response?.data?.error?.message ?? 'Could not update payment method.'
+  } finally {
+    busyId.value = ''
+  }
+}
 </script>
 
 <template>
@@ -878,6 +906,10 @@ async function rejectPay(o: StaffOrderItem) {
                   <span>Hosting environment live on <strong>{{ o.domain_name || 'assigned domain' }}</strong></span>
                 </div>
                 <div class="active-right">
+                  <button v-if="canSeeBilling" type="button" class="btn-micro-link" :disabled="busyId === o.id" title="Toggle Complimentary Grant status" @click="toggleComplimentaryStatus(o)">
+                    <i class="fa-solid fa-gift" aria-hidden="true" />
+                    {{ ['staff', 'complimentary', 'free'].includes((o.payment_method || '').toLowerCase()) ? 'Comp Active' : 'Make Comp' }}
+                  </button>
                   <button type="button" class="btn-micro-link" @click="openReceipt(o.id)">
                     <i class="fa-solid fa-receipt" aria-hidden="true" /> Receipt
                   </button>

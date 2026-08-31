@@ -14,6 +14,7 @@ import {
 } from '@/lib/resourceUsage'
 import { tenantCpanelUrl, tenantMailUrl } from '@/lib/platformHosts'
 import { openHostingFromAccount } from '@/lib/hostingDeepLink'
+import { customersApi } from '@/api'
 import {
   IconGlobe,
   IconServer,
@@ -139,6 +140,42 @@ const isComplimentaryPlan = computed(() => {
   return Boolean(price === 0 && isFreeName && !pendingOrder.value && env.value)
 })
 
+const isStudentSubdomainNeeded = computed(() => {
+  const d = (env.value?.domain || '').toLowerCase()
+  const pName = (plan.value?.name || '').toLowerCase()
+  const pSlug = (plan.value?.slug || '').toLowerCase()
+  const isStudent = pName.includes('student') || pSlug.includes('student') || pName.includes('starter')
+  return Boolean(isStudent && (d.endsWith('.customers.ifnotus.space') || d.startsWith('env-') || !d))
+})
+
+const studentSurnameInput = ref('')
+const assigningSubdomain = ref(false)
+const assignSubdomainMsg = ref<{ type: 'ok' | 'err'; text: string } | null>(null)
+
+async function submitStudentSubdomain() {
+  if (!env.value?.id || !studentSurnameInput.value.trim()) return
+  assigningSubdomain.value = true
+  assignSubdomainMsg.value = null
+  try {
+    const { data } = await customersApi.assignStudentHostname(env.value.id, studentSurnameInput.value.trim())
+    assignSubdomainMsg.value = {
+      type: 'ok',
+      text: data.message || `Subdomain assigned! Your site is live on ${data.hostname || data.domain}.`,
+    }
+    setTimeout(() => {
+      window.location.reload()
+    }, 2000)
+  } catch (e: unknown) {
+    const errObj = e as { response?: { data?: { error?: { message?: string } } } }
+    assignSubdomainMsg.value = {
+      type: 'err',
+      text: errObj.response?.data?.error?.message ?? 'Could not assign that subdomain. Try another surname.',
+    }
+  } finally {
+    assigningSubdomain.value = false
+  }
+}
+
 </script>
 
 <template>
@@ -223,6 +260,39 @@ const isComplimentaryPlan = computed(() => {
           <span>Complimentary Free Plan Active</span>
         </div>
         <p class="comp-desc">Your hosting environment is fully provisioned with 100% complimentary resources (0.00 GHS billing).</p>
+      </div>
+
+      <!-- STUDENT SUBDOMAIN ASSIGNMENT HERO BANNER -->
+      <div v-if="isStudentSubdomainNeeded" class="student-assign-hero-card">
+        <div class="student-assign-head">
+          <div class="student-assign-title">
+            <i class="fa-solid fa-graduation-cap text-indigo-500" />
+            <strong>Assign Your Student Project Address</strong>
+          </div>
+          <span class="student-assign-badge">Action Needed</span>
+        </div>
+        <p class="student-assign-desc">
+          Your student hosting is ready, but you haven't assigned your project surname address yet. Enter your surname below to activate <code>surname.ifnotus.space</code> instantly.
+        </p>
+        <form class="student-assign-form" @submit.prevent="submitStudentSubdomain">
+          <div class="student-input-wrap">
+            <input
+              v-model="studentSurnameInput"
+              type="text"
+              class="student-input"
+              placeholder="Enter your surname (e.g. blay, mensah)"
+              required
+            />
+            <span class="student-suffix">.ifnotus.space</span>
+          </div>
+          <button type="submit" class="btn-assign-student" :disabled="assigningSubdomain">
+            <i class="fa-solid fa-bolt" :class="{ 'fa-spin': assigningSubdomain }" />
+            <span>{{ assigningSubdomain ? 'Assigning…' : 'Activate Project Address' }}</span>
+          </button>
+        </form>
+        <p v-if="assignSubdomainMsg" class="student-feedback" :class="assignSubdomainMsg.type === 'ok' ? 'ok' : 'err'">
+          {{ assignSubdomainMsg.text }}
+        </p>
       </div>
 
       <div class="overview-grid">
@@ -525,6 +595,128 @@ const isComplimentaryPlan = computed(() => {
 .support-badge-btn:hover {
   background: color-mix(in srgb, var(--p-accent, #1e3a5f) 14%, #ffffff);
   transform: translateY(-1px);
+}
+
+/* Student Assign Hero Banner */
+.student-assign-hero-card {
+  border: 1.5px solid #a5b4fc;
+  border-radius: 1rem;
+  background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 100%);
+  padding: 1.25rem 1.5rem;
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+:root.dark .student-assign-hero-card {
+  background: linear-gradient(135deg, rgba(49, 46, 129, 0.25) 0%, rgba(67, 56, 202, 0.15) 100%);
+  border-color: rgba(99, 102, 241, 0.4);
+}
+.student-assign-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.student-assign-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+  color: #312e81;
+}
+:root.dark .student-assign-title {
+  color: #c7d2fe;
+}
+.student-assign-badge {
+  font-size: 0.72rem;
+  font-weight: 750;
+  text-transform: uppercase;
+  background: #6366f1;
+  color: #ffffff;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+}
+.student-assign-desc {
+  font-size: 0.85rem;
+  color: #4338ca;
+  margin: 0;
+  line-height: 1.4;
+}
+:root.dark .student-assign-desc {
+  color: #a5b4fc;
+}
+.student-assign-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+.student-input-wrap {
+  display: inline-flex;
+  align-items: center;
+  background: #ffffff;
+  border: 1.5px solid #c7d2fe;
+  border-radius: 0.6rem;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+:root.dark .student-input-wrap {
+  background: #0f172a;
+  border-color: #4338ca;
+}
+.student-input {
+  border: none;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.88rem;
+  color: #0f172a;
+  outline: none;
+  min-width: 200px;
+  background: transparent;
+}
+:root.dark .student-input {
+  color: #f8fafc;
+}
+.student-suffix {
+  padding: 0.55rem 0.75rem;
+  background: #f1f5f9;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #475569;
+  border-left: 1px solid #e2e8f0;
+}
+:root.dark .student-suffix {
+  background: #1e293b;
+  color: #94a3b8;
+  border-left-color: #334155;
+}
+.btn-assign-student {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: #4f46e5;
+  color: #ffffff;
+  border: none;
+  border-radius: 0.6rem;
+  font-weight: 700;
+  font-size: 0.85rem;
+  padding: 0.55rem 1rem;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.btn-assign-student:hover {
+  background: #4338ca;
+}
+.student-feedback {
+  font-size: 0.82rem;
+  font-weight: 650;
+  margin: 0;
+}
+.student-feedback.ok {
+  color: #16a34a;
+}
+.student-feedback.err {
+  color: #dc2626;
 }
 
 /* Pending Banner */

@@ -78,7 +78,12 @@ export function tenantFpanelUrl(domain: string, tab?: string | null): string | n
     return null
   }
   const primary = primaryApexDomain(host)
-  const fpanelHost = isPlatformOrStudentHost(primary) ? primary : `fpanel.${primary}`
+  if (isPlatformOrStudentHost(primary)) {
+    // Student project subdomains manage files & databases directly via platform portal
+    const t = (tab || '').trim().replace(/^\//, '')
+    return t && t !== 'overview' ? `https://fpanel.ifnotus.space/${encodeURIComponent(t)}` : `https://fpanel.ifnotus.space/`
+  }
+  const fpanelHost = `fpanel.${primary}`
   const base = `https://${fpanelHost}`
   const t = (tab || '').trim().replace(/^\//, '')
   return t && t !== 'overview' ? `${base}/${encodeURIComponent(t)}` : `${base}/`
