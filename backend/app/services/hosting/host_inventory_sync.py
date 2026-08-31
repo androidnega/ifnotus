@@ -89,38 +89,55 @@ class HostInventorySync:
         ordered = sorted(envs, key=lambda e: ((e.domain or "").count("."), e.domain or ""))
         for env in ordered:
             name = (env.domain or "").strip().lower().rstrip(".")
-            if not name or name in by_name:
+            if not name:
                 continue
             # Skip reserved platform labels under the panel apex (mail, cpanel, …).
             label = name.split(".")[0] if name.endswith(".ifnotus.space") else None
             if label and is_reserved_platform_subdomain(label, settings=self._settings):
                 continue
 
-            domain_type, parent_name, sub_label = classify_hostname(name, known - {name})
-            parent_id = None
-            if parent_name and parent_name in by_name:
-                parent_id = by_name[parent_name].id
-            elif parent_name:
-                domain_type = "primary"
-                sub_label = None
+            if name not in by_name:
+                domain_type, parent_name, sub_label = classify_hostname(name, known - {name})
+                parent_id = None
+                if parent_name and parent_name in by_name:
+                    parent_id = by_name[parent_name].id
+                elif parent_name:
+                    domain_type = "primary"
+                    sub_label = None
 
-            entity = Domain(
-                name=name,
-                domain_type=domain_type,
-                parent_domain_id=parent_id,
-                subdomain_label=sub_label,
-                document_root=env.document_root,
-                proxy_port=env.container_port,
-                enabled=True,
-                nginx_enabled=True,
-                nginx_site=provisioner.site_name(name),
-                notes="Auto-imported from customer environment",
-                force_https=False,
-            )
-            await repo.create(entity)
-            by_name[name] = entity
-            known.add(name)
-            added += 1
+                entity = Domain(
+                    name=name,
+                    domain_type=domain_type,
+                    parent_domain_id=parent_id,
+                    subdomain_label=sub_label,
+                    document_root=env.document_root,
+                    proxy_port=env.container_port,
+                    enabled=True,
+                    nginx_enabled=True,
+                    nginx_site=provisioner.site_name(name),
+                    notes="Auto-imported from customer environment",
+                    force_https=True,
+                )
+                await repo.create(entity)
+                by_name[name] = entity
+                known.add(name)
+                added += 1
+
+            # Proactively ensure Nginx virtual host is physically provisioned & enabled on disk
+            available, enabled_path = provisioner.site_paths(name)
+            if env.document_root and (not available.exists() or not enabled_path.exists()):
+                try:
+                    await provisioner.provision(
+                        hostname=name,
+                        document_root=env.document_root,
+                        proxy_port=env.container_port,
+                        force_https=True,
+                        enabled=True,
+                        create_docroot=True,
+                    )
+                    logger.info("auto_provisioned_missing_nginx_vhost", domain=name)
+                except Exception as p_exc:  # noqa: BLE001
+                    logger.warning("customer_env_nginx_auto_provision_failed", domain=name, error=str(p_exc))
 
         if added:
             await self._session.commit()

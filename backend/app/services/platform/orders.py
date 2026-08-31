@@ -489,6 +489,27 @@ class OrderService:
                 meta["hosting_activated_by_id"] = str(actor_id)
             order.meta_json = meta
 
+            if order.domain_name:
+                from app.models.platform import CustomerEnvironment
+                env_stmt = (
+                    select(CustomerEnvironment)
+                    .where(CustomerEnvironment.customer_id == order.customer_id)
+                    .order_by(CustomerEnvironment.created_at.desc())
+                )
+                existing_env = (await self._session.execute(env_stmt)).scalars().first()
+                if existing_env and existing_env.document_root:
+                    existing_env.domain = order.domain_name
+                    try:
+                        from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
+                        await DomainNginxProvisioner(self._settings).provision(
+                            hostname=order.domain_name,
+                            document_root=existing_env.document_root,
+                            proxy_port=None,
+                            force_https=True,
+                        )
+                    except Exception as e:
+                        logger.warning("activate_env_nginx_provision_failed", error=str(e), domain=order.domain_name)
+
             self._session.add(
                 PlatformAuditLog(
                     customer_id=order.customer_id,
@@ -563,8 +584,40 @@ class OrderService:
                 )
             if env.document_root:
                 from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
+                from app.models.hosting import Domain
+                from app.repositories.domain import DomainRepository
+
+                provisioner = DomainNginxProvisioner(self._settings)
+                dom_repo = DomainRepository(self._session)
+                if old_domain and old_domain != raw_name:
+                    old_dom = await dom_repo.get_by_name(old_domain)
+                    if old_dom:
+                        old_dom.name = raw_name
+                        old_dom.document_root = env.document_root
+                        old_dom.nginx_site = provisioner.site_name(raw_name)
+                        old_dom.force_https = True
+                        await dom_repo.update(old_dom)
+                    try:
+                        await provisioner.remove(old_domain, remove_files=False)
+                    except Exception:
+                        pass
+                else:
+                    existing_dom = await dom_repo.get_by_name(raw_name)
+                    if not existing_dom:
+                        await dom_repo.create(
+                            Domain(
+                                name=raw_name,
+                                domain_type="primary" if "." not in raw_name.replace(".ifnotus.space", "") else "subdomain",
+                                document_root=env.document_root,
+                                proxy_port=env.container_port,
+                                enabled=True,
+                                nginx_enabled=True,
+                                nginx_site=provisioner.site_name(raw_name),
+                                force_https=True,
+                            )
+                        )
                 try:
-                    await DomainNginxProvisioner(self._settings).provision(
+                    await provisioner.provision(
                         hostname=raw_name,
                         document_root=env.document_root,
                         proxy_port=None,

@@ -823,7 +823,38 @@ class StaffPlatformService:
 
         if env.document_root:
             from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
+            from app.models.hosting import Domain
+            from app.repositories.domain import DomainRepository
+
             provisioner = DomainNginxProvisioner(self._settings)
+            dom_repo = DomainRepository(self._session)
+            if old_domain and old_domain != raw_name:
+                old_dom = await dom_repo.get_by_name(old_domain)
+                if old_dom:
+                    old_dom.name = raw_name
+                    old_dom.document_root = env.document_root
+                    old_dom.nginx_site = provisioner.site_name(raw_name)
+                    old_dom.force_https = True
+                    await dom_repo.update(old_dom)
+                try:
+                    await provisioner.remove(old_domain, remove_files=False)
+                except Exception:
+                    pass
+            else:
+                existing_dom = await dom_repo.get_by_name(raw_name)
+                if not existing_dom:
+                    await dom_repo.create(
+                        Domain(
+                            name=raw_name,
+                            domain_type="primary" if "." not in raw_name.replace(".ifnotus.space", "") else "subdomain",
+                            document_root=env.document_root,
+                            proxy_port=env.container_port,
+                            enabled=True,
+                            nginx_enabled=True,
+                            nginx_site=provisioner.site_name(raw_name),
+                            force_https=True,
+                        )
+                    )
             try:
                 await provisioner.provision(
                     hostname=raw_name,
