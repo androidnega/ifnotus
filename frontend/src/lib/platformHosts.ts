@@ -70,14 +70,20 @@ export function primaryApexDomain(host: string): string {
   return h
 }
 
-/** Tenant panel canonical entry — https://fpanel.<domain>/{tab}. */
+/** Tenant panel canonical entry — https://fpanel.<domain>/{tab} for custom apex domains; https://fpanel.ifnotus.space/ for subdomains. */
 export function tenantFpanelUrl(domain: string, tab?: string | null): string | null {
   let host = normalizedApex(domain)
   if (!host) return null
   if (host === 'ifnotus.space' || host === STAFF_PANEL_HOST || host === 'mail.ifnotus.space') {
     return null
   }
-  const fpanelHost = host.startsWith('fpanel.') ? host : `fpanel.${host}`
+  const primary = primaryApexDomain(host)
+  if (isPlatformOrStudentHost(primary) || host.endsWith('.ifnotus.space') || host.endsWith('.customers.ifnotus.space')) {
+    // All subdomains manage hosting via the central fPanel portal — never generate fpanel.<subdomain>
+    const t = (tab || '').trim().replace(/^\//, '')
+    return t && t !== 'overview' ? `https://fpanel.ifnotus.space/${encodeURIComponent(t)}` : `https://fpanel.ifnotus.space/`
+  }
+  const fpanelHost = `fpanel.${primary}`
   const base = `https://${fpanelHost}`
   const t = (tab || '').trim().replace(/^\//, '')
   return t && t !== 'overview' ? `${base}/${encodeURIComponent(t)}` : `${base}/`

@@ -45,12 +45,18 @@ class EnvironmentReconciliationService:
                 seen_domains.add(env.domain.strip().lower())
 
         # Also check custom domains from Domain table if any
+        from app.services.hosting.nginx_discovery import NginxDiscoveryService
         stmt_dom = select(Domain)
         res_dom = await self._session.execute(stmt_dom)
         domains = list(res_dom.scalars().all())
         for d in domains:
             d_name = (d.name or "").strip().lower()
-            if d_name and d_name not in seen_domains and not is_platform_hostname(d_name, settings=self._settings):
+            if (
+                d_name
+                and d_name not in seen_domains
+                and not is_platform_hostname(d_name, settings=self._settings)
+                and NginxDiscoveryService.is_actual_domain_or_subdomain(d_name)
+            ):
                 seen_domains.add(d_name)
                 # Ensure DNS zone if hosted on IFNOTUS NS
                 dns_updated = False
@@ -95,7 +101,12 @@ class EnvironmentReconciliationService:
         cd_rows = list(res_cd.scalars().all())
         for cd in cd_rows:
             cd_name = (cd.domain_name or "").strip().lower()
-            if cd_name and cd_name not in seen_domains and not is_platform_hostname(cd_name, settings=self._settings):
+            if (
+                cd_name
+                and cd_name not in seen_domains
+                and not is_platform_hostname(cd_name, settings=self._settings)
+                and NginxDiscoveryService.is_actual_domain_or_subdomain(cd_name)
+            ):
                 seen_domains.add(cd_name)
                 dns_updated = False
                 try:

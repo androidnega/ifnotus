@@ -47,8 +47,10 @@ def is_platform_hostname(domain: str | None, *, settings: object | None = None) 
 
 
 def control_panel_hostname(domain: str | None, *, settings: object | None = None) -> str | None:
-    """Canonical customer fPanel hostname: fpanel.<domain> (e.g. fpanel.yalleydadzie.online or fpanel.ade.ifnotus.space).
-    Customer subdomains remain managed through their dedicated fpanel.<domain>.
+    """Canonical customer fPanel hostname.
+    IMPORTANT: Subdomains (*.ifnotus.space, *.customers.ifnotus.space, or any multi-label subdomain)
+    must NEVER have an fpanel.<subdomain> host. They use the platform control panel (fpanel.ifnotus.space).
+    Only custom apex domains (e.g. yalleydadzie.online, adastrachambers.com) can have fpanel.<apex>.
     """
     host = (domain or "").lower().rstrip(".")
     if host.startswith("www."):
@@ -59,6 +61,23 @@ def control_panel_hostname(domain: str | None, *, settings: object | None = None
         return STAFF_PANEL_HOST
     if host.startswith("fpanel."):
         return host
+    if host.endswith(".ifnotus.space") or host.endswith(".serverlabsttu.space") or host.endswith(".customers.ifnotus.space"):
+        return STAFF_PANEL_HOST
+    if is_student_hostname(host, settings=settings) or is_platform_hostname(host, settings=settings):
+        return STAFF_PANEL_HOST
+
+    parts = host.split(".")
+    if len(parts) > 2:
+        two_level_tlds = {"co.uk", "org.uk", "me.uk", "com.gh", "org.gh", "edu.gh", "gov.gh", "net.gh", "com.ng", "co.za"}
+        suffix2 = ".".join(parts[-2:])
+        if suffix2 in two_level_tlds and len(parts) > 3:
+            primary = ".".join(parts[-3:])
+            return f"fpanel.{primary}"
+        elif suffix2 not in two_level_tlds:
+            # Multi-level subdomain under custom domain (e.g. blog.example.com -> fpanel.example.com)
+            primary = ".".join(parts[-2:])
+            return f"fpanel.{primary}"
+
     return f"fpanel.{host}"
 
 
@@ -215,6 +234,17 @@ def find_letsencrypt_cert(hostname: str) -> tuple[str | None, str | None]:
     exact = live_dir / clean
     if exact.exists():
         candidates.append(exact)
+    
+    # Common spelling alias checks (e.g. theofiluskwame -> theophiluskwame)
+    if "theofilus" in clean:
+        theo_cand = live_dir / clean.replace("theofilus", "theophilus")
+        if theo_cand.exists():
+            candidates.append(theo_cand)
+    elif "theophilus" in clean:
+        theo_cand = live_dir / clean.replace("theophilus", "theofilus")
+        if theo_cand.exists():
+            candidates.append(theo_cand)
+
     try:
         candidates.extend(
             sorted(
