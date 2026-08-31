@@ -4838,6 +4838,38 @@ async def list_customer_domains(
         .order_by(CustomerDomain.created_at.desc())
     )
     domains = list(result.scalars().all())
+    existing_domain_names = {d.domain_name.strip().lower() for d in domains if d.domain_name}
+
+    # Also discover all customer environments to ensure none are missing
+    all_envs_res = await session.execute(
+        select(CustomerEnvironment).where(
+            CustomerEnvironment.customer_id == customer.id,
+            CustomerEnvironment.status != "terminated",
+        )
+    )
+    all_envs = list(all_envs_res.scalars().all())
+    for env_row in all_envs:
+        dom_name = (env_row.domain or "").strip().lower()
+        if dom_name and dom_name not in existing_domain_names:
+            is_sub = (
+                dom_name.endswith(".ifnotus.space")
+                or dom_name.endswith(".serverlabsttu.space")
+                or dom_name.endswith(".customers.ifnotus.space")
+            )
+            new_cd = CustomerDomain(
+                customer_id=customer.id,
+                environment_id=env_row.id,
+                domain_name=dom_name,
+                registrar="ifnotus" if is_sub else "customer",
+                status="active" if is_sub else "active",
+                ssl_status=env_row.ssl_status or "active",
+                registration_date=env_row.created_at,
+                expiry_date=env_row.created_at + timedelta(days=365) if env_row.created_at else None,
+            )
+            session.add(new_cd)
+            domains.append(new_cd)
+            existing_domain_names.add(dom_name)
+    await session.flush()
 
     env_ids = [d.environment_id for d in domains if d.environment_id]
     env_map: dict[UUID, str] = {}

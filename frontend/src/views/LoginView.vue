@@ -133,6 +133,9 @@ function backToCredentials() {
       <!-- Credentials step -->
       <template v-if="step === 'credentials'">
         <form class="cpanel-login-card" @submit.prevent="handleLogin">
+          <UiAlert v-if="route.query.inactivity === '1'" tone="warning" class="compact-alert">
+            You were logged out after 20 minutes of inactivity.
+          </UiAlert>
           <UiAlert v-if="route.query.verified === '1'" tone="ok" class="compact-alert">Email verified. You can log in.</UiAlert>
 
           <div class="cpanel-input-wrap">

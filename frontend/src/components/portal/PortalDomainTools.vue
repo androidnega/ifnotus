@@ -46,6 +46,19 @@ const domainItems = ref<DomainItem[]>([])
 const searchQuery = ref('')
 const selectedDomainIds = ref<Set<string>>(new Set())
 
+// Sorting state
+const sortBy = ref<'domain' | 'docroot' | 'redirects' | 'https'>('domain')
+const sortOrder = ref<'asc' | 'desc'>('asc')
+
+function toggleSort(col: 'domain' | 'docroot' | 'redirects' | 'https') {
+  if (sortBy.value === col) {
+    sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortBy.value = col
+    sortOrder.value = 'asc'
+  }
+}
+
 // Create Domain Form
 const createDomainType = ref<'registered' | 'temporary'>('registered')
 const newDomainName = ref('')
@@ -105,13 +118,40 @@ watch(shareDocRoot, (isShared) => {
 
 const filteredDomains = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
-  if (!q) return domainItems.value
-  return domainItems.value.filter(
-    (d) =>
-      d.domain_name.toLowerCase().includes(q) ||
-      d.document_root.toLowerCase().includes(q) ||
-      (d.redirects_to && d.redirects_to.toLowerCase().includes(q)),
-  )
+  let list = domainItems.value
+  if (q) {
+    list = list.filter(
+      (d) =>
+        d.domain_name.toLowerCase().includes(q) ||
+        d.document_root.toLowerCase().includes(q) ||
+        (d.redirects_to && d.redirects_to.toLowerCase().includes(q)),
+    )
+  }
+
+  return [...list].sort((a, b) => {
+    if (sortBy.value === 'domain') {
+      if (a.is_primary && !b.is_primary) return sortOrder.value === 'asc' ? -1 : 1
+      if (!a.is_primary && b.is_primary) return sortOrder.value === 'asc' ? 1 : -1
+      const cmp = a.domain_name.localeCompare(b.domain_name)
+      return sortOrder.value === 'asc' ? cmp : -cmp
+    }
+    if (sortBy.value === 'docroot') {
+      const cmp = a.document_root.localeCompare(b.document_root)
+      return sortOrder.value === 'asc' ? cmp : -cmp
+    }
+    if (sortBy.value === 'redirects') {
+      const rA = a.redirects_to || 'Not Redirected'
+      const rB = b.redirects_to || 'Not Redirected'
+      const cmp = rA.localeCompare(rB)
+      return sortOrder.value === 'asc' ? cmp : -cmp
+    }
+    if (sortBy.value === 'https') {
+      const hA = a.force_https ? 1 : 0
+      const hB = b.force_https ? 1 : 0
+      return sortOrder.value === 'asc' ? hB - hA : hA - hB
+    }
+    return 0
+  })
 })
 
 const isAllSelected = computed(() => {
@@ -558,13 +598,42 @@ onMounted(load)
                   @change="toggleSelectAll"
                 />
               </th>
-              <th class="th-domain">
-                <span>Domain</span>
-                <i class="fas fa-chevron-up cp-sort-icon" />
+              <th class="th-sortable" @click="toggleSort('domain')">
+                <div class="th-content">
+                  <span>Domain</span>
+                  <i
+                    class="fas cp-sort-icon"
+                    :class="sortBy === 'domain' ? (sortOrder === 'asc' ? 'fa-caret-up active' : 'fa-caret-down active') : 'fa-sort'"
+                  />
+                </div>
               </th>
-              <th class="th-docroot">Document Root</th>
-              <th class="th-redirects">Redirects To</th>
-              <th class="th-https">Force HTTPS Redirect</th>
+              <th class="th-sortable" @click="toggleSort('docroot')">
+                <div class="th-content">
+                  <span>Document Root</span>
+                  <i
+                    class="fas cp-sort-icon"
+                    :class="sortBy === 'docroot' ? (sortOrder === 'asc' ? 'fa-caret-up active' : 'fa-caret-down active') : 'fa-sort'"
+                  />
+                </div>
+              </th>
+              <th class="th-sortable" @click="toggleSort('redirects')">
+                <div class="th-content">
+                  <span>Redirects To</span>
+                  <i
+                    class="fas cp-sort-icon"
+                    :class="sortBy === 'redirects' ? (sortOrder === 'asc' ? 'fa-caret-up active' : 'fa-caret-down active') : 'fa-sort'"
+                  />
+                </div>
+              </th>
+              <th class="th-sortable" @click="toggleSort('https')">
+                <div class="th-content">
+                  <span>Force HTTPS Redirect</span>
+                  <i
+                    class="fas cp-sort-icon"
+                    :class="sortBy === 'https' ? (sortOrder === 'asc' ? 'fa-caret-up active' : 'fa-caret-down active') : 'fa-sort'"
+                  />
+                </div>
+              </th>
               <th class="th-actions">
                 <span>Actions</span>
                 <i class="fas fa-cog text-slate-400 ml-1" />
@@ -1362,6 +1431,31 @@ onMounted(load)
 :root.dark .cp-domains-table th {
   background: #1e293b;
   border-color: #475569;
+  color: #38bdf8;
+}
+.th-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+.th-sortable:hover {
+  background: #f1f5f9;
+}
+:root.dark .th-sortable:hover {
+  background: #334155/60;
+}
+.th-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.cp-sort-icon {
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+.cp-sort-icon.active {
+  color: #0284c7;
+}
+:root.dark .cp-sort-icon.active {
   color: #38bdf8;
 }
 .cp-domains-table td {

@@ -220,19 +220,23 @@ class PanelPasswordService:
             verify_password(password or "dummy", _dummy_hash)
             raise AuthenticationError("Invalid credentials.") from None
 
-        if not env.panel_password_hash:
-            raise AuthenticationError("Invalid credentials.")
-        if not verify_password(password, env.panel_password_hash):
-            raise AuthenticationError("Invalid credentials.")
         customer = await self._session.get(Customer, env.customer_id)
         if customer is None or not customer.user_id:
             raise AuthenticationError("Invalid credentials.")
         user = await self._session.get(User, customer.user_id)
         if user is None or user.deleted_at is not None or not user.is_active:
             raise AuthenticationError("Invalid credentials.")
-        if user.is_superuser or Role.CUSTOMER.value not in (user.roles or []):
-            # Staff/superadmin must never use tenant panel login.
-            raise AuthenticationError("This login is for hosting tenants only.")
+
+        # Check password against env.panel_password_hash OR user account password
+        password_matched = False
+        if env.panel_password_hash and verify_password(password, env.panel_password_hash):
+            password_matched = True
+        elif user.hashed_password and verify_password(password, user.hashed_password):
+            password_matched = True
+
+        if not password_matched:
+            raise AuthenticationError("Invalid credentials.")
+
         user.last_login_at = datetime.now(UTC)
         if ip_address:
             user.last_login_ip = ip_address[:45]

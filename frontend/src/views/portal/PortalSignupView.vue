@@ -100,6 +100,9 @@ async function loadPanelStatus() {
 }
 
 onMounted(() => {
+  if (route.query.inactivity === '1') {
+    error.value = 'You have been logged out due to 20 minutes of inactivity.'
+  }
   if (panelLogin.value) {
     step.value = 'password'
     authMode.value = 'password'
