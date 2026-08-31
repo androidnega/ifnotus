@@ -547,6 +547,7 @@ async function rejectPay(o: StaffOrderItem) {
               v-for="o in filteredOrders"
               :key="o.id"
               class="order-card-slim"
+              :class="{ 'is-paid': o.payment_status === 'paid', 'is-active': o.provisioning_status === 'active' }"
             >
               <!-- TOP STRIP: INVOICE & CUSTOMER INFO + AMOUNT -->
               <div class="card-main-row">
@@ -557,7 +558,7 @@ async function rejectPay(o: StaffOrderItem) {
                     <span class="kind-badge">{{ o.order_kind || 'hosting' }}</span>
                     <span class="date-badge">
                       <i class="fa-regular fa-clock" aria-hidden="true" />
-                      {{ new Date(o.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }}
+                      {{ new Date(o.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) }}
                     </span>
                   </div>
 
@@ -614,7 +615,7 @@ async function rejectPay(o: StaffOrderItem) {
                 </div>
               </div>
 
-              <!-- MIDDLE STRIP: KEYED OUT SENDING REF & MOMO TRANSACTION ID + PLAN & DOMAIN -->
+              <!-- MIDDLE STRIP: PLAN & DOMAIN + CONDITIONAL REFERENCES -->
               <div class="card-meta-row">
                 <!-- LEFT SIDE: PLAN & DOMAIN/SUBDOMAIN -->
                 <div class="meta-item-group">
@@ -659,13 +660,17 @@ async function rejectPay(o: StaffOrderItem) {
                   </div>
                 </div>
 
-                <!-- RIGHT SIDE: KEYED OUT REFERENCES (SENDING REF + MOMO TX) -->
+                <!-- RIGHT SIDE: REFERENCES (SHOWN CLEANLY ONLY WHEN RELEVANT OR EXPANDED) -->
                 <div class="references-cluster">
-                  <!-- KEYED OUT SENDING REFERENCE (THE CODE GIVEN TO USER FOR MOMO NOTE) -->
-                  <div class="sending-ref-card" :title="'Expected Mobile Money transfer reference code: ' + (o.invoice_number || o.id.slice(0, 8))">
+                  <!-- SENDING REFERENCE (SHOWN ONLY IF UNPAID/SUBMITTED TO AVOID CLUTTER ON PAID LIST) -->
+                  <div
+                    v-if="o.payment_status !== 'paid'"
+                    class="sending-ref-card"
+                    :title="'Expected Mobile Money transfer reference code: ' + (o.invoice_number || o.id.slice(0, 8))"
+                  >
                     <span class="ref-k">
                       <i class="fa-solid fa-key" aria-hidden="true" />
-                      Sending Ref:
+                      Ref:
                     </span>
                     <code class="ref-v">{{ o.invoice_number || o.id.slice(0, 8) }}</code>
                     <button
@@ -869,15 +874,15 @@ async function rejectPay(o: StaffOrderItem) {
               <!-- STATUS: PAID & ACTIVE -->
               <div v-else-if="o.payment_status === 'paid' && o.provisioning_status === 'active'" class="active-footer">
                 <div class="active-left">
-                  <i class="fa-solid fa-circle-check text-green-600" aria-hidden="true" />
-                  <span>Hosting is active on <strong>{{ o.domain_name || 'domain' }}</strong></span>
+                  <i class="fa-solid fa-circle-check" aria-hidden="true" />
+                  <span>Hosting environment live on <strong>{{ o.domain_name || 'assigned domain' }}</strong></span>
                 </div>
                 <div class="active-right">
                   <button type="button" class="btn-micro-link" @click="openReceipt(o.id)">
                     <i class="fa-solid fa-receipt" aria-hidden="true" /> Receipt
                   </button>
                   <button type="button" class="btn-micro-link" @click="openCustomer(o.customer_id)">
-                    <i class="fa-solid fa-user" aria-hidden="true" /> Customer Profile
+                    <i class="fa-solid fa-user" aria-hidden="true" /> Customer
                   </button>
                 </div>
               </div>
@@ -1211,31 +1216,40 @@ async function rejectPay(o: StaffOrderItem) {
 .order-list {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.65rem;
 }
 
 .order-card-slim {
-  border: 1px solid #cbd5e1;
+  border: 1px solid #e2e8f0;
   border-radius: 0.75rem;
   background: #ffffff;
-  padding: 0.9rem 1.05rem;
+  padding: 0.85rem 1rem;
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.02);
   display: flex;
   flex-direction: column;
-  gap: 0.65rem;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  gap: 0.55rem;
+  transition: all 0.15s ease;
 }
 
 .order-card-slim:hover {
-  border-color: #94a3b8;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+  border-color: #cbd5e1;
+  box-shadow: 0 3px 8px rgba(15, 23, 42, 0.04);
+}
+
+.order-card-slim.is-paid {
+  border-color: #e2e8f0;
+  background: #ffffff;
+}
+
+.order-card-slim.is-active {
+  border-left: 3.5px solid #10b981;
 }
 
 /* TOP STRIP */
 .card-main-row {
   display: flex;
   flex-direction: column;
-  gap: 0.55rem;
+  gap: 0.45rem;
 }
 
 @media (min-width: 680px) {
@@ -1249,7 +1263,7 @@ async function rejectPay(o: StaffOrderItem) {
 .customer-info-block {
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 0.25rem;
   min-width: 0;
 }
 
@@ -1423,41 +1437,41 @@ async function rejectPay(o: StaffOrderItem) {
 .status-pills {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.3rem;
 }
 
 .status-pill {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
-  padding: 0.18rem 0.55rem;
+  gap: 0.25rem;
+  padding: 0.14rem 0.48rem;
   border-radius: 999px;
-  font-size: 0.68rem;
-  font-weight: 700;
+  font-size: 0.66rem;
+  font-weight: 750;
   background: #f1f5f9;
   color: #475569;
 }
 
-.status-pill[data-s='submitted'] { background: #fef3c7; color: #92400e; }
-.status-pill[data-s='paid'] { background: #d1fae5; color: #065f46; }
-.status-pill[data-s='failed'] { background: #fee2e2; color: #991b1b; }
-.status-pill[data-s='pending'] { background: #f1f5f9; color: #475569; }
+.status-pill[data-s='submitted'] { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+.status-pill[data-s='paid'] { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
+.status-pill[data-s='failed'] { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+.status-pill[data-s='pending'] { background: #f8fafc; color: #64748b; border: 1px solid #e2e8f0; }
 
-.status-pill[data-p='active'] { background: #dbeafe; color: #1e40af; }
-.status-pill[data-p='failed'] { background: #fee2e2; color: #991b1b; }
+.status-pill[data-p='active'] { background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }
+.status-pill[data-p='failed'] { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
 .status-pill[data-p='queued'],
 .status-pill[data-p='pending'],
-.status-pill[data-p='running'] { background: #ffedd5; color: #9a3412; }
+.status-pill[data-p='running'] { background: #fff7ed; color: #9a3412; border: 1px solid #fed7aa; }
 
 /* MIDDLE STRIP: PLAN & DOMAIN/MOMO & KEYED OUT SENDING REF */
 .card-meta-row {
   display: flex;
   flex-direction: column;
-  gap: 0.55rem;
-  padding: 0.6rem 0.8rem;
-  border-radius: 0.55rem;
+  gap: 0.45rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
   background: #f8fafc;
-  border: 1px solid #eef2f7;
+  border: 1px solid #f1f5f9;
 }
 
 @media (min-width: 768px) {
@@ -1471,7 +1485,7 @@ async function rejectPay(o: StaffOrderItem) {
 .meta-item-group {
   display: flex;
   align-items: center;
-  gap: 0.55rem;
+  gap: 0.5rem;
   flex-wrap: wrap;
 }
 
@@ -1584,39 +1598,38 @@ async function rejectPay(o: StaffOrderItem) {
 .references-cluster {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
   flex-wrap: wrap;
 }
 
 .sending-ref-card {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  background: var(--if-sending-ref-bg, #eff6ff);
-  border: 1.5px solid var(--if-sending-ref-border, #93c5fd);
-  padding: 0.2rem 0.55rem;
-  border-radius: 0.45rem;
-  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.08);
+  gap: 0.3rem;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  padding: 0.15rem 0.45rem;
+  border-radius: 0.35rem;
 }
 
 .ref-k {
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 800;
-  color: var(--if-sending-ref-k, #1e40af);
+  color: #1e40af;
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
+  gap: 0.2rem;
 }
 
 .ref-v {
   font-family: ui-monospace, monospace;
-  font-size: 0.82rem;
-  font-weight: 850;
+  font-size: 0.78rem;
+  font-weight: 800;
   color: #1e3a8a;
   background: #ffffff;
-  padding: 0.08rem 0.35rem;
-  border-radius: 0.3rem;
-  border: 1px solid #bfdbfe;
+  padding: 0.05rem 0.3rem;
+  border-radius: 0.25rem;
+  border: 1px solid #dbeafe;
 }
 
 .btn-copy-ref {
@@ -1624,9 +1637,9 @@ async function rejectPay(o: StaffOrderItem) {
   background: #dbeafe;
   color: #1e40af;
   cursor: pointer;
-  padding: 0.12rem 0.38rem;
-  border-radius: 0.3rem;
-  font-size: 0.7rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.25rem;
+  font-size: 0.68rem;
   font-weight: 750;
   display: inline-flex;
   align-items: center;
@@ -1642,22 +1655,22 @@ async function rejectPay(o: StaffOrderItem) {
 .momo-pill {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.3rem;
   background: #ffffff;
-  border: 1px solid #cbd5e1;
-  padding: 0.2rem 0.55rem;
-  border-radius: 0.45rem;
+  border: 1px solid #e2e8f0;
+  padding: 0.15rem 0.45rem;
+  border-radius: 0.35rem;
 }
 
 .momo-k {
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   font-weight: 700;
-  color: #475569;
+  color: #64748b;
 }
 
 .momo-v {
   font-family: ui-monospace, monospace;
-  font-size: 0.78rem;
+  font-size: 0.76rem;
   font-weight: 800;
   color: #0f172a;
 }
@@ -1667,9 +1680,9 @@ async function rejectPay(o: StaffOrderItem) {
   background: transparent;
   color: #64748b;
   cursor: pointer;
-  padding: 0.1rem 0.3rem;
+  padding: 0.08rem 0.25rem;
   border-radius: 0.25rem;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   font-weight: 700;
   display: inline-flex;
   align-items: center;
@@ -1969,11 +1982,11 @@ async function rejectPay(o: StaffOrderItem) {
 .active-footer {
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
-  padding-top: 0.45rem;
+  gap: 0.4rem;
+  padding-top: 0.35rem;
   border-top: 1px solid #f1f5f9;
-  font-size: 0.8rem;
-  color: #166534;
+  font-size: 0.78rem;
+  color: #059669;
 }
 
 @media (min-width: 600px) {
@@ -1987,30 +2000,32 @@ async function rejectPay(o: StaffOrderItem) {
 .active-left {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.35rem;
 }
 
 .active-right {
   display: flex;
-  gap: 0.45rem;
+  gap: 0.35rem;
 }
 
 .btn-micro-link {
   border: 1px solid #cbd5e1;
   background: #ffffff;
   color: #334155;
-  padding: 0.2rem 0.55rem;
+  padding: 0.18rem 0.48rem;
   border-radius: 0.35rem;
-  font-size: 0.74rem;
+  font-size: 0.72rem;
   font-weight: 650;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
+  gap: 0.25rem;
+  transition: all 0.12s ease;
 }
 
 .btn-micro-link:hover {
-  background: #f1f5f9;
+  background: #f8fafc;
+  border-color: #94a3b8;
   color: #0f172a;
 }
 
