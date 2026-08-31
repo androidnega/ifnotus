@@ -861,20 +861,20 @@ async function submitCancel() {
                     <span class="font-bold text-sm text-slate-900 dark:text-white">{{ dom.domain_name }}</span>
                     <span
                       class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide"
-                      :class="dom.is_active ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'"
+                      :class="(dom.is_active || dom.status === 'active' || dom.domain_name.endsWith('.ifnotus.space')) ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'"
                     >
-                      {{ dom.is_active ? 'Active' : 'Pending Activation (24-48h propagation)' }}
+                      {{ (dom.is_active || dom.status === 'active' || dom.domain_name.endsWith('.ifnotus.space')) ? 'Active' : 'Pending Activation (24-48h propagation)' }}
                     </span>
                   </div>
                   <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
                     <span v-if="dom.expiry_date">Renews: {{ formatDate(dom.expiry_date) }} · </span>
-                    <span>Status: {{ dom.status }}</span>
+                    <span>Status: {{ (dom.domain_name.endsWith('.ifnotus.space') || dom.is_active) ? 'active' : dom.status }}</span>
                     <span v-if="dom.environment_domain"> · Attached to {{ dom.environment_domain }}</span>
                   </p>
                 </div>
 
                 <a
-                  v-if="dom.is_active"
+                  v-if="dom.is_active || dom.status === 'active' || dom.domain_name.endsWith('.ifnotus.space')"
                   :href="`https://${dom.domain_name}`"
                   target="_blank"
                   rel="noreferrer"

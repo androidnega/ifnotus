@@ -4848,23 +4848,38 @@ async def list_customer_domains(
         for e in envs_res.scalars().all():
             env_map[e.id] = e.domain or e.hosting_name or str(e.id)
 
+    from app.services.platform.student_hostname import is_student_hostname
+
     items = []
     for d in domains:
-        is_active = d.status == "active"
+        name_lower = (d.domain_name or "").strip().lower()
+        is_subdomain = (
+            name_lower.endswith(".ifnotus.space")
+            or name_lower.endswith(".serverlabsttu.space")
+            or name_lower.endswith(".customers.ifnotus.space")
+            or d.registrar == "ifnotus"
+            or is_student_hostname(name_lower, settings=settings)
+        )
+        effective_status = "active" if is_subdomain else d.status
+        is_active = effective_status == "active"
         items.append(
             CustomerDomainItemResponse(
                 id=d.id,
                 domain_name=d.domain_name,
-                status=d.status,
+                status=effective_status,
                 is_active=is_active,
-                registrar=d.registrar,
+                registrar="ifnotus" if is_subdomain else d.registrar,
                 registration_date=d.registration_date,
                 expiry_date=d.expiry_date,
                 auto_renew=d.auto_renew,
                 environment_id=d.environment_id,
                 environment_domain=env_map.get(d.environment_id) if d.environment_id else None,
                 propagation_notice=(
-                    "New domain registrations and DNS updates take 24 to 48 hours to fully propagate worldwide across all networks."
+                    None
+                    if is_subdomain
+                    else (
+                        "New domain registrations and DNS updates take 24 to 48 hours to fully propagate worldwide across all networks."
+                    )
                 ),
             )
         )

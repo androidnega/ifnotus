@@ -1223,19 +1223,26 @@ class OrderService:
             )
             meta = order.meta_json or {}
             kind = str(meta.get("domain_kind") or "register")
-            should_register = kind == "register" and bool(meta.get("include_domain", True)) and not is_student_hostname(
-                full_name
+            is_platform_sub = (
+                full_name.endswith(".ifnotus.space")
+                or full_name.endswith(".serverlabsttu.space")
+                or is_student_hostname(full_name, settings=self._settings)
+            )
+            should_register = (
+                kind == "register"
+                and bool(meta.get("include_domain", True))
+                and not is_platform_sub
             )
             domain_row = CustomerDomain(
                 customer_id=order.customer_id,
                 domain_name=full_name,
-                registrar="ifnotus" if is_student_hostname(full_name) else ("queued" if should_register else "customer"),
+                registrar="ifnotus" if is_platform_sub else ("queued" if should_register else "customer"),
                 registration_date=datetime.now(UTC),
                 expiry_date=datetime.now(UTC) + timedelta(days=365),
                 auto_renew=True,
                 dns_records=[],
-                status="pending_verification",
-                ssl_status="pending",
+                status="active" if is_platform_sub else "pending_verification",
+                ssl_status="active" if is_platform_sub else "pending",
             )
             self._session.add(domain_row)
             await self._session.flush()
