@@ -730,9 +730,25 @@ class DomainNginxProvisioner:
             if "location = /cpanel" not in chunk or f"{portal}/go/hosting?host=$host" not in chunk:
                 needs_https_fix = True
                 break
-        if has_mail and has_cpanel and not needs_https_fix and not has_stale_cpanel_proxy:
+        if "location = /fpanel" in conf and "location = /mail" in conf:
             return conf
-        # Strip old embedded Roundcube /mail blocks and stale /cpanel blocks.
+
+        # Strip old embedded Roundcube /mail blocks, /webmail, /fpanel, and stale /cpanel blocks.
+        cleaned = re.sub(
+            r"[ \t]*# Customer convenience redirects[\s\S]*?(?=[ \t]*location / \{|\Z)",
+            "",
+            conf,
+        )
+        cleaned = re.sub(
+            r"[ \t]*location = /fpanel/? \{[\s\S]*?\n[ \t]*\}\n",
+            "",
+            cleaned,
+        )
+        cleaned = re.sub(
+            r"[ \t]*location = /webmail/? \{[\s\S]*?\n[ \t]*\}\n",
+            "",
+            cleaned,
+        )
         cleaned = re.sub(
             r"\n?[ \t]*# Roundcube webmail[^\n]*\n"
             r"(?:[ \t]*location = /mail \{[\s\S]*?\n[ \t]*\}\n)?"
@@ -740,7 +756,7 @@ class DomainNginxProvisioner:
             r"(?:[ \t]*location = /mail/ \{[\s\S]*?\n[ \t]*\}\n)?"
             r"(?:[ \t]*location /mail/ \{[\s\S]*?\n[ \t]*\}\n)?",
             "\n",
-            conf,
+            cleaned,
         )
         cleaned = re.sub(
             r"[ \t]*# Roundcube lives on mail\.ifnotus\.space[^\n]*\n"
