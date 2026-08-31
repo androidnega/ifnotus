@@ -112,9 +112,10 @@ class InventoryService:
         )
 
     async def _build_domain_inventory(self, now: datetime) -> DomainInventorySchema:
-        db_domains = await self._domains.list_all()
+        all_db = await self._domains.list_all()
+        db_domains = [d for d in all_db if NginxDiscoveryService.is_actual_domain_or_subdomain(d.name)]
         db_by_name = {d.name: d for d in db_domains}
-        nginx_sites = self._nginx.scan_sites()
+        nginx_sites = [s for s in self._nginx.scan_sites() if NginxDiscoveryService.is_actual_domain_or_subdomain(s.server_name)]
 
         managed: list[NginxDiscoveredDomainSchema] = []
         discovered: list[NginxDiscoveredDomainSchema] = []

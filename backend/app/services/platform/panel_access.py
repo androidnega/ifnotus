@@ -263,5 +263,14 @@ def find_letsencrypt_cert(hostname: str) -> tuple[str | None, str | None]:
         if p_full.exists() and p_key.exists():
             return str(p_full), str(p_key)
 
+    # Fallback for custom subdomains to their parent apex domain cert (e.g. blog.yalleydadzie.online -> yalleydadzie.online)
+    if "." in clean:
+        parts = clean.split(".")
+        if len(parts) > 2:
+            parent_apex = ".".join(parts[-2:])
+            apex_cand = live_dir / parent_apex
+            if (apex_cand / "fullchain.pem").exists() and (apex_cand / "privkey.pem").exists():
+                return str(apex_cand / "fullchain.pem"), str(apex_cand / "privkey.pem")
+
     return None, None
 

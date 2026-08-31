@@ -22,6 +22,36 @@ class NginxDiscoveryService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
+    @staticmethod
+    def is_actual_domain_or_subdomain(name: str) -> bool:
+        """Check if name is a real customer domain/subdomain rather than a system alias/catchall."""
+        if not name or name in {"_", "default", "localhost"}:
+            return False
+        clean = name.strip().lower().rstrip(";")
+        if clean.startswith("*") or clean.startswith("~") or "/" in clean or "\\" in clean:
+            return False
+        if "catchall" in clean or clean.endswith(".conf") or clean.endswith(".bak") or clean.endswith(".tmp"):
+            return False
+        # Filter out IP addresses
+        if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", clean):
+            return False
+        # Filter out service redirection prefixes (cpanel.*, webmail.*, mail.*, autodiscover.*, autoconfig.*)
+        if (
+            clean.startswith("cpanel.")
+            or clean.startswith("webmail.")
+            or clean.startswith("mail.")
+            or clean.startswith("autodiscover.")
+            or clean.startswith("autoconfig.")
+            or clean.startswith("cp.")
+        ):
+            return False
+        # www. is an alias, not a separate distinct website/app
+        if clean.startswith("www."):
+            return False
+        if "." not in clean:
+            return False
+        return True
+
     def scan_sites(self) -> list[NginxDiscoveredDomainSchema]:
         sites: dict[str, NginxDiscoveredDomainSchema] = {}
         enabled_dir = Path(self._settings.nginx_sites_enabled)
@@ -33,6 +63,10 @@ class NginxDiscoveryService:
                 continue
             for path in sorted(directory.iterdir()):
                 if not path.is_file() and not path.is_symlink():
+                    continue
+                # Skip backup, catchall, and temp files
+                name_lower = path.name.lower()
+                if "catchall" in name_lower or name_lower.endswith(".bak") or name_lower.endswith(".tmp") or "pre-takeover" in name_lower:
                     continue
                 try:
                     parsed = self._parse_site(path, enabled=path.is_symlink() or directory == enabled_dir)
@@ -71,16 +105,16 @@ class NginxDiscoveryService:
                 reconciliation_state=DomainReconciliationState.DISCOVERED,
             )
             for name in server_names
-            if name and name != "_"
+            if self.is_actual_domain_or_subdomain(name)
         ]
 
-    @staticmethod
-    def _extract_server_names(content: str) -> list[str]:
+    @classmethod
+    def _extract_server_names(cls, content: str) -> list[str]:
         names: list[str] = []
         for match in re.finditer(r"server_name\s+([^;]+);", content):
             for name in match.group(1).split():
                 name = name.strip().rstrip(";")
-                if name and name not in names and name != "_":
+                if name and name not in names and cls.is_actual_domain_or_subdomain(name):
                     names.append(name)
         return names
 

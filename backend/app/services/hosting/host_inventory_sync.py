@@ -33,6 +33,7 @@ class HostInventorySync:
 
     async def sync(self) -> dict[str, Any]:
         """Import nginx hostnames, active customer sites, and auto-register apps."""
+        await self._cleanup_obsolete_domains()
         nginx_sites = await asyncio.to_thread(NginxDiscoveryService(self._settings).scan_sites)
         domains = DomainService(self._settings, self._session)
         await domains._sync_from_nginx(nginx_sites)
@@ -49,6 +50,20 @@ class HostInventorySync:
         }
         logger.info("host_inventory_synced", **summary)
         return summary
+
+    async def _cleanup_obsolete_domains(self) -> int:
+        """Remove service aliases and non-actual domain records from the database."""
+        repo = DomainRepository(self._session)
+        existing = await repo.list_all()
+        removed = 0
+        for d in existing:
+            if not NginxDiscoveryService.is_actual_domain_or_subdomain(d.name):
+                await repo.delete(d)
+                removed += 1
+        if removed:
+            await self._session.commit()
+            logger.info("obsolete_domains_cleaned", count=removed)
+        return removed
 
     async def _sync_customer_environments(self) -> int:
         """Ensure every active customer hostname exists as a Domain row."""

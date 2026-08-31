@@ -98,7 +98,8 @@ class DomainService:
             await self._sync_from_nginx(nginx_sites)
 
         nginx_sites = await asyncio.to_thread(self._nginx_discovery.scan_sites)
-        domains = await self._list_with_relations()
+        raw_domains = await self._list_with_relations()
+        domains = [d for d in raw_domains if NginxDiscoveryService.is_actual_domain_or_subdomain(d.name)]
         site_by_name = {s.server_name: s for s in nginx_sites}
         enriched = [self._enrich_from_site(d, site_by_name.get(d.name)) for d in domains]
         db_names = {d.name for d in domains}
