@@ -516,8 +516,30 @@ watch([dateFrom, dateTo, ledgerFilter], load)
           lede="Real-time cash flow, MoMo reconciliations, proforma receivables, and audit telemetry."
         >
           <template #actions>
-            <div class="head-controls">
-              <!-- DATE PRESET PILLS -->
+            <div class="head-btn-group">
+              <button type="button" class="action-btn primary" @click="load">
+                <i class="fa-solid fa-arrows-rotate" :class="{ 'fa-spin': loading }" aria-hidden="true" />
+                Refresh
+              </button>
+              <button type="button" class="action-btn" title="Send SMS / Email Notice" @click="showBroadcastModal = true">
+                <i class="fa-solid fa-paper-plane text-indigo-500" aria-hidden="true" />
+                Custom Message
+              </button>
+              <button type="button" class="action-btn" title="Export Ledger to CSV" @click="exportCsv">
+                <i class="fa-solid fa-file-csv text-emerald-600" aria-hidden="true" />
+                CSV Export
+              </button>
+            </div>
+          </template>
+        </UiPageHeader>
+      </header>
+
+      <div class="acct-body">
+        <!-- FILTER & CONTROLS TOOLBAR CARD -->
+        <section class="panel-card filters-card">
+          <div class="filters-row">
+            <!-- LEFT: DATE PRESET PILLS & CUSTOM PICKERS -->
+            <div class="date-filter-group">
               <div class="preset-group">
                 <button
                   type="button"
@@ -569,7 +591,6 @@ watch([dateFrom, dateTo, ledgerFilter], load)
                 </button>
               </div>
 
-              <!-- CUSTOM DATE PICKERS -->
               <div class="date-pickers">
                 <label class="date-label">
                   <span>From</span>
@@ -580,41 +601,26 @@ watch([dateFrom, dateTo, ledgerFilter], load)
                   <input v-model="dateTo" type="date" class="date-input" />
                 </label>
               </div>
-
-              <!-- ACTIONS: REFRESH & EXPORT CSV -->
-              <div class="head-btn-group">
-                <button type="button" class="action-btn" title="Send SMS / Email Notice" @click="showBroadcastModal = true">
-                  <i class="fa-solid fa-paper-plane" aria-hidden="true" />
-                  Custom Message
-                </button>
-                <button type="button" class="action-btn" title="SMS Telemetry & Logs" @click="showSmsLogsModal = true">
-                  <i class="fa-solid fa-comment-sms" aria-hidden="true" />
-                  SMS Logs ({{ smsData?.total_sms_sent ?? 0 }})
-                </button>
-                <button type="button" class="action-btn" title="Export Ledger to CSV" @click="exportCsv">
-                  <i class="fa-solid fa-file-csv" aria-hidden="true" />
-                  CSV Export
-                </button>
-                <button
-                  type="button"
-                  class="action-btn guide-btn"
-                  :class="{ active: showBillingAgentGuide }"
-                  @click="showBillingAgentGuide = !showBillingAgentGuide"
-                >
-                  <i class="fa-solid fa-user-shield" aria-hidden="true" />
-                  Billing Role Guide
-                </button>
-                <button type="button" class="action-btn primary" @click="load">
-                  <i class="fa-solid fa-arrows-rotate" :class="{ 'fa-spin': loading }" aria-hidden="true" />
-                  Refresh
-                </button>
-              </div>
             </div>
-          </template>
-        </UiPageHeader>
-      </header>
 
-      <div class="acct-body">
+            <!-- RIGHT: AUXILIARY TOOL BUTTONS -->
+            <div class="filter-aux-group">
+              <button type="button" class="action-btn" title="SMS Telemetry & Logs" @click="showSmsLogsModal = true">
+                <i class="fa-solid fa-comment-sms text-fuchsia-600 dark:text-fuchsia-400" aria-hidden="true" />
+                SMS Logs ({{ smsData?.total_sms_sent ?? 0 }})
+              </button>
+              <button
+                type="button"
+                class="action-btn guide-btn"
+                :class="{ active: showBillingAgentGuide }"
+                @click="showBillingAgentGuide = !showBillingAgentGuide"
+              >
+                <i class="fa-solid fa-user-shield text-indigo-600 dark:text-indigo-400" aria-hidden="true" />
+                Billing Role Guide
+              </button>
+            </div>
+          </div>
+        </section>
         <!-- BILLING AGENT RESPONSIBILITIES GUIDE BANNER (COLLAPSIBLE) -->
         <div v-if="showBillingAgentGuide" class="billing-guide-card">
           <div class="guide-head">
@@ -1251,11 +1257,11 @@ watch([dateFrom, dateTo, ledgerFilter], load)
   overflow-x: hidden !important;
 }
 
-.head-controls {
-  display: flex;
+.head-btn-group {
+  display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem 0.65rem;
+  gap: 0.35rem 0.45rem;
   max-width: 100%;
   box-sizing: border-box;
 }
@@ -1298,9 +1304,8 @@ watch([dateFrom, dateTo, ledgerFilter], load)
 
 .date-pickers {
   display: inline-flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.35rem;
   max-width: 100%;
   box-sizing: border-box;
 }
@@ -1308,7 +1313,7 @@ watch([dateFrom, dateTo, ledgerFilter], load)
 .date-label {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
+  gap: 0.25rem;
   font-size: 0.7rem;
   font-weight: 700;
   color: #64748b;
@@ -1319,7 +1324,7 @@ watch([dateFrom, dateTo, ledgerFilter], load)
 .date-input {
   border: 1px solid #cbd5e1;
   border-radius: 0.45rem;
-  padding: 0.25rem 0.5rem;
+  padding: 0.25rem 0.45rem;
   font-size: 0.76rem;
   color: #0f172a;
   background: #ffffff;
@@ -1330,15 +1335,6 @@ watch([dateFrom, dateTo, ledgerFilter], load)
 
 .date-input:focus {
   border-color: #2563eb;
-}
-
-.head-btn-group {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.35rem 0.45rem;
-  max-width: 100%;
-  box-sizing: border-box;
 }
 
 .action-btn {
@@ -1390,6 +1386,49 @@ watch([dateFrom, dateTo, ledgerFilter], load)
   flex-direction: column;
   gap: 1rem;
   overflow-x: hidden !important;
+  box-sizing: border-box;
+}
+
+/* FILTER TOOLBAR CARD */
+.filters-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 0.75rem;
+  background: #ffffff;
+  padding: 0.75rem 1rem;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.filters-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.date-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.filter-aux-group {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
   box-sizing: border-box;
 }
 
@@ -1488,7 +1527,10 @@ watch([dateFrom, dateTo, ledgerFilter], load)
 .stats-grid {
   display: grid;
   gap: 0.75rem;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .stat-card {
@@ -1499,10 +1541,13 @@ watch([dateFrom, dateTo, ledgerFilter], load)
   border-radius: 0.75rem;
   background: #ffffff;
   padding: 0.85rem 1rem;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.02);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03);
   text-align: left;
   cursor: pointer;
   transition: all 0.15s ease;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .stat-card:hover {
@@ -1528,12 +1573,14 @@ watch([dateFrom, dateTo, ledgerFilter], load)
 .stat-body {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
 }
 
 .stat-k-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.35rem;
 }
 
 .stat-k {
@@ -1543,6 +1590,9 @@ watch([dateFrom, dateTo, ledgerFilter], load)
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stat-v {
@@ -1552,6 +1602,9 @@ watch([dateFrom, dateTo, ledgerFilter], load)
   font-weight: 850;
   color: #0f172a;
   line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stat-s {
@@ -1559,6 +1612,9 @@ watch([dateFrom, dateTo, ledgerFilter], load)
   margin-top: 0.2rem;
   font-size: 0.72rem;
   color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .badge-pulse {
@@ -1569,6 +1625,7 @@ watch([dateFrom, dateTo, ledgerFilter], load)
   padding: 0.1rem 0.4rem;
   border-radius: 999px;
   animation: pulse 2s infinite;
+  flex-shrink: 0;
 }
 
 @keyframes pulse {
@@ -1581,6 +1638,7 @@ watch([dateFrom, dateTo, ledgerFilter], load)
 .tone-pending .stat-icon { background: #dbeafe; color: #1d4ed8; }
 .tone-paid .stat-icon { background: #f1f5f9; color: #334155; }
 .tone-comp .stat-icon { background: #f3e8ff; color: #7e22ce; }
+.tone-sms .stat-icon { background: #fae8ff; color: #c026d3; }
 
 /* ANALYTICS ROW */
 .analytics-row {
@@ -2799,13 +2857,9 @@ html.control-ui.dark .ledger-foot {
 }
 
 /* SMS & MODAL STYLES */
-.tone-sms {
-  background: #fdf4ff !important;
-  border-color: #f0abfc !important;
-}
 .tone-sms .stat-icon {
-  background: #fae8ff !important;
-  color: #c026d3 !important;
+  background: #fae8ff;
+  color: #c026d3;
 }
 .modal-backdrop {
   position: fixed;
