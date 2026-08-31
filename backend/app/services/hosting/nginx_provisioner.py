@@ -41,10 +41,13 @@ class DomainNginxProvisioner:
         display_hostname: str | None = None,
     ) -> Path:
         from app.services.platform.hosting_ready_page import write_hosting_ready_page
+        from app.services.platform.tenant import ensure_cpanel_directory_layout
 
-        root = Path(path)
+        root = Path(path).resolve()
         host = (hostname or "").strip() or root.parent.name or root.name
         portal = getattr(self._settings, "customer_portal_url", None) or "https://ifnotus.space"
+        site_home = root.parent if root.name in {"public", "public_html", "web", "httpdocs"} and root.parent.exists() else root
+        ensure_cpanel_directory_layout(site_home, web_dir=root, hostname=host)
         write_hosting_ready_page(
             root,
             hostname=host,
@@ -77,12 +80,14 @@ class DomainNginxProvisioner:
         site_names = [hostname] + [a for a in (aliases or []) if a and a != hostname]
         from app.services.platform.panel_access import control_panel_hostname, is_platform_hostname, webmail_hostname
 
-        cpanel_host = control_panel_hostname(hostname)
+        cpanel_host = None
         webmail_host = None
         mail_host = None
-        if not is_platform_hostname(hostname) and "." in hostname and not hostname.startswith("www."):
-            mail_host = f"mail.{hostname}"
-            webmail_host = webmail_hostname(hostname)
+        if not is_platform_hostname(hostname):
+            cpanel_host = control_panel_hostname(hostname)
+            if "." in hostname and not hostname.startswith("www."):
+                mail_host = f"mail.{hostname}"
+                webmail_host = webmail_hostname(hostname)
         # www for apex custom domains (not for platform / student zones)
         if (
             not is_platform_hostname(hostname)
@@ -98,6 +103,7 @@ class DomainNginxProvisioner:
             and n != cpanel_host
             and n != mail_host
             and n != webmail_host
+            and (not str(n).startswith("fpanel.") or n == hostname)
             and (not str(n).startswith("cpanel.") or n == hostname)
             and (not str(n).startswith("webmail.") or n == hostname)
             and (not str(n).startswith("mail.") or n == hostname)
@@ -131,12 +137,13 @@ class DomainNginxProvisioner:
             "",
         ]
 
-        # HTTP-only shortcut hosts (no TLS — avoids LE SAN + Bad Request 400 on HTTPS).
-        lines += self._http_alias_redirect_servers(
-            cpanel_host=cpanel_host,
-            webmail_host=webmail_host,
-            mail_host=mail_host,
-        )
+        # HTTP-only shortcut hosts (port 80 when no TLS).
+        if not (cert and key):
+            lines += self._http_alias_redirect_servers(
+                cpanel_host=cpanel_host,
+                webmail_host=webmail_host,
+                mail_host=mail_host,
+            )
 
         # HTTP server for the real site
         lines += [
@@ -186,7 +193,7 @@ class DomainNginxProvisioner:
                 path_redirects=path_redirects or [],
             )
             lines += ["}", ""]
-            # HTTPS cpanel.* — Hosting Panel SPA on the customer's own hostname.
+            # HTTPS cpanel.* — Hosting Panel SPA on the customer's own hostname (includes port 80).
             if cpanel_host:
                 lines += self._cpanel_spa_server(
                     cpanel_host=cpanel_host,
@@ -194,7 +201,7 @@ class DomainNginxProvisioner:
                     key=key,
                     listen_https=True,
                 )
-            # HTTPS webmail.* — Roundcube Webmail on the customer's own hostname.
+            # HTTPS webmail.* — Roundcube Webmail on the customer's own hostname (includes port 80).
             if webmail_host:
                 lines += self._webmail_server(
                     webmail_host=webmail_host,
@@ -202,7 +209,7 @@ class DomainNginxProvisioner:
                     key=key,
                     listen_https=True,
                 )
-            # HTTPS mail.* — Redirect to HTTPS webmail.<domain>.
+            # HTTPS mail.* — Redirect to HTTPS webmail.<domain> (includes port 80).
             if mail_host and webmail_host:
                 lines += self._mail_redirect_server(
                     mail_host=mail_host,
@@ -248,15 +255,26 @@ class DomainNginxProvisioner:
         key: str | None = None,
         listen_https: bool = False,
     ) -> list[str]:
-        lines: list[str] = [
-            "# Customer control-panel host — Hosting Panel SPA (stays on cpanel.<domain>)",
-            "server {",
-        ]
+        fpanel_host = cpanel_host
+        if cpanel_host.startswith("cpanel."):
+            fpanel_host = f"fpanel.{cpanel_host[len('cpanel.'):]}"
+            legacy_cpanel_host = cpanel_host
+        elif cpanel_host.startswith("fpanel."):
+            legacy_cpanel_host = f"cpanel.{cpanel_host[len('fpanel.'):]}"
+        else:
+            fpanel_host = f"fpanel.{cpanel_host}"
+            legacy_cpanel_host = f"cpanel.{cpanel_host}"
+
+        lines: list[str] = []
+
         if listen_https and cert and key:
+            # Modern HTTPS fpanel.<domain> SPA host
             lines += [
+                "# Customer control-panel host — Hosting Panel SPA (stays on fpanel.<domain>)",
+                "server {",
                 "    listen 443 ssl;",
                 "    listen [::]:443 ssl;",
-                f"    server_name {cpanel_host};",
+                f"    server_name {fpanel_host};",
                 f"    ssl_certificate {cert};",
                 f"    ssl_certificate_key {key};",
             ]
@@ -265,27 +283,109 @@ class DomainNginxProvisioner:
             if Path("/etc/letsencrypt/ssl-dhparams.pem").exists():
                 lines.append("    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;")
             lines += self._cpanel_spa_locations()
-        else:
+            lines += ["}", ""]
+
+            # Legacy HTTPS cpanel.<domain> permanent redirect -> fpanel.<domain>
             lines += [
+                "# Legacy cpanel.<domain> redirect -> fpanel.<domain>",
+                "server {",
+                "    listen 443 ssl;",
+                "    listen [::]:443 ssl;",
+                f"    server_name {legacy_cpanel_host};",
+                f"    ssl_certificate {cert};",
+                f"    ssl_certificate_key {key};",
+            ]
+            if Path("/etc/letsencrypt/options-ssl-nginx.conf").exists():
+                lines.append("    include /etc/letsencrypt/options-ssl-nginx.conf;")
+            if Path("/etc/letsencrypt/ssl-dhparams.pem").exists():
+                lines.append("    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;")
+            lines += [
+                "    location / {",
+                f"        return 301 https://{fpanel_host}$request_uri;",
+                "    }",
+                "}",
+                "",
+            ]
+
+            # Modern HTTP fpanel.<domain> -> redirect to HTTPS (with acme-challenge)
+            lines += [
+                "# Customer control-panel host — Hosting Panel SPA (HTTP redirect)",
+                "server {",
                 "    listen 80;",
                 "    listen [::]:80;",
-                f"    server_name {cpanel_host};",
+                f"    server_name {fpanel_host};",
+                "    location ^~ /.well-known/acme-challenge/ {",
+                f"        root {ACME_WEBROOT};",
+                "        default_type text/plain;",
+                "        allow all;",
+                "    }",
+                "    location / {",
+                f"        return 301 https://{fpanel_host}$request_uri;",
+                "    }",
+                "}",
+                "",
+            ]
+
+            # Legacy HTTP cpanel.<domain> redirect -> fpanel.<domain>
+            lines += [
+                "# Legacy cpanel.<domain> HTTP redirect -> fpanel.<domain>",
+                "server {",
+                "    listen 80;",
+                "    listen [::]:80;",
+                f"    server_name {legacy_cpanel_host};",
+                "    location ^~ /.well-known/acme-challenge/ {",
+                f"        root {ACME_WEBROOT};",
+                "        default_type text/plain;",
+                "        allow all;",
+                "    }",
+                "    location / {",
+                f"        return 301 https://{fpanel_host}$request_uri;",
+                "    }",
+                "}",
+                "",
+            ]
+        else:
+            # Modern HTTP fpanel.<domain> (HTTP only)
+            lines += [
+                "# Customer control-panel host — Hosting Panel SPA (HTTP)",
+                "server {",
+                "    listen 80;",
+                "    listen [::]:80;",
+                f"    server_name {fpanel_host};",
                 "    location ^~ /.well-known/acme-challenge/ {",
                 f"        root {ACME_WEBROOT};",
                 "        default_type text/plain;",
                 "        allow all;",
                 "    }",
             ]
-            # Prefer HTTPS when this cert lineage already covers cpanel.*.
             if cert and key:
                 lines += [
                     "    location / {",
-                    "        return 301 https://$host$request_uri;",
+                    f"        return 301 https://{fpanel_host}$request_uri;",
                     "    }",
                 ]
             else:
                 lines += self._cpanel_spa_locations()
-        lines += ["}", ""]
+            lines += ["}", ""]
+
+            # Legacy HTTP cpanel.<domain> redirect -> fpanel.<domain>
+            lines += [
+                "# Legacy cpanel.<domain> HTTP redirect -> fpanel.<domain>",
+                "server {",
+                "    listen 80;",
+                "    listen [::]:80;",
+                f"    server_name {legacy_cpanel_host};",
+                "    location ^~ /.well-known/acme-challenge/ {",
+                f"        root {ACME_WEBROOT};",
+                "        default_type text/plain;",
+                "        allow all;",
+                "    }",
+                "    location / {",
+                f"        return 301 https://{fpanel_host}$request_uri;",
+                "    }",
+                "}",
+                "",
+            ]
         return lines
 
     def _webmail_server(
@@ -327,7 +427,27 @@ class DomainNginxProvisioner:
                 "        include snippets/fastcgi-php.conf;",
                 f"        fastcgi_pass unix:{sock};",
                 "    }",
+                "}",
+                "",
             ]
+            lines += [
+                "# Webmail hostname HTTP redirect (HTTPS enabled)",
+                "server {",
+                "    listen 80;",
+                "    listen [::]:80;",
+                f"    server_name {webmail_host};",
+                "    location ^~ /.well-known/acme-challenge/ {",
+                f"        root {ACME_WEBROOT};",
+                "        default_type text/plain;",
+                "        allow all;",
+                "    }",
+                "    location / {",
+                f"        return 301 https://$host$request_uri;",
+                "    }",
+                "}",
+                "",
+            ]
+            return lines
         else:
             lines += [
                 "    listen 80;",
@@ -389,7 +509,27 @@ class DomainNginxProvisioner:
                 "    location / {",
                 f"        return 302 https://{webmail_host}$request_uri;",
                 "    }",
+                "}",
+                "",
             ]
+            lines += [
+                "# Mail hostname HTTP redirect (HTTPS enabled)",
+                "server {",
+                "    listen 80;",
+                "    listen [::]:80;",
+                f"    server_name {mail_host};",
+                "    location ^~ /.well-known/acme-challenge/ {",
+                f"        root {ACME_WEBROOT};",
+                "        default_type text/plain;",
+                "        allow all;",
+                "    }",
+                "    location / {",
+                f"        return 302 https://{webmail_host}$request_uri;",
+                "    }",
+                "}",
+                "",
+            ]
+            return lines
         else:
             lines += [
                 "    listen 80;",
@@ -414,29 +554,15 @@ class DomainNginxProvisioner:
         webmail_host: str | None = None,
         mail_host: str | None = None,
     ) -> list[str]:
-        """Dedicated port-80 servers for cpanel.* (SPA) / webmail.* / mail.*."""
+        """Dedicated port-80 servers for cpanel.* / fpanel.* (SPA) / webmail.* / mail.*."""
         lines: list[str] = []
         if cpanel_host:
-            apex = cpanel_host[len("cpanel.") :] if cpanel_host.startswith("cpanel.") else ""
-            cert = key = None
-            if apex:
-                le = Path(f"/etc/letsencrypt/live/{apex}")
-                if (le / "fullchain.pem").exists() and (le / "privkey.pem").exists():
-                    cert = str(le / "fullchain.pem")
-                    key = str(le / "privkey.pem")
             lines += self._cpanel_spa_server(
-                cpanel_host=cpanel_host, cert=cert, key=key, listen_https=False
+                cpanel_host=cpanel_host, cert=None, key=None, listen_https=False
             )
         if webmail_host:
-            apex = webmail_host[len("webmail.") :] if webmail_host.startswith("webmail.") else ""
-            cert = key = None
-            if apex:
-                le = Path(f"/etc/letsencrypt/live/{apex}")
-                if (le / "fullchain.pem").exists() and (le / "privkey.pem").exists():
-                    cert = str(le / "fullchain.pem")
-                    key = str(le / "privkey.pem")
             lines += self._webmail_server(
-                webmail_host=webmail_host, cert=cert, key=key, listen_https=False
+                webmail_host=webmail_host, cert=None, key=None, listen_https=False
             )
         if mail_host and webmail_host:
             lines += self._mail_redirect_server(
@@ -457,29 +583,43 @@ class DomainNginxProvisioner:
 
     def _webmail_locations(self, *, hostname: str | None = None) -> list[str]:
         """Customer convenience redirects on the primary website vhost:
-        /cpanel -> 302 to https://cpanel.<domain>/
+        /fpanel & /cpanel -> 302 to https://fpanel.<domain>/
         /webmail -> 302 to https://webmail.<domain>/
         /mail -> 302 to https://webmail.<domain>/
         """
+        from app.services.platform.panel_access import control_panel_hostname, webmail_hostname
+
+        raw_host = (hostname or "").strip().lower()
+        if raw_host.startswith("www."):
+            raw_host = raw_host[4:]
+        fpanel_url = f"https://{control_panel_hostname(raw_host)}/" if raw_host else "https://fpanel.$host/"
+        webmail_url = f"https://{webmail_hostname(raw_host)}/" if raw_host else "https://webmail.$host/"
+
         return [
             "    # Customer convenience redirects",
+            "    location = /fpanel {",
+            f"        return 302 {fpanel_url};",
+            "    }",
+            "    location = /fpanel/ {",
+            f"        return 302 {fpanel_url};",
+            "    }",
             "    location = /cpanel {",
-            "        return 302 https://cpanel.$host/;",
+            f"        return 302 {fpanel_url};",
             "    }",
             "    location = /cpanel/ {",
-            "        return 302 https://cpanel.$host/;",
+            f"        return 302 {fpanel_url};",
             "    }",
             "    location = /webmail {",
-            "        return 302 https://webmail.$host/;",
+            f"        return 302 {webmail_url};",
             "    }",
             "    location = /webmail/ {",
-            "        return 302 https://webmail.$host/;",
+            f"        return 302 {webmail_url};",
             "    }",
             "    location = /mail {",
-            "        return 302 https://webmail.$host/;",
+            f"        return 302 {webmail_url};",
             "    }",
             "    location = /mail/ {",
-            "        return 302 https://webmail.$host/;",
+            f"        return 302 {webmail_url};",
             "    }",
         ]
 
@@ -720,6 +860,7 @@ class DomainNginxProvisioner:
         if not self._available.is_dir():
             return OperationResult(success=False, message="nginx sites-available missing")
         skip_hosts = {
+            "fpanel.ifnotus.space",
             "cpanel.ifnotus.space",
             "ifnotus.space",
             "mail.ifnotus.space",
@@ -741,7 +882,7 @@ class DomainNginxProvisioner:
                 continue
             if name.endswith(".pre-webmail"):
                 continue
-            if name in skip_hosts or name.startswith("cpanel."):
+            if name in skip_hosts or name.startswith("fpanel.") or name.startswith("cpanel."):
                 skipped.append(name)
                 continue
             # Prefer enabled sites; also allow managed available sites not yet linked
@@ -812,6 +953,7 @@ class DomainNginxProvisioner:
         path_redirects: list[dict] | None = None,
         force_takeover: bool = False,
         ram_gb: float | None = None,
+        unix_user: str | None = None,
     ) -> OperationResult:
         root = document_root or f"/var/www/{hostname}"
         if create_docroot and not redirect_url:
@@ -826,6 +968,7 @@ class DomainNginxProvisioner:
             hostname=hostname,
             document_root=root,
             ram_gb=ram_gb,
+            unix_user=unix_user,
         )
 
         available, enabled_path = self.site_paths(hostname)

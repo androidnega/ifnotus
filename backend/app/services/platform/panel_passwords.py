@@ -37,19 +37,51 @@ class PanelPasswordService:
 
     async def env_by_site_host(self, host: str) -> CustomerEnvironment | None:
         lookup = (host or "").strip().lower().rstrip(".")
+        if ":" in lookup:
+            lookup = lookup.split(":", 1)[0]
         if lookup.startswith("www."):
             lookup = lookup[4:]
-        if lookup.startswith("cpanel.") and lookup != "cpanel.ifnotus.space":
+        if lookup.startswith("fpanel.") and lookup != "fpanel.ifnotus.space":
+            lookup = lookup[len("fpanel.") :]
+        elif lookup.startswith("cpanel.") and lookup != "cpanel.ifnotus.space":
             lookup = lookup[len("cpanel.") :]
-        if not lookup or lookup in {"ifnotus.space", "cpanel.ifnotus.space", "mail.ifnotus.space"}:
+        if not lookup or lookup in {"ifnotus.space", "fpanel.ifnotus.space", "cpanel.ifnotus.space", "mail.ifnotus.space"}:
             return None
-        return (
+
+        # 1. Direct match on CustomerEnvironment.domain
+        env = (
             await self._session.execute(
                 select(CustomerEnvironment).where(
                     func.lower(CustomerEnvironment.domain) == lookup,
                 )
             )
         ).scalar_one_or_none()
+        if env is not None:
+            return env
+
+        # 2. Check Domain table (custom domains / aliases / addon domains)
+        from app.models.hosting import Domain
+
+        domain_row = (
+            await self._session.execute(
+                select(Domain).where(
+                    func.lower(Domain.name) == lookup,
+                )
+            )
+        ).scalar_one_or_none()
+        if domain_row is not None:
+            # Match environment linked to this Domain
+            env = (
+                await self._session.execute(
+                    select(CustomerEnvironment).where(
+                        CustomerEnvironment.hosting_domain_id == domain_row.id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if env is not None:
+                return env
+
+        return None
 
     async def status(
         self,

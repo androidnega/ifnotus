@@ -31,7 +31,7 @@ def classify_resource(
         return ResourceClass.TENANT
 
     if (
-        n in {"ifnotus", "ifnotus-api", "ifnotus-web", "ifnotus-worker", "cpanel.ifnotus.space"}
+        n in {"ifnotus", "ifnotus-api", "ifnotus-web", "ifnotus-worker", "fpanel.ifnotus.space", "cpanel.ifnotus.space"}
         or p.startswith("/srv/apps/ifnotus")
         or p.startswith("/var/www/ifnotus")
         or any("ifnotus.space" in s and not s.startswith("mail.") for s in names)

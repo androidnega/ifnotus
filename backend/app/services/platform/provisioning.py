@@ -189,15 +189,19 @@ class ProvisioningEngine:
         if is_student_hostname(raw_domain):
             hostname = raw_domain
             purchased = None
+        elif raw_domain and not raw_domain.endswith(".customers.ifnotus.space"):
+            hostname = raw_domain
+            purchased = raw_domain
         else:
-            addon_hostname = f"env-{str(order.id)[:8]}.customers.ifnotus.space"
-            purchased = (
-                raw_domain
-                if raw_domain and not raw_domain.endswith(".customers.ifnotus.space")
-                else None
-            )
-            hostname = addon_hostname
-            name_hint = purchased or raw_domain or hostname
+            base_label = ""
+            if user:
+                base_label = (user.username or user.email.split("@")[0]).split("_")[0].lower()
+                base_label = re.sub(r"[^a-z0-9]", "", base_label)
+            if not base_label or len(base_label) < 3:
+                base_label = f"student{str(order.id)[:6]}"
+            hostname = f"{base_label}.ifnotus.space"
+            purchased = None
+            name_hint = hostname
 
         hosting_name = await HostingNameService(self._session).generate_unique_name(
             customer,
@@ -363,6 +367,20 @@ class ProvisioningEngine:
             identity = unix.ensure_identity(env, actor="provisioning")
             job.result = {**(job.result or {}), "unix_identity": identity}
             await self._session.flush()
+
+            # Ensure PHP-FPM pool is created/configured for tenant Unix identity
+            if env.domain and env.unix_username:
+                try:
+                    from app.services.platform.php_fpm import PhpFpmPoolService
+
+                    PhpFpmPoolService(self._settings).ensure_pool(
+                        hostname=env.domain,
+                        document_root=doc_root,
+                        ram_gb=float(env.ram_limit_gb or plan.ram_gb or 0.5),
+                        unix_user=env.unix_username,
+                    )
+                except Exception as p_exc:  # noqa: BLE001
+                    logger.warning("post_provision_php_fpm_pool_failed", domain=env.domain, error=str(p_exc))
 
             if feature_included(plan, "sftp"):
                 await EnvironmentFtpService(self._settings, self._session).ensure_account(env)

@@ -73,6 +73,10 @@ class AuthoritativeDnsService:
         serial = self._next_serial(zone_path)
         aaaa_apex = f"    IN AAAA {ipv6}\n" if ipv6 else ""
         aaaa_www = f"www IN AAAA {ipv6}\n" if ipv6 else ""
+        aaaa_fpanel = f"fpanel IN AAAA {ipv6}\n" if ipv6 else ""
+        aaaa_cpanel = f"cpanel IN AAAA {ipv6}\n" if ipv6 else ""
+        aaaa_webmail = f"webmail IN AAAA {ipv6}\n" if ipv6 else ""
+        aaaa_mail = f"mail IN AAAA {ipv6}\n" if ipv6 else ""
         body = (
             f"$TTL 1800\n"
             f"@   IN SOA {ns1}. hostmaster.ifnotus.space. (\n"
@@ -90,9 +94,14 @@ class AuthoritativeDnsService:
             f"\n"
             f"www IN A    {ipv4}\n"
             f"{aaaa_www}"
+            f"fpanel IN A {ipv4}\n"
+            f"{aaaa_fpanel}"
             f"cpanel IN A {ipv4}\n"
+            f"{aaaa_cpanel}"
             f"webmail IN A {ipv4}\n"
+            f"{aaaa_webmail}"
             f"mail IN A   {ipv4}\n"
+            f"{aaaa_mail}"
             f"autoconfig IN CNAME mail.{name}.\n"
             f"autodiscover IN CNAME mail.{name}.\n"
             f'_dmarc IN TXT "v=DMARC1; p=none; rua=mailto:postmaster@{name}"\n'
@@ -122,6 +131,59 @@ class AuthoritativeDnsService:
             "zone_file": str(zone_path),
             "serial": serial,
         }
+
+    def ensure_generated_environment_dns(self, hostname: str) -> dict:
+        """Ensure environment-scoped wildcard and service records in db.ifnotus.space for generated subdomains.
+        Example: env-78f1b5ce.customers.ifnotus.space -> adds env-78f1b5ce.customers & *.env-78f1b5ce.customers A records.
+        """
+        host = (hostname or "").strip().lower().rstrip(".")
+        if not host.endswith(".customers.ifnotus.space"):
+            return {"ok": False, "skipped": True}
+        label = host[: -len(".customers.ifnotus.space")]
+        if not label or "." in label:
+            return {"ok": False, "skipped": True}
+
+        ipv4 = (self._settings.server_public_ip or "").strip()
+        if not ipv4:
+            return {"ok": False, "error": "No server public IP"}
+
+        zone_path = self._zones_dir / "db.ifnotus.space"
+        if not zone_path.exists():
+            zone_path = Path("deploy/dns/db.ifnotus.space")
+            if not zone_path.exists():
+                return {"ok": False, "error": "db.ifnotus.space zone file not found"}
+
+        content = zone_path.read_text(encoding="utf-8")
+        rec_base = f"{label}.customers IN A {ipv4}"
+        rec_wild = f"*.{label}.customers IN A {ipv4}"
+
+        if rec_base in content and rec_wild in content:
+            return {"ok": True, "already_present": True, "label": label}
+
+        # Increment serial
+        serial = self._next_serial(zone_path)
+        content = re.sub(r"(\d{10})\s*;\s*serial", f"{serial} ; serial", content)
+
+        # Append records before any dmarc / dkim or at the end
+        new_records = f"\n; Customer generated environment {label}\n{rec_base}\n{rec_wild}\n"
+        if "_dmarc" in content:
+            parts = content.split("_dmarc", 1)
+            content = parts[0].rstrip() + "\n" + new_records + "\n_dmarc" + parts[1]
+        else:
+            content = content.rstrip() + "\n" + new_records
+
+        zone_path.write_text(content, encoding="utf-8")
+        check = subprocess.run(
+            ["named-checkzone", "ifnotus.space", str(zone_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if check.returncode == 0:
+            subprocess.run(["rndc", "reload", "ifnotus.space"], capture_output=True, check=False)
+            logger.info("generated_env_dns_ready", label=label, serial=serial)
+            return {"ok": True, "label": label, "serial": serial}
+        return {"ok": False, "validation_error": (check.stderr or check.stdout or "")[-200:]}
 
     def remove_zone(self, domain: str) -> None:
         """Drop a customer zone file and rebuild named.conf.customer."""

@@ -1,0 +1,212 @@
+================================================================================
+                    IFNOTUS HOSTING PLATFORM SYSTEM AUDIT:
+           ARCHITECTURE & OPERATIONAL MECHANICS OF FPANEL & CPANEL
+================================================================================
+Date: August 31, 2026
+Target System: IFNOTUS Hosting Infrastructure (FastAPI Backend + Vue 3 SPA + Nginx)
+================================================================================
+
+1. EXECUTIVE SUMMARY & ARCHITECTURAL OVERVIEW
+--------------------------------------------------------------------------------
+The IFNOTUS hosting platform separates management interfaces into two distinct
+planes:
+  1. Staff Control Plane (WHM / Operator level):
+     Canonical URL: https://fpanel.ifnotus.space
+     Role: Multi-tenant server administration, system logs, terminal access,
+           billing confirmation, customer provisioning, and resource allocation.
+  2. Customer Hosting Control Panel (cPanel-equivalent "fPanel"):
+     Canonical URL: https://fpanel.<customer-domain>/
+     Role: Per-site hosting management (File Manager, Databases & phpMyAdmin,
+           Domain management, Email accounts, FTP/SFTP, Cron, Backups, Stacks).
+
+To ensure backward compatibility and traditional cPanel habits:
+  - "cpanel.<domain>" is maintained as a legacy alias that automatically 301-
+    redirects to "fpanel.<domain>".
+  - "https://<domain>/fpanel" and "https://<domain>/cpanel" serve as HTTP 302
+    shortcuts directing users straight to their dedicated fPanel instance.
+
+
+2. HOSTNAME CLASSIFICATION & ROUTING ENGINE
+--------------------------------------------------------------------------------
+The system continuously classifies every incoming HTTP request and browser host
+using two synchronized modules:
+  - Backend:  backend/app/services/platform/host_routing.py
+  - Frontend: frontend/src/lib/platformHosts.ts
+
+A. Classification Hierarchy:
+   1. Platform Staff Host:
+      - Host: fpanel.ifnotus.space (or legacy cpanel.ifnotus.space)
+      - Access: Restricted to staff users (superuser, platform_owner,
+        hosting_operator, billing_agent, support_agent).
+   2. Platform Public / Customer Portal:
+      - Host: ifnotus.space / www.ifnotus.space
+      - Role: Public marketing, plan selection, checkout, central user account.
+   3. Customer fPanel Host:
+      - Pattern: fpanel.<domain> (e.g. fpanel.yalleydadzie.online)
+      - Role: Isolated hosting control panel for that specific website environment.
+   4. Customer Site Apex & Subdomains:
+      - Pattern: <domain>, www.<domain>, blog.<domain>
+      - Role: Public website content served directly from public_html.
+
+B. Resolution Rules:
+   - When a user navigates to fpanel.<domain>, the system strips "fpanel." and
+     matches the apex domain against both `CustomerEnvironment.domain` and the
+     `Domain` table (covering primary, addon, and custom domains).
+   - Port numbers (:80, :443) are stripped before database lookup to prevent
+     resolution mismatches.
+
+
+3. NGINX VIRTUAL HOST & PORT CONFIGURATION
+--------------------------------------------------------------------------------
+Virtual hosts are dynamically generated and provisioned by:
+backend/app/services/hosting/nginx_provisioner.py
+
+A. Customer fPanel VHosts (Port 80 and Port 443):
+   1. HTTPS Server (Port 443 SSL):
+      - Server Name: fpanel.<domain>
+      - Root: /var/www/ifnotus (Shared SPA distribution)
+      - Directives:
+          location /api/ {
+              proxy_pass http://127.0.0.1:8010;
+              proxy_set_header Host $host;
+              ...
+          }
+          location / {
+              try_files $uri $uri/ /index.html;
+          }
+   2. HTTP Server (Port 80):
+      - Server Name: fpanel.<domain>
+      - ACME Challenge Passthrough:
+          location ^~ /.well-known/acme-challenge/ {
+              root /var/www/letsencrypt;
+          }
+      - Redirect: 301 https://fpanel.<domain>$request_uri;
+   3. Legacy cpanel.<domain> Redirection:
+      - Port 80 & Port 443 vhosts for cpanel.<domain> issue a 301 redirect to
+        https://fpanel.<domain>$request_uri.
+
+B. Primary Website VHost Convenience Shortcuts:
+   Every primary customer website includes apex redirect locations:
+     location = /fpanel  { return 302 https://fpanel.<apex-domain>/; }
+     location = /cpanel  { return 302 https://fpanel.<apex-domain>/; }
+     location = /webmail { return 302 https://webmail.<apex-domain>/; }
+     location = /mail    { return 302 https://webmail.<apex-domain>/; }
+
+
+4. AUTHENTICATION & SINGLE SIGN-ON (SSO) FLOW
+--------------------------------------------------------------------------------
+There are two ways customers access their fPanel:
+
+A. Direct fPanel Login (Credentials Mode):
+   - Path: https://fpanel.<domain>/
+   - The frontend detects that it is running on a customer fPanel host.
+   - It queries `/api/v1/customers/panel/status?host=<domain>`.
+   - The backend looks up the environment matching the host and returns:
+       { "username": "ifn_abc123", "password_set": true/false }
+   - The UI displays the specialized fPanel login card (or first-time password
+     setup card).
+   - Upon submitting credentials, `/api/v1/customers/panel/login` authenticates
+     against the hosting environment's hashed password and issues JWT tokens.
+
+B. Account Portal SSO Handoff (One-Click Access):
+   - When a logged-in user clicks "Open fPanel" in their main IFNOTUS account
+     (ifnotus.space/account), the backend generates a short-lived SSO token:
+     `/api/v1/customers/sso-handoff`
+   - The browser opens:
+     `https://fpanel.<domain>/sso?token=<jwt_token>&tab=files`
+   - The fPanel host validates the token via `/api/v1/customers/sso/consume`,
+     stores local tokens in the browser, and routes directly to the requested
+     tool (e.g. File Manager, Databases).
+
+
+5. FILE MANAGER & DIRECTORY JAILING (TRADITIONAL CPANEL LAYOUT)
+--------------------------------------------------------------------------------
+Filesystem structure and jailing are managed in:
+  - backend/app/services/platform/tenant.py
+  - backend/app/services/hosting/files.py
+  - frontend/src/views/portal/PortalFilesView.vue
+
+A. Directory Hierarchy per Account:
+   Every customer environment home directory is structured identically to
+   traditional cPanel:
+     /srv/apps/ifnotus-customers/<customer_slug>/<domain>/
+       ├── public_html/          <- Primary document root for website files
+       │   ├── index.html        <- Default ready page or customer website
+       │   └── .htaccess
+       ├── public -> public_html <- Symlink for modern frameworks (Laravel/Node)
+       ├── www -> public_html    <- Symlink for traditional cPanel compatibility
+       ├── logs/                 <- Nginx / PHP access and error logs
+       ├── tmp/                  <- Temporary session and upload scratch space
+       ├── ssl/                  <- Certificate and CSR storage
+       └── .trash/               <- Recycle bin for deleted files
+
+B. Path Normalization & Security:
+   - Jailing: The backend enforces that all operations (read, write, delete,
+     chmod, zip/unzip, move, copy) resolve strictly within the tenant's home root.
+   - Dotfile Visibility: Standard dotfiles (.htaccess, .env, .user.ini) are
+     fully visible and editable by the customer. Internal backend metadata
+     (.ifnotus) is hidden.
+   - Frontend Navigation: Customers can browse `/` (home root) and enter
+     `/public_html` seamlessly.
+
+
+6. DNS CONFIGURATION & ZONE GENERATION
+--------------------------------------------------------------------------------
+DNS provisioning is handled across BIND9 and Registrar integrations:
+  - backend/app/services/platform/authoritative_dns.py
+  - backend/app/services/platform/dns.py
+  - backend/app/services/hosting/domains.py
+
+When a domain (e.g. adastrachambers.com) is provisioned or configured:
+  1. Authoritative BIND Zone Records Generated:
+     - @          IN A     <Server_IP>
+     - www        IN A     <Server_IP>
+     - fpanel     IN A     <Server_IP>
+     - cpanel     IN A     <Server_IP>
+     - webmail    IN A     <Server_IP>
+     - mail       IN A     <Server_IP>
+     - autoconfig IN CNAME mail.<domain>.
+     - autodiscover IN CNAME mail.<domain>.
+     - SPF / DMARC TXT records
+  2. External Registrar DNS Guidance & Sync:
+     - If the domain uses external nameservers (e.g. Namecheap / GoDaddy / Cloudflare),
+       the required records list explicitly instructs pointing A records for @,
+       www, fpanel, cpanel, webmail, and mail to the server IP.
+     - Automated Namecheap API synchronization pushes the entire record set to
+       prevent NXDOMAIN errors on fpanel subdomains.
+
+
+7. HOSTING TOOLS & CPANEL FEATURE MATRIX
+--------------------------------------------------------------------------------
+fPanel includes a full suite of hosting tools mapped to tenant capabilities:
+  1. File Manager:
+     - Multi-file drag-and-drop upload (up to 512 MB).
+     - Zip extraction & directory compression.
+     - Code editor with syntax highlighting.
+     - Trash bin with one-click restore and conflict resolution.
+     - Unix permission editor (chmod).
+  2. Databases:
+     - MySQL/MariaDB database and user creation with full grants.
+     - Single-sign-on launch into phpMyAdmin.
+     - SQL Dump import and automated backup exports.
+  3. Domains & Subdomains:
+     - Addon domains, subdomains, and domain aliases.
+     - Visual DNS zone editor.
+     - Let's Encrypt SSL certificate generation with auto-renewal.
+  4. Email Accounts:
+     - Custom mailbox creation (@yourdomain.com).
+     - Storage quotas, password management, and webmail access via Roundcube.
+  5. FTP / SFTP:
+     - Dedicated chrooted FTP/SFTP accounts jailed to site document roots.
+  6. Stacks & App Installer:
+     - 1-Click WordPress installation with automated DB setup.
+     - Laravel, Node.js, and static site runners.
+  7. Scheduled Tasks (Cron):
+     - Crontab management with interval restrictions and execution logs.
+  8. Backups & Server Logs:
+     - Snapshot backups and instant rollback.
+     - Live Nginx error/access log viewer.
+
+================================================================================
+                           END OF AUDIT REPORT
+================================================================================

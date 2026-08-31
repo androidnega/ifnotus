@@ -152,7 +152,7 @@ class Settings(BaseSettings):
 
     # Hosting control plane
     webmail_url: str | None = "https://mail.ifnotus.space"
-    staff_panel_url: str = "https://cpanel.ifnotus.space"
+    staff_panel_url: str = "https://fpanel.ifnotus.space"
     roundcube_public_html: str = "/var/lib/roundcube/public_html"
     php_fpm_socket: str = "/run/php/php8.3-fpm.sock"
     certbot_binary: str | None = None

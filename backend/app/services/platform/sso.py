@@ -94,7 +94,9 @@ class HostingSsoService:
             if not safe:
                 raise AppException("Invalid domain name.", code="domain_invalid")
             lookup = safe.lower().rstrip(".")
-            if lookup.startswith("cpanel."):
+            if lookup.startswith("fpanel."):
+                lookup = lookup[len("fpanel.") :]
+            elif lookup.startswith("cpanel."):
                 lookup = lookup[len("cpanel.") :]
             if lookup.startswith("www."):
                 lookup = lookup[4:]
@@ -119,6 +121,26 @@ class HostingSsoService:
                 if owned is not None and owned.environment_id:
                     env = await self._session.get(CustomerEnvironment, owned.environment_id)
 
+            if env is None:
+                from app.models.hosting import Domain
+
+                hosting_domain = (
+                    await self._session.execute(
+                        select(Domain).where(
+                            func.lower(Domain.name) == lookup,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if hosting_domain is not None:
+                    env = (
+                        await self._session.execute(
+                            select(CustomerEnvironment).where(
+                                CustomerEnvironment.customer_id == customer.id,
+                                CustomerEnvironment.hosting_domain_id == hosting_domain.id,
+                            )
+                        )
+                    ).scalar_one_or_none()
+
         if env is None:
             # Fall back to customer's active environment
             env = (
@@ -142,7 +164,7 @@ class HostingSsoService:
         if not domain_name:
             raise AppException("Hosting environment has no associated domain.", code="env_no_domain")
 
-        cpanel_host = control_panel_hostname(domain_name) or domain_name
+        fpanel_host = control_panel_hostname(domain_name) or domain_name
         jti = str(uuid.uuid4())
         now = datetime.now(UTC)
         expire = now + timedelta(seconds=SSO_TOKEN_EXPIRY_SECONDS)
@@ -154,7 +176,8 @@ class HostingSsoService:
             "environment_id": str(env.id),
             "customer_id": str(customer.id),
             "domain": domain_name,
-            "cpanel_host": cpanel_host,
+            "fpanel_host": fpanel_host,
+            "cpanel_host": fpanel_host,
             "tab": tab or "",
             "iat": now,
             "exp": expire,
@@ -162,14 +185,14 @@ class HostingSsoService:
 
         sso_token = jwt.encode(payload, self._settings.secret_key, algorithm=self._settings.jwt_algorithm)
 
-        handoff_url = f"https://{cpanel_host}/sso?token={sso_token}"
+        handoff_url = f"https://{fpanel_host}/sso?token={sso_token}"
         if tab:
             handoff_url += f"&tab={tab}"
 
         return {
             "handoff_url": handoff_url,
             "token": sso_token,
-            "target_host": cpanel_host,
+            "target_host": fpanel_host,
             "environment_id": env.id,
             "domain": domain_name,
             "expires_in": SSO_TOKEN_EXPIRY_SECONDS,
@@ -211,13 +234,15 @@ class HostingSsoService:
         user_id = UUID(data["sub"])
         env_id = UUID(data["environment_id"])
         token_domain = str(data.get("domain") or "").strip().lower()
-        token_cpanel = str(data.get("cpanel_host") or "").strip().lower()
+        token_cpanel = str(data.get("fpanel_host") or data.get("cpanel_host") or "").strip().lower()
 
         # Host matching validation
         if requested_host:
             host_clean = normalize_host(requested_host)
             apex = host_clean
-            if apex.startswith("cpanel."):
+            if apex.startswith("fpanel."):
+                apex = apex[len("fpanel.") :]
+            elif apex.startswith("cpanel."):
                 apex = apex[len("cpanel.") :]
             if apex.startswith("www."):
                 apex = apex[4:]

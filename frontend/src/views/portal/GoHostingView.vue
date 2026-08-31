@@ -14,7 +14,9 @@ const loading = ref(true)
 function normalizeHost(raw: string): string {
   let host = String(raw || '').trim().toLowerCase().replace(/\.$/, '')
   if (host.startsWith('www.')) host = host.slice(4)
-  if (host.startsWith('cpanel.') && host !== 'cpanel.ifnotus.space') {
+  if (host.startsWith('fpanel.') && host !== 'fpanel.ifnotus.space') {
+    host = host.slice('fpanel.'.length)
+  } else if (host.startsWith('cpanel.') && host !== 'cpanel.ifnotus.space') {
     host = host.slice('cpanel.'.length)
   }
   return host

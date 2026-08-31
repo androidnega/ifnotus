@@ -21,6 +21,7 @@ PLATFORM_HOSTS = frozenset(
         "ifnotus.space",
         "www.ifnotus.space",
         "api.ifnotus.space",
+        "fpanel.ifnotus.space",
         "cpanel.ifnotus.space",
         "mail.ifnotus.space",
         "ftp.ifnotus.space",
@@ -82,7 +83,7 @@ def classify_host(host: str | None, *, settings: object | None = None) -> HostKi
     if h in PLATFORM_HOSTS or h == PLATFORM_APEX:
         return HostKind(kind="platform", hostname=h, apex=PLATFORM_APEX)
 
-    if h == f"cpanel.{PLATFORM_APEX}":
+    if h in {f"fpanel.{PLATFORM_APEX}", f"cpanel.{PLATFORM_APEX}"}:
         return HostKind(kind="platform", hostname=h, apex=PLATFORM_APEX)
 
     # Reserved first-level labels (mail, api, phpmyadmin, …) are platform, not student.
@@ -94,8 +95,16 @@ def classify_host(host: str | None, *, settings: object | None = None) -> HostKi
     if is_student_hostname(h, settings=settings):
         return HostKind(kind="student", hostname=h, apex=student_zone_for(h, settings=settings))
 
-    if h.startswith("cpanel.") and h != f"cpanel.{PLATFORM_APEX}":
-        apex = h[len("cpanel.") :]
+    if (h.startswith("fpanel.") or h.startswith("cpanel.")) and h not in {
+        f"fpanel.{PLATFORM_APEX}",
+        f"cpanel.{PLATFORM_APEX}",
+    }:
+        prefix = "fpanel." if h.startswith("fpanel.") else "cpanel."
+        apex = h[len(prefix) :]
+        if not apex or "." not in apex:
+            return HostKind(kind="unknown", hostname=h)
+        if apex.endswith(".customers.ifnotus.space"):
+            return HostKind(kind="custom_panel", hostname=h, apex=apex)
         if apex.endswith(f".{PLATFORM_APEX}") or apex in {
             resolve_student_zone(settings),
             resolve_legacy_student_zone(settings),
@@ -115,6 +124,8 @@ def classify_host(host: str | None, *, settings: object | None = None) -> HostKi
             return HostKind(kind="platform", hostname=h, apex=PLATFORM_APEX)
         if "." not in label:
             return HostKind(kind="student", hostname=h, apex=PLATFORM_APEX)
+        if h.endswith(".customers.ifnotus.space"):
+            return HostKind(kind="custom_site", hostname=h, apex=h)
         return HostKind(kind="unknown", hostname=h)
 
     apex = h[4:] if h.startswith("www.") else h

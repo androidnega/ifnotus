@@ -36,6 +36,9 @@ const routes: RouteRecordRaw[] = [
       if (typeof window !== 'undefined' && isCustomerCpanelHost()) {
         return import('@/views/hosting/HostingPanelView.vue')
       }
+      if (typeof window !== 'undefined' && isStaffPanelHost()) {
+        return import('@/views/LoginView.vue')
+      }
       return import('@/views/HomeView.vue')
     },
     meta: { panel: 'public' },
@@ -666,9 +669,18 @@ router.beforeEach(async (to) => {
   }
 
   if (isStaffPanelHost()) {
-    if (to.path === '/' || to.name === 'home' || to.name === 'plans' || to.name === 'portal-signup') {
+    if (
+      to.path === '/' ||
+      to.name === 'home' ||
+      to.name === 'plans' ||
+      to.name === 'plan-detail' ||
+      to.name === 'portal-signup' ||
+      to.path === '/signup' ||
+      to.path === '/pricing' ||
+      (to.meta.panel === 'public' && to.name !== 'login' && to.name !== 'maintenance')
+    ) {
       if (!token) {
-        if (to.name === 'login') return true
+        if (to.name === 'login' || to.path === '/login') return true
         return { name: 'login' }
       }
       return { name: 'dashboard' }

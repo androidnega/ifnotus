@@ -638,15 +638,43 @@ class DomainService:
             ),
         ]
         if entity.domain_type in {"primary", "addon"}:
-            seeds.append(
+            seeds.extend([
                 DomainDnsRecord(
                     domain_id=entity.id,
                     record_type="CNAME",
                     host="www",
                     value=entity.name,
                     ttl=3600,
-                )
-            )
+                ),
+                DomainDnsRecord(
+                    domain_id=entity.id,
+                    record_type="A",
+                    host="fpanel",
+                    value=server_ip,
+                    ttl=3600,
+                ),
+                DomainDnsRecord(
+                    domain_id=entity.id,
+                    record_type="A",
+                    host="cpanel",
+                    value=server_ip,
+                    ttl=3600,
+                ),
+                DomainDnsRecord(
+                    domain_id=entity.id,
+                    record_type="A",
+                    host="webmail",
+                    value=server_ip,
+                    ttl=3600,
+                ),
+                DomainDnsRecord(
+                    domain_id=entity.id,
+                    record_type="A",
+                    host="mail",
+                    value=server_ip,
+                    ttl=3600,
+                ),
+            ])
         for row in seeds:
             self._session.add(row)
         await self._session.flush()

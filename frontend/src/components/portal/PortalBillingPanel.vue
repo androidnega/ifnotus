@@ -3,8 +3,8 @@ import { computed, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import type { CustomerDashboard, HostingPlan } from '@/types/platform'
 import { formatCpu, formatRamGb } from '@/lib/planResources'
-import { planAccentFromPrice, type PlanColorTier } from '@/lib/theme'
-import { sshHeadline, visibleStacks } from '@/lib/planMatrix'
+import type { PlanColorTier } from '@/lib/theme'
+import { sshHeadline } from '@/lib/planMatrix'
 import { packItems } from '@/lib/planPack'
 import { customersApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
@@ -31,10 +31,6 @@ const emit = defineEmits<{
 
 const router = useRouter()
 
-const changePlanIdModel = computed({
-  get: () => props.changePlanId,
-  set: (v: string) => emit('update:changePlanId', v),
-})
 const topUpCreditsModel = computed({
   get: () => props.topUpCredits,
   set: (v: number) => emit('update:topUpCredits', v),
@@ -59,27 +55,9 @@ function planName(planId: string) {
   return props.plans.find((p) => p.id === planId)?.name ?? 'Personal Hosting'
 }
 
-function planFor(planId: string) {
-  return props.plans.find((p) => p.id === planId)
-}
-
-function accentFor(planId: string) {
-  const p = planFor(planId)
-  return planAccentFromPrice(Number(p?.price_monthly || 0), props.planColors, p?.features)
-}
-
 function expiryLabel(iso?: string | null) {
   if (!iso) return 'No expiry'
   return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
-}
-
-function stacksLine(plan: HostingPlan | undefined) {
-  if (!plan) return ''
-  return visibleStacks(plan)
-    .filter((s) => s.level === 'yes')
-    .map((s) => s.label)
-    .slice(0, 6)
-    .join(' · ')
 }
 
 function priceLabel(plan: HostingPlan) {

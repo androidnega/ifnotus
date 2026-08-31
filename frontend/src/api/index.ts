@@ -938,6 +938,24 @@ export type StackInstallProgress = {
   steps?: Array<{ id: string; label: string; state: 'pending' | 'active' | 'done' | 'failed' | string }>
 }
 
+export type EnvironmentDatabaseV2Response = {
+  id: string
+  environment_id: string
+  engine?: string | null
+  logical_name?: string | null
+  name?: string | null
+  username?: string | null
+  host?: string | null
+  port?: number | null
+  password_set?: boolean
+  legacy?: boolean
+  status?: string | null
+  size_mb?: number | null
+  storage_limit_mb?: number | null
+  remote_access_mode?: string | null
+  message?: string | null
+}
+
 export const customersApi = {
   register: (body: {
     email: string
@@ -1724,29 +1742,19 @@ export const customersApi = {
     >(`/customers/environments/${environmentId}/databases`),
 
   listEnvDatabasesV2: (environmentId: string) =>
-    apiClient.get<
-      Array<{
-        id: string
-        environment_id: string
-        engine?: string | null
-        logical_name?: string | null
-        name?: string | null
-        username?: string | null
-        host?: string | null
-        port?: number | null
-        password_set?: boolean
-        legacy?: boolean
-        status?: string | null
-        size_mb?: number | null
-        message?: string | null
-      }>
-    >(`/customers/environments/${environmentId}/databases-v2`),
+    apiClient.get<EnvironmentDatabaseV2Response[]>(`/customers/environments/${environmentId}/databases-v2`),
 
   createEnvDatabase: (
     environmentId: string,
-    body: { engine: string; logical_name?: string; name?: string },
+    body: {
+      engine: string
+      logical_name?: string
+      name?: string
+      username?: string
+      password?: string
+    },
   ) =>
-    apiClient.post(`/customers/environments/${environmentId}/databases`, body),
+    apiClient.post<EnvironmentDatabaseV2Response>(`/customers/environments/${environmentId}/databases`, body),
 
   revealEnvDatabase: (environmentId: string, databaseId: string) =>
     apiClient.post<{

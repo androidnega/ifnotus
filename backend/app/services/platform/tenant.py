@@ -12,6 +12,77 @@ from app.core.exceptions import AppException, AuthorizationError, NotFoundError
 from app.models.platform import CustomerEnvironment, HostingPlan, Subscription
 
 
+def ensure_cpanel_directory_layout(
+    home: Path,
+    *,
+    web_dir: Path | None = None,
+    hostname: str | None = None,
+) -> Path:
+    """Ensure standard cPanel directory structure in tenant home:
+    - public_html (with www symlink)
+    - logs, tmp, ssl
+    - starter index.html if empty
+    """
+    home = home.resolve()
+    home.mkdir(parents=True, exist_ok=True)
+
+    # Determine primary web directory
+    public_html = home / "public_html"
+    public = home / "public"
+
+    if web_dir is not None and web_dir.resolve() != home:
+        resolved_web = web_dir.resolve()
+        if resolved_web.name == "public" and not public_html.exists():
+            try:
+                public_html.symlink_to("public", target_is_directory=True)
+            except OSError:
+                public_html.mkdir(parents=True, exist_ok=True)
+        elif resolved_web.name == "public_html" and not public.exists():
+            try:
+                public.symlink_to("public_html", target_is_directory=True)
+            except OSError:
+                public.mkdir(parents=True, exist_ok=True)
+    else:
+        if not public_html.exists() and not public.exists():
+            public_html.mkdir(parents=True, exist_ok=True)
+        if public_html.exists() and not public.exists():
+            try:
+                public.symlink_to("public_html", target_is_directory=True)
+            except OSError:
+                pass
+        elif public.exists() and not public_html.exists():
+            try:
+                public_html.symlink_to("public", target_is_directory=True)
+            except OSError:
+                pass
+
+    # Ensure www -> public_html symlink
+    www = home / "www"
+    if not www.exists():
+        try:
+            www.symlink_to("public_html", target_is_directory=True)
+        except OSError:
+            pass
+
+    # Ensure standard cPanel directories
+    for folder in ("logs", "tmp", "ssl"):
+        (home / folder).mkdir(parents=True, exist_ok=True)
+
+    # Ensure starter page in web directory if completely empty
+    target_web = public_html if public_html.exists() else (public if public.exists() else home)
+    try:
+        resolved_target = target_web.resolve()
+        has_content = any(p.name not in {".ifnotus", ".ifnotus-trash"} for p in resolved_target.iterdir())
+        if not has_content:
+            from app.services.platform.hosting_ready_page import write_hosting_ready_page
+
+            write_hosting_ready_page(resolved_target, hostname=hostname or home.name)
+    except OSError:
+        pass
+
+    return home
+
+
 class TenantService:
     """Resolve a customer's allowed filesystem roots and owned environments."""
 
@@ -57,11 +128,9 @@ class TenantService:
             if not env.document_root:
                 continue
             path = Path(env.document_root).resolve()
-            if path.exists():
-                roots.append(path)
-            else:
-                path.mkdir(parents=True, exist_ok=True)
-                roots.append(path.resolve())
+            site_home = path.parent if path.name in {"public", "public_html", "web", "httpdocs"} and path.parent.exists() else path
+            ensure_cpanel_directory_layout(site_home, web_dir=path, hostname=env.domain)
+            roots.append(site_home.resolve())
         return list(dict.fromkeys(roots))
 
     async def roots_for_environment(self, customer_id: UUID, environment_id: UUID) -> list[Path]:
@@ -69,8 +138,9 @@ class TenantService:
         if not env.document_root:
             raise AppException("Environment has no document root.")
         path = Path(env.document_root).resolve()
-        path.mkdir(parents=True, exist_ok=True)
-        return [path.resolve()]
+        site_home = path.parent if path.name in {"public", "public_html", "web", "httpdocs"} and path.parent.exists() else path
+        ensure_cpanel_directory_layout(site_home, web_dir=path, hostname=env.domain)
+        return [site_home.resolve()]
 
     async def plan_for_environment(self, env: CustomerEnvironment) -> HostingPlan | None:
         sub = await self._session.get(Subscription, env.subscription_id)

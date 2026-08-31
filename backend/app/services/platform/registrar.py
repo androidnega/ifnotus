@@ -458,7 +458,7 @@ class DomainRegistrar:
         merged: list[dict[str, str]] = []
         replaced_a = False
         has_www = False
-        panel_hosts = {"cpanel", "mail"} if also_panel_hosts else set()
+        panel_hosts = {"fpanel", "cpanel", "mail", "webmail"} if also_panel_hosts else set()
         replaced_panel: set[str] = set()
         for host in existing:
             h = (host.get("host") or "").lower()

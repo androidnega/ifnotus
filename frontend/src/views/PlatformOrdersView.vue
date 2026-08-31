@@ -245,7 +245,7 @@ function startProgressSimulation() {
       progressStage.value = 'Configuring Nginx vhost, DNS records & SSL certs…'
     } else if (progressPercent.value < 95) {
       progressPercent.value += 1
-      progressStage.value = 'Provisioning customer mailbox & cPanel alias…'
+      progressStage.value = 'Provisioning customer mailbox & fPanel alias…'
     }
   }, 600)
 }
@@ -713,7 +713,7 @@ async function rejectPay(o: StaffOrderItem) {
                   <div class="progress-track">
                     <div class="progress-fill" :style="{ width: `${progressPercent}%` }" />
                   </div>
-                  <p class="progress-sub">Creating ISPConfig webroot, assigning database, issuing SSL SANs and mapping cPanel.</p>
+                  <p class="progress-sub">Creating ISPConfig webroot, assigning database, issuing SSL SANs and mapping fPanel.</p>
                 </div>
 
                 <!-- CONTROLS WHEN IDLE -->

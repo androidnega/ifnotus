@@ -52,19 +52,55 @@ class PhpFpmPoolService:
         base = root.parent if root.name == "public" else root
         children = max(2, min(12, int(round(float(ram_gb or 0.5) * 4)) or 2))
         conf = self._pool_dir / f"{name}.conf"
-        run_user = (unix_user or "").strip() or "www-data"
+        run_user = (unix_user or "").strip()
+
+        if not run_user:
+            for check_path in (root, base, root / "public"):
+                if check_path.exists():
+                    try:
+                        stat_info = check_path.stat()
+                        owner_name = pwd.getpwuid(stat_info.st_uid).pw_name
+                        if owner_name not in ("root", "www-data", "nobody", "bin", "daemon"):
+                            run_user = owner_name
+                            break
+                    except Exception:
+                        pass
+
+        if not run_user:
+            run_user = "www-data"
+
         if run_user != "www-data" and not self._unix_user_exists(run_user):
             logger.warning("php_fpm_user_missing_fallback_www_data", pool=name, user=run_user)
             run_user = "www-data"
+
+        run_group = run_user if run_user != "www-data" else "www-data"
+        if run_user != "www-data":
+            try:
+                subprocess.run(["usermod", "-aG", run_user, "www-data"], capture_output=True, check=False)
+            except Exception:
+                pass
+            # Ensure parent directories up to /srv/apps/ifnotus-customers are traversable by tenant unix user
+            try:
+                curr = base
+                while curr and curr != curr.parent:
+                    curr = curr.parent
+                    if curr.exists() and (curr.name in ("ifnotus-customers", "apps", "srv") or str(curr).startswith("/srv/apps")):
+                        st = curr.stat()
+                        if (st.st_mode & 0o111) != 0o111:
+                            curr.chmod(st.st_mode | 0o755)
+            except Exception:
+                pass
+
         # Socket must stay www-data-owned so nginx can connect.
         body = "\n".join(
             [
                 f"[{name}]",
                 f"user = {run_user}",
-                "group = www-data",
+                f"group = {run_group}",
                 f"listen = {sock}",
                 "listen.owner = www-data",
                 "listen.group = www-data",
+                "listen.mode = 0660",
                 "pm = ondemand",
                 f"pm.max_children = {children}",
                 "pm.process_idle_timeout = 10s",

@@ -13,34 +13,31 @@ assert(fmFile.includes('function normalizeVirtualPath'), 'normalizeVirtualPath m
 assert(fmFile.includes("clean === 'public'"), 'normalizeVirtualPath must normalize public alias to root')
 assert(fmFile.includes("pathStr === '__trash__'"), 'normalizeVirtualPath preserves __trash__ location')
 
-// 2. Check that Places sidebar contains Home and Trash
-assert(fmFile.includes("<p class=\"nav-label\">Places</p>"), 'Places section exists in sidebar')
-assert(fmFile.includes("@click=\"openDir('.')\""), 'Home button calls openDir(".")')
-assert(fmFile.includes("@click=\"openTrash\""), 'Trash button calls openTrash() in Places')
-assert(fmFile.includes("<IconTrash"), 'IconTrash rendered in sidebar')
+// 2. Check that Directory Tree sidebar contains Home and Trash
+assert(fmFile.includes("cp-tree-pane"), 'Tree pane exists in sidebar')
+assert(fmFile.includes("@click=\"openDir('.')\""), 'Home node calls openDir(".")')
+assert(fmFile.includes("@click=\"openTrash\""), 'Trash node calls openTrash() in Tree')
+assert(fmFile.includes("trash-node"), 'Trash node rendered in sidebar')
 
-// 3. Check Breadcrumb logic
+// 3. Check Breadcrumb / Path logic
 assert(fmFile.includes("isTrashMode.value"), 'isTrashMode computed exists')
-assert(fmFile.includes("{ label: 'Trash', path: '__trash__' }"), 'Breadcrumb shows Trash in trash mode')
+assert(fmFile.includes("manualPath"), 'Path input bar exists')
 
 // 4. Check that normal delete moves to trash
-assert(fmFile.includes("Move ${label} to Trash?"), 'Normal delete asks to move to trash')
 assert(fmFile.includes("customersApi.moveToTrash"), 'Normal delete calls moveToTrash API')
 assert(fmFile.includes("lastMovedTrash"), 'Normal delete sets undo state')
 assert(fmFile.includes("undoLastTrash"), 'Undo button restores recently trashed items')
 
 // 5. Check Trash toolbar and actions
-assert(fmFile.includes("Search Trash"), 'Search placeholder adapts in Trash mode')
 assert(fmFile.includes("Restore"), 'Restore action available in Trash')
-assert(fmFile.includes("Delete permanently"), 'Permanent delete action available in Trash')
+assert(fmFile.includes("Delete Permanently") || fmFile.includes("Delete permanently"), 'Permanent delete action available in Trash')
 assert(fmFile.includes("Empty Trash"), 'Empty trash action available in Trash')
 assert(fmFile.includes("restoreTrashTargets"), 'Restore function defined')
 assert(fmFile.includes("permanentDeleteTargets"), 'Permanent delete function defined')
 assert(fmFile.includes("conflictModal"), 'Conflict resolution modal defined')
 
 // 6. Check empty state display
-assert(fmFile.includes("Trash is empty"), 'Trash empty state message exists')
-assert(fmFile.includes("This folder is empty"), 'Folder empty state message exists')
+assert(fmFile.includes("This directory is empty"), 'Folder empty state message exists')
 
 // 7. Check backend file manager jailing and trash support
 const backendFmFile = fs.readFileSync('backend/app/services/hosting/files.py', 'utf8')

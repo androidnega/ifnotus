@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import type { CustomerDashboard, CustomerEnvironment, CustomerSubscription, HostingPlan } from '@/types/platform'
+import type { CustomerDashboard, HostingPlan } from '@/types/platform'
 import { customersApi } from '@/api'
 import { openHostingFromAccount } from '@/lib/hostingDeepLink'
 import { getApiErrorMessage } from '@/lib/apiError'
@@ -75,7 +75,7 @@ const serviceItems = computed(() => {
       currency: plan?.currency || 'GH₵',
       billingTerm: sub?.billing_term_months || 1,
       expiresAt: sub?.expires_at,
-      createdAt: env.created_at || sub?.started_at,
+      createdAt: env.created_at || null,
       idShort: sub ? sub.id.slice(0, 8).toUpperCase() : env.id.slice(0, 8).toUpperCase(),
     }
   })
@@ -154,7 +154,7 @@ function daysUntil(iso?: string | null) {
   return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)))
 }
 
-function launchCpanel(domain: string, envId: string) {
+function launchFpanel(domain: string, envId: string) {
   openHostingFromAccount(domain, 'overview', envId)
 }
 
@@ -193,7 +193,7 @@ async function saveHostingPassword() {
       selectedService.value.env.id,
       newPassword.value,
     )
-    passwordMsg.value = data.message || 'Hosting cPanel password updated successfully!'
+    passwordMsg.value = data.message || 'Hosting fPanel password updated successfully!'
     passwordMsgType.value = 'success'
     newPassword.value = ''
     confirmPassword.value = ''
@@ -208,7 +208,6 @@ async function saveHostingPassword() {
 // Upgrade Flow
 function openUpgrade() {
   if (!selectedService.value) return
-  const currentPlanId = selectedService.value.plan?.id
   const higherPlans = props.plans.filter(
     (p) => Number(p.price_monthly) > Number(selectedService.value?.plan?.price_monthly || 0),
   )
@@ -583,12 +582,12 @@ async function submitCancel() {
 
             <div class="prop-row">
               <span class="prop-k">SERVER IP</span>
-              <span class="prop-v font-mono">185.150.191.249</span>
+              <span class="prop-v font-mono text-muted">Shared Hosting (Protected)</span>
             </div>
 
             <div class="prop-row">
               <span class="prop-k">HOSTNAME</span>
-              <span class="prop-v font-mono">node1.ifnotus.space</span>
+              <span class="prop-v font-mono">{{ selectedService.env.domain ? `fpanel.${selectedService.domain}` : 'node1.ifnotus.space' }}</span>
             </div>
 
             <div class="prop-row">
@@ -603,7 +602,7 @@ async function submitCancel() {
                 <button
                   type="button"
                   class="btn-eye-toggle"
-                  title="Toggle password view"
+                  title="Manage password"
                   @click="activeTab = 'password'"
                 >
                   <i class="fa-solid fa-pen-to-square" />
@@ -619,38 +618,38 @@ async function submitCancel() {
             <div class="prop-row">
               <span class="prop-k">BANDWIDTH</span>
               <span class="prop-v">
-                {{ selectedService.plan?.bandwidth_gb ? selectedService.plan.bandwidth_gb * 1000 : 50000 }} MB / per month
+                {{ selectedService.plan?.bandwidth_tb ? `${Number(selectedService.plan.bandwidth_tb) * 1000000} MB / per month` : 'Unmetered' }}
               </span>
             </div>
 
             <div class="prop-row">
               <span class="prop-k">DISK QUOTA</span>
-              <span class="prop-v">
-                {{ selectedService.plan?.storage_gb ? selectedService.plan.storage_gb * 1000 : 5000 }} MB
+              <span class="prop-v font-mono">
+                {{ selectedService.plan?.storage_gb ? `${selectedService.plan.storage_gb * 1024} MB` : `${selectedService.env.storage_limit_gb * 1024} MB` }}
               </span>
             </div>
 
             <div class="prop-row">
-              <span class="prop-k">CPANEL URL</span>
+              <span class="prop-k">FPANEL URL</span>
               <a
-                :href="`https://cpanel.${selectedService.domain}`"
+                :href="`https://fpanel.${selectedService.domain}`"
                 target="_blank"
                 rel="noreferrer"
                 class="prop-v link-cpanel"
               >
-                cpanel.{{ selectedService.domain }}
+                fpanel.{{ selectedService.domain }}
               </a>
             </div>
           </div>
 
-          <!-- Bottom Action: Login to cPanel Button (Image 1) -->
+          <!-- Bottom Action: Login to fPanel Button (Image 1) -->
           <div class="details-bottom-bar">
             <button
               type="button"
               class="btn-login-cpanel"
-              @click="launchCpanel(selectedService.domain, selectedService.env.id)"
+              @click="launchFpanel(selectedService.domain, selectedService.env.id)"
             >
-              Login to cPanel
+              Login to fPanel
             </button>
           </div>
         </div>
@@ -670,7 +669,7 @@ async function submitCancel() {
               <span class="prop-k">NAMESERVER 1</span>
               <div class="prop-v ns-val-row">
                 <span class="font-mono font-bold">ns1.ifnotus.space</span>
-                <span class="ns-ip-tag">(IP: 80.241.223.82)</span>
+                <span class="ns-ip-tag">(Primary)</span>
               </div>
             </div>
 
@@ -678,7 +677,7 @@ async function submitCancel() {
               <span class="prop-k">NAMESERVER 2</span>
               <div class="prop-v ns-val-row">
                 <span class="font-mono font-bold">ns2.ifnotus.space</span>
-                <span class="ns-ip-tag">(IP: 80.241.223.82)</span>
+                <span class="ns-ip-tag">(Primary)</span>
               </div>
             </div>
 
@@ -700,23 +699,8 @@ async function submitCancel() {
           </div>
         </div>
 
-        <!-- Tab 3: Password (Hosting cPanel Credentials) -->
+        <!-- Tab 3: Password (Hosting fPanel Credentials) -->
         <div v-else class="tab-content password-tab-pane">
-          <div class="password-notice">
-            <i class="fa-solid fa-shield-halved text-blue-600" />
-            <div>
-              <strong>Dedicated Hosting cPanel Password</strong>
-              <p>
-                This password is used to log in directly at
-                <a :href="`https://cpanel.${selectedService.domain}`" target="_blank" class="font-mono font-bold underline">
-                  cpanel.{{ selectedService.domain }}
-                </a>
-                using your assigned username <strong>{{ selectedService.username }}</strong>.
-                It is separate from your main IFNOTUS account credentials.
-              </p>
-            </div>
-          </div>
-
           <div v-if="passwordMsg" class="pass-alert" :class="passwordMsgType">
             {{ passwordMsg }}
           </div>
@@ -938,71 +922,77 @@ async function submitCancel() {
 /* 1. Header Bar */
 .services-head-bar {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 1rem;
+  gap: 1.25rem;
+  padding: 0.25rem 0.25rem 0.5rem;
 }
 .page-title {
-  font-size: 1.65rem;
+  font-size: 1.55rem;
   font-weight: 700;
   color: #0f172a;
-  margin: 0 0 0.25rem;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.35rem;
 }
 .page-subtitle {
-  font-size: 0.9rem;
+  font-size: 0.88rem;
   color: #64748b;
   margin: 0;
 }
 .head-actions {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: 0.75rem;
 }
 .btn-top-order {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.45rem;
   background: #0284c7;
   color: #ffffff;
   font-weight: 600;
   font-size: 0.85rem;
-  padding: 0.55rem 1.1rem;
-  border-radius: 0.5rem;
+  padding: 0.6rem 1.15rem;
+  border-radius: 0.55rem;
   text-decoration: none;
-  transition: background 0.15s ease;
+  box-shadow: 0 1px 2px rgba(2, 132, 199, 0.15);
+  transition: all 0.15s ease;
 }
 .btn-top-order:hover {
   background: #0369a1;
+  transform: translateY(-1px);
 }
 .btn-top-ticket {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  background: #f1f5f9;
+  gap: 0.45rem;
+  background: #ffffff;
   color: #334155;
   font-weight: 600;
   font-size: 0.85rem;
-  padding: 0.55rem 1rem;
-  border-radius: 0.5rem;
+  padding: 0.6rem 1.05rem;
+  border-radius: 0.55rem;
   border: 1px solid #cbd5e1;
   cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
   transition: all 0.15s ease;
 }
 .btn-top-ticket:hover {
-  background: #e2e8f0;
+  background: #f8fafc;
+  border-color: #94a3b8;
 }
 
 /* Services Card */
 .services-card {
   background: #ffffff;
   border: 1px solid #e2e8f0;
-  border-radius: 0.875rem;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  border-radius: 1rem;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.03), 0 2px 4px -2px rgba(0, 0, 0, 0.03);
   overflow: hidden;
 }
 .card-top-row {
-  padding: 1.25rem 1.5rem;
+  padding: 1.25rem 1.75rem;
   border-bottom: 1px solid #f1f5f9;
 }
 .card-title-group {
@@ -1014,6 +1004,7 @@ async function submitCancel() {
   font-size: 1.15rem;
   font-weight: 700;
   color: #0f172a;
+  letter-spacing: -0.01em;
   margin: 0;
 }
 .badge-count {
@@ -1032,7 +1023,7 @@ async function submitCancel() {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 1rem;
-  padding: 0.85rem 1.5rem;
+  padding: 0.9rem 1.75rem;
   background: #f8fafc;
   border-bottom: 1px solid #f1f5f9;
 }
@@ -1076,24 +1067,24 @@ async function submitCancel() {
   text-align: left;
 }
 .services-table th {
-  padding: 0.85rem 1.5rem;
+  padding: 0.95rem 1.75rem;
   background: #f1f5f9;
-  font-size: 0.78rem;
+  font-size: 0.76rem;
   font-weight: 700;
-  color: #0f172a;
-  letter-spacing: 0.04em;
+  color: #334155;
+  letter-spacing: 0.05em;
   border-bottom: 1px solid #e2e8f0;
 }
 .service-row {
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: all 0.15s ease;
   border-bottom: 1px solid #f1f5f9;
 }
 .service-row:hover {
   background: #f8fafc;
 }
 .services-table td {
-  padding: 1rem 1.5rem;
+  padding: 1.15rem 1.75rem;
   vertical-align: middle;
 }
 .service-name-wrap {
@@ -1220,6 +1211,13 @@ async function submitCancel() {
 }
 
 /* 2. DETAILS VIEW (Image 1 & 4) */
+.service-details-view {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  width: 100%;
+}
+
 .details-top-bar {
   display: flex;
   align-items: center;
@@ -1278,21 +1276,22 @@ async function submitCancel() {
 .summary-hero-card {
   background: #ffffff;
   border: 1px solid #e2e8f0;
-  border-radius: 0.875rem;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  border-radius: 1rem;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.03), 0 2px 4px -2px rgba(0, 0, 0, 0.03);
   overflow: hidden;
 }
 .hero-head {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  padding: 1.25rem 1.5rem;
+  gap: 1.25rem;
+  padding: 1.5rem 1.75rem;
   border-bottom: 1px solid #f1f5f9;
 }
 .hero-title {
   font-size: 1.35rem;
   font-weight: 700;
   color: #0f172a;
+  letter-spacing: -0.01em;
   margin: 0;
 }
 .summary-meta-grid {
@@ -1303,7 +1302,7 @@ async function submitCancel() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.85rem 1.5rem;
+  padding: 1rem 1.75rem;
   border-bottom: 1px solid #f1f5f9;
 }
 .meta-row:nth-child(even) {
@@ -1326,18 +1325,19 @@ async function submitCancel() {
 .manage-account-card {
   background: #ffffff;
   border: 1px solid #e2e8f0;
-  border-radius: 0.875rem;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  border-radius: 1rem;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.03), 0 2px 4px -2px rgba(0, 0, 0, 0.03);
   overflow: hidden;
 }
 .manage-card-head {
-  padding: 1.5rem 1.5rem 1rem;
+  padding: 1.75rem 1.75rem 1rem;
 }
 .manage-title {
   font-size: 1.25rem;
   font-weight: 700;
   color: #0f172a;
-  margin: 0 0 0.25rem;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.35rem;
 }
 .manage-subtitle {
   font-size: 0.88rem;
@@ -1350,16 +1350,16 @@ async function submitCancel() {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0 1.5rem;
-  margin-top: 0.5rem;
+  padding: 0 1.75rem;
+  margin-top: 0.75rem;
   border-bottom: 1px solid #e2e8f0;
 }
 .tab-btn {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
-  padding: 0.6rem 1.1rem;
-  border-radius: 0.5rem 0.5rem 0 0;
+  gap: 0.5rem;
+  padding: 0.7rem 1.25rem;
+  border-radius: 0.55rem 0.55rem 0 0;
   border: 1px solid transparent;
   border-bottom: none;
   background: transparent;
@@ -1380,20 +1380,20 @@ async function submitCancel() {
 
 /* Tab Content */
 .tab-content {
-  padding: 1.5rem;
+  padding: 1.75rem;
 }
 
 /* Details Table Wrap (Image 1) */
 .details-table-wrap {
   border: 1px solid #e2e8f0;
-  border-radius: 0.65rem;
+  border-radius: 0.75rem;
   overflow: hidden;
 }
 .prop-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.85rem 1.25rem;
+  padding: 0.95rem 1.5rem;
   border-bottom: 1px solid #f1f5f9;
 }
 .prop-row:nth-child(even) {

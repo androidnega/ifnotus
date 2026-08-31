@@ -15,7 +15,7 @@ const props = withDefaults(
 
 const brandLabel = computed(() => {
   if (props.variant === 'staff' || isStaffPanelHost() || isCustomerCpanelHost()) {
-    return 'cPanel'
+    return 'fPanel'
   }
   return 'IFNOTUS'
 })

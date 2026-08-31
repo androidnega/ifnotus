@@ -609,7 +609,7 @@ onMounted(() => {
         <div class="hp-brand-main">
           <span class="hp-mark">IF</span>
           <div v-if="!isCollapsed" class="hp-brand-info">
-            <span class="hp-word">cPanel</span>
+            <span class="hp-word">fPanel</span>
             <span class="hp-subword">{{ env?.domain || 'Hosting Workspace' }}</span>
           </div>
         </div>
@@ -878,7 +878,7 @@ onMounted(() => {
                 <p class="kicker">Hosting Workspace Appearance</p>
                 <h2>Panel Theme Studio</h2>
                 <p class="muted">
-                  Choose a signature look for this hosting workspace. Click any theme to immediately test-drive and live-preview it across your cPanel. Unowned themes revert upon page refresh unless purchased.
+                  Choose a signature look for this hosting workspace. Click any theme to immediately test-drive and live-preview it across your fPanel. Unowned themes revert upon page refresh unless purchased.
                 </p>
               </div>
             </div>
@@ -888,7 +888,7 @@ onMounted(() => {
               <div class="preview-box-main">
                 <span class="preview-live-pill"><i class="fas fa-eye" /> Live Preview Active</span>
                 <p class="preview-desc">
-                  You are test-driving <strong>{{ pendingThemePack.name }}</strong> live across all cPanel views. Refreshing the browser will revert to your active theme.
+                  You are test-driving <strong>{{ pendingThemePack.name }}</strong> live across all fPanel views. Refreshing the browser will revert to your active theme.
                 </p>
               </div>
               <div class="preview-box-actions">
@@ -1002,7 +1002,7 @@ onMounted(() => {
           <PortalAiPanel
             v-else-if="env?.id || environmentId || resolvedEnvId"
             :environment-id="env?.id || environmentId || resolvedEnvId"
-            :domain="env?.domain || domain"
+            :domain="env?.domain || undefined"
             mode="files"
           />
           <div v-else class="hp-ai-loading">
@@ -1423,13 +1423,16 @@ onMounted(() => {
 .hp-btn.primary { background: var(--hp-accent); color: #fff; border-color: var(--hp-accent); }
 .hp-btn.ghost { background: var(--hp-surface); color: var(--hp-ink); border-color: var(--hp-border); }
 .hp-overview { display: flex; flex-direction: column; gap: 1rem; }
-.hp-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
-@media (min-width: 960px) { .hp-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.hp-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; width: 100%; }
+@media (max-width: 960px) { .hp-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .hp-metrics { grid-template-columns: 1fr; } }
 .hp-metric {
-  display: flex; gap: 0.75rem; align-items: flex-start;
+  display: flex; gap: 0.75rem; align-items: center; min-width: 0;
   background: var(--hp-surface); border: 1px solid var(--hp-border);
-  border-radius: 0.9rem; padding: 0.9rem 0.95rem;
+  border-radius: 0.9rem; padding: 0.85rem 0.95rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
 }
+.hp-metric > div { min-width: 0; flex: 1; }
 .hp-metric-icon {
   width: 2.2rem; height: 2.2rem; border-radius: 0.65rem;
   display: grid; place-items: center; color: #fff; flex-shrink: 0;
@@ -1438,9 +1441,17 @@ onMounted(() => {
 .tone-green .hp-metric-icon { background: #10b981; }
 .tone-purple .hp-metric-icon { background: #8b5cf6; }
 .tone-orange .hp-metric-icon { background: #f59e0b; }
-.hp-metric .lbl { margin: 0; font-size: 0.72rem; font-weight: 700; color: var(--hp-muted); text-transform: uppercase; letter-spacing: 0.04em; }
-.hp-metric .val { margin: 0.15rem 0 0; font-size: 1.25rem; font-weight: 800; font-family: Sora, sans-serif; }
-.hp-metric .hint { margin: 0.15rem 0 0; font-size: 0.75rem; color: var(--hp-muted); }
+.hp-metric .lbl {
+  margin: 0; font-size: 0.7rem; font-weight: 700; color: var(--hp-muted);
+  text-transform: uppercase; letter-spacing: 0.04em;
+  display: flex; align-items: center; justify-content: space-between; gap: 0.35rem;
+}
+.hp-metric .lbl em.rs-badge { font-style: normal; font-size: 0.62rem; padding: 0.05rem 0.35rem; border-radius: 0.25rem; flex-shrink: 0; }
+.hp-metric .val { margin: 0.15rem 0 0; font-size: 1.25rem; font-weight: 800; font-family: Sora, sans-serif; line-height: 1.2; }
+.hp-metric .hint {
+  margin: 0.15rem 0 0; font-size: 0.73rem; color: var(--hp-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .hp-grid-3 { display: grid; grid-template-columns: 1fr; gap: 1rem; }
 @media (min-width: 960px) { .hp-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 

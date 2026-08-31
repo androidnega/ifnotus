@@ -25,6 +25,38 @@ const reply = ref('')
 const busy = ref(false)
 const msg = ref('')
 const planAccent = ref('#1e3a5f')
+const expandedMessages = ref<Set<string>>(new Set())
+const copiedMsgId = ref<string | null>(null)
+
+function toggleExpand(id: string) {
+  if (expandedMessages.value.has(id)) {
+    expandedMessages.value.delete(id)
+  } else {
+    expandedMessages.value.add(id)
+  }
+}
+
+function isExpanded(id: string): boolean {
+  return expandedMessages.value.has(id)
+}
+
+function isLong(text: string): boolean {
+  return (text || '').length > 280 || (text || '').split('\n').length > 5
+}
+
+function copyText(text: string, id: string) {
+  navigator.clipboard.writeText(text)
+  copiedMsgId.value = id
+  setTimeout(() => {
+    if (copiedMsgId.value === id) copiedMsgId.value = null
+  }, 2000)
+}
+
+function formatTime(dateStr?: string | null): string {
+  if (!dateStr) return ''
+  const date = new Date(dateStr)
+  return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+}
 
 async function loadList() {
   loading.value = true
@@ -185,9 +217,34 @@ onMounted(async () => {
                 class="bubble"
                 :class="m.author_role === 'staff' ? 'staff' : 'you'"
               >
-                <p class="role">{{ m.author_role }}</p>
-                <p class="body">{{ m.body }}</p>
-                <p class="meta">{{ m.created_at ? new Date(m.created_at).toLocaleString() : '' }}</p>
+                <div class="bubble-head">
+                  <p class="role">
+                    {{ m.author_role === 'staff' ? '🛡️ Support Specialist' : '👤 You' }}
+                  </p>
+                  <button
+                    type="button"
+                    class="copy-btn"
+                    title="Copy message"
+                    @click="copyText(m.body, m.id)"
+                  >
+                    {{ copiedMsgId === m.id ? '✓ Copied' : 'Copy' }}
+                  </button>
+                </div>
+                <div
+                  class="body"
+                  :class="{ 'body-clamped': isLong(m.body) && !isExpanded(m.id) }"
+                >
+                  {{ m.body }}
+                </div>
+                <button
+                  v-if="isLong(m.body)"
+                  type="button"
+                  class="read-more-btn"
+                  @click="toggleExpand(m.id)"
+                >
+                  {{ isExpanded(m.id) ? '▲ Show less' : '▼ Read full message' }}
+                </button>
+                <p class="meta">{{ formatTime(m.created_at) }}</p>
               </div>
             </div>
             <form v-if="selected.status !== 'closed'" class="form mt" @submit.prevent="sendReply">
@@ -255,9 +312,34 @@ onMounted(async () => {
               class="bubble"
               :class="m.author_role === 'staff' ? 'staff' : 'you'"
             >
-              <p class="role">{{ m.author_role }}</p>
-              <p class="body">{{ m.body }}</p>
-              <p class="meta">{{ m.created_at ? new Date(m.created_at).toLocaleString() : '' }}</p>
+              <div class="bubble-head">
+                <p class="role">
+                  {{ m.author_role === 'staff' ? '🛡️ Support Specialist' : '👤 You' }}
+                </p>
+                <button
+                  type="button"
+                  class="copy-btn"
+                  title="Copy message"
+                  @click="copyText(m.body, m.id)"
+                >
+                  {{ copiedMsgId === m.id ? '✓ Copied' : 'Copy' }}
+                </button>
+              </div>
+              <div
+                class="body"
+                :class="{ 'body-clamped': isLong(m.body) && !isExpanded(m.id) }"
+              >
+                {{ m.body }}
+              </div>
+              <button
+                v-if="isLong(m.body)"
+                type="button"
+                class="read-more-btn"
+                @click="toggleExpand(m.id)"
+              >
+                {{ isExpanded(m.id) ? '▲ Show less' : '▼ Read full message' }}
+              </button>
+              <p class="meta">{{ formatTime(m.created_at) }}</p>
             </div>
           </div>
           <form v-if="selected.status !== 'closed'" class="form mt" @submit.prevent="sendReply">
@@ -376,7 +458,29 @@ onMounted(async () => {
   background: #f4f6f8;
 }
 .role { margin: 0; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; color: var(--p-accent, var(--if-plan)); }
-.body { margin: 0.25rem 0 0; font-size: 0.875rem; white-space: pre-wrap; }
+.bubble-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem; }
+.copy-btn { border: none; background: rgba(0,0,0,0.06); border-radius: 0.35rem; font-size: 0.68rem; padding: 0.15rem 0.4rem; cursor: pointer; color: var(--p-muted, var(--if-muted)); }
+.copy-btn:hover { background: rgba(0,0,0,0.12); color: var(--p-ink, var(--if-ink)); }
+.body { margin: 0.25rem 0 0; font-size: 0.875rem; white-space: pre-wrap; word-break: break-word; }
+.body-clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.read-more-btn {
+  background: none;
+  border: none;
+  padding: 0.3rem 0;
+  margin-top: 0.35rem;
+  color: var(--p-accent, var(--if-plan));
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+.read-more-btn:hover { opacity: 0.85; }
 .muted { color: var(--p-muted, var(--if-muted)); font-size: 0.85rem; margin: 0; }
 .err { color: #b91c1c; font-size: 0.85rem; }
 .mt { margin-top: 0.75rem; }

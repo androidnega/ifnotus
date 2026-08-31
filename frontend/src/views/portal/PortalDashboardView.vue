@@ -269,12 +269,16 @@ function openInvoice(id: string) {
   void router.push(`/account/invoice/${id}`)
 }
 
-function onOpenPanel(next: 'site' | 'billing' | 'ai' | 'support') {
+function onOpenPanel(next: string) {
   if (next === 'ai' || next === 'site') {
     goToHosting(next === 'ai' ? 'apps' : 'overview')
-      return
-    }
-  goNav(next)
+    return
+  }
+  if (next === 'overview') {
+    goNav('home')
+    return
+  }
+  goNav(next as 'home' | 'hosting' | 'billing' | 'ai' | 'support' | 'site')
 }
 
 function onOpenSiteTab(tab: string) {

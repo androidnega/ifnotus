@@ -143,7 +143,7 @@ class EnvironmentDnsService:
         limit = self.custom_domain_limit(plan)
         check_name = primary_custom or (custom[0].domain_name if custom else None)
         readiness = self._domain_readiness(env, check_name=check_name, nameservers=ns)
-        from app.services.platform.panel_access import control_panel_url, site_cpanel_url, site_mail_url
+        from app.services.platform.panel_access import control_panel_url, site_fpanel_url, site_mail_url
 
         panel_url = control_panel_url(env.domain, self._settings.customer_portal_url)
         mail_host = None
@@ -175,7 +175,7 @@ class EnvironmentDnsService:
             "recommended_ip": ip,
             "records": required_records,
             "namecheap_pushed": False,
-            "panel_hostname": site_cpanel_url(env.domain),
+            "panel_hostname": site_fpanel_url(env.domain),
             "panel_url": panel_url,
             "mail_hostname": mail_host,
             "message": readiness["message"],
@@ -184,23 +184,25 @@ class EnvironmentDnsService:
         }
 
     def required_external_records(self, domain: str | None, ip: str, *, cname_target: str = "ifnotus.space") -> list[dict]:
-        """CNAME records for customers who keep DNS at their registrar (no raw IP exposed)."""
+        """DNS records for customers who keep DNS at their registrar."""
         from app.services.platform.panel_access import control_panel_hostname, webmail_hostname
 
         name = (domain or "").strip().lower().rstrip(".")
         if not name or self.is_included_hostname(name):
             return []
-        cpanel = control_panel_hostname(name)
+        fpanel = control_panel_hostname(name)
         webmail = webmail_hostname(name)
         target = cname_target or "ifnotus.space"
-        rows: list[dict] = [
-            {"record_type": "CNAME", "host": "www", "value": f"{name}.", "ttl": 3600},
-        ]
-        if cpanel and cpanel.startswith("cpanel."):
-            rows.append({"record_type": "CNAME", "host": "cpanel", "value": f"{target}.", "ttl": 3600})
+        rows: list[dict] = []
+        if ip:
+            rows.append({"record_type": "A", "host": "@", "value": ip, "ttl": 3600})
+        rows.append({"record_type": "CNAME", "host": "www", "value": f"{name}.", "ttl": 3600})
+        if fpanel and (fpanel.startswith("fpanel.") or fpanel.startswith("cpanel.")):
+            rows.append({"record_type": "A" if ip else "CNAME", "host": "fpanel", "value": ip or f"{target}.", "ttl": 3600})
+            rows.append({"record_type": "A" if ip else "CNAME", "host": "cpanel", "value": ip or f"{target}.", "ttl": 3600})
         if webmail and webmail.startswith("webmail."):
-            rows.append({"record_type": "CNAME", "host": "webmail", "value": f"{target}.", "ttl": 3600})
-        rows.append({"record_type": "CNAME", "host": "mail", "value": f"{target}.", "ttl": 3600})
+            rows.append({"record_type": "A" if ip else "CNAME", "host": "webmail", "value": ip or f"{target}.", "ttl": 3600})
+        rows.append({"record_type": "A" if ip else "CNAME", "host": "mail", "value": ip or f"{target}.", "ttl": 3600})
         return rows
 
     def _server_ips(self) -> set[str]:
@@ -265,10 +267,11 @@ class EnvironmentDnsService:
 
         apex_points = self._a_points_here(name)
         www_points = self._a_points_here(f"www.{name}")
-        cpanel_host = control_panel_hostname(name) or f"cpanel.{name}"
-        cpanel_subdomain_points = self._a_points_here(cpanel_host)
-        # Phase K: hosting panel is https://{domain}/cpanel on the apex/www vhost.
-        cpanel_points = apex_points or cpanel_subdomain_points
+        fpanel_host = control_panel_hostname(name) or f"fpanel.{name}"
+        fpanel_subdomain_points = self._a_points_here(fpanel_host)
+        cpanel_subdomain_points = self._a_points_here(f"cpanel.{name}")
+        # Hosting panel requires explicit fpanel.<domain> or cpanel.<domain> pointing to server
+        cpanel_points = fpanel_subdomain_points or cpanel_subdomain_points
 
         a_mode_live = apex_points and www_points
         dns_live = ns_live or a_mode_live

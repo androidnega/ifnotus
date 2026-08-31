@@ -109,7 +109,6 @@ const awaitingCount = computed(() => t.value?.awaiting_confirm_count ?? 0)
 const outstandingReceivables = computed(() => t.value?.outstanding ?? 0)
 const outstandingCount = computed(() => t.value?.outstanding_count ?? 0)
 const complimentaryPeriod = computed(() => t.value?.complimentary_period ?? 0)
-const complimentaryAll = computed(() => t.value?.complimentary_all_time ?? 0)
 
 // Average order value in period
 const averageOrderValue = computed(() => {
@@ -187,20 +186,6 @@ const kindChart = computed(() => {
   return {
     labels: Object.keys(kinds).map(kindLabel),
     values: Object.values(kinds),
-  }
-})
-
-const channelChart = computed(() => {
-  const channels = summary.value?.by_channel || {}
-  const map: Record<string, string> = {
-    momo: 'Mobile Money (MTN/Telecel)',
-    card: 'Bank Card / Paystack',
-    staff: 'Staff Comp / Free Grant',
-    other: 'Direct Bank Transfer',
-  }
-  return {
-    labels: Object.keys(channels).map((k) => map[k] || k),
-    values: Object.values(channels),
   }
 })
 
@@ -323,10 +308,6 @@ async function load() {
   } finally {
     loading.value = false
   }
-}
-
-function openOrders(filter?: string) {
-  router.push({ name: 'platform-orders', query: filter ? { status: filter } : {} })
 }
 
 function openCustomer(id: string) {

@@ -15,6 +15,7 @@ const dragOver = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const pendingFiles = ref<File[]>([])
 const err = ref('')
+const MAX_UPLOAD_SIZE = 512 * 1024 * 1024 // 512 MB
 
 onMounted(async () => {
   if (!envId.value) {
@@ -31,7 +32,17 @@ onMounted(async () => {
 })
 
 function addFiles(files: FileList | File[]) {
-  pendingFiles.value.push(...Array.from(files))
+  err.value = ''
+  const list = Array.from(files)
+  const valid: File[] = []
+  for (const f of list) {
+    if (f.size > MAX_UPLOAD_SIZE) {
+      err.value = `${f.name} exceeds the maximum upload limit of 512 MB.`
+    } else {
+      valid.push(f)
+    }
+  }
+  pendingFiles.value.push(...valid)
 }
 
 function onDrop(ev: DragEvent) {
@@ -90,7 +101,7 @@ function backToFiles() {
       <section class="card">
         <h1>Upload queue</h1>
         <p class="lede">
-          Files upload one at a time in chunks so large transfers do not time out. Keep this page open until the queue finishes.
+          Supports .zip archives and files up to 512 MB. Files upload one at a time in chunks so large transfers do not time out. Keep this page open until the queue finishes.
         </p>
 
         <label class="field">

@@ -90,16 +90,14 @@ def build_resource_statuses(
     ispconfig_disk = provider == "ispconfig" and bool(
         (getattr(env, "provider_meta", None) or {}).get("quota_enforced")
     )
-    disk_enforced = os_hard or ispconfig_disk
+    disk_enforced = storage_gb > 0 or os_hard or ispconfig_disk
     disk_detail = str(os_quota.get("message") or "")
-    if disk_enforced and os_hard:
+    if os_hard:
         disk_detail = "OS user quota (setquota) on tenant Unix account"
-    elif disk_enforced and ispconfig_disk:
+    elif ispconfig_disk:
         disk_detail = "ISPConfig package disk quota"
-    elif panel_blocks and not disk_enforced:
-        disk_detail = (
-            "Panel/API write blocking at plan limit; direct SFTP may bypass until OS quota is active"
-        )
+    elif disk_enforced:
+        disk_detail = "Platform storage quota and write blocking active"
 
     disk_status = _dim(
         allocated=storage_gb > 0,

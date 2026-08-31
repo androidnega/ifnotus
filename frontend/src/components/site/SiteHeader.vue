@@ -6,7 +6,7 @@ import { isPureCustomer, isStaffUser } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth'
 
 defineProps<{
-  active?: 'home' | 'plans'
+  active?: 'home' | 'plans' | 'contact' | 'status'
   tone?: 'light' | 'dark'
   surface?: 'glass' | 'solid'
 }>()
@@ -25,7 +25,7 @@ const panelLink = computed(() => {
   if (!auth.user) return null
   if (isPureCustomer(auth.user)) return { name: 'portal-dashboard' as const, label: 'My panel', href: '' }
   if (isStaffUser(auth.user)) {
-    return { name: 'dashboard' as const, label: 'Staff panel', href: 'https://cpanel.ifnotus.space/' }
+    return { name: 'dashboard' as const, label: 'Staff panel', href: 'https://fpanel.ifnotus.space/' }
   }
   return { name: 'portal-dashboard' as const, label: 'My panel', href: '' }
 })

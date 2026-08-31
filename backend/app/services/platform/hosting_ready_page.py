@@ -85,10 +85,10 @@ def ready_page_label(
 
 
 def panel_path(*, tab: str | None = None) -> str:
-    """Relative /cpanel link — resolved dynamically by nginx → API at click time."""
+    """Relative /fpanel link — resolved dynamically by nginx → API at click time."""
     if tab:
-        return f"/cpanel?tab={quote(tab)}"
-    return "/cpanel"
+        return f"/fpanel?tab={quote(tab)}"
+    return "/fpanel"
 
 
 def panel_entry_url(
@@ -218,6 +218,13 @@ def write_hosting_ready_page(
     """
     path = Path(root)
     path.mkdir(parents=True, exist_ok=True)
+    if not force:
+        # Never place parking index.html if user files (php, html, etc.) already exist
+        try:
+            if any(p.is_file() and p.name != "index.html" for p in path.iterdir()):
+                return path
+        except OSError:
+            pass
     index = path / "index.html"
     if index.exists() and not force:
         try:

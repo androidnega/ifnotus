@@ -17,7 +17,7 @@ const props = defineProps<{
   environments: CustomerEnvironment[]
   activeEnv: CustomerEnvironment
   activePlan?: HostingPlan | null
-  initialTab?: 'files' | 'stack' | 'applications' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail' | ''
+  initialTab?: 'files' | 'stack' | 'applications' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail' | 'git' | ''
   hideSubnav?: boolean
   filePath: string
   fileEntries: Array<{ name: string; path: string; is_dir: boolean; size_bytes?: number | null }>
@@ -445,29 +445,6 @@ const dbEngineLabel = computed(() => {
 
 const isWordpressInstalled = computed(() => String(props.currentStack?.stack || '') === 'wordpress')
 
-const isMysqlEngine = computed(() => {
-  const e = String(props.dbCreds?.engine || '').toLowerCase()
-  return e === 'mysql' || e === 'mariadb'
-})
-
-async function openSqlStudio() {
-  const id = props.activeEnv?.id
-  if (!id) return
-  // MySQL → phpMyAdmin (shared-hosting style). PostgreSQL stays on SQL studio.
-  if (isMysqlEngine.value) {
-    try {
-      const dbId = props.selectedDbId || undefined
-      const { data } = await customersApi.openEnvPhpMyAdmin(id, dbId)
-      window.open(data.url, `ifnotus-pma-${id}`)
-      return
-    } catch {
-      /* fall through to built-in studio */
-    }
-  }
-  const href = `https://ifnotus.space/account/database/studio?env=${encodeURIComponent(id)}`
-  window.open(href, `ifnotus-sql-${id}`)
-}
-
 function packLocked(label: string) {
   return `${label} is not on ${props.activePlan?.name || 'this package'}. Open Billing to upgrade.`
 }
@@ -781,6 +758,7 @@ const dnsRecords = computed(() => {
   return [
     { record_type: 'A', host: '@', value: ip },
     { record_type: 'A', host: 'www', value: ip },
+    { record_type: 'A', host: 'fpanel', value: ip },
     { record_type: 'A', host: 'cpanel', value: ip },
     { record_type: 'A', host: 'mail', value: ip },
   ]
@@ -2707,7 +2685,7 @@ const pool = new Pool({
         <h3>Connect your domain</h3>
         <p class="muted">
           Either path works: delegate nameservers to IFNOTUS, or keep your registrar DNS and add A records
-          pointing here. Hosting, cpanel, mail, and HTTPS work the same either way.
+          pointing here. Hosting, fpanel, mail, and HTTPS work the same either way.
         </p>
 
         <div class="dns-mode-tabs mt">
@@ -2793,7 +2771,7 @@ const pool = new Pool({
           <ol class="steps-ns">
             <li>Keep your current external nameservers (Cloudflare / Registrar).</li>
             <li>At your DNS provider, add these CNAME records pointing to IFNOTUS.</li>
-            <li>Once configured, your hosting panel is canonical at <strong>cpanel.yourdomain</strong>, webmail at <strong>webmail.yourdomain</strong>.</li>
+            <li>Once configured, your hosting panel is canonical at <strong>fpanel.yourdomain</strong>, webmail at <strong>webmail.yourdomain</strong>.</li>
             <li>Wait for DNS to update, then click Test again.</li>
           </ol>
           <div v-for="(rec, i) in dnsRecords" :key="`${rec.host}-${rec.record_type}`" class="cred-row">

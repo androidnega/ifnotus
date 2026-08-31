@@ -99,6 +99,7 @@ _PLATFORM_ADMIN_PERMISSIONS = frozenset(
         Permission.EMAIL_READ,
         Permission.MONITORING_READ,
         Permission.DOMAINS_READ,
+        Permission.DOMAINS_WRITE,
         Permission.SSL_READ,
         Permission.FILES_READ,
         Permission.MAIL_READ,

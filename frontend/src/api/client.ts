@@ -58,14 +58,14 @@ function authRedirectPath(): string {
   const search = window.location.search || ''
   const next = `${path}${search}`
   const host = (window.location.hostname || '').toLowerCase()
-  if (host === 'cpanel.ifnotus.space') {
+  if (host === 'fpanel.ifnotus.space' || host === 'cpanel.ifnotus.space') {
     if (next && next !== '/login' && !next.startsWith('/login?')) {
       return `/login?redirect=${encodeURIComponent(next)}`
     }
     return '/login'
   }
-  // Custom-domain hosting panel — customer login stays on cpanel.<domain>.
-  if (host.startsWith('cpanel.') && host !== 'cpanel.ifnotus.space') {
+  // Custom-domain hosting panel — customer login stays on fpanel.<domain> / cpanel.<domain>.
+  if ((host.startsWith('fpanel.') || host.startsWith('cpanel.')) && host !== 'fpanel.ifnotus.space' && host !== 'cpanel.ifnotus.space') {
     if (next && next !== '/login' && next.startsWith('/') && !next.startsWith('//')) {
       return `/login?redirect=${encodeURIComponent(next)}`
     }

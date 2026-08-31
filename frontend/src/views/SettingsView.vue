@@ -514,7 +514,7 @@ async function createStaffUser() {
           ? 'Business admin created. They can manage plans, orders, customers, and env remediation.'
           : staffRole.value === 'customer_care'
             ? 'Customer care created. They can confirm MoMo and handle support tickets.'
-            : 'Staff account created and activated. They can sign in at https://cpanel.ifnotus.space.'
+            : 'Staff account created and activated. They can sign in at https://fpanel.ifnotus.space.'
     staffPassword.value = ''
     staffEmail.value = ''
     staffName.value = ''
@@ -748,7 +748,7 @@ onMounted(refreshAll)
               <span>
                 <span class="font-semibold">Maintenance page</span>
                 <span class="mt-0.5 block text-xs text-surface-muted">
-                  Public pages show a maintenance screen. Staff login at cpanel.ifnotus.space stays available.
+                  Public pages show a maintenance screen. Staff login at fpanel.ifnotus.space stays available.
                 </span>
               </span>
             </label>

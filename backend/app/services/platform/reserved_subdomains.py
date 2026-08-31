@@ -29,6 +29,7 @@ RESERVED_PLATFORM_SUBDOMAINS: frozenset[str] = frozenset(
         "accounts",
         "portal",
         "panel",
+        "fpanel",
         "cpanel",
         "whm",
         "webmail",

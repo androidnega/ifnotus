@@ -779,8 +779,10 @@ class StaffPlatformService:
         raw_name = (new_domain or "").strip().lower()
         if not raw_name:
             raise ValidationError("Domain or subdomain is required.")
+        if "." not in raw_name:
+            raw_name = f"{raw_name}.ifnotus.space"
         if not re.match(r"^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?)+$", raw_name):
-            raise ValidationError("Invalid subdomain or domain format (e.g. sub.domain.com).")
+            raise ValidationError("Invalid subdomain or domain format (e.g. username.ifnotus.space or domain.com).")
 
         old_domain = env.domain
         if old_domain == raw_name:
@@ -796,19 +798,42 @@ class StaffPlatformService:
 
         env.domain = raw_name
 
+        # Update CustomerDomain if present
+        from app.models.platform import CustomerDomain
+        cd_stmt = select(CustomerDomain).where(CustomerDomain.customer_id == env.customer_id)
+        cd = (await self._session.execute(cd_stmt)).scalar_one_or_none()
+        if cd:
+            cd.domain_name = raw_name
+        else:
+            self._session.add(
+                CustomerDomain(
+                    customer_id=env.customer_id,
+                    domain_name=raw_name,
+                    environment_id=env.id,
+                    status="active",
+                    ssl_status="active",
+                )
+            )
+
         if env.document_root:
             from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
             provisioner = DomainNginxProvisioner(self._settings)
             try:
                 await provisioner.provision(
-                    raw_name,
-                    web_root=env.document_root,
-                    php_version=getattr(env, "php_version", "8.3") or "8.3",
-                    run_user=getattr(env, "unix_user", "www-data") or "www-data",
-                    run_group=getattr(env, "unix_group", "www-data") or "www-data",
+                    hostname=raw_name,
+                    document_root=env.document_root,
+                    proxy_port=None,
+                    force_https=True,
                 )
             except Exception as e:
                 logger.warning("update_env_nginx_provision_failed", error=str(e), domain=raw_name)
+
+        if not raw_name.endswith(".ifnotus.space") and not raw_name.endswith(".serverlabsttu.space"):
+            from app.services.platform.authoritative_dns import AuthoritativeDnsService
+            try:
+                AuthoritativeDnsService(self._settings).ensure_zone(raw_name)
+            except Exception as e:
+                logger.warning("update_env_dns_zone_failed", error=str(e), domain=raw_name)
 
         self._session.add(
             PlatformAuditLog(

@@ -2,7 +2,6 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { PORTAL_ACCOUNT_TABS } from '@/lib/uiRegistry'
-import { openHostingFromAccount } from '@/lib/hostingDeepLink'
 import {
   IconDashboard,
   IconServer,

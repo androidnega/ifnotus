@@ -29,6 +29,8 @@ from app.schemas.hosting import (
 from app.schemas.operations import FileEntry, FileListResponse, OperationResult
 from app.services.applications.path_scanner import ApplicationPathScanner
 
+MAX_FILE_UPLOAD_BYTES = 512 * 1024 * 1024  # 512 MB upload limit
+
 
 def safe_upload_basename(filename: str | None) -> str:
     """Strip directories from an upload name so it cannot escape the destination dir."""
@@ -220,12 +222,9 @@ class FileManagerService:
         entries: list[FileEntry] = []
         if target.is_dir():
             for child in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
-                if child.name.startswith("."):
-                    # For customer tenant views, hide internal platform metadata .ifnotus and hidden dotfiles
-                    if not self._admin_storage:
-                        continue
-                    if child.name not in {".ifnotus"}:
-                        continue
+                if child.name in {".ifnotus", ".ifnotus-trash"}:
+                    # Hide internal platform metadata from all views
+                    continue
                 detail = self._file_detail(child, base)
                 entries.append(
                     FileEntry(
@@ -674,6 +673,11 @@ class FileManagerService:
             except (TypeError, ValueError):
                 declared = None
         if declared is not None:
+            if declared > MAX_FILE_UPLOAD_BYTES:
+                raise ValidationError(
+                    "File size exceeds the maximum upload limit of 512 MB.",
+                    code="file_too_large",
+                )
             self._assert_quota(base, extra_bytes=declared - old_bytes)
 
         from app.services.platform.usage import limit_bytes, measure_path_usage
@@ -690,6 +694,16 @@ class FileManagerService:
         with target.open("wb") as out:
             while chunk := await file.read(1024 * 1024):
                 written += len(chunk)
+                if written > MAX_FILE_UPLOAD_BYTES:
+                    out.close()
+                    try:
+                        target.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    raise ValidationError(
+                        "File size exceeds the maximum upload limit of 512 MB.",
+                        code="file_too_large",
+                    )
                 if limit is not None and used_base + written > limit:
                     out.close()
                     try:
@@ -716,6 +730,11 @@ class FileManagerService:
     ) -> FileUploadInitResponse:
         base = self._resolve_base(app_id, root_id)
         safe_name = safe_upload_basename(filename)
+        if int(size_bytes) > MAX_FILE_UPLOAD_BYTES:
+            raise ValidationError(
+                "File size exceeds the maximum upload limit of 512 MB.",
+                code="file_too_large",
+            )
         self._assert_quota(base, extra_bytes=max(int(size_bytes), 0))
         chunk = chunk_size or self._settings.file_upload_chunk_size
         upload_id = str(uuid.uuid4())

@@ -44,6 +44,10 @@ const props = withDefaults(
 )
 
 const fileInputRef = ref<HTMLInputElement | null>(null)
+const modalFileInputRef = ref<HTMLInputElement | null>(null)
+const showUploadModal = ref(false)
+const uploadDragOver = ref(false)
+const MAX_UPLOAD_SIZE = 512 * 1024 * 1024 // 512 MB
 
 const resolvedEnvId = ref('')
 const envId = computed(() => {
@@ -58,8 +62,8 @@ const envId = computed(() => {
 function normalizeVirtualPath(pathStr: string): string {
   if (!pathStr) return '.'
   if (pathStr === '__trash__') return '__trash__'
-  let clean = pathStr.replace(/^[./\\]+/, '').replace(/[/\\]+$/, '')
-  if (!clean || clean === 'public' || clean === 'public_html' || clean === 'web') return '.'
+  const clean = pathStr.replace(/^[./\\]+/, '').replace(/[/\\]+$/, '')
+  if (!clean || clean === 'public') return clean || '.'
   return clean
 }
 
@@ -208,7 +212,7 @@ const sidebarFolders = computed(() => {
     set.add(currentPath.value)
   }
   return [...set]
-    .filter((f) => f && f !== '.' && f !== '__trash__' && f !== 'public' && f !== 'public_html')
+    .filter((f) => f && f !== '.' && f !== '__trash__')
     .sort((a, b) => a.localeCompare(b))
 })
 
@@ -984,26 +988,61 @@ function downloadEntry(entry?: Entry | null) {
 }
 
 function pickUpload() {
-  if (fileInputRef.value) {
-    fileInputRef.value.click()
-    return
-  }
+  showUploadModal.value = true
+}
+
+function handleFilesToUpload(files: FileList | File[]) {
   if (!envId.value) return
-  const href = `https://ifnotus.space/account/files/upload?env=${encodeURIComponent(envId.value)}&path=${encodeURIComponent(currentPath.value || '.')}`
-  window.open(href, `ifnotus-upload-${envId.value}`)
+  const fileArray = Array.from(files)
+  if (!fileArray.length) return
+  const valid: File[] = []
+  for (const f of fileArray) {
+    if (f.size > MAX_UPLOAD_SIZE) {
+      msg.value = `"${f.name}" exceeds the maximum upload limit of 512 MB.`
+    } else {
+      valid.push(f)
+    }
+  }
+  if (!valid.length) return
+  transfers.enqueueUploadMany(valid, currentPath.value || '.', {
+    environmentId: envId.value,
+  })
+  msg.value = `Queued ${valid.length} file(s) for upload.`
+  showUploadModal.value = true
 }
 
 function onFileInputChange(event: Event) {
   const target = event.target as HTMLInputElement
-  const files = target.files
-  if (!files || !files.length || !envId.value) return
-  const fileArray = Array.from(files)
-  transfers.enqueueUploadMany(fileArray, currentPath.value || '.', {
-    environmentId: envId.value,
-  })
-  msg.value = `Queued ${fileArray.length} file(s) for upload.`
+  if (target.files?.length) {
+    handleFilesToUpload(target.files)
+  }
   target.value = ''
 }
+
+function onModalFileInputChange(event: Event) {
+  const target = event.target as HTMLInputElement
+  if (target.files?.length) {
+    handleFilesToUpload(target.files)
+  }
+  target.value = ''
+}
+
+function onDropFiles(ev: DragEvent) {
+  uploadDragOver.value = false
+  if (ev.dataTransfer?.files?.length) {
+    handleFilesToUpload(ev.dataTransfer.files)
+  }
+}
+
+watch(
+  () => transfers.hasPending,
+  (pending, wasPending) => {
+    if (wasPending && !pending) {
+      void load()
+      void loadUsage()
+    }
+  },
+)
 
 function onKeydown(ev: KeyboardEvent) {
   const tag = (ev.target as HTMLElement | null)?.tagName
@@ -1483,6 +1522,76 @@ onUnmounted(() => {
           <i class="fas fa-trash-alt" /> Delete
         </button>
       </template>
+    </div>
+
+    <!-- UPLOAD MODAL -->
+    <div v-if="showUploadModal" class="cp-modal-backdrop" @click.self="showUploadModal = false">
+      <div class="cp-modal-card upload-modal-card">
+        <div class="modal-head">
+          <div class="upload-head-title">
+            <i class="fas fa-cloud-upload-alt upload-main-icon" />
+            <div>
+              <h3>Upload Files & Archives</h3>
+              <p class="modal-sub">Target folder: <code>{{ currentPath === '.' ? '/ (root)' : currentPath }}</code></p>
+            </div>
+          </div>
+          <button type="button" class="btn-close" @click="showUploadModal = false">✕</button>
+        </div>
+
+        <div
+          class="upload-drop-zone"
+          :class="{ active: uploadDragOver }"
+          @dragover.prevent="uploadDragOver = true"
+          @dragleave="uploadDragOver = false"
+          @drop.prevent="onDropFiles"
+          @click="modalFileInputRef?.click()"
+        >
+          <i class="fas fa-file-zipper drop-icon" />
+          <h4>Drag & drop files or ZIP archives here</h4>
+          <p class="drop-hint">Maximum upload limit: <strong>512 MB</strong> per file. Supports .zip, tarballs, PHP, HTML, media & code.</p>
+          <button type="button" class="btn-primary" @click.stop="modalFileInputRef?.click()">
+            <i class="fas fa-folder-open" /> Choose Files to Upload
+          </button>
+          <input
+            ref="modalFileInputRef"
+            type="file"
+            multiple
+            accept="*/*"
+            style="display: none"
+            @change="onModalFileInputChange"
+          />
+        </div>
+
+        <!-- ACTIVE / RECENT UPLOADS STATUS -->
+        <div v-if="transfers.items.length" class="upload-transfers-box">
+          <div class="transfers-box-head">
+            <span>Transfers Queue ({{ transfers.items.length }})</span>
+            <button v-if="!transfers.hasPending" type="button" class="btn-clear-q" @click="transfers.clearCompleted">
+              Clear list
+            </button>
+          </div>
+          <div class="transfers-list">
+            <div v-for="item in transfers.items" :key="item.id" class="transfer-row">
+              <div class="transfer-info">
+                <i :class="item.name.toLowerCase().endsWith('.zip') ? 'fas fa-file-archive tone-orange' : 'fas fa-file tone-blue'" />
+                <span class="transfer-name" :title="item.name">{{ item.name }}</span>
+                <span class="transfer-status-pill" :class="item.status">{{ item.status }}</span>
+              </div>
+              <div class="transfer-progress-wrap">
+                <div class="transfer-bar">
+                  <div class="transfer-fill" :style="{ width: `${item.progress}%` }"></div>
+                </div>
+                <span class="transfer-pct">{{ item.progress }}%</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-foot">
+          <p class="upload-note">Files stream in high-speed chunks safely. Keep this panel open during transfer.</p>
+          <button type="button" class="btn-ghost" @click="showUploadModal = false">Close</button>
+        </div>
+      </div>
     </div>
 
     <!-- NEW FILE MODAL -->
@@ -2154,6 +2263,188 @@ onUnmounted(() => {
   border: none;
   border-top: 1px solid #e2e8f0;
   margin: 0.25rem 0;
+}
+
+/* UPLOAD MODAL */
+.upload-modal-card {
+  max-width: 36rem !important;
+  width: 100%;
+}
+
+.upload-head-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.upload-main-icon {
+  font-size: 1.5rem;
+  color: #0284c7;
+}
+
+.modal-sub {
+  font-size: 0.76rem;
+  color: #64748b;
+  margin: 0.15rem 0 0;
+}
+
+.modal-sub code {
+  background: #f1f5f9;
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.25rem;
+  color: #0f172a;
+}
+
+.upload-drop-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  padding: 2rem 1.5rem;
+  border: 2px dashed #cbd5e1;
+  border-radius: 0.75rem;
+  background: #f8fafc;
+  text-align: center;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  margin: 0.75rem 0;
+}
+
+.upload-drop-zone.active, .upload-drop-zone:hover {
+  border-color: #0284c7;
+  background: #f0f9ff;
+}
+
+.drop-icon {
+  font-size: 2.2rem;
+  color: #0284c7;
+}
+
+.upload-drop-zone h4 {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #0f172a;
+  margin: 0;
+}
+
+.drop-hint {
+  font-size: 0.78rem;
+  color: #64748b;
+  margin: 0;
+  max-width: 26rem;
+}
+
+.upload-transfers-box {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.6rem;
+  padding: 0.75rem 0.9rem;
+  margin-top: 0.75rem;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+.transfers-box-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #334155;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.btn-clear-q {
+  background: none;
+  border: none;
+  color: #0284c7;
+  font-size: 0.74rem;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.transfers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.transfer-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.transfer-info {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+}
+
+.transfer-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.transfer-status-pill {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.25rem;
+  background: #e2e8f0;
+  color: #475569;
+}
+
+.transfer-status-pill.complete, .transfer-status-pill.done {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.transfer-status-pill.uploading, .transfer-status-pill.processing {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.transfer-progress-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.transfer-bar {
+  flex: 1;
+  height: 0.35rem;
+  background: #e2e8f0;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.transfer-fill {
+  height: 100%;
+  background: #0284c7;
+  transition: width 0.3s ease;
+}
+
+.transfer-pct {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #475569;
+}
+
+.upload-note {
+  font-size: 0.75rem;
+  color: #64748b;
+  margin: 0;
+  flex: 1;
 }
 
 /* MODALS */

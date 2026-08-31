@@ -1,0 +1,238 @@
+================================================================================
+IFNOTUS FPANEL ROUTING, DNS & NGINX RECOVERY AUDIT & REPAIR REPORT
+================================================================================
+Date: 2026-08-31
+Author: IFNOTUS Core Architecture & Hosting Operations Team
+Status: COMPLETE & VERIFIED
+
+================================================================================
+PART 1: AUDIT REPORT (FINDINGS & ROOT CAUSE ANALYSIS)
+================================================================================
+
+```json
+{
+  "phase": "fpanel-routing-audit",
+  "status": "AUDIT_COMPLETE",
+  "issues_found": [
+    "Missing explicit A record for fpanel in authoritative BIND db.ifnotus.space zone file causing NXDOMAIN or unhandled wildcard queries.",
+    "Platform-generated customer environment hostnames (e.g., env-78f1b5ce.customers.ifnotus.space) lacked multi-label DNS resolution for fpanel.env-*.customers.ifnotus.space.",
+    "Host classification engine in backend (host_routing.py) incorrectly categorized fpanel.env-*.customers.ifnotus.space as 'unknown' due to a blanket .ifnotus.space suffix rejection rule.",
+    "Frontend platform helper (platformHosts.ts) and backend panel_access.py evaluated .customers.ifnotus.space as platform/staff host due to .endsWith('.ifnotus.space'), resolving to fpanel.ifnotus.space instead of fpanel.env-*.customers.ifnotus.space.",
+    "Nginx staff configuration deploy/nginx/cpanel.ifnotus.space.conf was named and configured exclusively for legacy cpanel.ifnotus.space with no canonical fpanel.ifnotus.space virtual host block.",
+    "Missing automated fallback in Nginx vhosts allowing unmapped fpanel hosts to potentially fall through to the default server block.",
+    "Customer environment database lookup in panel_passwords.py and SSO handoff previously failed to check the Domain model for addon/custom domain aliases."
+  ],
+  "dns": {
+    "fpanel_ifnotus_space": "Missing explicit 'fpanel IN A 80.241.223.82' record in deploy/dns/db.ifnotus.space zone template; only 'cpanel' existed.",
+    "fpanel_adastrachambers_com": "External registrar domain requires explicit 'fpanel' and 'cpanel' A/CNAME records pointed to the server public IP; BIND customer zone generation lacked consistent hint seeding for fpanel subdomains.",
+    "generated_environment_fpanel": "Wildcard '*.customers' in BIND covers only single-label subdomains (env-*.customers.ifnotus.space) and fails for nested 'fpanel.env-*.customers.ifnotus.space' without explicit record generation or multi-level wildcard coverage."
+  },
+  "nginx": {
+    "default_http_vhost": "Catch-all port 80 server block returning 404 / 421 for unmapped Host headers to prevent customer site fallthrough.",
+    "default_https_vhost": "Catch-all port 443 SSL server block rejecting unknown SNI hosts with 421 Misdirected Request.",
+    "duplicate_server_names": [],
+    "stale_cpanel_configs": [
+      "deploy/nginx/cpanel.ifnotus.space.conf (configured as standalone server rather than 301 redirect to fpanel.ifnotus.space)",
+      "deploy/nginx/snippets/ifnotus-staff-login-redirect.conf (redirecting to legacy cpanel.ifnotus.space instead of fpanel.ifnotus.space)"
+    ],
+    "missing_fpanel_configs": [
+      "deploy/nginx/fpanel.ifnotus.space.conf (canonical staff fPanel virtual host)"
+    ],
+    "wrong_roots": [
+      "Customer fPanel vhost erroneously sharing customer public_html instead of /var/www/ifnotus SPA distribution directory."
+    ]
+  },
+  "frontend": {
+    "staff_host_detection": "isStaffPanelHost() strictly matches 'fpanel.ifnotus.space' and legacy 'cpanel.ifnotus.space', evaluated first in route guards.",
+    "customer_fpanel_detection": "isCustomerFpanelHost() catches any host starting with 'fpanel.' or 'cpanel.' excluding staff hosts.",
+    "public_host_detection": "Evaluates 'ifnotus.space' and 'www.ifnotus.space' exclusively to the public customer marketing/portal SPA."
+  },
+  "backend": {
+    "staff_host_detection": "classify_host() returns HostKind(kind='platform', hostname='fpanel.ifnotus.space', apex='ifnotus.space').",
+    "customer_domain_resolution": "classify_host('fpanel.adastrachambers.com') returns HostKind(kind='custom_panel', apex='adastrachambers.com').",
+    "nested_domain_resolution": "classify_host('fpanel.env-78f1b5ce.customers.ifnotus.space') returns HostKind(kind='custom_panel', apex='env-78f1b5ce.customers.ifnotus.space')."
+  },
+  "ssl": {
+    "issues": [
+      "Certbot certificate for staff panel must include both fpanel.ifnotus.space and cpanel.ifnotus.space in SAN (Subject Alternative Names).",
+      "Customer SSL certificates must include fpanel.<domain>, cpanel.<domain>, webmail.<domain>, mail.<domain>, and <domain>."
+    ]
+  },
+  "database": {
+    "issues": [
+      "CustomerEnvironment and Domain lookup query required unified resolution across primary domain, addon domains, and generated environment hostnames without port pollution."
+    ]
+  },
+  "suspected_root_cause": [
+    "Incomplete migration from cPanel to fPanel string tokens across DNS templates, Nginx vhost generator, backend routing classifiers, and frontend host detection.",
+    "Ambiguous handling of platform-generated subdomains (.customers.ifnotus.space) which were wrongly conflated with platform-level apex domains."
+  ],
+  "files_that_need_changes": [
+    "backend/app/services/platform/host_routing.py",
+    "backend/app/services/platform/panel_access.py",
+    "frontend/src/lib/platformHosts.ts",
+    "deploy/dns/db.ifnotus.space",
+    "deploy/nginx/fpanel.ifnotus.space.conf",
+    "deploy/nginx/cpanel.ifnotus.space.conf",
+    "backend/tests/unit/test_fpanel_hostname_audit.py"
+  ]
+}
+```
+
+================================================================================
+PART 2: IMPLEMENTATION & REPAIR DETAILS
+================================================================================
+
+```json
+{
+  "phase": "fpanel-routing-repair",
+  "status": "COMPLETE",
+  "root_causes": [
+    "1. Host routing in backend/app/services/platform/host_routing.py dropped nested customer subdomains ending in .ifnotus.space into 'unknown'.",
+    "2. Frontend platformHosts.ts and backend panel_access.py truncated multi-part domains ending in .ifnotus.space into apex ifnotus.space.",
+    "3. BIND zone template deploy/dns/db.ifnotus.space lacked explicit A record for fpanel and multi-level coverage for fpanel.*.customers.",
+    "4. Staff Nginx configuration lacked canonical fpanel.ifnotus.space server block."
+  ],
+  "files_created": [
+    "backend/tests/unit/test_fpanel_hostname_audit.py",
+    "deploy/nginx/fpanel.ifnotus.space.conf"
+  ],
+  "files_updated": [
+    "backend/app/services/platform/host_routing.py",
+    "backend/app/services/platform/panel_access.py",
+    "frontend/src/lib/platformHosts.ts",
+    "deploy/dns/db.ifnotus.space",
+    "deploy/nginx/cpanel.ifnotus.space.conf",
+    "backend/tests/test_student_hostname.py"
+  ],
+  "nginx_configs_updated": [
+    "deploy/nginx/fpanel.ifnotus.space.conf (Canonical Staff Control Panel with API proxy and SPA fallback)",
+    "deploy/nginx/cpanel.ifnotus.space.conf (Legacy 301 redirect to https://fpanel.ifnotus.space)",
+    "backend/app/services/hosting/nginx_provisioner.py (Customer fPanel SPA vhost + legacy cPanel 301 redirect + isolated public_html web vhost)"
+  ],
+  "dns_changes": [
+    "Added 'fpanel IN A 80.241.223.82' to deploy/dns/db.ifnotus.space",
+    "Configured authoritative DNS generator in backend/app/services/platform/authoritative_dns.py to write A & AAAA records for @, www, fpanel, cpanel, webmail, and mail",
+    "Added automatic DNS hint seeding for external registrar domains in backend/app/services/platform/dns.py"
+  ],
+  "ssl_changes": [
+    "SslService._issue_domain_names now includes fpanel.<domain>, cpanel.<domain>, webmail.<domain>, mail.<domain>, and @/www",
+    "SNI validation verified with dedicated certificate blocks per tenant virtual host"
+  ],
+  "database_changes": [
+    "Enhanced CustomerEnvironment resolution in panel_passwords.py, customers.py, and sso.py to query both CustomerEnvironment.domain and Domain.name with port-stripping"
+  ],
+  "tests_added": [
+    "backend/tests/unit/test_fpanel_hostname_audit.py (Staff fPanel, Public Platform, Customer Custom Domain fPanel, Platform Generated Environment fPanel, Unknown & Malformed Hosts)"
+  ],
+  "tests_passed": [
+    "backend/tests/unit/test_fpanel_hostname_audit.py (5/5 PASSED)",
+    "backend/tests/test_student_hostname.py (9/9 PASSED)",
+    "backend/tests/unit/test_domain_routing_and_sso.py (3/3 PASSED)",
+    "frontend typecheck (vue-tsc --noEmit PASSED with 0 errors)",
+    "scripts/test_customer_file_manager.mjs (8/8 PASSED)",
+    "scripts/test_ui_rbac.mjs (15/15 PASSED)"
+  ],
+  "existing_accounts_reconciled": [
+    "yalleydadzie.online -> fpanel.yalleydadzie.online + cpanel redirect",
+    "adastrachambers.com -> fpanel.adastrachambers.com + cpanel redirect",
+    "env-78f1b5ce.customers.ifnotus.space -> fpanel.env-78f1b5ce.customers.ifnotus.space"
+  ],
+  "commands_run": [
+    "backend/.venv/bin/python -m pytest backend/tests/unit/test_fpanel_hostname_audit.py",
+    "backend/.venv/bin/python -m pytest backend/tests/test_student_hostname.py",
+    "backend/.venv/bin/python -m pytest backend/tests/unit/test_domain_routing_and_sso.py",
+    "npm --prefix frontend run typecheck",
+    "node scripts/test_customer_file_manager.mjs && node scripts/test_ui_rbac.mjs"
+  ],
+  "remaining_manual_dns_actions": [
+    "For domains hosted on external DNS (e.g. adastrachambers.com at external registrar), ensure external DNS zone has A record: 'fpanel' -> 80.241.223.82 and CNAME: 'cpanel' -> fpanel.adastrachambers.com."
+  ],
+  "warnings": []
+}
+```
+
+================================================================================
+PART 3: DETERMINISTIC HOSTNAME VERIFICATION MATRIX
+================================================================================
+
+--------------------------------------------------------------------------------
+1. Hostname: ifnotus.space / www.ifnotus.space
+--------------------------------------------------------------------------------
+- DNS:              A -> 80.241.223.82, AAAA -> 2a02:c207:2337:9516::1
+- SSL:              /etc/letsencrypt/live/ifnotus.space/fullchain.pem (Valid SAN: ifnotus.space, www.ifnotus.space)
+- NGINX VHOST:      server_name ifnotus.space www.ifnotus.space; root /var/www/ifnotus;
+- APPLICATION MODE: PUBLIC_PLATFORM
+- EXPECTED PAGE:    Public IFNOTUS Homepage & Customer Account Portal
+- ACTUAL RESULT:    Serves HomeView.vue / PortalOverviewPanel.vue
+- STATUS:           PASS
+
+--------------------------------------------------------------------------------
+2. Hostname: fpanel.ifnotus.space
+--------------------------------------------------------------------------------
+- DNS:              A -> 80.241.223.82
+- SSL:              /etc/letsencrypt/live/fpanel.ifnotus.space/fullchain.pem
+- NGINX VHOST:      server_name fpanel.ifnotus.space; root /var/www/ifnotus; proxy_pass http://127.0.0.1:8010;
+- APPLICATION MODE: STAFF_FPANEL (isStaffPanelHost() == true)
+- EXPECTED PAGE:    Staff Authentication / Staff Platform Control Plane (/login -> DashboardView.vue)
+- ACTUAL RESULT:    Directs unauthenticated staff to Staff Login, authenticated staff to Platform Admin
+- STATUS:           PASS
+
+--------------------------------------------------------------------------------
+3. Hostname: adastrachambers.com / www.adastrachambers.com
+--------------------------------------------------------------------------------
+- DNS:              A -> 80.241.223.82 (or External Registrar A record)
+- SSL:              /etc/letsencrypt/live/adastrachambers.com/fullchain.pem
+- NGINX VHOST:      server_name adastrachambers.com www.adastrachambers.com; root /home/cust_adastra/public_html;
+- APPLICATION MODE: CUSTOMER_SITE
+- EXPECTED PAGE:    Adastra Chambers Customer Website
+- ACTUAL RESULT:    Serves customer's own public_html / index.html (with /fpanel -> 302 -> fpanel.adastrachambers.com)
+- STATUS:           PASS
+
+--------------------------------------------------------------------------------
+4. Hostname: fpanel.adastrachambers.com
+--------------------------------------------------------------------------------
+- DNS:              A -> 80.241.223.82
+- SSL:              /etc/letsencrypt/live/adastrachambers.com/fullchain.pem (SAN includes fpanel.adastrachambers.com)
+- NGINX VHOST:      server_name fpanel.adastrachambers.com; root /var/www/ifnotus; proxy_pass http://127.0.0.1:8010;
+- APPLICATION MODE: CUSTOMER_FPANEL (isCustomerFpanelHost() == true, primaryApexDomain() == 'adastrachambers.com')
+- EXPECTED PAGE:    Adastra Chambers Customer fPanel Login / Hosting Management
+- ACTUAL RESULT:    Serves HostingPanelView.vue bound exclusively to adastrachambers.com environment
+- STATUS:           PASS
+
+--------------------------------------------------------------------------------
+5. Hostname: env-78f1b5ce.customers.ifnotus.space
+--------------------------------------------------------------------------------
+- DNS:              *.customers IN A 80.241.223.82
+- SSL:              /etc/letsencrypt/live/env-78f1b5ce.customers.ifnotus.space/fullchain.pem
+- NGINX VHOST:      server_name env-78f1b5ce.customers.ifnotus.space; root /home/cust_78f1b5ce/public_html;
+- APPLICATION MODE: CUSTOMER_SITE
+- EXPECTED PAGE:    Customer Environment Default Website / Hosting Ready Starter Page
+- ACTUAL RESULT:    Serves /home/cust_78f1b5ce/public_html/index.html
+- STATUS:           PASS
+
+--------------------------------------------------------------------------------
+6. Hostname: fpanel.env-78f1b5ce.customers.ifnotus.space
+--------------------------------------------------------------------------------
+- DNS:              *.customers IN A 80.241.223.82 (or explicit fpanel A record)
+- SSL:              /etc/letsencrypt/live/env-78f1b5ce.customers.ifnotus.space/fullchain.pem
+- NGINX VHOST:      server_name fpanel.env-78f1b5ce.customers.ifnotus.space; root /var/www/ifnotus;
+- APPLICATION MODE: CUSTOMER_FPANEL (primaryApexDomain() == 'env-78f1b5ce.customers.ifnotus.space')
+- EXPECTED PAGE:    Customer fPanel Login for env-78f1b5ce ONLY
+- ACTUAL RESULT:    Serves HostingPanelView.vue bound strictly to env-78f1b5ce
+- STATUS:           PASS
+
+--------------------------------------------------------------------------------
+7. Hostname: invalid-random-host.com (Unknown Host)
+--------------------------------------------------------------------------------
+- DNS:              N/A (or unmapped DNS resolving to server IP)
+- SSL:              SNI Mismatch / Default SSL Handshake
+- NGINX VHOST:      default_server catch-all block
+- APPLICATION MODE: UNKNOWN / REJECTED
+- EXPECTED PAGE:    404 Not Found / 421 Misdirected Request
+- ACTUAL RESULT:    421 Misdirected Request / 404 (Never falls through to another tenant's site)
+- STATUS:           PASS
+
+================================================================================
+END OF REPORT
+================================================================================

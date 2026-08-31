@@ -51,15 +51,6 @@ function copyToClip(key: string, text: string) {
   }, 2500)
 }
 
-function openSiteTab(tab: string) {
-  if (!env.value?.domain) {
-    emit('openPanel', 'site')
-    return
-  }
-  openHostingFromAccount(env.value.domain, tab, env.value.id)
-}
-
-
 const env = computed(() => props.activeEnv)
 const plan = computed(() => props.activePlan)
 const usage = computed(() => props.usageSnapshot || null)
@@ -179,7 +170,7 @@ const isComplimentaryPlan = computed(() => {
           ({{ pendingOrder.currency }} {{ pendingOrder.total_price }}). Once payment is approved, your site tools unlock automatically.
         </template>
         <template v-else>
-          Get started with high-performance web hosting, isolated cPanel management, SSL and custom email accounts.
+          Get started with high-performance web hosting, isolated fPanel management, SSL and custom email accounts.
         </template>
       </p>
       <button type="button" class="btn-primary" @click="emit('openPanel', 'billing')">
@@ -259,70 +250,90 @@ const isComplimentaryPlan = computed(() => {
             <!-- Telemetry & Resource Gauges -->
             <div class="gauges-container">
               <!-- CPU Meter -->
-              <div v-if="cpuPct != null" class="gauge-item">
-                <div class="gauge-head">
+              <div v-if="cpuPct != null" class="gauge-card">
+                <div class="gauge-card-head">
                   <div class="gauge-label-wrap">
+                    <i class="fas fa-microchip gauge-icon tone-blue" />
                     <span class="gauge-name">CPU</span>
-                    <span class="gauge-status-tag" :class="resourceStatusClass(rs?.cpu)">{{ resourceStatusLabel(rs?.cpu) }}</span>
                   </div>
-                  <span class="gauge-value">
-                    {{ usage?.cpu_usage_vcpu != null ? Number(usage.cpu_usage_vcpu).toFixed(2) : '0.00' }} / {{ formatCpu(env.cpu_limit) }} vCPU
-                    <strong>{{ Math.round(cpuPct) }}%</strong>
-                  </span>
+                  <span class="gauge-status-tag" :class="resourceStatusClass(rs?.cpu)">{{ resourceStatusLabel(rs?.cpu) }}</span>
                 </div>
-                <div class="gauge-track">
-                  <div class="gauge-fill" :class="barClassForTier(resourceTier(cpuPct))" :style="{ width: `${Math.max(4, cpuPct)}%` }"></div>
+                <div class="gauge-card-body">
+                  <div class="gauge-value-row">
+                    <span class="gauge-detail" :title="`${usage?.cpu_usage_vcpu != null ? Number(usage.cpu_usage_vcpu).toFixed(2) : '0.00'} / ${formatCpu(env.cpu_limit)} vCPU`">
+                      {{ usage?.cpu_usage_vcpu != null ? Number(usage.cpu_usage_vcpu).toFixed(2) : '0.00' }} / {{ formatCpu(env.cpu_limit) }} vCPU
+                    </span>
+                    <strong class="gauge-pct">{{ Math.round(cpuPct) }}%</strong>
+                  </div>
+                  <div class="gauge-track">
+                    <div class="gauge-fill" :class="barClassForTier(resourceTier(cpuPct))" :style="{ width: `${Math.max(4, Math.min(100, cpuPct))}%` }"></div>
+                  </div>
                 </div>
               </div>
 
               <!-- Memory Meter -->
-              <div v-if="memPct != null" class="gauge-item">
-                <div class="gauge-head">
+              <div v-if="memPct != null" class="gauge-card">
+                <div class="gauge-card-head">
                   <div class="gauge-label-wrap">
+                    <i class="fas fa-memory gauge-icon tone-green" />
                     <span class="gauge-name">Memory</span>
-                    <span class="gauge-status-tag" :class="resourceStatusClass(rs?.memory)">{{ resourceStatusLabel(rs?.memory) }}</span>
                   </div>
-                  <span class="gauge-value">
-                    {{ Math.round(usage?.memory_usage_mb || 0) }} / {{ Math.round(usage?.memory_limit_mb || Number(env.ram_limit_gb || 0) * 1024) }} MB
-                    <strong>{{ Math.round(memPct) }}%</strong>
-                  </span>
+                  <span class="gauge-status-tag" :class="resourceStatusClass(rs?.memory)">{{ resourceStatusLabel(rs?.memory) }}</span>
                 </div>
-                <div class="gauge-track">
-                  <div class="gauge-fill" :class="barClassForTier(resourceTier(memPct))" :style="{ width: `${Math.max(4, memPct)}%` }"></div>
+                <div class="gauge-card-body">
+                  <div class="gauge-value-row">
+                    <span class="gauge-detail" :title="`${Math.round(usage?.memory_usage_mb || 0)} / ${Math.round(usage?.memory_limit_mb || Number(env.ram_limit_gb || 0) * 1024)} MB`">
+                      {{ Math.round(usage?.memory_usage_mb || 0) }} / {{ Math.round(usage?.memory_limit_mb || Number(env.ram_limit_gb || 0) * 1024) }} MB
+                    </span>
+                    <strong class="gauge-pct">{{ Math.round(memPct) }}%</strong>
+                  </div>
+                  <div class="gauge-track">
+                    <div class="gauge-fill" :class="barClassForTier(resourceTier(memPct))" :style="{ width: `${Math.max(4, Math.min(100, memPct))}%` }"></div>
+                  </div>
                 </div>
               </div>
 
               <!-- Disk Meter -->
-              <div class="gauge-item">
-                <div class="gauge-head">
+              <div class="gauge-card">
+                <div class="gauge-card-head">
                   <div class="gauge-label-wrap">
+                    <i class="fas fa-hdd gauge-icon tone-purple" />
                     <span class="gauge-name">Disk Storage</span>
-                    <span class="gauge-status-tag" :class="resourceStatusClass(rs?.disk)">{{ resourceStatusLabel(rs?.disk) }}</span>
                   </div>
-                  <span class="gauge-value">
-                    {{ usage?.storage_used_gb != null ? usage.storage_used_gb : '0.001' }} / {{ spec.disk }} GB
-                    <strong>{{ Math.round(diskPct) }}%</strong>
-                  </span>
+                  <span class="gauge-status-tag" :class="resourceStatusClass(rs?.disk)">{{ resourceStatusLabel(rs?.disk) }}</span>
                 </div>
-                <div class="gauge-track">
-                  <div class="gauge-fill" :class="usageStatus || barClassForTier(resourceTier(diskPct))" :style="{ width: `${Math.max(4, diskPct)}%` }"></div>
+                <div class="gauge-card-body">
+                  <div class="gauge-value-row">
+                    <span class="gauge-detail" :title="`${usage?.storage_used_gb != null ? usage.storage_used_gb : '0.001'} / ${spec.disk} GB`">
+                      {{ usage?.storage_used_gb != null ? usage.storage_used_gb : '0.001' }} / {{ spec.disk }} GB
+                    </span>
+                    <strong class="gauge-pct">{{ Math.round(diskPct) }}%</strong>
+                  </div>
+                  <div class="gauge-track">
+                    <div class="gauge-fill" :class="usageStatus || barClassForTier(resourceTier(diskPct))" :style="{ width: `${Math.max(4, Math.min(100, diskPct))}%` }"></div>
+                  </div>
                 </div>
               </div>
 
               <!-- Processes Meter -->
-              <div v-if="procsPct != null" class="gauge-item">
-                <div class="gauge-head">
+              <div v-if="procsPct != null" class="gauge-card">
+                <div class="gauge-card-head">
                   <div class="gauge-label-wrap">
+                    <i class="fas fa-network-wired gauge-icon tone-orange" />
                     <span class="gauge-name">Processes</span>
-                    <span class="gauge-status-tag" :class="resourceStatusClass(rs?.processes)">{{ resourceStatusLabel(rs?.processes) }}</span>
                   </div>
-                  <span class="gauge-value">
-                    {{ usage?.process_count ?? 2 }} / {{ usage?.process_limit ?? 40 }}
-                    <strong>{{ Math.round(procsPct) }}%</strong>
-                  </span>
+                  <span class="gauge-status-tag" :class="resourceStatusClass(rs?.processes)">{{ resourceStatusLabel(rs?.processes) }}</span>
                 </div>
-                <div class="gauge-track">
-                  <div class="gauge-fill" :class="barClassForTier(resourceTier(procsPct))" :style="{ width: `${Math.max(4, procsPct)}%` }"></div>
+                <div class="gauge-card-body">
+                  <div class="gauge-value-row">
+                    <span class="gauge-detail" :title="`${usage?.process_count ?? 2} / ${usage?.process_limit ?? 40}`">
+                      {{ usage?.process_count ?? 2 }} / {{ usage?.process_limit ?? 40 }}
+                    </span>
+                    <strong class="gauge-pct">{{ Math.round(procsPct) }}%</strong>
+                  </div>
+                  <div class="gauge-track">
+                    <div class="gauge-fill" :class="barClassForTier(resourceTier(procsPct))" :style="{ width: `${Math.max(4, Math.min(100, procsPct))}%` }"></div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -688,75 +699,146 @@ const isComplimentaryPlan = computed(() => {
   background: currentColor;
 }
 
-/* Gauges */
+/* Gauges — 4 in a row, responsive clean cards */
 .gauges-container {
-  display: flex;
-  flex-direction: column;
-  gap: 0.95rem;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.85rem;
+  width: 100%;
 }
 
-.gauge-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
+@media (max-width: 992px) {
+  .gauges-container {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
-.gauge-head {
+@media (max-width: 520px) {
+  .gauges-container {
+    grid-template-columns: 1fr;
+  }
+}
+
+.gauge-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: var(--p-card-bg, #ffffff);
+  border: 1px solid var(--p-border, #e2e8f0);
+  border-radius: 0.75rem;
+  padding: 0.85rem 1rem;
+  gap: 0.65rem;
+  min-width: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.gauge-card:hover {
+  border-color: color-mix(in srgb, var(--p-accent, #1e3a5f) 30%, var(--p-border, #cbd5e1));
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.04);
+}
+
+.gauge-card-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 0.75rem;
-  font-size: 0.82rem;
+  gap: 0.5rem;
+  min-width: 0;
 }
 
 .gauge-label-wrap {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.45rem;
+  min-width: 0;
 }
 
+.gauge-icon {
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+
+.gauge-icon.tone-blue { color: #2563eb; }
+.gauge-icon.tone-green { color: #16a34a; }
+.gauge-icon.tone-purple { color: #9333ea; }
+.gauge-icon.tone-orange { color: #ea580c; }
+
 .gauge-name {
+  font-size: 0.82rem;
   font-weight: 700;
-  color: var(--p-ink, #1e293b);
+  color: var(--p-ink, #0f172a);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .gauge-status-tag {
-  font-size: 0.68rem;
+  font-size: 0.62rem;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  padding: 0.12rem 0.45rem;
+  padding: 0.1rem 0.4rem;
   border-radius: 0.35rem;
+  flex-shrink: 0;
 }
 
-.gauge-status-tag.enforced {
+.gauge-status-tag.enforced, .gauge-status-tag.rs-enforced {
   background: #f0fdf4;
   color: #15803d;
   border: 1px solid #bbf7d0;
 }
 
-.gauge-status-tag.reported {
+.gauge-status-tag.reported, .gauge-status-tag.rs-reported {
   background: #eff6ff;
   color: #1d4ed8;
   border: 1px solid #bfdbfe;
 }
 
-.gauge-value {
-  color: var(--p-muted, #64748b);
-  font-variant-numeric: tabular-nums;
+.gauge-status-tag.monitored, .gauge-status-tag.rs-monitored {
+  background: #f8fafc;
+  color: #475569;
+  border: 1px solid #e2e8f0;
 }
 
-.gauge-value strong {
+.gauge-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.gauge-value-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.gauge-detail {
+  font-size: 0.76rem;
+  color: var(--p-muted, #64748b);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.gauge-pct {
+  font-size: 0.85rem;
+  font-weight: 800;
   color: var(--p-ink, #0f172a);
-  margin-left: 0.25rem;
+  flex-shrink: 0;
 }
 
 .gauge-track {
-  height: 0.55rem;
+  height: 0.45rem;
   border-radius: 999px;
   background: var(--p-border, #f1f5f9);
   overflow: hidden;
   position: relative;
+  width: 100%;
 }
 
 .gauge-fill {

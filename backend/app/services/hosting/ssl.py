@@ -478,6 +478,8 @@ class SslService:
             resolve_legacy_student_zone(),
         }
         if SslService.is_ifnotus_hostname(entity.name) and entity.name not in apexes:
+            if entity.name.endswith(".customers.ifnotus.space"):
+                return [entity.name, f"fpanel.{entity.name}"]
             return [entity.name]
         names: list[str] = []
         if parent is not None:
@@ -502,15 +504,19 @@ class SslService:
             if (
                 not is_platform_hostname(base)
                 and not base.startswith("www.")
+                and not base.startswith("fpanel.")
                 and not base.startswith("cpanel.")
                 and not base.startswith("webmail.")
                 and not base.startswith("mail.")
             ):
                 if f"www.{base}" not in names:
                     names.append(f"www.{base}")
-                cpanel = control_panel_hostname(base)
-                if cpanel and cpanel not in names:
-                    names.append(cpanel)
+                fpanel = control_panel_hostname(base)
+                if fpanel and fpanel not in names:
+                    names.append(fpanel)
+                legacy_cpanel = f"cpanel.{base}"
+                if legacy_cpanel not in names:
+                    names.append(legacy_cpanel)
                 webmail = webmail_hostname(base)
                 if webmail and webmail not in names:
                     names.append(webmail)

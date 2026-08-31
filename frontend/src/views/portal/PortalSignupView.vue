@@ -86,14 +86,14 @@ async function loadPanelStatus() {
   try {
     const { data } = await customersApi.panelStatus({
       ...(userHint ? { username: userHint } : {}),
-      ...(host ? { host: host.replace(/^cpanel\./, '') } : {}),
+      ...(host ? { host: host.replace(/^(fpanel|cpanel)\./, '') } : {}),
     })
     panelUsername.value = data.username
     panelNeedsCreate.value = !data.password_set
-    panelDomainHint.value = data.domain || host.replace(/^cpanel\./, '') || ''
+    panelDomainHint.value = data.domain || host.replace(/^(fpanel|cpanel)\./, '') || ''
   } catch {
     /* user can still type username */
-    if (host) panelDomainHint.value = host.replace(/^cpanel\./, '')
+    if (host) panelDomainHint.value = host.replace(/^(fpanel|cpanel)\./, '')
   } finally {
     panelStatusLoaded.value = true
   }
@@ -149,7 +149,7 @@ async function finishAuth(profile: {
     if (host) {
       await router.replace({
         name: 'go-hosting',
-        query: { host: host.replace(/^cpanel\./, '') },
+        query: { host: host.replace(/^(fpanel|cpanel)\./, '') },
       })
       return
     }

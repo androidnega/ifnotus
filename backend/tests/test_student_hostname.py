@@ -98,6 +98,7 @@ def test_new_assignments_never_use_serverlabsttu(test_settings) -> None:
 
 
 def test_host_routing_kinds() -> None:
+    assert classify_host("fpanel.ifnotus.space").kind == "platform"
     assert classify_host("cpanel.ifnotus.space").kind == "platform"
     assert classify_host("mail.ifnotus.space").kind == "platform"
     assert classify_host("manuel.ifnotus.space").kind == "student"
@@ -144,8 +145,8 @@ def test_nginx_custom_vhost_path_cpanel_and_mail(test_settings, tmp_path) -> Non
         redirect_url=None,
     )
     assert "location = /cpanel" in cfg
-    assert "go/hosting?host=$host" in cfg
-    assert "cpanel.studio.online" not in cfg
+    assert "location = /fpanel" in cfg
+    assert "fpanel.studio.online" in cfg
     assert "mail.studio.online" in cfg
+    assert "webmail.studio.online" in cfg
     assert "server_name studio.online www.studio.online" in cfg
-    assert "mail.ifnotus.space" in cfg

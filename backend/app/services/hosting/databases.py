@@ -64,10 +64,12 @@ def mysql_user_grant_sql(
     db = database.replace("`", "``")
     sql = [
         f"CREATE USER IF NOT EXISTS '{u}'@'localhost' IDENTIFIED BY '{p}';",
+        f"ALTER USER '{u}'@'localhost' IDENTIFIED BY '{p}';",
         f"GRANT ALL PRIVILEGES ON `{db}`.* TO '{u}'@'localhost';",
     ]
     if allow_remote:
         sql.append(f"CREATE USER IF NOT EXISTS '{u}'@'%' IDENTIFIED BY '{p}';")
+        sql.append(f"ALTER USER '{u}'@'%' IDENTIFIED BY '{p}';")
         sql.append(f"GRANT ALL PRIVILEGES ON `{db}`.* TO '{u}'@'%';")
     sql.append("FLUSH PRIVILEGES;")
     return sql

@@ -33,6 +33,7 @@ _HOSTING_NAME_RESERVED = frozenset(
         "host",
         "hosting",
         "mail",
+        "fpanel",
         "cpanel",
         "panel",
         "api",
@@ -74,7 +75,9 @@ def domain_label(domain: str | None) -> str:
         return ""
     if host.startswith("www."):
         host = host[4:]
-    if host.startswith("cpanel."):
+    if host.startswith("fpanel."):
+        host = host[len("fpanel.") :]
+    elif host.startswith("cpanel."):
         host = host[len("cpanel.") :]
     if host.startswith("mail."):
         host = host[len("mail.") :]

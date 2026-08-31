@@ -24,6 +24,7 @@ def test_resource_classification() -> None:
     """Test classification of platform, product, tenant, and infrastructure resources."""
     # Platform
     assert classify_resource("ifnotus-api", "/srv/apps/ifnotus/backend") == ResourceClass.PLATFORM
+    assert classify_resource("fpanel.ifnotus.space", None, ["fpanel.ifnotus.space"]) == ResourceClass.PLATFORM
     assert classify_resource("cpanel.ifnotus.space", None, ["cpanel.ifnotus.space"]) == ResourceClass.PLATFORM
 
     # Sibling Products (NOT tenant hosting)

@@ -88,7 +88,7 @@ export const UI_ROUTES: UiRouteEntry[] = [
   { path: '/contact', name: 'contact', shell: 'public', view: 'ContactView.vue', panel: 'public' },
   { path: '/status', name: 'status', shell: 'public', view: 'PublicStatusView.vue', panel: 'public' },
   { path: '/legal/:slug', name: 'legal', shell: 'public', view: 'LegalView.vue', panel: 'public' },
-  { path: '/login', name: 'login', shell: 'public', view: 'portal/PortalSignupView.vue (or LoginView on cpanel.ifnotus.space)', panel: 'public' },
+  { path: '/login', name: 'login', shell: 'public', view: 'portal/PortalSignupView.vue (or LoginView on fpanel.ifnotus.space)', panel: 'public' },
   { path: '/signup', name: 'portal-signup', shell: 'public', view: 'portal/PortalSignupView.vue', panel: 'public' },
   { path: '/admin_1', name: 'admin-1-legacy', shell: 'auth', view: 'redirect→/login', panel: 'public' },
   { path: '/staff-login', name: 'staff-login-legacy', shell: 'auth', view: 'redirect→/login', panel: 'public' },

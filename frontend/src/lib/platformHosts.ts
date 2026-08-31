@@ -1,8 +1,9 @@
-/** Platform hostname helpers for staff cpanel host vs customer portal. */
+/** Platform hostname helpers for staff fpanel host vs customer portal. */
 
 import { customersApi } from '@/api'
 
-export const STAFF_PANEL_HOST = 'cpanel.ifnotus.space'
+export const STAFF_PANEL_HOST = 'fpanel.ifnotus.space'
+export const LEGACY_STAFF_PANEL_HOST = 'cpanel.ifnotus.space'
 export const STAFF_PANEL_ORIGIN = `https://${STAFF_PANEL_HOST}`
 
 export function hostnameNow(): string {
@@ -11,13 +12,16 @@ export function hostnameNow(): string {
 }
 
 export function isStaffPanelHost(host = hostnameNow()): boolean {
-  return host === STAFF_PANEL_HOST
+  return host === STAFF_PANEL_HOST || host === LEGACY_STAFF_PANEL_HOST
 }
 
-/** Customer cPanel host: cpanel.<domain> (e.g. cpanel.yalleydadzie.online). */
-export function isCustomerCpanelHost(host = hostnameNow()): boolean {
-  return host.startsWith('cpanel.') && host !== STAFF_PANEL_HOST
+/** Customer fPanel host: fpanel.<domain> (e.g. fpanel.yalleydadzie.online). */
+export function isCustomerFpanelHost(host = hostnameNow()): boolean {
+  if (isStaffPanelHost(host)) return false
+  return host.startsWith('fpanel.') || host.startsWith('cpanel.')
 }
+
+export const isCustomerCpanelHost = isCustomerFpanelHost
 
 export function staffPanelHref(path = '/'): string {
   const p = path.startsWith('/') ? path : `/${path}`
@@ -30,6 +34,7 @@ function normalizedApex(host: string): string {
 
 export function isPlatformOrStudentHost(host: string): boolean {
   const h = normalizedApex(host)
+  if (h.endsWith('.customers.ifnotus.space')) return false
   return (
     h === 'ifnotus.space' ||
     h.endsWith('.ifnotus.space') ||
@@ -46,10 +51,12 @@ export function customApex(host: string): string | null {
 
 export function primaryApexDomain(host: string): string {
   let h = normalizedApex(host)
+  if (h.startsWith('fpanel.')) h = h.slice('fpanel.'.length)
   if (h.startsWith('cpanel.')) h = h.slice('cpanel.'.length)
   if (h.startsWith('webmail.')) h = h.slice('webmail.'.length)
   if (h.startsWith('mail.')) h = h.slice('mail.'.length)
   if (h.startsWith('www.')) h = h.slice(4)
+  if (h.endsWith('.customers.ifnotus.space')) return h
   if (isPlatformOrStudentHost(h)) return h
 
   const parts = h.split('.')
@@ -65,25 +72,27 @@ export function primaryApexDomain(host: string): string {
   return h
 }
 
-/** Tenant panel canonical entry — https://cpanel.<domain>/{tab}. */
-export function tenantCpanelUrl(domain: string, tab?: string | null): string | null {
+/** Tenant panel canonical entry — https://fpanel.<domain>/{tab}. */
+export function tenantFpanelUrl(domain: string, tab?: string | null): string | null {
   let host = normalizedApex(domain)
   if (!host) return null
-  if (host === 'ifnotus.space' || host === STAFF_PANEL_HOST || host === 'mail.ifnotus.space') {
+  if (host === 'ifnotus.space' || host === STAFF_PANEL_HOST || host === LEGACY_STAFF_PANEL_HOST || host === 'mail.ifnotus.space') {
     return null
   }
   const primary = primaryApexDomain(host)
-  const cpanelHost = isPlatformOrStudentHost(primary) ? primary : `cpanel.${primary}`
-  const base = `https://${cpanelHost}`
+  const fpanelHost = isPlatformOrStudentHost(primary) ? primary : `fpanel.${primary}`
+  const base = `https://${fpanelHost}`
   const t = (tab || '').trim().replace(/^\//, '')
   return t && t !== 'overview' ? `${base}/${encodeURIComponent(t)}` : `${base}/`
 }
+
+export const tenantCpanelUrl = tenantFpanelUrl
 
 /** Tenant webmail canonical entry — https://webmail.<domain>. */
 export function tenantMailUrl(domain: string): string | null {
   let host = normalizedApex(domain)
   if (!host) return null
-  if (host === 'ifnotus.space' || host === STAFF_PANEL_HOST) {
+  if (host === 'ifnotus.space' || host === STAFF_PANEL_HOST || host === LEGACY_STAFF_PANEL_HOST) {
     return 'https://mail.ifnotus.space/'
   }
   const primary = primaryApexDomain(host)
@@ -92,7 +101,7 @@ export function tenantMailUrl(domain: string): string | null {
 }
 
 export function customPanelHostname(domain: string): string | null {
-  const url = tenantCpanelUrl(domain)
+  const url = tenantFpanelUrl(domain)
   if (!url) return null
   try {
     const u = new URL(url)
@@ -113,8 +122,8 @@ export function customMailHostname(domain: string): string | null {
   }
 }
 
-/** Open tenant cPanel via secure single-use SSO handoff token (opens in a new tab). */
-export async function openTenantCpanel(
+/** Open tenant fPanel via secure single-use SSO handoff token (opens in a new tab). */
+export async function openTenantFpanel(
   domain: string,
   tab?: string | null,
   environmentId?: string | null,
@@ -140,7 +149,7 @@ export async function openTenantCpanel(
     // Fallback if SSO handoff creation fails
   }
 
-  const fallback = tenantCpanelUrl(domain, tab)
+  const fallback = tenantFpanelUrl(domain, tab)
   if (fallback) {
     if (newTab) {
       const opened = window.open(fallback, '_blank')
@@ -149,3 +158,5 @@ export async function openTenantCpanel(
     window.location.href = fallback
   }
 }
+
+export const openTenantCpanel = openTenantFpanel

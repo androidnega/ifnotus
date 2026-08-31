@@ -743,7 +743,7 @@ export function usePortalSiteTools(
       const err = e as { response?: { data?: { error?: { message?: string } } } }
       const msg = err.response?.data?.error?.message ?? 'Could not load SFTP.'
       sftpInfo.value = msg
-      sftpCreds.value = { host: 'serverlabsttu.space', error: msg }
+      sftpCreds.value = { host: 'ifnotus.space', error: msg }
     }
   }
 
@@ -758,7 +758,7 @@ export function usePortalSiteTools(
       const err = e as { response?: { data?: { error?: { message?: string } } } }
       const msg = err.response?.data?.error?.message ?? 'Could not create SFTP account.'
       sftpInfo.value = msg
-      sftpCreds.value = { ...(sftpCreds.value || { host: 'serverlabsttu.space' }), error: msg }
+      sftpCreds.value = { ...(sftpCreds.value || { host: 'ifnotus.space' }), error: msg }
     }
   }
 

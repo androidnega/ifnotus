@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.api.deps import AccessControlDep, CurrentUser, DbSession, SettingsDep
 from app.core.exceptions import AppException, AuthenticationError, AuthorizationError, NotFoundError
 from app.core.permissions import Permission, Role
-from app.core.security import create_token_pair
+from app.core.security import create_token_pair, hash_password
 from app.models.platform import CustomerEnvironment, EnvironmentDatabase, HostingPlan, PlatformAuditLog, Subscription
 from app.schemas.ai import (
     AiApplyActionRequest,
@@ -805,9 +805,7 @@ async def list_env_files(
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
-    return await FileManagerService(
-        settings, only_roots=roots, storage_limit_gb=env.storage_limit_gb
-    ).list_files(path)
+    return await _tenant_files(settings, env, roots).list_files(path)
 
 
 @router.get(
@@ -825,9 +823,7 @@ async def read_env_file(
     customer = await CustomerService(settings, session).require_for_user(user.id)
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
-    return await FileManagerService(
-        settings, only_roots=roots, storage_limit_gb=env.storage_limit_gb
-    ).read_file(path)
+    return await _tenant_files(settings, env, roots).read_file(path)
 
 
 @router.put(
@@ -4348,6 +4344,25 @@ async def resolve_panel_alias(
                 )
             ).scalar_one_or_none()
     if env is None:
+        from app.models.hosting import Domain
+
+        domain_row = (
+            await session.execute(
+                select(Domain).where(
+                    func.lower(Domain.name) == lookup,
+                )
+            )
+        ).scalar_one_or_none()
+        if domain_row is not None:
+            env = (
+                await session.execute(
+                    select(CustomerEnvironment).where(
+                        CustomerEnvironment.customer_id == customer.id,
+                        CustomerEnvironment.hosting_domain_id == domain_row.id,
+                    )
+                )
+            ).scalar_one_or_none()
+    if env is None:
         # Exists for someone else?
         other = (
             await session.execute(
@@ -4517,9 +4532,27 @@ async def set_hosting_password(
 ) -> HostingPasswordSetResponse:
     """Set or change the hosting panel password for an environment from the customer account."""
     _require_customer_user(user)
-    customer = await CustomerService(settings, session).require_for_user(user.id)
+    customer = await CustomerService(settings, session).get_by_user_id(user.id)
     env = await session.get(CustomerEnvironment, environment_id)
-    if env is None or env.customer_id != customer.id:
+    if env is None:
+        raise NotFoundError("Hosting environment not found.")
+
+    is_staff = bool(
+        user.is_superuser
+        or any(
+            r in (user.roles or [])
+            for r in (
+                "admin",
+                "superadmin",
+                "platform_admin",
+                "platform_owner",
+                "hosting_operator",
+                "operator",
+                "support_agent",
+            )
+        )
+    )
+    if not is_staff and (customer is None or env.customer_id != customer.id):
         raise NotFoundError("Hosting environment not found.")
 
     pwd = (body.password or "").strip()
@@ -4529,7 +4562,7 @@ async def set_hosting_password(
     env.panel_password_hash = hash_password(pwd)
     session.add(
         PlatformAuditLog(
-            customer_id=customer.id,
+            customer_id=env.customer_id,
             actor_id=user.id,
             action="hosting_panel_password_updated",
             target_type="environment",
@@ -4541,7 +4574,7 @@ async def set_hosting_password(
     await session.flush()
     return HostingPasswordSetResponse(
         success=True,
-        message="Hosting cPanel password updated successfully.",
+        message="Hosting fPanel password updated successfully.",
         username=env.hosting_name or "cpanel_user",
     )
 

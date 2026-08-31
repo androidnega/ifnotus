@@ -90,3 +90,128 @@ export function playOrderBell(): void {
     console.warn('[Sound] Could not play notification bell:', err)
   }
 }
+
+let activeRingInterval: number | null = null
+let activeRingTimeout: number | null = null
+let ringGainNode: GainNode | null = null
+
+/**
+ * Stop any ongoing ticket ringing alert.
+ */
+export function stopTicketRing(): void {
+  if (activeRingInterval !== null) {
+    clearInterval(activeRingInterval)
+    activeRingInterval = null
+  }
+  if (activeRingTimeout !== null) {
+    clearTimeout(activeRingTimeout)
+    activeRingTimeout = null
+  }
+  if (ringGainNode) {
+    try {
+      ringGainNode.gain.setValueAtTime(0, ringGainNode.context.currentTime)
+    } catch {
+      /* ignore */
+    }
+    ringGainNode = null
+  }
+}
+
+/**
+ * Plays a continuous phone-style alert chime / beep pattern for ~15 seconds.
+ * Perfect for incoming support ticket messages requiring immediate agent attention.
+ * Can be stopped anytime with `stopTicketRing()`.
+ */
+export function playTicketRing15s(onStop?: () => void): { stop: () => void } {
+  stopTicketRing()
+
+  if (isSoundMuted()) {
+    onStop?.()
+    return { stop: stopTicketRing }
+  }
+
+  const ctx = getAudioContext()
+  if (!ctx) {
+    onStop?.()
+    return { stop: stopTicketRing }
+  }
+
+  function playRingBurst() {
+    if (!ctx) return
+    try {
+      const now = ctx.currentTime
+
+      // Master gain for this burst to allow quick silence
+      const masterGain = ctx.createGain()
+      masterGain.gain.setValueAtTime(0.35, now)
+      masterGain.connect(ctx.destination)
+      ringGainNode = masterGain
+
+      // Pulse 1: 0.0s to 0.4s
+      const osc1a = ctx.createOscillator()
+      const osc1b = ctx.createOscillator()
+      const gain1 = ctx.createGain()
+
+      osc1a.type = 'sine'
+      osc1b.type = 'sine'
+      osc1a.frequency.setValueAtTime(784, now) // G5
+      osc1b.frequency.setValueAtTime(1046.5, now) // C6
+
+      gain1.gain.setValueAtTime(0, now)
+      gain1.gain.linearRampToValueAtTime(0.3, now + 0.04)
+      gain1.gain.setValueAtTime(0.3, now + 0.35)
+      gain1.gain.linearRampToValueAtTime(0, now + 0.42)
+
+      osc1a.connect(gain1)
+      osc1b.connect(gain1)
+      gain1.connect(masterGain)
+
+      osc1a.start(now)
+      osc1b.start(now)
+      osc1a.stop(now + 0.45)
+      osc1b.stop(now + 0.45)
+
+      // Pulse 2: 0.5s to 0.9s
+      const osc2a = ctx.createOscillator()
+      const osc2b = ctx.createOscillator()
+      const gain2 = ctx.createGain()
+
+      osc2a.type = 'sine'
+      osc2b.type = 'sine'
+      osc2a.frequency.setValueAtTime(880, now + 0.5) // A5
+      osc2b.frequency.setValueAtTime(1174.66, now + 0.5) // D6
+
+      gain2.gain.setValueAtTime(0, now + 0.5)
+      gain2.gain.linearRampToValueAtTime(0.35, now + 0.54)
+      gain2.gain.setValueAtTime(0.35, now + 0.85)
+      gain2.gain.linearRampToValueAtTime(0, now + 0.92)
+
+      osc2a.connect(gain2)
+      osc2b.connect(gain2)
+      gain2.connect(masterGain)
+
+      osc2a.start(now + 0.5)
+      osc2b.start(now + 0.5)
+      osc2a.stop(now + 0.95)
+      osc2b.stop(now + 0.95)
+    } catch (err) {
+      console.warn('[Sound] Ticket ring error:', err)
+    }
+  }
+
+  // Play immediately
+  playRingBurst()
+
+  // Repeat every 1.8 seconds
+  activeRingInterval = window.setInterval(() => {
+    playRingBurst()
+  }, 1800)
+
+  // Automatically shut off after 15 seconds (15,000ms)
+  activeRingTimeout = window.setTimeout(() => {
+    stopTicketRing()
+    onStop?.()
+  }, 15000)
+
+  return { stop: stopTicketRing }
+}

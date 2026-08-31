@@ -168,15 +168,6 @@ const activeEnv = computed(() =>
 
 const isHostingOperator = computed(() => getCanonicalRole(auth.user) === 'hosting_operator')
 
-const isAwaitingBilling = computed(() => {
-  if (!selected.value) return false
-  const status = selected.value.customer?.hosting_status || ''
-  const hasUnclearedOrder = selected.value.orders?.some(
-    (o) => o.payment_status === 'submitted' || o.payment_status === 'pending',
-  )
-  return status === 'awaiting_payment' || (Boolean(hasUnclearedOrder) && !selected.value.environments?.length)
-})
-
 const filteredCustomers = computed(() => {
   let list = customers.value
   if (isHostingOperator.value && statusFilter.value === 'all') {

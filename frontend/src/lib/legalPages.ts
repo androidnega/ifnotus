@@ -50,7 +50,7 @@ export const legalPages: Record<
     body: [
       'Connect custom domains either way: delegate nameservers to ns1.ifnotus.space and ns2.ifnotus.space, or keep your registrar DNS and add A records for @ and www pointing to the server IP shown in your panel.',
       'Those two nameservers are two official names for IFNOTUS DNS. They currently run on the same hosting node. Many registrars still require two names; that is expected.',
-      'Your hosting panel is always https://yourdomain/cpanel (not cpanel.yourdomain). Webmail is https://yourdomain/mail. Only IFNOTUS staff uses cpanel.ifnotus.space.',
+      'Your hosting panel is always https://yourdomain/fpanel (or https://fpanel.yourdomain). Webmail is https://yourdomain/mail. Staff control plane is fpanel.ifnotus.space.',
       'Student sites on *.ifnotus.space (and legacy *.serverlabsttu.space student hosts) already use IFNOTUS DNS. No nameserver change is needed.',
       'After DNS updates, turn on HTTPS in your panel.',
     ],
