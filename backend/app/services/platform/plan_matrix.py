@@ -355,9 +355,9 @@ MATRIX: dict[str, dict[str, Any]] = {
         custom_domains=1,
         ssh="no",
         stacks={
-            "php": YES, "laravel": LIM, "wordpress": YES, "mysql": LIM, "python": LIM,
-            "django": NO, "fastapi": NO, "flask": LIM, "nodejs": LIM, "nextjs": NO,
-            "express": LIM, "react": YES, "vue": LIM, "postgres": LIM, "mongodb": NO,
+            "php": YES, "laravel": NO, "wordpress": YES, "mysql": YES, "python": NO,
+            "django": NO, "fastapi": NO, "flask": NO, "nodejs": NO, "nextjs": NO,
+            "express": NO, "react": NO, "vue": NO, "postgres": NO, "mongodb": NO,
             "redis": NO, "docker": NO,
         },
         cron=LIM, env_vars=NO, dns=LIM, git=LIM, github=NO, gitlab=NO, bitbucket=NO,

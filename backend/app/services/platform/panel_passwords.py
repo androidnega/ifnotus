@@ -19,16 +19,88 @@ class PanelPasswordService:
         self._session = session
 
     async def env_by_hosting_name(self, username: str) -> CustomerEnvironment:
-        key = (username or "").strip().lower()
-        if not key:
+        raw_key = (username or "").strip().lower()
+        if not raw_key:
             raise ValidationError("Username is required.", code="panel_username_required")
+        # Strip common prefixes e.g. /home3/user or home/user or fpanel.domain
+        key = raw_key
+        if key.startswith("/"):
+            key = key.lstrip("/")
+        if "/" in key:
+            key = key.split("/")[-1]
+        if key.startswith("fpanel."):
+            key = key[len("fpanel."):]
+        if key.startswith("cpanel."):
+            key = key[len("cpanel."):]
+
+        # 1. Match by hosting_name, unix_username (system username), ftp_username, sftp_username, provider_username
         env = (
             await self._session.execute(
                 select(CustomerEnvironment).where(
-                    func.lower(CustomerEnvironment.hosting_name) == key,
+                    (func.lower(CustomerEnvironment.hosting_name) == key)
+                    | (func.lower(CustomerEnvironment.unix_username) == key)
+                    | (func.lower(CustomerEnvironment.ftp_username) == key)
+                    | (func.lower(CustomerEnvironment.sftp_username) == key)
+                    | (func.lower(CustomerEnvironment.provider_username) == key)
                 )
             )
         ).scalar_one_or_none()
+
+        # 2. Match by domain or domain prefix (e.g. yalleydadzie from yalleydadzie.online)
+        if env is None:
+            clean_dom = key.removeprefix("www.")
+            env = (
+                await self._session.execute(
+                    select(CustomerEnvironment).where(
+                        (func.lower(CustomerEnvironment.domain) == clean_dom)
+                        | (func.lower(CustomerEnvironment.domain).startswith(f"{clean_dom}."))
+                    )
+                )
+            ).scalar_one_or_none()
+
+        # 3. Match by CustomerDomain
+        if env is None:
+            from app.models.platform import CustomerDomain
+
+            cd = (
+                await self._session.execute(
+                    select(CustomerDomain).where(
+                        (func.lower(CustomerDomain.domain_name) == key)
+                        | (func.lower(CustomerDomain.domain_name).startswith(f"{key}."))
+                    )
+                )
+            ).scalar_one_or_none()
+            if cd and cd.environment_id:
+                env = await self._session.get(CustomerEnvironment, cd.environment_id)
+
+        # 4. Match by User (username / email) or Customer (email / phone)
+        if env is None:
+            user = (
+                await self._session.execute(
+                    select(User).where(
+                        (func.lower(User.username) == key)
+                        | (func.lower(User.email) == key)
+                    )
+                )
+            ).scalar_one_or_none()
+            if user:
+                customer = (
+                    await self._session.execute(
+                        select(Customer).where(Customer.user_id == user.id)
+                    )
+                ).scalar_one_or_none()
+                if customer:
+                    env = (
+                        await self._session.execute(
+                            select(CustomerEnvironment)
+                            .where(
+                                CustomerEnvironment.customer_id == customer.id,
+                                CustomerEnvironment.status != "terminated",
+                            )
+                            .order_by(CustomerEnvironment.created_at.desc())
+                        )
+                    ).scalar_one_or_none()
+
         if env is None:
             raise NotFoundError("Unknown hosting username.")
         if env.status in {"terminated", "terminating"}:
@@ -43,9 +115,7 @@ class PanelPasswordService:
             lookup = lookup[4:]
         if lookup.startswith("fpanel.") and lookup != "fpanel.ifnotus.space":
             lookup = lookup[len("fpanel.") :]
-        elif lookup.startswith("cpanel.") and lookup != "cpanel.ifnotus.space":
-            lookup = lookup[len("cpanel.") :]
-        if not lookup or lookup in {"ifnotus.space", "fpanel.ifnotus.space", "cpanel.ifnotus.space", "mail.ifnotus.space"}:
+        if not lookup or lookup in {"ifnotus.space", "fpanel.ifnotus.space", "mail.ifnotus.space"}:
             return None
 
         # 1. Direct match on CustomerEnvironment.domain
@@ -98,12 +168,11 @@ class PanelPasswordService:
                 raise NotFoundError("No hosting site for that address.")
         else:
             raise ValidationError("Provide username or host.", code="panel_status_input")
-        name = (env.hosting_name or "").strip().lower()
+        name = (env.unix_username or env.hosting_name or "").strip().lower()
+        if not name and env.domain:
+            name = env.domain.split(".")[0].lower()
         if not name:
-            raise AppException(
-                "Hosting username is not ready yet. Open your account or contact support.",
-                code="hosting_name_missing",
-            )
+            name = "user"
         return {
             "username": name,
             "domain": (env.domain or "").strip().lower() or None,

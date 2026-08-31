@@ -610,17 +610,17 @@ onMounted(() => {
     :class="{
       compact: Boolean((effectiveTheme as any)?.compact !== false),
       'sidebar-collapsed': isCollapsed,
+      'is-standalone-files': tab === 'files',
     }"
     :data-hosting-theme="effectiveThemeId"
     :style="hostingThemeStyle"
   >
-    <aside class="hp-side" :class="{ collapsed: isCollapsed }" aria-label="Hosting navigation">
+    <aside v-if="tab !== 'files'" class="hp-side" :class="{ collapsed: isCollapsed }" aria-label="Hosting navigation">
       <div class="hp-brand">
         <div class="hp-brand-main">
           <span class="hp-mark">IF</span>
           <div v-if="!isCollapsed" class="hp-brand-info">
             <span class="hp-word">fPanel</span>
-            <span class="hp-subword">{{ env?.domain || 'Hosting Workspace' }}</span>
           </div>
         </div>
         <button
@@ -2283,6 +2283,38 @@ h2 { margin: 0.2rem 0 0.45rem; font-family: Sora, sans-serif; font-size: 1.1rem;
 .theme-confirm p { margin: 0; font-size: 0.88rem; line-height: 1.45; }
 .theme-confirm-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.7rem; }
 .theme-msg { margin-top: 0.65rem; }
+.hp.is-standalone-files {
+  display: block;
+  grid-template-columns: 1fr !important;
+  padding: 0;
+  max-width: 100vw;
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+}
+.hp.is-standalone-files .hp-side {
+  display: none !important;
+}
+.hp.is-standalone-files .hp-main {
+  padding: 0 !important;
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+}
+.hp.is-standalone-files .hp-files-embed {
+  height: 100vh;
+  min-height: 100vh;
+  max-height: 100vh;
+  border-radius: 0;
+}
+.hp.is-standalone-files .hp-files-embed :deep(.cpanel-fm) {
+  height: 100vh;
+  min-height: 100vh;
+  max-height: 100vh;
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
+}
 .hp-embed { min-width: 0; }
 .hp-files-embed {
   min-width: 0;

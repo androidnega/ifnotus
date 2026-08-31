@@ -17,66 +17,127 @@ def ensure_cpanel_directory_layout(
     *,
     web_dir: Path | None = None,
     hostname: str | None = None,
+    subdomains: list[str] | None = None,
 ) -> Path:
     """Ensure standard cPanel directory structure in tenant home:
-    - public_html (with www symlink)
-    - logs, tmp, ssl
+    - public_html (with www symlink, serving primary domain web root)
+    - public_ftp, mail, logs, ssl, tmp, etc.
     - starter index.html if empty
+    - subdomain / addon domain web roots under home
     """
     home = home.resolve()
     home.mkdir(parents=True, exist_ok=True)
 
-    # Determine primary web directory
+    # Ensure public_html is a real directory
     public_html = home / "public_html"
-    public = home / "public"
-
-    if web_dir is not None and web_dir.resolve() != home:
-        resolved_web = web_dir.resolve()
-        if resolved_web.name == "public" and not public_html.exists():
-            try:
-                public_html.symlink_to("public", target_is_directory=True)
-            except OSError:
+    if public_html.is_symlink():
+        try:
+            target_path = public_html.resolve()
+            public_html.unlink()
+            if not public_html.exists():
                 public_html.mkdir(parents=True, exist_ok=True)
-        elif resolved_web.name == "public_html" and not public.exists():
-            try:
-                public.symlink_to("public_html", target_is_directory=True)
-            except OSError:
-                public.mkdir(parents=True, exist_ok=True)
-    else:
-        if not public_html.exists() and not public.exists():
-            public_html.mkdir(parents=True, exist_ok=True)
-        if public_html.exists() and not public.exists():
-            try:
-                public.symlink_to("public_html", target_is_directory=True)
-            except OSError:
-                pass
-        elif public.exists() and not public_html.exists():
-            try:
-                public_html.symlink_to("public", target_is_directory=True)
-            except OSError:
-                pass
+        except OSError:
+            pass
+    elif not public_html.exists():
+        public_html.mkdir(parents=True, exist_ok=True)
 
     # Ensure www -> public_html symlink
     www = home / "www"
-    if not www.exists():
+    if not www.exists() and not www.is_symlink():
         try:
             www.symlink_to("public_html", target_is_directory=True)
         except OSError:
             pass
 
-    # Ensure standard cPanel directories
-    for folder in ("logs", "tmp", "ssl"):
-        (home / folder).mkdir(parents=True, exist_ok=True)
+    # Ensure standard fPanel directories with appropriate permissions
+    dir_perms: dict[str, int] = {
+        "public_html": 0o755,
+        "public_ftp": 0o750,
+        "mail": 0o751,
+        "logs": 0o700,
+        "ssl": 0o700,
+        "tmp": 0o755,
+        "etc": 0o750,
+        ".trash": 0o700,
+        ".fpanel": 0o755,
+        ".cache": 0o700,
+        ".config": 0o700,
+        ".caldav": 0o700,
+        ".cl.selector": 0o700,
+        ".fpaddons": 0o755,
+        ".htpasswds": 0o750,
+        ".local": 0o700,
+        ".pip": 0o700,
+        ".putty": 0o700,
+        ".razor": 0o700,
+        ".sitepad": 0o755,
+        ".softaculous": 0o755,
+        ".spamassassin": 0o700,
+        ".ssh": 0o700,
+        ".subaccounts": 0o700,
+        "virtualenv": 0o755,
+    }
 
-    # Ensure starter page in web directory if completely empty
-    target_web = public_html if public_html.exists() else (public if public.exists() else home)
+    # Clean legacy .cpanel and .cpaddons directories if present
+    for legacy_dir, new_dir in [(".cpanel", ".fpanel"), (".cpaddons", ".fpaddons")]:
+        old_path = home / legacy_dir
+        new_path = home / new_dir
+        if old_path.exists() and not new_path.exists():
+            try:
+                old_path.rename(new_path)
+            except OSError:
+                pass
+
+    for folder, mode in dir_perms.items():
+        target_dir = home / folder
+        target_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            target_dir.chmod(mode)
+        except OSError:
+            pass
+
+    # Ensure subdomains/addon domain document roots under home if provided
+    if subdomains:
+        for sub in subdomains:
+            sub_name = sub.strip().lower().rstrip(".")
+            if sub_name and not sub_name.startswith("www."):
+                sub_dir = home / sub_name
+                sub_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    sub_dir.chmod(0o755)
+                except OSError:
+                    pass
+
+    # Ensure standard dotfiles
+    dotfiles: dict[str, tuple[str, int]] = {
+        ".bash_history": ("", 0o600),
+        ".bash_logout": ("# ~/.bash_logout\nclear\n", 0o644),
+        ".bash_profile": (
+            "# .bash_profile\n\n# Get the aliases and functions\nif [ -f ~/.bashrc ]; then\n\t. ~/.bashrc\nfi\n\n# User specific environment and startup programs\nPATH=$PATH:$HOME/.local/bin:$HOME/bin\nexport PATH\n",
+            0o644,
+        ),
+        ".bashrc": (
+            "# .bashrc\n\n# Source global definitions\nif [ -f /etc/bashrc ]; then\n\t. /etc/bashrc\nfi\n\n# User specific environment\n",
+            0o644,
+        ),
+    }
+
+    for file_name, (content, mode) in dotfiles.items():
+        target_file = home / file_name
+        if not target_file.exists():
+            try:
+                target_file.write_text(content, encoding="utf-8")
+                target_file.chmod(mode)
+            except OSError:
+                pass
+
+    # Ensure starter page in public_html if completely empty
     try:
-        resolved_target = target_web.resolve()
-        has_content = any(p.name not in {".ifnotus", ".ifnotus-trash"} for p in resolved_target.iterdir())
+        has_content = any(p.name not in {".ifnotus", ".ifnotus-trash"} for p in public_html.iterdir())
         if not has_content:
             from app.services.platform.hosting_ready_page import write_hosting_ready_page
 
-            write_hosting_ready_page(resolved_target, hostname=hostname or home.name)
+            write_hosting_ready_page(public_html, hostname=hostname or home.name)
     except OSError:
         pass
 
@@ -139,7 +200,25 @@ class TenantService:
             raise AppException("Environment has no document root.")
         path = Path(env.document_root).resolve()
         site_home = path.parent if path.name in {"public", "public_html", "web", "httpdocs"} and path.parent.exists() else path
-        ensure_cpanel_directory_layout(site_home, web_dir=path, hostname=env.domain)
+
+        # Collect any associated subdomains/addon domains for this environment
+        subdomains: list[str] = []
+        try:
+            from app.models.platform import CustomerDomain
+
+            cd_res = await self._session.execute(
+                select(CustomerDomain.domain_name).where(
+                    CustomerDomain.customer_id == customer_id,
+                    CustomerDomain.environment_id == environment_id,
+                )
+            )
+            for d in cd_res.scalars().all():
+                if d and str(d).strip().lower() != (env.domain or "").strip().lower():
+                    subdomains.append(str(d))
+        except Exception:
+            pass
+
+        ensure_cpanel_directory_layout(site_home, web_dir=path, hostname=env.domain, subdomains=subdomains)
         return [site_home.resolve()]
 
     async def plan_for_environment(self, env: CustomerEnvironment) -> HostingPlan | None:

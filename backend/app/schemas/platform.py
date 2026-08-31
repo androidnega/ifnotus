@@ -280,6 +280,35 @@ class InvoiceViewResponse(SchemaBase):
     document_kind: str = "invoice"
 
 
+class CreateDomainOrderRequest(SchemaBase):
+    domain_name: str
+    domain_extension: str
+    environment_id: UUID | None = None
+
+
+class CustomerDomainItemResponse(SchemaBase):
+    id: UUID
+    domain_name: str
+    status: str
+    is_active: bool
+    registrar: str | None = None
+    registration_date: datetime | None = None
+    expiry_date: datetime | None = None
+    auto_renew: bool = True
+    environment_id: UUID | None = None
+    environment_domain: str | None = None
+    propagation_notice: str = (
+        "New domain registrations and DNS updates take 24 to 48 hours to fully propagate worldwide across all networks."
+    )
+
+
+class CustomerDomainListResponse(SchemaBase):
+    items: list[CustomerDomainItemResponse]
+    propagation_notice: str = (
+        "New domain registrations and DNS updates take 24 to 48 hours to fully propagate worldwide across all networks."
+    )
+
+
 class CreateOrderResponse(SchemaBase):
     order: OrderResponse
     authorization_url: str | None = None
@@ -1031,12 +1060,12 @@ class PanelStatusResponse(SchemaBase):
 
 
 class PanelPasswordCreateRequest(SchemaBase):
-    username: str = Field(min_length=2, max_length=16)
+    username: str = Field(min_length=2, max_length=128)
     password: str = Field(min_length=8, max_length=128)
 
 
 class PanelLoginRequest(SchemaBase):
-    username: str = Field(min_length=2, max_length=16)
+    username: str = Field(min_length=2, max_length=128)
     password: str = Field(min_length=8, max_length=128)
     device_fingerprint: str | None = Field(default=None, max_length=128)
 

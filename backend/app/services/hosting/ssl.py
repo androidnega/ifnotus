@@ -514,9 +514,6 @@ class SslService:
                 fpanel = control_panel_hostname(base)
                 if fpanel and fpanel not in names:
                     names.append(fpanel)
-                legacy_cpanel = f"cpanel.{base}"
-                if legacy_cpanel not in names:
-                    names.append(legacy_cpanel)
                 webmail = webmail_hostname(base)
                 if webmail and webmail not in names:
                     names.append(webmail)

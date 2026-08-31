@@ -293,13 +293,29 @@ class FileManagerService:
     ) -> OperationResult:
         base = self._resolve_base(app_id, root_id)
         src = self._safe_path(base, source)
-        dst = self._safe_path(base, destination)
         if not src.exists():
             raise NotFoundError("Source not found.")
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        self._apply_owner(dst.parent)
-        shutil.move(str(src), str(dst))
-        self._apply_owner(dst)
+
+        dst = self._safe_path(base, destination)
+        # If destination is an existing directory, move source inside it (e.g. public_html/file.txt)
+        if dst.exists() and dst.is_dir():
+            target_dest = dst / src.name
+        else:
+            target_dest = dst
+
+        # Ensure parent exists
+        target_dest.parent.mkdir(parents=True, exist_ok=True)
+        self._apply_owner(target_dest.parent)
+
+        # If target already exists and is a file, remove it first to allow overwrite
+        if target_dest.exists() and target_dest.is_file():
+            try:
+                target_dest.unlink()
+            except OSError:
+                pass
+
+        shutil.move(str(src), str(target_dest))
+        self._apply_owner(target_dest)
         return OperationResult(success=True, message=f"Moved to {destination}")
 
     async def copy(
@@ -312,20 +328,26 @@ class FileManagerService:
     ) -> OperationResult:
         base = self._resolve_base(app_id, root_id)
         src = self._safe_path(base, source)
-        dst = self._safe_path(base, destination)
         if not src.exists():
             raise NotFoundError("Source not found.")
+
+        dst = self._safe_path(base, destination)
+        if dst.exists() and dst.is_dir():
+            target_dest = dst / src.name
+        else:
+            target_dest = dst
+
         extra = self._path_size_bytes(src)
         self._assert_quota(base, extra_bytes=extra)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        self._apply_owner(dst.parent)
+        target_dest.parent.mkdir(parents=True, exist_ok=True)
+        self._apply_owner(target_dest.parent)
         if src.is_dir():
-            if dst.exists():
+            if target_dest.exists():
                 raise ValidationError("Destination already exists.", code="destination_exists")
-            shutil.copytree(src, dst, symlinks=False)
+            shutil.copytree(src, target_dest, symlinks=False)
         else:
-            shutil.copy2(src, dst)
-        self._apply_owner_tree(dst)
+            shutil.copy2(src, target_dest)
+        self._apply_owner_tree(target_dest)
         return OperationResult(success=True, message=f"Copied to {destination}")
 
     async def delete(self, path: str, *, permanent: bool = False, deleted_by: str | None = None, app_id: str | None = None, root_id: str | None = None) -> OperationResult:

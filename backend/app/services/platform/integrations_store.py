@@ -9,6 +9,7 @@ import base64
 import hashlib
 import json
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,21 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from app.core.config import Settings
 from app.core.exceptions import AppException
+
+DEFAULT_DOMAIN_PRICES: dict[str, Decimal] = {
+    ".online": Decimal("65"),
+    ".com": Decimal("225"),
+    ".org": Decimal("240"),
+    ".net": Decimal("260"),
+    ".xyz": Decimal("70"),
+    ".store": Decimal("95"),
+    ".tech": Decimal("120"),
+    ".me": Decimal("150"),
+    ".site": Decimal("65"),
+    ".info": Decimal("190"),
+    ".co.uk": Decimal("110"),
+    ".club": Decimal("95"),
+}
 
 # Secrets are Fernet-encrypted; everything else stored plaintext in JSON.
 SECRET_FIELDS = frozenset(
@@ -137,6 +153,38 @@ class IntegrationsSettingsStore:
                 update[field] = val
         return self._settings.model_copy(update=update)
 
+    def get_domain_prices(self) -> dict[str, Decimal]:
+        raw = self._read_raw()
+        saved = raw.get("domain_prices")
+        prices = dict(DEFAULT_DOMAIN_PRICES)
+        if isinstance(saved, dict):
+            for k, v in saved.items():
+                ext = f".{k.lower().lstrip('.')}"
+                try:
+                    val = Decimal(str(v))
+                    if val > 0:
+                        prices[ext] = val
+                except Exception:
+                    continue
+        return prices
+
+    def update_domain_prices(self, prices: dict[str, Any]) -> None:
+        raw = self._read_raw()
+        current = raw.get("domain_prices", {})
+        if not isinstance(current, dict):
+            current = {}
+        for k, v in prices.items():
+            ext = f".{k.lower().lstrip('.')}"
+            try:
+                val = float(v)
+                if val > 0:
+                    current[ext] = val
+            except Exception:
+                continue
+        raw["domain_prices"] = current
+        raw["updated_at"] = datetime.now(UTC).isoformat()
+        self._write_raw(raw)
+
     def status(self) -> dict[str, Any]:
         nc_user = self.get("namecheap_api_user")
         nc_key = self.get("namecheap_api_key")
@@ -193,6 +241,7 @@ class IntegrationsSettingsStore:
                 "number": self.get("momo_number") or "0257940791",
                 "account_name": self.get("momo_account_name") or "Emmanuel Kwofie",
             },
+            "domain_prices": {k: float(v) for k, v in self.get_domain_prices().items()},
         }
 
     def update(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -307,6 +356,22 @@ class IntegrationsSettingsStore:
             ):
                 if src in momo:
                     set_plain(dest, momo.get(src))
+
+        domain_prices = payload.get("domain_prices")
+        if isinstance(domain_prices, dict):
+            current_prices = raw.get("domain_prices", {})
+            if not isinstance(current_prices, dict):
+                current_prices = {}
+            for k, v in domain_prices.items():
+                ext = f".{k.lower().lstrip('.')}"
+                try:
+                    val = float(v)
+                    if val > 0:
+                        current_prices[ext] = val
+                        changed = True
+                except Exception:
+                    continue
+            raw["domain_prices"] = current_prices
 
         if not changed:
             return self.status()

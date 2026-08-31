@@ -22,7 +22,6 @@ PLATFORM_HOSTS = frozenset(
         "www.ifnotus.space",
         "api.ifnotus.space",
         "fpanel.ifnotus.space",
-        "cpanel.ifnotus.space",
         "mail.ifnotus.space",
         "ftp.ifnotus.space",
         "ssh.ifnotus.space",
@@ -83,7 +82,7 @@ def classify_host(host: str | None, *, settings: object | None = None) -> HostKi
     if h in PLATFORM_HOSTS or h == PLATFORM_APEX:
         return HostKind(kind="platform", hostname=h, apex=PLATFORM_APEX)
 
-    if h in {f"fpanel.{PLATFORM_APEX}", f"cpanel.{PLATFORM_APEX}"}:
+    if h == f"fpanel.{PLATFORM_APEX}":
         return HostKind(kind="platform", hostname=h, apex=PLATFORM_APEX)
 
     # Reserved first-level labels (mail, api, phpmyadmin, …) are platform, not student.
@@ -95,11 +94,8 @@ def classify_host(host: str | None, *, settings: object | None = None) -> HostKi
     if is_student_hostname(h, settings=settings):
         return HostKind(kind="student", hostname=h, apex=student_zone_for(h, settings=settings))
 
-    if (h.startswith("fpanel.") or h.startswith("cpanel.")) and h not in {
-        f"fpanel.{PLATFORM_APEX}",
-        f"cpanel.{PLATFORM_APEX}",
-    }:
-        prefix = "fpanel." if h.startswith("fpanel.") else "cpanel."
+    if h.startswith("fpanel.") and h != f"fpanel.{PLATFORM_APEX}":
+        prefix = "fpanel."
         apex = h[len(prefix) :]
         if not apex or "." not in apex:
             return HostKind(kind="unknown", hostname=h)

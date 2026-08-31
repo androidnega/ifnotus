@@ -21,12 +21,16 @@ from app.schemas.platform import (
 
 router = APIRouter()
 
-DOMAIN_PRICES = [
-    DomainTldPriceSchema(extension=".online", price_yearly=50),
-    DomainTldPriceSchema(extension=".com", price_yearly=250),
-    DomainTldPriceSchema(extension=".org", price_yearly=180),
-    DomainTldPriceSchema(extension=".net", price_yearly=200),
-]
+
+def get_catalog_domain_prices(settings: SettingsDep) -> list[DomainTldPriceSchema]:
+    from app.services.platform.integrations_store import IntegrationsSettingsStore
+
+    prices = IntegrationsSettingsStore(settings).get_domain_prices()
+    return [
+        DomainTldPriceSchema(extension=ext, price_yearly=val)
+        for ext, val in prices.items()
+    ]
+
 
 
 def _enrich_public_plan(plan: HostingPlan) -> HostingPlanSchema:
@@ -133,7 +137,7 @@ async def catalog_meta(settings: SettingsDep) -> CatalogMetaResponse:
     except Exception:  # noqa: BLE001
         registrar_on = False
     return CatalogMetaResponse(
-        domain_prices=DOMAIN_PRICES,
+        domain_prices=get_catalog_domain_prices(settings),
         theme=str(theme.get("theme") or "studio-light"),
         themes=list(theme.get("themes") or []),
         colors=dict(theme.get("colors") or {}),

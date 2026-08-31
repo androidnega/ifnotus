@@ -246,12 +246,14 @@ class EnvironmentStackService:
             matrix_key = INSTALL_STACK_KEY.get(row["id"], row["id"])
             seen.add(matrix_key)
 
-        # Pack matrix stacks (Python, Django, Flask, …) that this plan includes.
+        # Pack matrix stacks (Python, Django, Flask, …) that this plan specifically includes (level == "yes").
         feats = features_for(plan) if plan is not None else {}
         matrix_stacks = feats.get("stacks") if isinstance(feats.get("stacks"), dict) else {}
+        # Engines handled in Databases tab, not as standalone web stack installers
+        db_engine_keys = {"mysql", "postgres", "postgresql", "mongodb", "redis"}
         for key in STACK_KEYS:
             level = str(matrix_stacks.get(key) or "no")
-            if level == "no" or key in seen:
+            if level != "yes" or key in seen or key in db_engine_keys:
                 continue
             # Skip keys already represented by a one-click option.
             if key == "php" and any(r["id"] == "static" for r in out):
@@ -264,10 +266,10 @@ class EnvironmentStackService:
                     "name": STACK_LABELS.get(key, key.title()),
                     "description": (
                         f"{STACK_LABELS.get(key, key)} is included on this pack. "
-                        "Deploy via Files or Git (one-click installer coming soon)."
+                        "Deploy via Files or Git."
                     ),
                     "icon": key,
-                    "level": level,
+                    "level": "yes",
                     "allowed": True,
                     "one_click": False,
                 }

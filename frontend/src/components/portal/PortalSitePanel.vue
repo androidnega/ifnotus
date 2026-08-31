@@ -341,15 +341,15 @@ function openFileManager(path = '.') {
   if (!id) return
   const q = path && path !== '.' ? `?path=${encodeURIComponent(path)}` : ''
   if (isCustomerCpanelHost()) {
-    window.location.href = `/files${q}`
+    window.open(`/files${q}`, '_blank')
     return
   }
   const customUrl = props.activeEnv?.domain ? tenantCpanelUrl(props.activeEnv.domain, 'files') : null
   if (customUrl) {
-    window.open(`${customUrl}${q}`, `ifnotus-files-${id}`)
+    window.open(`${customUrl}${q}`, '_blank')
     return
   }
-  window.open(`/hosting/${encodeURIComponent(id)}/files${q}`, `ifnotus-files-${id}`)
+  window.open(`/hosting/${encodeURIComponent(id)}/files${q}`, '_blank')
 }
 const showPassword = ref(false)
 const showFtpPassword = ref(false)

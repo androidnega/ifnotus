@@ -56,6 +56,7 @@ class IntegrationsStatusResponse(SchemaBase):
     smtp: SmtpIntegrationStatus
     sms: SmsIntegrationStatus
     momo: MomoIntegrationStatus
+    domain_prices: dict[str, float] = Field(default_factory=dict)
 
 
 class NamecheapIntegrationUpdate(SchemaBase):
@@ -105,3 +106,4 @@ class IntegrationsUpdateRequest(SchemaBase):
     smtp: SmtpIntegrationUpdate | None = None
     sms: SmsIntegrationUpdate | None = None
     momo: MomoIntegrationUpdate | None = None
+    domain_prices: dict[str, float] | None = None

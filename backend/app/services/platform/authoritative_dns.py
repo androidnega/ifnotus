@@ -74,7 +74,6 @@ class AuthoritativeDnsService:
         aaaa_apex = f"    IN AAAA {ipv6}\n" if ipv6 else ""
         aaaa_www = f"www IN AAAA {ipv6}\n" if ipv6 else ""
         aaaa_fpanel = f"fpanel IN AAAA {ipv6}\n" if ipv6 else ""
-        aaaa_cpanel = f"cpanel IN AAAA {ipv6}\n" if ipv6 else ""
         aaaa_webmail = f"webmail IN AAAA {ipv6}\n" if ipv6 else ""
         aaaa_mail = f"mail IN AAAA {ipv6}\n" if ipv6 else ""
         body = (
@@ -96,8 +95,6 @@ class AuthoritativeDnsService:
             f"{aaaa_www}"
             f"fpanel IN A {ipv4}\n"
             f"{aaaa_fpanel}"
-            f"cpanel IN A {ipv4}\n"
-            f"{aaaa_cpanel}"
             f"webmail IN A {ipv4}\n"
             f"{aaaa_webmail}"
             f"mail IN A   {ipv4}\n"

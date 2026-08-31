@@ -91,12 +91,12 @@ const anchorPath = ref<string | null>(null)
 const folderTree = ref<string[]>(['.'])
 const treeCollapsed = ref(false)
 
-const STANDARD_CPANEL_ROOT_DIRS = [
+const STANDARD_FPANEL_ROOT_DIRS = [
   '.caldav',
   '.cl.selector',
   '.config',
-  '.cpaddons',
-  '.cpanel',
+  '.fpaddons',
+  '.fpanel',
   '.htpasswds',
   '.local',
   '.pip',
@@ -155,7 +155,7 @@ const rootTreeFolders = computed<FolderTreeNode[]>(() => {
   const seen = new Set<string>()
   const result: FolderTreeNode[] = []
 
-  const allNames = Array.from(new Set([...STANDARD_CPANEL_ROOT_DIRS, ...dynamicRootDirs.value]))
+  const allNames = Array.from(new Set([...STANDARD_FPANEL_ROOT_DIRS, ...dynamicRootDirs.value]))
     .filter((n) => n !== '.trash' && n !== '__trash__')
   allNames.sort((a, b) => a.localeCompare(b))
 
@@ -166,7 +166,7 @@ const rootTreeFolders = computed<FolderTreeNode[]>(() => {
     result.push({
       name,
       path: name,
-      hasChildren: children.length > 0 || name === 'public_html' || name === 'app' || name === 'ssl' || name === '.cpanel',
+      hasChildren: children.length > 0 || name === 'public_html' || name === 'app' || name === 'ssl' || name === '.fpanel',
       children,
     })
   }
@@ -1554,14 +1554,78 @@ watch(
 
 function onKeydown(ev: KeyboardEvent) {
   const tag = (ev.target as HTMLElement | null)?.tagName
-  if (tag === 'INPUT' || tag === 'TEXTAREA') return
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+  
+  const list = filtered.value
+  if (!list.length) return
+
+  const getKey = (item: Entry | TrashEntry) => ('trash_id' in item ? item.trash_id : item.path)
+
+  // Select all: Ctrl+A / Cmd+A
   if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'a') {
     ev.preventDefault()
     if (isTrashMode.value) {
-      selectedPaths.value = new Set((filtered.value as TrashEntry[]).map((e) => e.trash_id))
+      selectedPaths.value = new Set((list as TrashEntry[]).map((e) => e.trash_id))
     } else {
-      selectedPaths.value = new Set((filtered.value as Entry[]).map((e) => e.path))
+      selectedPaths.value = new Set((list as Entry[]).map((e) => e.path))
     }
+    return
+  }
+
+  // Clear selection / close context: Escape
+  if (ev.key === 'Escape') {
+    ev.preventDefault()
+    selectedPaths.value.clear()
+    closeMenus()
+    return
+  }
+
+  // Open entry: Enter
+  if (ev.key === 'Enter') {
+    if (selectedEntries.value.length === 1 && !isTrashMode.value) {
+      ev.preventDefault()
+      openEntry(selectedEntries.value[0])
+      return
+    }
+  }
+
+  // Delete selection: Delete / Backspace
+  if (ev.key === 'Delete' || (ev.key === 'Backspace' && (ev.metaKey || ev.ctrlKey))) {
+    if (!isTrashMode.value && selectedEntries.value.length > 0) {
+      ev.preventDefault()
+      removeTargets(selectedEntries.value)
+      return
+    }
+  }
+
+  // Navigate / Multi-select with Arrow keys
+  if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+    ev.preventDefault()
+    const lastKey = anchorPath.value || Array.from(selectedPaths.value).pop()
+    let currentIndex = list.findIndex((e) => getKey(e) === lastKey)
+    if (currentIndex < 0) {
+      currentIndex = ev.key === 'ArrowDown' ? 0 : list.length - 1
+    } else {
+      currentIndex = ev.key === 'ArrowDown' ? Math.min(list.length - 1, currentIndex + 1) : Math.max(0, currentIndex - 1)
+    }
+
+    const targetKey = getKey(list[currentIndex])
+
+    if (ev.shiftKey && anchorPath.value) {
+      const anchorIdx = list.findIndex((e) => getKey(e) === anchorPath.value)
+      if (anchorIdx >= 0) {
+        const [start, end] = anchorIdx < currentIndex ? [anchorIdx, currentIndex] : [currentIndex, anchorIdx]
+        selectedPaths.value.clear()
+        for (let i = start; i <= end; i++) {
+          selectedPaths.value.add(getKey(list[i]))
+        }
+        return
+      }
+    }
+
+    selectedPaths.value.clear()
+    selectedPaths.value.add(targetKey)
+    anchorPath.value = targetKey
   }
 }
 
@@ -1804,10 +1868,10 @@ onUnmounted(() => {
         </button>
         <span class="sub-sep" />
         <button type="button" class="sub-act-btn" @click="toggleSelectAll">
-          <i class="fas fa-check-square" /> Select All
+          <i class="fas fa-check-double" /> Select All
         </button>
         <button type="button" class="sub-act-btn" :disabled="!selectionCount" @click="unselectAll">
-          <i class="far fa-square" /> Unselect All
+          <i class="fas fa-times" /> Unselect All
         </button>
         <span class="sub-sep" />
         <button
@@ -1950,15 +2014,6 @@ onUnmounted(() => {
           <table class="cp-table">
             <thead>
               <tr>
-                <th class="col-check">
-                  <input
-                    type="checkbox"
-                    :checked="allVisibleSelected"
-                    :indeterminate="selectionCount > 0 && !allVisibleSelected"
-                    @change="toggleSelectAll"
-                    @click.stop
-                  />
-                </th>
                 <th class="col-name">Name</th>
                 <th class="col-size">Size</th>
                 <th class="col-mod">Last Modified</th>
@@ -1969,7 +2024,6 @@ onUnmounted(() => {
             <tbody>
               <!-- PARENT ROW -->
               <tr v-if="parentPath != null && currentPath !== '.' && !isTrashMode" class="row-parent">
-                <td class="col-check"></td>
                 <td colspan="5">
                   <button type="button" class="btn-parent-dir" @click="openDir(parentPath || '.')">
                     <i class="fas fa-level-up-alt" /> Up One Level
@@ -1986,13 +2040,6 @@ onUnmounted(() => {
                   @click.stop="selectRow(item, $event)"
                   @contextmenu="onTrashContextMenu(item, $event)"
                 >
-                  <td class="col-check" @click.stop>
-                    <input
-                      type="checkbox"
-                      :checked="selectedPaths.has(item.trash_id)"
-                      @change="togglePath(item.trash_id)"
-                    />
-                  </td>
                   <td class="col-name">
                     <div class="file-name-cell">
                       <i :class="item.item_type === 'dir' ? 'fas fa-folder folder-icon' : 'fas fa-file-alt file-icon'" />
@@ -2005,7 +2052,7 @@ onUnmounted(() => {
                   <td class="col-mode mono">0700</td>
                 </tr>
                 <tr v-if="!filtered.length">
-                  <td colspan="6" class="cp-empty-cell">Trash is empty.</td>
+                  <td colspan="5" class="cp-empty-cell">Trash is empty.</td>
                 </tr>
               </template>
 
@@ -2019,13 +2066,6 @@ onUnmounted(() => {
                   @dblclick.stop="openEntry(entry)"
                   @contextmenu="onContextMenu(entry, $event)"
                 >
-                  <td class="col-check" @click.stop>
-                    <input
-                      type="checkbox"
-                      :checked="selectedPaths.has(entry.path)"
-                      @change="togglePath(entry.path)"
-                    />
-                  </td>
                   <td class="col-name">
                     <div class="file-name-cell">
                       <i :class="fileIconClass(entry)" />
@@ -2038,7 +2078,7 @@ onUnmounted(() => {
                   <td class="col-mode mono">{{ formatPermissions(entry) }}</td>
                 </tr>
                 <tr v-if="!filtered.length">
-                  <td colspan="6" class="cp-empty-cell">
+                  <td colspan="5" class="cp-empty-cell">
                     This directory is empty. Use <strong>+ File</strong>, <strong>+ Folder</strong> or <strong>Upload</strong> to add files.
                   </td>
                 </tr>
@@ -3040,17 +3080,19 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+.cp-table tbody tr {
+  cursor: pointer;
+  user-select: none;
+}
+
 .cp-table tr:hover td {
   background: #f1f5f9;
 }
 
 .cp-table tr.selected td {
-  background: #e0f2fe;
-}
-
-.col-check {
-  width: 2rem;
-  text-align: center;
+  background: #dbeafe;
+  color: #0369a1;
+  font-weight: 500;
 }
 
 .col-name {

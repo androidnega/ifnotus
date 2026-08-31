@@ -59,6 +59,9 @@ from app.schemas.platform import (
     CapacityNodeResponse,
     StaffCapacityDashboardResponse,
     ChangePlanRequest,
+    CreateDomainOrderRequest,
+    CustomerDomainItemResponse,
+    CustomerDomainListResponse,
     CreateOrderRequest,
     CreateOrderResponse,
     CreditTopUpRequest,
@@ -177,7 +180,19 @@ router = APIRouter()
 
 def _require_customer_user(user) -> None:
     roles = set(user.roles or [])
-    if user.is_superuser or Role.CUSTOMER.value in roles or Role.ADMIN.value in roles or Role.SUPERADMIN.value in roles:
+    if (
+        user.is_superuser
+        or Role.CUSTOMER.value in roles
+        or Role.PLATFORM_OWNER.value in roles
+        or Role.PLATFORM_ADMIN.value in roles
+        or Role.ADMIN.value in roles
+        or Role.SUPERADMIN.value in roles
+        or Role.HOSTING_OPERATOR.value in roles
+        or Role.OPERATOR.value in roles
+        or Role.BILLING_AGENT.value in roles
+        or Role.SUPPORT_AGENT.value in roles
+        or Role.AUDITOR.value in roles
+    ):
         return
     raise AuthorizationError("Customer account required.")
 
@@ -368,10 +383,10 @@ async def customer_login(
 @router.get("/panel/status", response_model=PanelStatusResponse)
 async def panel_status(
     session: DbSession,
-    username: str | None = Query(default=None, max_length=16),
+    username: str | None = Query(default=None, max_length=128),
     host: str | None = Query(default=None, max_length=253),
 ) -> PanelStatusResponse:
-    """Public hint for tenant cpanel login (username + whether password exists)."""
+    """Public hint for tenant fpanel login (username + whether password exists)."""
     from app.services.platform.panel_passwords import PanelPasswordService
 
     data = await PanelPasswordService(session).status(username=username, host=host)
@@ -4267,6 +4282,81 @@ async def check_domain(
     )
 
 
+@router.get("/domains", response_model=CustomerDomainListResponse)
+async def list_customer_domains(
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> CustomerDomainListResponse:
+    """List all registered and assigned domains for the authenticated customer."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    from app.models.platform import CustomerDomain, CustomerEnvironment
+
+    result = await session.execute(
+        select(CustomerDomain)
+        .where(CustomerDomain.customer_id == customer.id)
+        .order_by(CustomerDomain.created_at.desc())
+    )
+    domains = list(result.scalars().all())
+
+    env_ids = [d.environment_id for d in domains if d.environment_id]
+    env_map: dict[UUID, str] = {}
+    if env_ids:
+        envs_res = await session.execute(
+            select(CustomerEnvironment).where(CustomerEnvironment.id.in_(env_ids))
+        )
+        for e in envs_res.scalars().all():
+            env_map[e.id] = e.domain or e.hosting_name or str(e.id)
+
+    items = []
+    for d in domains:
+        is_active = d.status == "active"
+        items.append(
+            CustomerDomainItemResponse(
+                id=d.id,
+                domain_name=d.domain_name,
+                status=d.status,
+                is_active=is_active,
+                registrar=d.registrar,
+                registration_date=d.registration_date,
+                expiry_date=d.expiry_date,
+                auto_renew=d.auto_renew,
+                environment_id=d.environment_id,
+                environment_domain=env_map.get(d.environment_id) if d.environment_id else None,
+                propagation_notice=(
+                    "New domain registrations and DNS updates take 24 to 48 hours to fully propagate worldwide across all networks."
+                ),
+            )
+        )
+
+    return CustomerDomainListResponse(
+        items=items,
+        propagation_notice=(
+            "New domain registrations and DNS updates take 24 to 48 hours to fully propagate worldwide across all networks."
+        ),
+    )
+
+
+@router.post("/orders/domain", response_model=CreateOrderResponse)
+async def create_domain_order(
+    body: CreateDomainOrderRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> CreateOrderResponse:
+    """Buy a standalone domain without hosting or attach to an existing environment."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    result = await OrderService(settings, session).create_domain_order(
+        customer,
+        domain_name=body.domain_name,
+        domain_extension=body.domain_extension,
+        environment_id=body.environment_id,
+    )
+    return CreateOrderResponse.model_validate(result)
+
+
 @router.post("/domains/student-preview", response_model=StudentHostnameResponse)
 async def student_hostname_preview(
     body: StudentHostnameRequest,
@@ -4279,6 +4369,37 @@ async def student_hostname_preview(
 
     result = await StudentHostnameService(session, settings).preview(body.surname)
     return StudentHostnameResponse.model_validate(result)
+
+
+@router.post("/environments/{environment_id}/student-hostname", response_model=StudentHostnameResponse)
+async def assign_student_hostname(
+    environment_id: UUID,
+    body: StudentHostnameRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> StudentHostnameResponse:
+    """Assign or claim student project surname address on an unassigned environment."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+
+    from app.services.platform.student_hostname import StudentHostnameService
+    from app.services.platform.staff import StaffPlatformService
+
+    svc = StudentHostnameService(session, settings)
+    allocated_hostname = await svc.allocate(body.surname)
+
+    staff_svc = StaffPlatformService(settings, session)
+    await staff_svc.update_environment_subdomain(env.id, allocated_hostname, actor_id=user.id)
+
+    return StudentHostnameResponse(
+        surname=body.surname,
+        hostname=allocated_hostname,
+        available=True,
+        message=f"Student project is now live on {allocated_hostname}!",
+        zone=svc._zone,
+    )
 
 
 @router.get("/panel-alias", response_model=PanelAliasResolveResponse)
@@ -4575,7 +4696,7 @@ async def set_hosting_password(
     return HostingPasswordSetResponse(
         success=True,
         message="Hosting fPanel password updated successfully.",
-        username=env.hosting_name or "cpanel_user",
+        username=env.unix_username or env.hosting_name or "fpanel_user",
     )
 
 

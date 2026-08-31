@@ -43,19 +43,24 @@ class DomainNginxProvisioner:
         from app.services.platform.hosting_ready_page import write_hosting_ready_page
         from app.services.platform.tenant import ensure_cpanel_directory_layout
 
-        root = Path(path).resolve()
-        host = (hostname or "").strip() or root.parent.name or root.name
+        raw = Path(path).resolve()
+        host = (hostname or "").strip() or raw.parent.name or raw.name
         portal = getattr(self._settings, "customer_portal_url", None) or "https://ifnotus.space"
-        site_home = root.parent if root.name in {"public", "public_html", "web", "httpdocs"} and root.parent.exists() else root
-        ensure_cpanel_directory_layout(site_home, web_dir=root, hostname=host)
+        if raw.name in {"public", "public_html", "web", "httpdocs"} and raw.parent.exists():
+            site_home = raw.parent
+            web_root = raw
+        else:
+            site_home = raw
+            web_root = raw / "public_html"
+        ensure_cpanel_directory_layout(site_home, web_dir=web_root, hostname=host)
         write_hosting_ready_page(
-            root,
+            web_root,
             hostname=host,
             portal_base=portal,
             display_hostname=display_hostname,
             force=False,
         )
-        return root
+        return web_root
 
     def render_config(
         self,
@@ -111,7 +116,15 @@ class DomainNginxProvisioner:
         if not site_names:
             site_names = [hostname]
         names_line = " ".join(site_names)
-        root = document_root or f"/var/www/{hostname}"
+        raw_root = Path(document_root or f"/var/www/{hostname}").resolve()
+        if raw_root.name in {"public", "public_html", "web", "httpdocs"}:
+            root = str(raw_root)
+        elif (raw_root / "public_html").is_dir() or (raw_root / "public_html").is_symlink():
+            root = str(raw_root / "public_html")
+        elif (raw_root / "public").is_dir() or (raw_root / "public").is_symlink():
+            root = str(raw_root / "public")
+        else:
+            root = str(raw_root / "public_html")
         cert = ssl_certificate
         key = ssl_certificate_key
         if not cert or not key:
@@ -260,12 +273,8 @@ class DomainNginxProvisioner:
         fpanel_host = cpanel_host
         if cpanel_host.startswith("cpanel."):
             fpanel_host = f"fpanel.{cpanel_host[len('cpanel.'):]}"
-            legacy_cpanel_host = cpanel_host
-        elif cpanel_host.startswith("fpanel."):
-            legacy_cpanel_host = f"cpanel.{cpanel_host[len('fpanel.'):]}"
-        else:
+        elif not cpanel_host.startswith("fpanel."):
             fpanel_host = f"fpanel.{cpanel_host}"
-            legacy_cpanel_host = f"cpanel.{cpanel_host}"
 
         lines: list[str] = []
 
@@ -287,28 +296,6 @@ class DomainNginxProvisioner:
             lines += self._cpanel_spa_locations()
             lines += ["}", ""]
 
-            # Legacy HTTPS cpanel.<domain> permanent redirect -> fpanel.<domain>
-            lines += [
-                "# Legacy cpanel.<domain> redirect -> fpanel.<domain>",
-                "server {",
-                "    listen 443 ssl;",
-                "    listen [::]:443 ssl;",
-                f"    server_name {legacy_cpanel_host};",
-                f"    ssl_certificate {cert};",
-                f"    ssl_certificate_key {key};",
-            ]
-            if Path("/etc/letsencrypt/options-ssl-nginx.conf").exists():
-                lines.append("    include /etc/letsencrypt/options-ssl-nginx.conf;")
-            if Path("/etc/letsencrypt/ssl-dhparams.pem").exists():
-                lines.append("    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;")
-            lines += [
-                "    location / {",
-                f"        return 301 https://{fpanel_host}$request_uri;",
-                "    }",
-                "}",
-                "",
-            ]
-
             # Modern HTTP fpanel.<domain> -> redirect to HTTPS (with acme-challenge)
             lines += [
                 "# Customer control-panel host — Hosting Panel SPA (HTTP redirect)",
@@ -316,25 +303,6 @@ class DomainNginxProvisioner:
                 "    listen 80;",
                 "    listen [::]:80;",
                 f"    server_name {fpanel_host};",
-                "    location ^~ /.well-known/acme-challenge/ {",
-                f"        root {ACME_WEBROOT};",
-                "        default_type text/plain;",
-                "        allow all;",
-                "    }",
-                "    location / {",
-                f"        return 301 https://{fpanel_host}$request_uri;",
-                "    }",
-                "}",
-                "",
-            ]
-
-            # Legacy HTTP cpanel.<domain> redirect -> fpanel.<domain>
-            lines += [
-                "# Legacy cpanel.<domain> HTTP redirect -> fpanel.<domain>",
-                "server {",
-                "    listen 80;",
-                "    listen [::]:80;",
-                f"    server_name {legacy_cpanel_host};",
                 "    location ^~ /.well-known/acme-challenge/ {",
                 f"        root {ACME_WEBROOT};",
                 "        default_type text/plain;",
@@ -369,25 +337,6 @@ class DomainNginxProvisioner:
             else:
                 lines += self._cpanel_spa_locations()
             lines += ["}", ""]
-
-            # Legacy HTTP cpanel.<domain> redirect -> fpanel.<domain>
-            lines += [
-                "# Legacy cpanel.<domain> HTTP redirect -> fpanel.<domain>",
-                "server {",
-                "    listen 80;",
-                "    listen [::]:80;",
-                f"    server_name {legacy_cpanel_host};",
-                "    location ^~ /.well-known/acme-challenge/ {",
-                f"        root {ACME_WEBROOT};",
-                "        default_type text/plain;",
-                "        allow all;",
-                "    }",
-                "    location / {",
-                f"        return 301 https://{fpanel_host}$request_uri;",
-                "    }",
-                "}",
-                "",
-            ]
         return lines
 
     def _webmail_server(
@@ -603,12 +552,6 @@ class DomainNginxProvisioner:
             f"        return 302 {fpanel_url};",
             "    }",
             "    location = /fpanel/ {",
-            f"        return 302 {fpanel_url};",
-            "    }",
-            "    location = /cpanel {",
-            f"        return 302 {fpanel_url};",
-            "    }",
-            "    location = /cpanel/ {",
             f"        return 302 {fpanel_url};",
             "    }",
             "    location = /webmail {",

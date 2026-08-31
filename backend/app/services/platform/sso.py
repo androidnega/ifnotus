@@ -96,8 +96,6 @@ class HostingSsoService:
             lookup = safe.lower().rstrip(".")
             if lookup.startswith("fpanel."):
                 lookup = lookup[len("fpanel.") :]
-            elif lookup.startswith("cpanel."):
-                lookup = lookup[len("cpanel.") :]
             if lookup.startswith("www."):
                 lookup = lookup[4:]
 
@@ -242,8 +240,6 @@ class HostingSsoService:
             apex = host_clean
             if apex.startswith("fpanel."):
                 apex = apex[len("fpanel.") :]
-            elif apex.startswith("cpanel."):
-                apex = apex[len("cpanel.") :]
             if apex.startswith("www."):
                 apex = apex[4:]
 

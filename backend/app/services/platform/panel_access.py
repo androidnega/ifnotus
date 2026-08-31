@@ -22,7 +22,6 @@ from app.services.platform.student_hostname import (
 )
 
 STAFF_PANEL_HOST = "fpanel.ifnotus.space"
-LEGACY_STAFF_PANEL_HOST = "cpanel.ifnotus.space"
 PLATFORM_APEX = "ifnotus.space"
 
 
@@ -33,7 +32,7 @@ def is_platform_hostname(domain: str | None, *, settings: object | None = None) 
         return False
     if host.startswith("www."):
         host = host[4:]
-    if host in {PLATFORM_APEX, STAFF_PANEL_HOST, LEGACY_STAFF_PANEL_HOST, "mail.ifnotus.space", "api.ifnotus.space"}:
+    if host in {PLATFORM_APEX, STAFF_PANEL_HOST, "mail.ifnotus.space", "api.ifnotus.space"}:
         return True
     if host.endswith(".customers.ifnotus.space"):
         return False
@@ -56,15 +55,10 @@ def control_panel_hostname(domain: str | None, *, settings: object | None = None
         host = host[4:]
     if not host or "." not in host:
         return None
-    if host in {STAFF_PANEL_HOST, LEGACY_STAFF_PANEL_HOST}:
-        return STAFF_PANEL_HOST
-    if host in {PLATFORM_APEX, "mail.ifnotus.space", "api.ifnotus.space"}:
+    if host in {STAFF_PANEL_HOST, PLATFORM_APEX, "mail.ifnotus.space", "api.ifnotus.space"}:
         return STAFF_PANEL_HOST
     if host.startswith("fpanel."):
         return host
-    if host.startswith("cpanel."):
-        host = host[len("cpanel.") :]
-        return f"fpanel.{host}"
     if host.endswith(".customers.ifnotus.space"):
         return f"fpanel.{host}"
     if is_student_hostname(host, settings=settings):
@@ -94,14 +88,12 @@ def webmail_hostname(domain: str | None, *, settings: object | None = None) -> s
         host = host[4:]
     if not host or "." not in host:
         return None
-    if host in {PLATFORM_APEX, STAFF_PANEL_HOST, LEGACY_STAFF_PANEL_HOST, "mail.ifnotus.space"}:
+    if host in {PLATFORM_APEX, STAFF_PANEL_HOST, "mail.ifnotus.space"}:
         return "mail.ifnotus.space"
     if host.startswith("webmail."):
         return host
     if host.startswith("fpanel."):
         host = host[len("fpanel.") :]
-    elif host.startswith("cpanel."):
-        host = host[len("cpanel.") :]
     if host.endswith(".customers.ifnotus.space"):
         return f"webmail.{host}"
 

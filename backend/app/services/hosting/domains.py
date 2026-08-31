@@ -656,13 +656,6 @@ class DomainService:
                 DomainDnsRecord(
                     domain_id=entity.id,
                     record_type="A",
-                    host="cpanel",
-                    value=server_ip,
-                    ttl=3600,
-                ),
-                DomainDnsRecord(
-                    domain_id=entity.id,
-                    record_type="A",
                     host="webmail",
                     value=server_ip,
                     ttl=3600,

@@ -122,7 +122,8 @@ class OrderService:
 
         domain_price = Decimal("0")
         if include_domain and extension:
-            domain_price = DOMAIN_PRICES.get(extension, Decimal("0"))
+            domain_prices = IntegrationsSettingsStore(self._settings).get_domain_prices()
+            domain_price = domain_prices.get(extension, Decimal("65" if extension == ".online" else "225"))
 
         from app.services.platform.billing_terms_store import BillingTermsStore, add_calendar_months
 
@@ -438,32 +439,36 @@ class OrderService:
         if order.provisioning_status == "active":
             return OrderResponse.model_validate(order)
 
-        order.provisioning_status = "queued"
-        await self._activate_hosting(order, prefer_inline=True)
-        order.provisioning_status = "active"
+        kind = (order.order_kind or "hosting").lower()
+        if kind == "domain":
+            await self._activate_domain_order(order, actor_id=actor_id)
+        else:
+            order.provisioning_status = "queued"
+            await self._activate_hosting(order, prefer_inline=True)
+            order.provisioning_status = "active"
 
-        self._session.add(
-            PlatformAuditLog(
-                customer_id=order.customer_id,
-                actor_id=actor_id,
-                action="order.hosting_activated",
-                target_type="order",
-                target_id=str(order.id),
-                result="success",
-                metadata_json={
-                    "domain": order.domain_name,
-                    "plan_id": str(order.plan_id),
-                    "invoice_number": order.invoice_number,
-                },
+            self._session.add(
+                PlatformAuditLog(
+                    customer_id=order.customer_id,
+                    actor_id=actor_id,
+                    action="order.hosting_activated",
+                    target_type="order",
+                    target_id=str(order.id),
+                    result="success",
+                    metadata_json={
+                        "domain": order.domain_name,
+                        "plan_id": str(order.plan_id),
+                        "invoice_number": order.invoice_number,
+                    },
+                )
             )
-        )
-        await NotificationService(self._session, self._settings).notify(
-            order.customer_id,
-            title="Hosting Activated",
-            body=f"Your hosting environment ({order.domain_name or 'site'}) is now live and ready to use.",
-            kind="hosting",
-            deliver=True,
-        )
+            await NotificationService(self._session, self._settings).notify(
+                order.customer_id,
+                title="Hosting Activated",
+                body=f"Your hosting environment ({order.domain_name or 'site'}) is now live and ready to use.",
+                kind="hosting",
+                deliver=True,
+            )
         await self._session.flush()
         await self._session.refresh(order)
         return OrderResponse.model_validate(order)
@@ -892,6 +897,203 @@ class OrderService:
             body=f"{meta.get('theme_name') or theme_id} is ready on your hosting panel.",
             kind="theme",
             deliver=False,
+        )
+
+    async def create_domain_order(
+        self,
+        customer: Customer,
+        *,
+        domain_name: str,
+        domain_extension: str,
+        environment_id: UUID | None = None,
+    ) -> dict:
+        from app.services.platform.integrations_store import IntegrationsSettingsStore
+
+        raw_name = domain_name.strip().lower()
+        ext = f".{domain_extension.strip().lower().lstrip('.')}"
+        if "." in raw_name:
+            sld, parsed_ext = raw_name.split(".", 1)
+            ext = f".{parsed_ext}"
+        else:
+            sld = raw_name
+
+        full_domain = f"{sld}{ext}"
+
+        if len(sld) < 2 or len(sld) > 63:
+            raise ValidationError("Domain name must be between 2 and 63 characters.", code="invalid_domain")
+
+        # Check if already registered/active for another customer
+        existing_active = await self._session.execute(
+            select(CustomerDomain).where(
+                func.lower(CustomerDomain.domain_name) == full_domain,
+                CustomerDomain.status == "active",
+                CustomerDomain.customer_id != customer.id,
+            )
+        )
+        if existing_active.scalar_one_or_none() is not None:
+            raise ConflictError(f"{full_domain} is already registered.", code="domain_taken")
+
+        domain_prices = IntegrationsSettingsStore(self._settings).get_domain_prices()
+        price = domain_prices.get(ext, Decimal("65" if ext == ".online" else "225"))
+
+        result = await self._session.execute(
+            select(HostingPlan).where(HostingPlan.is_active.is_(True)).order_by(HostingPlan.sort_order).limit(1)
+        )
+        plan = result.scalar_one_or_none()
+        if plan is None:
+            raise AppException("No hosting plans configured.")
+
+        # Create or reuse CustomerDomain with status 'pending_registration'
+        cd_res = await self._session.execute(
+            select(CustomerDomain).where(
+                CustomerDomain.customer_id == customer.id,
+                func.lower(CustomerDomain.domain_name) == full_domain,
+            )
+        )
+        cd = cd_res.scalars().first()
+        if cd is None:
+            cd = CustomerDomain(
+                customer_id=customer.id,
+                environment_id=environment_id,
+                domain_name=full_domain,
+                status="pending_registration",
+                auto_renew=True,
+            )
+            self._session.add(cd)
+            await self._session.flush()
+        else:
+            cd.status = "pending_registration"
+            if environment_id:
+                cd.environment_id = environment_id
+
+        reference = f"ifnotus-dom-{secrets.token_hex(8)}"
+        order = Order(
+            customer_id=customer.id,
+            plan_id=plan.id,
+            domain_name=full_domain,
+            domain_extension=ext,
+            plan_price=Decimal("0"),
+            domain_price=price,
+            total_price=price,
+            currency="GHS",
+            payment_status="pending",
+            provisioning_status="pending",
+            order_kind="domain",
+            paystack_reference=reference,
+            invoice_number=await self._new_invoice(),
+            meta_json={
+                "domain_name": full_domain,
+                "sld": sld,
+                "extension": ext,
+                "environment_id": str(environment_id) if environment_id else None,
+                "customer_domain_id": str(cd.id),
+                "propagation_notice": (
+                    "New domain registrations and DNS updates take 24 to 48 hours to fully propagate worldwide across all networks."
+                ),
+            },
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        self._session.add(order)
+        await self._session.flush()
+
+        return {
+            "order": OrderResponse.model_validate(order),
+            "authorization_url": None,
+            "reference": reference,
+            "demo": False,
+            "paystack_public_key": None,
+            "amount": price,
+            "applied": False,
+            "payment_method": "momo",
+            "invoice_number": order.invoice_number,
+            "momo": self._momo_details(),
+            "propagation_notice": (
+                "Domain registration and DNS propagation takes 24 to 48 hours to fully resolve worldwide across all networks."
+            ),
+        }
+
+    async def _activate_domain_order(self, order: Order, *, actor_id: UUID | None = None) -> None:
+        from app.services.platform.dns_writer import DnsWriterService
+
+        domain_name = (order.domain_name or "").strip().lower()
+        customer = await self._session.get(Customer, order.customer_id)
+
+        customer_domain_id = (order.meta_json or {}).get("customer_domain_id")
+        cd: CustomerDomain | None = None
+        if customer_domain_id:
+            try:
+                cd = await self._session.get(CustomerDomain, UUID(str(customer_domain_id)))
+            except Exception:
+                cd = None
+        if cd is None and domain_name:
+            result = await self._session.execute(
+                select(CustomerDomain).where(
+                    CustomerDomain.customer_id == order.customer_id,
+                    func.lower(CustomerDomain.domain_name) == domain_name,
+                )
+            )
+            cd = result.scalars().first()
+
+        if cd is not None:
+            cd.status = "active"
+            cd.registration_date = cd.registration_date or datetime.now(UTC)
+            cd.expiry_date = datetime.now(UTC) + timedelta(days=365)
+            cd.registrar = cd.registrar or "ifnotus"
+            env_id = (order.meta_json or {}).get("environment_id")
+            if env_id and not cd.environment_id:
+                try:
+                    cd.environment_id = UUID(str(env_id))
+                except Exception:
+                    pass
+        elif domain_name:
+            cd = CustomerDomain(
+                customer_id=order.customer_id,
+                domain_name=domain_name,
+                status="active",
+                registration_date=datetime.now(UTC),
+                expiry_date=datetime.now(UTC) + timedelta(days=365),
+                registrar="ifnotus",
+                auto_renew=True,
+            )
+            self._session.add(cd)
+
+        try:
+            DnsWriterService(self._settings).publish_zone(domain_name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("domain_activate_zone_publish_skipped", domain=domain_name, error=str(exc))
+
+        order.provisioning_status = "active"
+
+        self._session.add(
+            PlatformAuditLog(
+                customer_id=order.customer_id,
+                actor_id=actor_id,
+                action="order.domain_activated",
+                target_type="order",
+                target_id=str(order.id),
+                result="success",
+                metadata_json={
+                    "domain": domain_name,
+                    "invoice_number": order.invoice_number,
+                },
+            )
+        )
+
+        name = customer.full_name if customer else "Customer"
+        sms_text = (
+            f"Hello {name}, your domain {domain_name} is now active and ready to use! "
+            f"Please allow 24-48 hours for global DNS propagation to complete."
+        )
+        await NotificationService(self._session, self._settings).notify(
+            order.customer_id,
+            title=f"Domain {domain_name} Activated",
+            body=(
+                f"Your domain {domain_name} has been registered and activated. "
+                f"It is now active in your account. Please allow 24 to 48 hours for DNS propagation worldwide."
+            ),
+            kind="domain",
+            sms_body=sms_text,
+            deliver=True,
         )
 
     async def _init_payment(self, customer: Customer, order: Order, amount: Decimal, *, purpose: str) -> dict:

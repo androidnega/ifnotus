@@ -356,3 +356,63 @@ class MessageDelivery:
         if len(digits) < 10:
             return None
         return digits
+
+    def check_sms_balance(self) -> dict[str, Any]:
+        """Fetch live balance details from the configured SMS provider."""
+        provider = (self._settings.sms_provider or "none").lower()
+        if provider in {"", "none", "off"}:
+            return {"ok": False, "provider": provider, "message": "SMS provider is not configured."}
+        if provider == "log":
+            return {"ok": True, "provider": "log", "sms_balance": 999999, "main_balance": 0.0, "currency": "SMS (dev stub)"}
+
+        if provider == "arkasel":
+            api_key = self._settings.sms_api_key or ""
+            if not api_key:
+                return {"ok": False, "provider": "arkasel", "message": "Arkasel API key is not set."}
+            try:
+                headers = {"api-key": api_key}
+                with httpx.Client(timeout=10.0) as client:
+                    resp = client.get("https://sms.arkesel.com/api/v2/clients/balance-details", headers=headers)
+                if 200 <= resp.status_code < 300:
+                    data = resp.json()
+                    inner = data.get("data") if isinstance(data, dict) else {}
+                    sms_bal = inner.get("sms_balance") if isinstance(inner, dict) else None
+                    main_bal = inner.get("main_balance") if isinstance(inner, dict) else None
+                    return {
+                        "ok": True,
+                        "provider": "arkasel",
+                        "sms_balance": sms_bal,
+                        "main_balance": main_bal,
+                        "message": "Arkasel balance retrieved successfully.",
+                    }
+                return {
+                    "ok": False,
+                    "provider": "arkasel",
+                    "status_code": resp.status_code,
+                    "message": f"Arkasel error ({resp.status_code}): {resp.text[:150]}",
+                }
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "provider": "arkasel", "message": f"Failed to connect to Arkasel: {exc}"}
+
+        if provider == "moolre":
+            key = self._settings.sms_api_key or ""
+            if not key:
+                return {"ok": False, "provider": "moolre", "message": "Moolre API key is not set."}
+            try:
+                headers = {"X-API-VASKEY": key}
+                with httpx.Client(timeout=10.0) as client:
+                    resp = client.get("https://api.moolre.com/open/balance", headers=headers)
+                if 200 <= resp.status_code < 300:
+                    data = resp.json()
+                    return {"ok": True, "provider": "moolre", "raw": data, "message": "Moolre balance retrieved."}
+                return {
+                    "ok": False,
+                    "provider": "moolre",
+                    "status_code": resp.status_code,
+                    "message": f"Moolre error: {resp.text[:150]}",
+                }
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "provider": "moolre", "message": f"Failed to connect to Moolre: {exc}"}
+
+        return {"ok": False, "provider": provider, "message": f"Live balance lookup not supported for provider '{provider}'."}
+

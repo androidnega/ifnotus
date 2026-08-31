@@ -960,6 +960,36 @@ async def import_integrations_from_env(settings: SettingsDep) -> IntegrationsSta
 
 
 @router.get(
+    "/integrations/sms-balance",
+    dependencies=[Depends(RequirePermission(Permission.PLATFORM_READ))],
+)
+async def get_sms_balance(
+    session: DbSession,
+    settings: SettingsDep,
+) -> dict:
+    """Get live balance from Arkasel/SMS provider + total SMS sent & cost tracking."""
+    from app.models.platform import Notification
+    from app.services.platform.delivery import DeliveryService
+    from sqlalchemy import func, select
+
+    delivery = DeliveryService(settings)
+    bal = delivery.check_sms_balance()
+
+    stmt = select(func.count(Notification.id)).where(Notification.channel == "sms")
+    res = await session.execute(stmt)
+    total_sent = int(res.scalar() or 0)
+    estimated_spent = round(total_sent * 0.04, 2)
+
+    return {
+        **bal,
+        "total_sms_sent": total_sent,
+        "estimated_spent_ghs": estimated_spent,
+        "unit_rate_ghs": 0.04,
+    }
+
+
+
+@router.get(
     "/coupons",
     dependencies=[Depends(RequirePermission(Permission.PLATFORM_READ))],
 )

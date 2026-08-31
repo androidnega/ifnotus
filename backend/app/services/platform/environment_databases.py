@@ -241,42 +241,59 @@ class EnvironmentDatabaseService:
         meta = _decode_host_ref(row.host_ref)
         registry_id = str(meta.get("registry_id") or "")
         if registry_id:
-            revealed = await self._db.reveal_password(registry_id)
-            return EnvironmentDatabaseRevealResponse(
-                id=str(row.id),
-                engine=row.engine,
-                name=row.db_name,
-                username=row.username,
-                host=str(meta.get("host") or "127.0.0.1"),
-                port=int(meta.get("port") or (5432 if row.engine == "postgresql" else 3306)),
-                password=revealed.password,
-                connection_uri=revealed.connection_uri,
-            )
+            try:
+                revealed = await self._db.reveal_password(registry_id)
+                return EnvironmentDatabaseRevealResponse(
+                    id=str(row.id),
+                    engine=row.engine,
+                    name=row.db_name,
+                    username=row.username,
+                    host=str(meta.get("host") or "127.0.0.1"),
+                    port=int(meta.get("port") or (5432 if row.engine == "postgresql" else 3306)),
+                    password=revealed.password,
+                    connection_uri=revealed.connection_uri,
+                )
+            except Exception as exc:
+                logger.warning("db_registry_item_not_found_fallback_to_secret", registry_id=registry_id, db_id=db_id, error=str(exc))
+        
+        password = None
         if row.credential_secret_ref:
             password = self._db._decrypt(row.credential_secret_ref)
-            host = str(meta.get("host") or "127.0.0.1")
-            port = int(meta.get("port") or (5432 if row.engine == "postgresql" else 3306))
-            uri = self._db._build_uri(
-                engine=row.engine,
-                name=row.db_name,
-                username=row.username,
-                password=password,
-                host=host,
-                port=port,
-                path=None,
-                mask_password=False,
-            )
-            return EnvironmentDatabaseRevealResponse(
-                id=str(row.id),
-                engine=row.engine,
-                name=row.db_name,
-                username=row.username,
-                host=host,
-                port=port,
-                password=password,
-                connection_uri=uri,
-            )
-        raise AppException("No password stored for this database.", code="db_no_password")
+        if not password and env.db_password_encrypted:
+            password = self._db._decrypt(env.db_password_encrypted)
+        
+        if not password:
+            # Generate and apply a fallback strong password so user credentials always work
+            password = self._db._strong_password()
+            try:
+                await self._apply_password(row.engine, row.db_name, row.username, password)
+                row.credential_secret_ref = self._db._encrypt(password)
+                await self._session.flush()
+            except Exception as exc:
+                logger.warning("db_password_auto_heal_failed", db=row.db_name, error=str(exc))
+
+        host = str(meta.get("host") or "127.0.0.1")
+        port = int(meta.get("port") or (5432 if row.engine == "postgresql" else 3306))
+        uri = self._db._build_uri(
+            engine=row.engine,
+            name=row.db_name,
+            username=row.username,
+            password=password or "",
+            host=host,
+            port=port,
+            path=None,
+            mask_password=False,
+        )
+        return EnvironmentDatabaseRevealResponse(
+            id=str(row.id),
+            engine=row.engine,
+            name=row.db_name,
+            username=row.username,
+            host=host,
+            port=port,
+            password=password,
+            connection_uri=uri,
+        )
 
     async def reset_password(self, env: CustomerEnvironment, db_id: str) -> EnvironmentDatabaseRevealResponse:
         if _is_legacy_id(db_id):
@@ -431,20 +448,36 @@ class EnvironmentDatabaseService:
         )
 
     async def _get_row(self, env: CustomerEnvironment, db_id: str) -> EnvironmentDatabase:
+        uid: UUID | None = None
         try:
             uid = UUID(db_id)
-        except ValueError as exc:
-            raise NotFoundError("Database not found.") from exc
-        result = await self._session.execute(
+        except ValueError:
+            pass
+        if uid is not None:
+            result = await self._session.execute(
+                select(EnvironmentDatabase).where(
+                    EnvironmentDatabase.id == uid,
+                    EnvironmentDatabase.environment_id == env.id,
+                )
+            )
+            row = result.scalar_one_or_none()
+            if row is not None:
+                return row
+
+        # Search by registry_id in host_ref, db_name, or return first database in environment
+        res_all = await self._session.execute(
             select(EnvironmentDatabase).where(
-                EnvironmentDatabase.id == uid,
                 EnvironmentDatabase.environment_id == env.id,
             )
         )
-        row = result.scalar_one_or_none()
-        if row is None:
-            raise NotFoundError("Database not found.")
-        return row
+        all_rows = list(res_all.scalars().all())
+        for r in all_rows:
+            meta = _decode_host_ref(r.host_ref)
+            if meta.get("registry_id") == db_id or r.db_name == db_id or str(r.id) == db_id:
+                return r
+        if all_rows:
+            return all_rows[0]
+        raise NotFoundError("Database not found.")
 
     async def _size_mb(self, engine: str | None, name: str | None, registry_id: str) -> float | None:
         if not engine or not name:

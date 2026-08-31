@@ -815,6 +815,13 @@ class EnvironmentDnsService:
             raise AppException("That domain is already attached to another account.", code="domain_in_use")
         if other and other.environment_id not in {None, env.id}:
             raise AppException("That domain is already assigned to another site. Unassign it first.", code="domain_in_use")
+        if other and other.status in {"pending_registration", "pending_purchase"}:
+            raise AppException(
+                f"Domain {name} is currently pending registration and fulfillment. "
+                "Once activated by our team, it will be linked to your hosting. "
+                "Please allow 24 to 48 hours for global DNS propagation.",
+                code="domain_pending_activation",
+            )
 
         if not env.document_root:
             raise AppException("This site has no document root yet.", code="no_docroot")

@@ -12,7 +12,7 @@ import httpx
 
 from app.core.config import Settings
 from app.core.logging import get_logger
-from app.services.platform.orders import DOMAIN_PRICES
+from app.services.platform.integrations_store import IntegrationsSettingsStore
 
 logger = get_logger(__name__)
 
@@ -93,7 +93,7 @@ class DomainRegistrar:
         sld = name.lower().strip().replace(" ", "")
         tld = extension.lower().lstrip(".")
         domain = f"{sld}.{tld}"
-        price = DOMAIN_PRICES.get(f".{tld}", Decimal("0"))
+        price = IntegrationsSettingsStore(self._settings).get_domain_prices().get(f".{tld}", Decimal("0"))
 
         cached = _CHECK_CACHE.get(domain)
         if cached and (time.monotonic() - cached[0]) < _CHECK_CACHE_TTL:
