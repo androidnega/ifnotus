@@ -705,8 +705,11 @@ class EnvironmentDnsService:
         if not env.domain:
             return {"ok": False, "local": False, "message": "This site has no domain yet."}
         if self.is_included_hostname(env.domain):
-            # Student / addon hostnames rely on apex wildcards — verify resolution so
-            # NXDOMAIN surfaces in the provision job instead of a false green.
+            if env.domain.endswith(".customers.ifnotus.space"):
+                try:
+                    self._auth.ensure_generated_environment_dns(env.domain)
+                except Exception as g_exc:
+                    logger.warning("ensure_generated_dns_failed", domain=env.domain, error=str(g_exc))
             resolved = self.verify_hostname_resolves(env.domain)
             ok = bool(resolved.get("ok"))
             return {

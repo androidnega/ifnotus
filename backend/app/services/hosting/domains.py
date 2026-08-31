@@ -712,6 +712,18 @@ class DomainService:
             entity.ssl_certificate_path = str(le)
             entity.force_https = True
 
+        # Ensure Authoritative DNS zone is written / reloaded
+        try:
+            from app.services.platform.authoritative_dns import AuthoritativeDnsService
+            from app.services.platform.panel_access import is_platform_hostname
+
+            if not is_platform_hostname(entity.name, settings=self._settings) and not entity.name.endswith(".customers.ifnotus.space"):
+                AuthoritativeDnsService(self._settings).ensure_zone(entity.name)
+            elif entity.name.endswith(".customers.ifnotus.space"):
+                AuthoritativeDnsService(self._settings).ensure_generated_environment_dns(entity.name)
+        except Exception as dns_exc:  # noqa: BLE001
+            logger.warning("domain_dns_zone_ensure_failed", domain=entity.name, error=str(dns_exc))
+
         result = await self._provisioner.provision(
             hostname=entity.name,
             document_root=entity.document_root,

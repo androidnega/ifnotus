@@ -834,6 +834,12 @@ class StaffPlatformService:
                 AuthoritativeDnsService(self._settings).ensure_zone(raw_name)
             except Exception as e:
                 logger.warning("update_env_dns_zone_failed", error=str(e), domain=raw_name)
+        elif raw_name.endswith(".customers.ifnotus.space"):
+            from app.services.platform.authoritative_dns import AuthoritativeDnsService
+            try:
+                AuthoritativeDnsService(self._settings).ensure_generated_environment_dns(raw_name)
+            except Exception as e:
+                logger.warning("update_env_dns_zone_failed", error=str(e), domain=raw_name)
 
         self._session.add(
             PlatformAuditLog(

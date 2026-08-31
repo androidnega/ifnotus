@@ -52,6 +52,18 @@ class EnvironmentReconciliationService:
             d_name = (d.name or "").strip().lower()
             if d_name and d_name not in seen_domains and not is_platform_hostname(d_name, settings=self._settings):
                 seen_domains.add(d_name)
+                # Ensure DNS zone if hosted on IFNOTUS NS
+                dns_updated = False
+                try:
+                    if not d_name.endswith(".customers.ifnotus.space"):
+                        self._auth_dns.ensure_zone(d_name)
+                        dns_updated = True
+                    else:
+                        env_dns = self._auth_dns.ensure_generated_environment_dns(d_name)
+                        dns_updated = env_dns.get("ok", False)
+                except Exception:
+                    pass
+
                 # Look up certificate
                 cert_path = Path(f"/etc/letsencrypt/live/{d_name}/fullchain.pem")
                 has_ssl = cert_path.exists()
@@ -70,10 +82,53 @@ class EnvironmentReconciliationService:
                         "domain": d_name,
                         "fpanel_host": control_panel_hostname(d_name, settings=self._settings),
                         "nginx_vhost_rendered": nginx_res.success,
+                        "dns_updated": dns_updated,
                         "ssl_active": has_ssl,
                     })
                 except Exception as exc:
                     reports.append({"domain": d_name, "error": str(exc)})
+
+        # Also check CustomerDomain table if any unassigned / attached custom domains exist
+        stmt_cd = select(CustomerDomain)
+        res_cd = await self._session.execute(stmt_cd)
+        cd_rows = list(res_cd.scalars().all())
+        for cd in cd_rows:
+            cd_name = (cd.domain_name or "").strip().lower()
+            if cd_name and cd_name not in seen_domains and not is_platform_hostname(cd_name, settings=self._settings):
+                seen_domains.add(cd_name)
+                dns_updated = False
+                try:
+                    if not cd_name.endswith(".customers.ifnotus.space"):
+                        self._auth_dns.ensure_zone(cd_name)
+                        dns_updated = True
+                    else:
+                        env_dns = self._auth_dns.ensure_generated_environment_dns(cd_name)
+                        dns_updated = env_dns.get("ok", False)
+                except Exception:
+                    pass
+
+                cert_path = Path(f"/etc/letsencrypt/live/{cd_name}/fullchain.pem")
+                has_ssl = cert_path.exists()
+                try:
+                    nginx_res = await self._nginx.provision(
+                        hostname=cd_name,
+                        document_root=f"/var/www/{cd_name}",
+                        proxy_port=None,
+                        force_https=has_ssl,
+                        enabled=True,
+                        create_docroot=True,
+                        force_takeover=True,
+                        ssl_certificate=str(cert_path) if has_ssl else None,
+                    )
+                    reports.append({
+                        "domain": cd_name,
+                        "fpanel_host": control_panel_hostname(cd_name, settings=self._settings),
+                        "nginx_vhost_rendered": nginx_res.success,
+                        "dns_updated": dns_updated,
+                        "ssl_active": has_ssl,
+                    })
+                except Exception as exc:
+                    reports.append({"domain": cd_name, "error": str(exc)})
 
         return reports
 
