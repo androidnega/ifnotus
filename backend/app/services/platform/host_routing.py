@@ -99,13 +99,6 @@ def classify_host(host: str | None, *, settings: object | None = None) -> HostKi
         apex = h[len(prefix) :]
         if not apex or "." not in apex:
             return HostKind(kind="unknown", hostname=h)
-        if apex.endswith(".customers.ifnotus.space"):
-            return HostKind(kind="custom_panel", hostname=h, apex=apex)
-        if apex.endswith(f".{PLATFORM_APEX}") or apex in {
-            resolve_student_zone(settings),
-            resolve_legacy_student_zone(settings),
-        }:
-            return HostKind(kind="unknown", hostname=h)
         return HostKind(kind="custom_panel", hostname=h, apex=apex)
 
     if h.startswith("mail.") and h != f"mail.{PLATFORM_APEX}":

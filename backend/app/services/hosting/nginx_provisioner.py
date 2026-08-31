@@ -83,27 +83,36 @@ class DomainNginxProvisioner:
         ACME challenges stay on the HTTP vhost webroot (never bounce to ifnotus.space).
         """
         site_names = [hostname] + [a for a in (aliases or []) if a and a != hostname]
-        from app.services.platform.panel_access import control_panel_hostname, is_platform_hostname, webmail_hostname
+        from app.services.platform.panel_access import control_panel_hostname, webmail_hostname
         from app.services.platform.student_hostname import is_student_hostname
 
         cpanel_host = None
         webmail_host = None
         mail_host = None
-        is_sub_or_student = is_platform_hostname(hostname) or is_student_hostname(hostname, settings=self._settings)
+        is_platform_root = hostname in {
+            "ifnotus.space",
+            "www.ifnotus.space",
+            "fpanel.ifnotus.space",
+            "mail.ifnotus.space",
+            "api.ifnotus.space",
+        }
 
-        if not is_sub_or_student:
+        if not is_platform_root:
             c_host = control_panel_hostname(hostname, settings=self._settings)
-            if c_host and c_host != hostname and not is_platform_hostname(c_host):
+            if c_host and c_host != hostname and c_host != "fpanel.ifnotus.space":
                 cpanel_host = c_host
-            if "." in hostname and not hostname.startswith("www."):
+            if "." in hostname and not hostname.startswith("www.") and not is_student_hostname(hostname, settings=self._settings):
                 mail_host = f"mail.{hostname}"
                 w_host = webmail_hostname(hostname, settings=self._settings)
-                if w_host and w_host != hostname and not is_platform_hostname(w_host):
+                if w_host and w_host != hostname and w_host != "mail.ifnotus.space":
                     webmail_host = w_host
 
-        # www for apex custom domains (not for platform / student zones)
+        # www for apex custom domains (not for platform / student subdomains)
         if (
-            not is_sub_or_student
+            not is_platform_root
+            and not is_student_hostname(hostname, settings=self._settings)
+            and not hostname.endswith(".ifnotus.space")
+            and not hostname.endswith(".serverlabsttu.space")
             and not hostname.startswith("www.")
             and f"www.{hostname}" not in site_names
         ):

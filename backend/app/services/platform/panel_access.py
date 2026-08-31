@@ -47,9 +47,8 @@ def is_platform_hostname(domain: str | None, *, settings: object | None = None) 
 
 
 def control_panel_hostname(domain: str | None, *, settings: object | None = None) -> str | None:
-    """Canonical customer fPanel hostname: fpanel.<domain> (e.g. fpanel.yalleydadzie.online).
-    Customer subdomains (e.g. blog.yalleydadzie.online) remain managed through fpanel.<primary-domain>.
-    Student project subdomains (*.ifnotus.space) never generate double fpanel subdomains.
+    """Canonical customer fPanel hostname: fpanel.<domain> (e.g. fpanel.yalleydadzie.online or fpanel.ade.ifnotus.space).
+    Customer subdomains remain managed through their dedicated fpanel.<domain>.
     """
     host = (domain or "").lower().rstrip(".")
     if host.startswith("www."):
@@ -60,23 +59,6 @@ def control_panel_hostname(domain: str | None, *, settings: object | None = None
         return STAFF_PANEL_HOST
     if host.startswith("fpanel."):
         return host
-    if host.endswith(".customers.ifnotus.space"):
-        return f"fpanel.{host}"
-    if is_student_hostname(host, settings=settings) or is_platform_hostname(host, settings=settings):
-        # Student hostnames are subdomains; their panel is the main platform panel
-        return STAFF_PANEL_HOST
-
-    parts = host.split(".")
-    if len(parts) > 2:
-        two_level_tlds = {"co.uk", "org.uk", "me.uk", "com.gh", "org.gh", "edu.gh", "gov.gh", "net.gh", "com.ng", "co.za"}
-        suffix2 = ".".join(parts[-2:])
-        if suffix2 in two_level_tlds and len(parts) > 3:
-            primary = ".".join(parts[-3:])
-            return f"fpanel.{primary}"
-        elif suffix2 not in two_level_tlds:
-            primary = ".".join(parts[-2:])
-            return f"fpanel.{primary}"
-
     return f"fpanel.{host}"
 
 
@@ -249,6 +231,14 @@ def find_letsencrypt_cert(hostname: str) -> tuple[str | None, str | None]:
         privkey = cand / "privkey.pem"
         if fullchain.exists() and privkey.exists():
             return str(fullchain), str(privkey)
+
+    # If this is a service prefix (fpanel., cpanel., webmail., mail.), check the apex domain
+    for prefix in ("fpanel.", "cpanel.", "webmail.", "mail.", "www."):
+        if clean.startswith(prefix):
+            apex = clean[len(prefix):]
+            for cand in [live_dir / apex, live_dir / f"{apex}-0001", live_dir / f"{apex}-0002"]:
+                if (cand / "fullchain.pem").exists() and (cand / "privkey.pem").exists():
+                    return str(cand / "fullchain.pem"), str(cand / "privkey.pem")
 
     # Fallback for platform/student subdomains to ensure HTTPS is always enabled
     if clean.endswith(".ifnotus.space"):
