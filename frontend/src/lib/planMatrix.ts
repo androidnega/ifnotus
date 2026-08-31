@@ -83,7 +83,7 @@ const FALLBACK: Record<string, Pick<PlanMatrix, 'kind' | 'custom_domains' | 'ssh
   personal: {
     kind: 'managed', custom_domains: 1, ssh: 'no',
     sftp: L, file_manager: Y, cron: L, ssl: Y, db_manage: L, ai: L,
-    stacks: { php: Y, laravel: L, wordpress: Y, mysql: L, python: L, django: N, fastapi: N, flask: L, nodejs: L, nextjs: N, express: L, react: Y, vue: L, postgres: L, mongodb: N, redis: N, docker: N },
+    stacks: { php: Y, laravel: N, wordpress: Y, mysql: Y, python: N, django: N, fastapi: N, flask: N, nodejs: N, nextjs: N, express: N, react: N, vue: N, postgres: N, mongodb: N, redis: N, docker: N },
   },
   'club-connect': {
     kind: 'managed', custom_domains: 3, ssh: 'limited',

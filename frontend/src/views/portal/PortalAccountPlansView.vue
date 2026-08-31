@@ -13,12 +13,16 @@ import { planAccentFromPrice } from '@/lib/theme'
 import { formatCpu, formatRamGb } from '@/lib/planResources'
 import { sshHeadline, visibleStacks } from '@/lib/planMatrix'
 
-const DOMAIN_FEES: Record<string, number> = {
-  '.online': 50,
+const DOMAIN_FEES = ref<Record<string, number>>({
+  '.online': 65,
   '.com': 225,
-  '.org': 180,
-  '.net': 200,
-}
+  '.org': 240,
+  '.net': 260,
+  '.xyz': 70,
+  '.store': 95,
+  '.tech': 120,
+  '.site': 65,
+})
 
 const router = useRouter()
 const route = useRoute()
@@ -72,7 +76,7 @@ const packageAccent = computed(() => {
 })
 
 const domainFee = computed(() =>
-  domainMode.value === 'register' ? DOMAIN_FEES[domainExt.value] || 0 : 0,
+  domainMode.value === 'register' ? DOMAIN_FEES.value[domainExt.value] || 0 : 0,
 )
 
 const selectedTerm = computed(
@@ -153,10 +157,21 @@ onMounted(async () => {
       })
       return
     }
-    const [planRes, dashRes] = await Promise.all([catalogApi.plans(), customersApi.dashboard()])
+    const [planRes, dashRes, metaRes] = await Promise.all([
+      catalogApi.plans(),
+      customersApi.dashboard(),
+      catalogApi.meta().catch(() => null),
+    ])
     plans.value = planRes.data.items
     comingSoon.value = planRes.data.coming_soon || []
     dash.value = dashRes.data
+    if (metaRes?.data?.domain_prices?.length) {
+      const map: Record<string, number> = {}
+      for (const d of metaRes.data.domain_prices) {
+        map[d.extension] = Number(d.price_yearly)
+      }
+      DOMAIN_FEES.value = { ...DOMAIN_FEES.value, ...map }
+    }
     // Prefill student surname from profile during checkout only (not after activation).
     const parts = (dash.value.customer.full_name || '').trim().split(/\s+/).filter(Boolean)
     if (parts.length && !studentSurname.value) {

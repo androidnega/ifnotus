@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
@@ -10,7 +10,7 @@ import { useAuthStore } from '@/stores/auth'
 import { usePolling } from '@/composables/usePolling'
 import { Permission } from '@/lib/permissions'
 import { usePermissions } from '@/composables/usePermissions'
-import { isPlatformOwner, isPlatformAdmin } from '@/lib/roles'
+import { isPlatformOwner, isPlatformAdmin, isStaffUser } from '@/lib/roles'
 import Skeleton from '@/components/ui/Skeleton.vue'
 import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import UiTabBar from '@/components/ui/UiTabBar.vue'
@@ -29,13 +29,15 @@ interface WebmailSettings {
   updated_at?: string | null
 }
 
+const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const { can } = usePermissions()
 const isOwner = computed(() => isPlatformOwner(auth.user))
 const isAdmin = computed(() => isPlatformAdmin(auth.user))
+const isStaff = computed(() => isStaffUser(auth.user))
 
-const canManageSecurity = computed(() => isOwner.value || can(Permission.SYSTEM_ADMIN))
+const canManageSecurity = computed(() => isOwner.value || isAdmin.value || can(Permission.SYSTEM_ADMIN) || isStaff.value)
 
 const { data: readiness, refresh: refreshReadiness } = usePolling<ReadinessResponse>(
   async () => (await healthApi.readiness()).data,
@@ -50,7 +52,7 @@ const aiModel = ref('deepseek-chat')
 const aiAgentName = ref('SNR Dev')
 const aiMessage = ref<{ ok: boolean; text: string } | null>(null)
 const settingsTab = ref('account')
-const canManageAi = computed(() => isOwner.value)
+const canManageAi = computed(() => isOwner.value || isAdmin.value || can(Permission.SYSTEM_ADMIN) || can(Permission.PLATFORM_WRITE) || isStaff.value)
 
 const webmailSettings = ref<WebmailSettings | null>(null)
 const webmailLoading = ref(false)
@@ -59,11 +61,11 @@ const webmailWhatsapp = ref('+233541069241')
 const webmailProduct = ref('IFNOTUS Webmail')
 const webmailAutoDetect = ref(true)
 const webmailMessage = ref<{ ok: boolean; text: string } | null>(null)
-const canManageWebmail = computed(() => isOwner.value || isAdmin.value || can(Permission.SYSTEM_ADMIN))
-const canManageIntegrations = computed(() => isOwner.value)
-const canManageTheme = computed(() => isOwner.value || isAdmin.value)
+const canManageWebmail = computed(() => isOwner.value || isAdmin.value || can(Permission.SYSTEM_ADMIN) || can(Permission.PLATFORM_WRITE) || isStaff.value)
+const canManageIntegrations = computed(() => isOwner.value || isAdmin.value || can(Permission.PLATFORM_WRITE) || can(Permission.SYSTEM_ADMIN) || isStaff.value)
+const canManageTheme = computed(() => isOwner.value || isAdmin.value || can(Permission.PLATFORM_WRITE) || isStaff.value)
 const canManageStaff = computed(
-  () => isOwner.value && !auth.user?.privilege_viewing_as,
+  () => (isOwner.value || isAdmin.value || can(Permission.USERS_WRITE) || can(Permission.SYSTEM_ADMIN) || isStaff.value) && !auth.user?.privilege_viewing_as,
 )
 
 const siteTheme = ref('studio-light')
@@ -145,7 +147,9 @@ const settingsTabs = computed(() => {
   if (canManageAi.value) tabs.push({ id: 'ai', label: 'AI agent' })
   if (canManageWebmail.value) tabs.push({ id: 'webmail', label: 'Webmail' })
   if (canManageStaff.value) tabs.push({ id: 'staff', label: 'Staff' })
-  if (isOwner.value) tabs.push({ id: 'health', label: 'Health' })
+  if (isOwner.value || isAdmin.value || can(Permission.SYSTEM_ADMIN) || can(Permission.PLATFORM_READ) || isStaff.value) {
+    tabs.push({ id: 'health', label: 'Health' })
+  }
   return tabs
 })
 
@@ -367,6 +371,47 @@ watch(
   { deep: true },
 )
 
+const smsBalanceData = ref<{
+  ok: boolean
+  provider: string
+  sms_balance?: number | null
+  main_balance?: number | null
+  total_sms_sent?: number
+  estimated_spent_ghs?: number
+  unit_rate_ghs?: number
+  message?: string
+} | null>(null)
+const smsBalanceLoading = ref(false)
+
+const domainPrices = ref<Record<string, number>>({
+  '.online': 65,
+  '.com': 225,
+  '.org': 240,
+  '.net': 260,
+  '.xyz': 70,
+  '.store': 95,
+  '.tech': 120,
+  '.site': 65,
+  '.me': 150,
+  '.info': 190,
+})
+
+async function loadSmsBalance() {
+  smsBalanceLoading.value = true
+  try {
+    const { data } = await platformAdminApi.getSmsBalance()
+    smsBalanceData.value = data
+  } catch (e) {
+    smsBalanceData.value = {
+      ok: false,
+      provider: smsProvider.value,
+      message: getApiErrorMessage(e, 'Could not fetch live SMS balance.'),
+    }
+  } finally {
+    smsBalanceLoading.value = false
+  }
+}
+
 async function loadApiIntegrations() {
   if (!canManageIntegrations.value) return
   apiIntLoading.value = true
@@ -393,6 +438,12 @@ async function loadApiIntegrations() {
     momoNetwork.value = data.momo?.network || 'MTN'
     momoNumber.value = data.momo?.number || '0257940791'
     momoAccount.value = data.momo?.account_name || 'Emmanuel Kwofie'
+    if (data.domain_prices && Object.keys(data.domain_prices).length > 0) {
+      domainPrices.value = { ...domainPrices.value, ...data.domain_prices }
+    }
+    if (data.sms.configured && smsProvider.value !== 'none') {
+      void loadSmsBalance()
+    }
   } catch (e) {
     apiIntMessage.value = {
       ok: false,
@@ -432,6 +483,7 @@ async function saveApiIntegrations() {
         number: momoNumber.value.trim() || null,
         account_name: momoAccount.value.trim() || 'Emmanuel Kwofie',
       },
+      domain_prices: domainPrices.value,
     }
     if (ncKey.value.trim()) body.namecheap!.api_key = ncKey.value.trim()
     if (psSecret.value.trim()) body.paystack!.secret_key = psSecret.value.trim()
@@ -565,7 +617,28 @@ function refreshAll() {
   loadStaffUsers()
 }
 
-onMounted(refreshAll)
+onMounted(() => {
+  const initialTab = route.query.tab
+  if (typeof initialTab === 'string' && initialTab.trim()) {
+    settingsTab.value = initialTab.trim()
+  }
+  refreshAll()
+})
+
+watch(
+  () => route.query.tab,
+  (tab) => {
+    if (typeof tab === 'string' && tab.trim() && tab !== settingsTab.value) {
+      settingsTab.value = tab.trim()
+    }
+  },
+)
+
+watch(settingsTab, (tab) => {
+  if (route.query.tab !== tab) {
+    void router.replace({ query: { ...route.query, tab } })
+  }
+})
 </script>
 
 <template>
@@ -952,6 +1025,46 @@ onMounted(refreshAll)
                 <span class="text-surface-muted">Sender ID</span>
                 <input v-model="smsSender" class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 text-sm" />
               </label>
+
+              <!-- Live SMS Balance & Spend Tracking -->
+              <div v-if="smsProvider !== 'none'" class="mt-3 space-y-2 rounded-lg bg-slate-50 p-3 dark:bg-slate-900/60 border border-surface-border">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-semibold uppercase tracking-wider text-surface-muted">SMS Balance & Usage</span>
+                  <button
+                    type="button"
+                    class="text-xs text-brand-600 hover:underline dark:text-brand-400 font-medium disabled:opacity-50"
+                    :disabled="smsBalanceLoading"
+                    @click="loadSmsBalance"
+                  >
+                    {{ smsBalanceLoading ? 'Checking…' : '↻ Check Balance' }}
+                  </button>
+                </div>
+
+                <div class="grid grid-cols-2 gap-2 text-xs">
+                  <div class="rounded bg-white p-2 border border-surface-border dark:bg-slate-800">
+                    <p class="text-surface-muted">Live Balance</p>
+                    <p class="mt-0.5 text-sm font-bold text-slate-900 dark:text-white">
+                      <span v-if="smsBalanceData?.sms_balance != null">{{ smsBalanceData.sms_balance }} SMS</span>
+                      <span v-else-if="smsBalanceData?.main_balance != null">GHS {{ Number(smsBalanceData.main_balance).toFixed(2) }}</span>
+                      <span v-else-if="smsBalanceLoading" class="text-surface-muted text-xs">Loading…</span>
+                      <span v-else class="text-surface-muted text-xs">Not checked</span>
+                    </p>
+                  </div>
+                  <div class="rounded bg-white p-2 border border-surface-border dark:bg-slate-800">
+                    <p class="text-surface-muted">SMS Sent (Ledger)</p>
+                    <p class="mt-0.5 text-sm font-bold text-slate-900 dark:text-white">
+                      {{ smsBalanceData?.total_sms_sent ?? '—' }}
+                      <span class="text-[10px] font-normal text-surface-muted block" v-if="smsBalanceData?.estimated_spent_ghs != null">
+                        (~GHS {{ smsBalanceData.estimated_spent_ghs.toFixed(2) }} spent)
+                      </span>
+                    </p>
+                  </div>
+                </div>
+
+                <p v-if="smsBalanceData?.message" class="text-[11px]" :class="smsBalanceData.ok ? 'text-surface-muted' : 'text-amber-600 dark:text-amber-400'">
+                  {{ smsBalanceData.message }}
+                </p>
+              </div>
             </div>
           </div>
 
@@ -987,6 +1100,51 @@ onMounted(refreshAll)
               @click="loadApiIntegrations"
             >
               Refresh
+            </button>
+          </div>
+        </div>
+      </Card>
+
+      <Card
+        title="Domain pricing & TLD fees (GHS)"
+        subtitle="Manage selling prices for standalone and package domain registrations"
+      >
+        <div class="space-y-4">
+          <p class="text-xs text-surface-muted">
+            Set customer prices in GHS. When customers order a standalone domain or add a domain during checkout, these rates are applied.
+          </p>
+
+          <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+            <div
+              v-for="(price, ext) in domainPrices"
+              :key="ext"
+              class="rounded-lg border border-surface-border p-3 space-y-1.5"
+            >
+              <div class="flex items-center justify-between">
+                <span class="font-bold text-sm text-brand-600 dark:text-brand-400">{{ ext }}</span>
+                <span class="text-[10px] uppercase font-semibold text-surface-muted">GHS/yr</span>
+              </div>
+              <input
+                v-model.number="domainPrices[ext]"
+                type="number"
+                min="1"
+                step="1"
+                class="w-full rounded-md border border-surface-border bg-transparent px-2.5 py-1.5 text-sm font-semibold"
+              />
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between pt-2">
+            <p class="text-xs text-surface-muted">
+              Standard: .online (65 GHS), .com (225 GHS). Changes take effect immediately.
+            </p>
+            <button
+              type="button"
+              class="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50"
+              :disabled="apiIntSaving"
+              @click="saveApiIntegrations"
+            >
+              {{ apiIntSaving ? 'Saving…' : 'Save Domain Prices' }}
             </button>
           </div>
         </div>

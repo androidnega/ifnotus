@@ -20,9 +20,14 @@ const checkSeq = ref(0)
 let statusTimer: ReturnType<typeof setInterval> | null = null
 
 const tlds = ref<Array<{ extension: string; price_yearly: number }>>([
-  { extension: '.online', price_yearly: 50 },
+  { extension: '.online', price_yearly: 65 },
   { extension: '.com', price_yearly: 225 },
-  { extension: '.org', price_yearly: 180 },
+  { extension: '.org', price_yearly: 240 },
+  { extension: '.net', price_yearly: 260 },
+  { extension: '.xyz', price_yearly: 70 },
+  { extension: '.store', price_yearly: 95 },
+  { extension: '.tech', price_yearly: 120 },
+  { extension: '.site', price_yearly: 65 },
 ])
 
 const listedTlds = computed(() => {
@@ -30,7 +35,7 @@ const listedTlds = computed(() => {
   return order.map((ext) => {
     const hit = tlds.value.find((t) => t.extension.toLowerCase() === ext)
     if (hit) return hit
-    const fallback = { '.online': 50, '.com': 225, '.org': 180 }[ext] ?? 0
+    const fallback = { '.online': 65, '.com': 225, '.org': 240 }[ext] ?? 0
     return { extension: ext, price_yearly: fallback }
   })
 })
@@ -141,9 +146,21 @@ async function checkDomain() {
   }
 }
 
+function buyDomainOnly() {
+  if (domainAvailable.value && cleanName.value) {
+    localStorage.setItem('ifnotus_selected_domain', fullDomain.value)
+    localStorage.setItem('ifnotus_domain_only', '1')
+  }
+  router.push({
+    name: 'portal-signup',
+    query: { domain: fullDomain.value, domain_only: '1' },
+  })
+}
+
 function startWithDomain() {
   if (domainAvailable.value && cleanName.value) {
     localStorage.setItem('ifnotus_selected_domain', fullDomain.value)
+    localStorage.removeItem('ifnotus_domain_only')
   }
   router.push({
     name: 'portal-signup',
@@ -237,8 +254,12 @@ function clearAndRetry() {
               <template v-else>{{ domainMsg }}</template>
             </p>
             <div v-if="!domainBusy" class="result-actions">
-              <button v-if="domainAvailable" type="button" class="go" @click="startWithDomain">
-                Continue with this domain
+              <button v-if="domainAvailable" type="button" class="go" @click="buyDomainOnly">
+                <i class="fa-solid fa-globe" aria-hidden="true" />
+                Buy domain only (₵{{ checkedPrice || selectedTldPrice || 65 }}/yr)
+              </button>
+              <button v-if="domainAvailable" type="button" class="again" @click="startWithDomain">
+                Get with hosting pack
                 <i class="fa-solid fa-arrow-right" aria-hidden="true" />
               </button>
               <button

@@ -1106,9 +1106,52 @@ export const customersApi = {
       domain: string
       available: boolean
       price_yearly: number
+      currency?: string
       message: string
       provider?: string
     }>('/customers/domains/check', { name, extension }),
+
+  listDomains: () =>
+    apiClient.get<{
+      items: Array<{
+        id: string
+        domain_name: string
+        status: string
+        is_active: boolean
+        registrar?: string | null
+        registration_date?: string | null
+        expiry_date?: string | null
+        auto_renew: boolean
+        environment_id?: string | null
+        environment_domain?: string | null
+        propagation_notice: string
+      }>
+      propagation_notice: string
+    }>('/customers/domains'),
+
+  orderDomain: (body: {
+    domain_name: string
+    domain_extension: string
+    environment_id?: string
+  }) =>
+    apiClient.post<{
+      order: {
+        id: string
+        total_price: number
+        currency: string
+        paystack_reference?: string
+        invoice_number?: string
+        payment_status?: string
+        payment_method?: string
+      }
+      authorization_url?: string
+      reference: string
+      demo: boolean
+      payment_method?: string
+      invoice_number?: string
+      momo?: { network: string; number: string; account_name: string }
+      propagation_notice?: string
+    }>('/customers/orders/domain', body),
 
   previewStudentHostname: (surname: string) =>
     apiClient.post<{
@@ -1118,6 +1161,15 @@ export const customersApi = {
       message: string
       zone?: string
     }>('/customers/domains/student-preview', { surname }),
+
+  assignStudentHostname: (environmentId: string, surname: string) =>
+    apiClient.post<{
+      surname: string
+      hostname: string
+      available: boolean
+      message: string
+      zone?: string
+    }>(`/customers/environments/${environmentId}/student-hostname`, { surname }),
 
   resolvePanelAlias: (host: string) =>
     apiClient.get<{
@@ -2573,6 +2625,18 @@ export const platformAdminApi = {
 
   getIntegrations: () =>
     apiClient.get<import('@/types/integrations').IntegrationsStatus>('/platform/integrations'),
+
+  getSmsBalance: () =>
+    apiClient.get<{
+      ok: boolean
+      provider: string
+      sms_balance?: number | null
+      main_balance?: number | null
+      total_sms_sent?: number
+      estimated_spent_ghs?: number
+      unit_rate_ghs?: number
+      message?: string
+    }>('/platform/integrations/sms-balance'),
 
   updateIntegrations: (body: import('@/types/integrations').IntegrationsUpdatePayload) =>
     apiClient.put<import('@/types/integrations').IntegrationsStatus>('/platform/integrations', body),

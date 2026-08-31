@@ -475,6 +475,16 @@ function resolveTabFromRoute(): HostingTab {
 }
 
 function goTab(next: HostingTab) {
+  if (next === 'files') {
+    if (isCustomerCpanelHost()) {
+      window.open('/files', '_blank')
+    } else if (environmentId.value) {
+      window.open(`/hosting/${encodeURIComponent(environmentId.value)}/files`, '_blank')
+    } else {
+      window.open('/files', '_blank')
+    }
+    return
+  }
   tab.value = next
   if (isCustomerCpanelHost()) {
     if (next === 'overview') {
@@ -2274,6 +2284,21 @@ h2 { margin: 0.2rem 0 0.45rem; font-family: Sora, sans-serif; font-size: 1.1rem;
 .theme-confirm-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.7rem; }
 .theme-msg { margin-top: 0.65rem; }
 .hp-embed { min-width: 0; }
+.hp-files-embed {
+  min-width: 0;
+  width: 100%;
+  height: calc(100vh - 5rem);
+  min-height: 650px;
+  display: flex;
+  flex-direction: column;
+}
+.hp-files-embed :deep(.cpanel-fm) {
+  height: 100%;
+  border-radius: 0.75rem;
+  overflow: hidden;
+  border: 1px solid var(--hp-border, #cbd5e1);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.05);
+}
 .hp-ai-embed {
   min-width: 0;
   width: 100%;

@@ -631,7 +631,6 @@ router.beforeEach(async (to) => {
     // Ensure session is valid on customer cpanel hosts.
     if (token && to.meta.requiresAuth) {
       const { useAuthStore } = await import('@/stores/auth')
-      const { isPureCustomer, isStaffUser } = await import('@/lib/roles')
       const auth = useAuthStore()
       if (!auth.user) {
         try {
@@ -641,19 +640,6 @@ router.beforeEach(async (to) => {
           return {
             name: 'login',
             query: { redirect: to.fullPath || '/' },
-          }
-        }
-      }
-      if (isStaffUser(auth.user) && !isPureCustomer(auth.user)) {
-        const roles = new Set(auth.user?.roles ?? [])
-        if (!roles.has('customer')) {
-          auth.clearSession()
-          return {
-            name: 'login',
-            query: {
-              redirect: to.fullPath || '/',
-              reason: 'customer_panel',
-            },
           }
         }
       }

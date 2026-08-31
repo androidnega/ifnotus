@@ -22,7 +22,85 @@ const router = useRouter()
 
 // View state: 'list' or 'details'
 const selectedEnvId = ref<string | null>(null)
-const activeTab = ref<'details' | 'nameservers' | 'password'>('details')
+const activeTab = ref<'details' | 'domains' | 'nameservers' | 'password'>('details')
+
+// Customer domains tab state
+const customerDomains = ref<
+  Array<{
+    id: string
+    domain_name: string
+    status: string
+    is_active: boolean
+    registration_date?: string | null
+    expiry_date?: string | null
+    environment_domain?: string | null
+    propagation_notice?: string
+  }>
+>([])
+const domainsLoading = ref(false)
+const searchDomName = ref('')
+const searchDomExt = ref('.online')
+const searchDomBusy = ref(false)
+const searchDomResult = ref<{
+  domain: string
+  available: boolean
+  price_yearly: number
+  message: string
+} | null>(null)
+const domainOrderBusy = ref(false)
+const domainOrderMsg = ref('')
+const domainOrderSuccess = ref(false)
+
+async function loadCustomerDomains() {
+  domainsLoading.value = true
+  try {
+    const { data } = await customersApi.listDomains()
+    customerDomains.value = data.items || []
+  } catch {
+    /* fallback */
+  } finally {
+    domainsLoading.value = false
+  }
+}
+
+async function checkDomainAvailability() {
+  const name = searchDomName.value.trim().toLowerCase()
+  if (!name) return
+  searchDomBusy.value = true
+  searchDomResult.value = null
+  domainOrderMsg.value = ''
+  try {
+    const { data } = await customersApi.checkDomain(name, searchDomExt.value)
+    searchDomResult.value = data
+  } catch (e) {
+    domainOrderMsg.value = getApiErrorMessage(e, 'Could not check domain availability.')
+  } finally {
+    searchDomBusy.value = false
+  }
+}
+
+async function orderStandaloneDomain() {
+  if (!searchDomResult.value?.available) return
+  domainOrderBusy.value = true
+  domainOrderMsg.value = ''
+  domainOrderSuccess.value = false
+  try {
+    const { data } = await customersApi.orderDomain({
+      domain_name: searchDomName.value.trim().toLowerCase(),
+      domain_extension: searchDomExt.value,
+      environment_id: selectedService.value?.env.id || undefined,
+    })
+    domainOrderSuccess.value = true
+    domainOrderMsg.value = `Order placed (Invoice #${data.invoice_number || data.order.id.slice(0, 8)}). Note: New domain registrations and DNS updates take 24 to 48 hours to fully propagate worldwide across all networks. We will send you an SMS once activated.`
+    searchDomResult.value = null
+    searchDomName.value = ''
+    await loadCustomerDomains()
+  } catch (e) {
+    domainOrderMsg.value = getApiErrorMessage(e, 'Could not place domain order.')
+  } finally {
+    domainOrderBusy.value = false
+  }
+}
 
 // List table state
 const searchQuery = ref('')
@@ -111,6 +189,7 @@ function selectService(envId: string) {
   passwordMsg.value = ''
   newPassword.value = ''
   confirmPassword.value = ''
+  void loadCustomerDomains()
 }
 
 function backToList() {
@@ -537,7 +616,7 @@ async function submitCancel() {
           <p class="manage-subtitle">Access hosting details, nameservers, and account credentials from one place.</p>
         </div>
 
-        <!-- 3 Tabs Navigation -->
+        <!-- Tabs Navigation -->
         <div class="manage-tabs-bar">
           <button
             type="button"
@@ -546,6 +625,14 @@ async function submitCancel() {
             @click="activeTab = 'details'"
           >
             <i class="fa-solid fa-circle-info" /> Details
+          </button>
+          <button
+            type="button"
+            class="tab-btn"
+            :class="{ active: activeTab === 'domains' }"
+            @click="activeTab = 'domains'; loadCustomerDomains()"
+          >
+            <i class="fa-solid fa-globe" /> Domains
           </button>
           <button
             type="button"
@@ -651,6 +738,155 @@ async function submitCancel() {
             >
               Login to fPanel
             </button>
+          </div>
+        </div>
+
+        <!-- Tab: Domains & Standalone Registration -->
+        <div v-else-if="activeTab === 'domains'" class="tab-content domains-tab-pane">
+          <!-- Propagation Notice Banner -->
+          <div class="ns-notice">
+            <i class="fa-solid fa-clock-rotate-left ns-info-ico" />
+            <div>
+              <p class="font-semibold text-slate-800 dark:text-slate-200">Domain Registration & Propagation</p>
+              <p class="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                New domain purchases and DNS updates typically take <strong>24 to 48 hours</strong> to fully propagate worldwide across all Internet Service Providers. We will send you an SMS notification as soon as your domain is activated.
+              </p>
+            </div>
+          </div>
+
+          <!-- Buy / Register New Domain Box -->
+          <div class="rounded-xl border border-surface-border bg-slate-50/60 p-4 dark:bg-slate-900/40 space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                Buy / Register Domain Only
+              </span>
+              <span class="text-xs text-brand-600 font-semibold dark:text-brand-400">
+                .online ₵65/yr · .com ₵225/yr
+              </span>
+            </div>
+
+            <form class="flex flex-col sm:flex-row gap-2" @submit.prevent="checkDomainAvailability">
+              <input
+                v-model="searchDomName"
+                placeholder="type domain name (e.g. mycompany)"
+                class="flex-1 rounded-lg border border-surface-border bg-white dark:bg-slate-800 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500"
+                :disabled="searchDomBusy || domainOrderBusy"
+              />
+              <select
+                v-model="searchDomExt"
+                class="rounded-lg border border-surface-border bg-white dark:bg-slate-800 px-3 py-2 text-sm font-semibold outline-none sm:w-32"
+                :disabled="searchDomBusy || domainOrderBusy"
+              >
+                <option value=".online">.online</option>
+                <option value=".com">.com</option>
+                <option value=".org">.org</option>
+                <option value=".net">.net</option>
+                <option value=".xyz">.xyz</option>
+                <option value=".store">.store</option>
+                <option value=".tech">.tech</option>
+                <option value=".site">.site</option>
+              </select>
+              <button
+                type="submit"
+                class="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
+                :disabled="searchDomBusy || domainOrderBusy || !searchDomName.trim()"
+              >
+                {{ searchDomBusy ? 'Checking…' : 'Check' }}
+              </button>
+            </form>
+
+            <!-- Search Result Card -->
+            <div
+              v-if="searchDomResult"
+              class="rounded-lg border p-3 text-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2"
+              :class="searchDomResult.available ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-800/40 dark:bg-emerald-950/20' : 'border-amber-200 bg-amber-50 dark:border-amber-800/40 dark:bg-amber-950/20'"
+            >
+              <div>
+                <p class="font-bold" :class="searchDomResult.available ? 'text-emerald-800 dark:text-emerald-300' : 'text-amber-800 dark:text-amber-300'">
+                  {{ searchDomResult.domain }} {{ searchDomResult.available ? 'is available!' : 'is already registered.' }}
+                </p>
+                <p v-if="searchDomResult.available" class="text-xs text-emerald-700 dark:text-emerald-400">
+                  Registration fee: GHS {{ searchDomResult.price_yearly }}/year · Fulfilled by IFNOTUS team
+                </p>
+              </div>
+
+              <button
+                v-if="searchDomResult.available"
+                type="button"
+                class="rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs px-3.5 py-2 disabled:opacity-50"
+                :disabled="domainOrderBusy"
+                @click="orderStandaloneDomain"
+              >
+                {{ domainOrderBusy ? 'Placing Order…' : 'Order Domain Only' }}
+              </button>
+            </div>
+
+            <p
+              v-if="domainOrderMsg"
+              class="text-xs rounded p-2"
+              :class="domainOrderSuccess ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-300'"
+            >
+              {{ domainOrderMsg }}
+            </p>
+          </div>
+
+          <!-- Existing Registered Domains Table -->
+          <div class="mt-4 space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold uppercase tracking-wider text-slate-500">Your Registered Domains</span>
+              <button
+                type="button"
+                class="text-xs text-brand-600 hover:underline font-semibold"
+                :disabled="domainsLoading"
+                @click="loadCustomerDomains"
+              >
+                {{ domainsLoading ? 'Refreshing…' : '↻ Refresh' }}
+              </button>
+            </div>
+
+            <div v-if="domainsLoading" class="p-4 text-center text-xs text-slate-500">
+              Loading domains…
+            </div>
+            <div v-else-if="customerDomains.length === 0" class="rounded-lg border border-surface-border p-4 text-center text-xs text-slate-500">
+              No registered domains found on your account. You can search and buy one above.
+            </div>
+            <div v-else class="space-y-2">
+              <div
+                v-for="dom in customerDomains"
+                :key="dom.id"
+                class="rounded-lg border border-surface-border bg-white dark:bg-slate-800/80 p-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2"
+              >
+                <div>
+                  <div class="flex items-center gap-2">
+                    <span class="font-bold text-sm text-slate-900 dark:text-white">{{ dom.domain_name }}</span>
+                    <span
+                      class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide"
+                      :class="dom.is_active ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'"
+                    >
+                      {{ dom.is_active ? 'Active' : 'Pending Activation (24-48h propagation)' }}
+                    </span>
+                  </div>
+                  <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    <span v-if="dom.expiry_date">Renews: {{ formatDate(dom.expiry_date) }} · </span>
+                    <span>Status: {{ dom.status }}</span>
+                    <span v-if="dom.environment_domain"> · Attached to {{ dom.environment_domain }}</span>
+                  </p>
+                </div>
+
+                <a
+                  v-if="dom.is_active"
+                  :href="`https://${dom.domain_name}`"
+                  target="_blank"
+                  rel="noreferrer"
+                  class="text-xs font-semibold text-brand-600 hover:underline inline-flex items-center gap-1"
+                >
+                  Visit Site <i class="fa-solid fa-arrow-up-right-from-square text-[10px]" />
+                </a>
+                <span v-else class="text-[11px] text-amber-700 dark:text-amber-400 italic">
+                  Propagating (24–48 hrs)
+                </span>
+              </div>
+            </div>
           </div>
         </div>
 

@@ -3,7 +3,6 @@
 import { customersApi } from '@/api'
 
 export const STAFF_PANEL_HOST = 'fpanel.ifnotus.space'
-export const LEGACY_STAFF_PANEL_HOST = 'cpanel.ifnotus.space'
 export const STAFF_PANEL_ORIGIN = `https://${STAFF_PANEL_HOST}`
 
 export function hostnameNow(): string {
@@ -12,13 +11,13 @@ export function hostnameNow(): string {
 }
 
 export function isStaffPanelHost(host = hostnameNow()): boolean {
-  return host === STAFF_PANEL_HOST || host === LEGACY_STAFF_PANEL_HOST
+  return host === STAFF_PANEL_HOST
 }
 
 /** Customer fPanel host: fpanel.<domain> (e.g. fpanel.yalleydadzie.online). */
 export function isCustomerFpanelHost(host = hostnameNow()): boolean {
   if (isStaffPanelHost(host)) return false
-  return host.startsWith('fpanel.') || host.startsWith('cpanel.')
+  return host.startsWith('fpanel.')
 }
 
 export const isCustomerCpanelHost = isCustomerFpanelHost
@@ -52,7 +51,6 @@ export function customApex(host: string): string | null {
 export function primaryApexDomain(host: string): string {
   let h = normalizedApex(host)
   if (h.startsWith('fpanel.')) h = h.slice('fpanel.'.length)
-  if (h.startsWith('cpanel.')) h = h.slice('cpanel.'.length)
   if (h.startsWith('webmail.')) h = h.slice('webmail.'.length)
   if (h.startsWith('mail.')) h = h.slice('mail.'.length)
   if (h.startsWith('www.')) h = h.slice(4)
@@ -76,7 +74,7 @@ export function primaryApexDomain(host: string): string {
 export function tenantFpanelUrl(domain: string, tab?: string | null): string | null {
   let host = normalizedApex(domain)
   if (!host) return null
-  if (host === 'ifnotus.space' || host === STAFF_PANEL_HOST || host === LEGACY_STAFF_PANEL_HOST || host === 'mail.ifnotus.space') {
+  if (host === 'ifnotus.space' || host === STAFF_PANEL_HOST || host === 'mail.ifnotus.space') {
     return null
   }
   const primary = primaryApexDomain(host)
@@ -92,7 +90,7 @@ export const tenantCpanelUrl = tenantFpanelUrl
 export function tenantMailUrl(domain: string): string | null {
   let host = normalizedApex(domain)
   if (!host) return null
-  if (host === 'ifnotus.space' || host === STAFF_PANEL_HOST || host === LEGACY_STAFF_PANEL_HOST) {
+  if (host === 'ifnotus.space' || host === STAFF_PANEL_HOST) {
     return 'https://mail.ifnotus.space/'
   }
   const primary = primaryApexDomain(host)

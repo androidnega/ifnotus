@@ -855,7 +855,7 @@ async function rejectPay(o: StaffOrderItem) {
                       @click="activateHosting(o)"
                     >
                       <i class="fa-solid fa-rocket" aria-hidden="true" />
-                      Activate Hosting
+                      {{ o.order_kind === 'domain' ? 'Activate Domain' : 'Activate Hosting' }}
                     </button>
                     <button
                       v-if="o.provisioning_status === 'failed'"

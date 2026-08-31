@@ -194,8 +194,8 @@ watch(
         </div>
       </label>
       <p v-if="domainModeModel === 'register'" class="mt-3 text-sm leading-relaxed text-slate-600">
-        .online GHS 50/yr · .com GHS 250/yr · .org GHS 180/yr · .net GHS 200/yr.
-        After payment we register it and set ns1 / ns2.ifnotus.space.
+        .online GHS 65/yr · .com GHS 225/yr · .org GHS 240/yr · .net GHS 260/yr.
+        After payment we fulfill registration and activate it. Global DNS propagation typically takes 24 to 48 hours.
       </p>
       <p v-else class="mt-3 text-sm leading-relaxed text-slate-600">
         Use IFNOTUS nameservers or add A records at your registrar when we ask — no domain fee on this invoice.

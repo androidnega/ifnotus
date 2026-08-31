@@ -47,6 +47,7 @@ export interface IntegrationsStatus {
     number?: string | null
     account_name?: string | null
   }
+  domain_prices?: Record<string, number>
 }
 
 export interface IntegrationsUpdatePayload {
@@ -89,4 +90,5 @@ export interface IntegrationsUpdatePayload {
     number?: string | null
     account_name?: string | null
   }
+  domain_prices?: Record<string, number>
 }

@@ -84,11 +84,151 @@ const newFileName = ref('')
 const showMkdirModal = ref(false)
 const showNewFileModal = ref(false)
 const domain = ref('')
+const unixUsername = ref('')
 const search = ref('')
 const selectedPaths = ref<Set<string>>(new Set())
 const anchorPath = ref<string | null>(null)
 const folderTree = ref<string[]>(['.'])
 const treeCollapsed = ref(false)
+
+const STANDARD_CPANEL_ROOT_DIRS = [
+  '.caldav',
+  '.cl.selector',
+  '.config',
+  '.cpaddons',
+  '.cpanel',
+  '.htpasswds',
+  '.local',
+  '.pip',
+  '.putty',
+  '.razor',
+  '.sitepad',
+  '.softaculous',
+  '.spamassassin',
+  '.ssh',
+  '.subaccounts',
+  '.trash',
+  'app',
+  'etc',
+  'logs',
+  'mail',
+  'public',
+  'public_ftp',
+  'public_html',
+  'ssl',
+  'tmp',
+  'virtualenv',
+  'www',
+]
+
+interface FolderTreeNode {
+  name: string
+  path: string
+  hasChildren: boolean
+  children?: FolderTreeNode[]
+}
+
+const rootExpanded = ref(true)
+const expandedFolderPaths = ref<Set<string>>(new Set())
+const folderChildrenMap = ref<Record<string, FolderTreeNode[]>>({})
+const dynamicRootDirs = ref<string[]>([])
+
+const hostingUsername = ref('')
+
+const homeDisplayLabel = computed(() => {
+  let u = hostingUsername.value || unixUsername.value
+  if (!u && domain.value) {
+    u = domain.value.split('.')[0].replace(/[^a-zA-Z0-9]/g, '').toLowerCase().slice(0, 8)
+  }
+  return `(/home3/${u || 'user'})`
+})
+
+function treeFolderIcon(name: string) {
+  if (name === 'public_html' || name === 'www') return 'fas fa-globe cp-icon-globe text-sky-600'
+  if (name === 'public_ftp') return 'fas fa-exchange-alt cp-icon-ftp text-emerald-600'
+  if (name === 'mail') return 'fas fa-envelope cp-icon-mail text-blue-600'
+  if (name === '.trash' || name === '__trash__') return 'fas fa-trash trash-icon text-slate-500'
+  return 'fas fa-folder folder-icon text-amber-500'
+}
+
+const rootTreeFolders = computed<FolderTreeNode[]>(() => {
+  const seen = new Set<string>()
+  const result: FolderTreeNode[] = []
+
+  const allNames = Array.from(new Set([...STANDARD_CPANEL_ROOT_DIRS, ...dynamicRootDirs.value]))
+    .filter((n) => n !== '.trash' && n !== '__trash__')
+  allNames.sort((a, b) => a.localeCompare(b))
+
+  for (const name of allNames) {
+    if (seen.has(name)) continue
+    seen.add(name)
+    const children = folderChildrenMap.value[name] || []
+    result.push({
+      name,
+      path: name,
+      hasChildren: children.length > 0 || name === 'public_html' || name === 'app' || name === 'ssl' || name === '.cpanel',
+      children,
+    })
+  }
+  return result
+})
+
+async function toggleFolderExpand(folder: FolderTreeNode) {
+  if (expandedFolderPaths.value.has(folder.path)) {
+    expandedFolderPaths.value.delete(folder.path)
+    return
+  }
+  expandedFolderPaths.value.add(folder.path)
+  if (!folderChildrenMap.value[folder.path] && envId.value) {
+    try {
+      const { data } = await customersApi.listEnvFiles(envId.value, folder.path)
+      const raw = data.entries || []
+      const subdirs = raw
+        .filter((e: any) => e.is_dir)
+        .map((e: any) => ({
+          name: e.name,
+          path: e.path,
+          hasChildren: false,
+          children: folderChildrenMap.value[e.path] || [],
+        }))
+      folderChildrenMap.value[folder.path] = subdirs
+    } catch {
+      folderChildrenMap.value[folder.path] = []
+    }
+  }
+}
+
+function isFolderExpanded(path: string): boolean {
+  return expandedFolderPaths.value.has(path)
+}
+
+function toggleRootExpand() {
+  rootExpanded.value = !rootExpanded.value
+}
+
+function toggleCollapseAll() {
+  if (expandedFolderPaths.value.size > 0 || rootExpanded.value) {
+    expandedFolderPaths.value.clear()
+    rootExpanded.value = false
+  } else {
+    rootExpanded.value = true
+    for (const f of rootTreeFolders.value) {
+      expandedFolderPaths.value.add(f.path)
+    }
+  }
+}
+
+const allCollapsed = computed(() => !rootExpanded.value && expandedFolderPaths.value.size === 0)
+
+function openInNewWindow() {
+  if (isCustomerCpanelHost()) {
+    window.open('/files', '_blank')
+  } else if (envId.value) {
+    window.open(`/hosting/${encodeURIComponent(envId.value)}/files`, '_blank')
+  } else {
+    window.open('/files', '_blank')
+  }
+}
 const clipboard = ref<{ mode: ClipboardMode; paths: string[] }>({ mode: null, paths: [] })
 
 // Navigation history
@@ -164,6 +304,74 @@ const conflictModal = ref<{
   trashEntry: TrashEntry | null
   busy: boolean
 }>({ open: false, trashEntry: null, busy: false })
+
+const passwordProtectModal = ref<{
+  open: boolean
+  entry: Entry | null
+  enabled: boolean
+  authName: string
+  username: string
+  password: string
+  busy: boolean
+  msg: string
+}>({
+  open: false,
+  entry: null,
+  enabled: true,
+  authName: 'Protected Area',
+  username: '',
+  password: '',
+  busy: false,
+  msg: '',
+})
+
+const leechProtectModal = ref<{
+  open: boolean
+  entry: Entry | null
+  enabled: boolean
+  redirectUrl: string
+  allowedDomains: string
+  busy: boolean
+  msg: string
+}>({
+  open: false,
+  entry: null,
+  enabled: true,
+  redirectUrl: '',
+  allowedDomains: '',
+  busy: false,
+  msg: '',
+})
+
+const manageIndicesModal = ref<{
+  open: boolean
+  entry: Entry | null
+  indexMode: 'default' | 'no_index' | 'standard' | 'fancy'
+  busy: boolean
+  msg: string
+}>({
+  open: false,
+  entry: null,
+  indexMode: 'default',
+  busy: false,
+  msg: '',
+})
+
+const htmlEditorModal = ref<{
+  open: boolean
+  entry: Entry | null
+  content: string
+  preview: boolean
+  loading: boolean
+  saving: boolean
+}>({
+  open: false,
+  entry: null,
+  content: '',
+  preview: false,
+  loading: false,
+  saving: false,
+})
 
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
@@ -247,25 +455,68 @@ const chmodOctal = computed(() => {
 
 function formatSize(n?: number | null) {
   if (n == null || Number.isNaN(n)) return '—'
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  if (n === 0) return '0 bytes'
+  if (n === 1) return '1 byte'
+  if (n < 1024) return `${n} bytes`
+  if (n < 1024 * 1024) {
+    const kb = n / 1024
+    return kb === Math.floor(kb) ? `${kb} KB` : `${kb.toFixed(2)} KB`
+  }
+  const mb = n / (1024 * 1024)
+  return mb === Math.floor(mb) ? `${mb} MB` : `${mb.toFixed(2)} MB`
 }
 
 function formatDate(iso?: string | null) {
   if (!iso) return '—'
   const d = new Date(iso)
-  return d.toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  if (isNaN(d.getTime())) return '—'
+  const now = new Date()
+  const isToday = d.toDateString() === now.toDateString()
+  const timeStr = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).toUpperCase()
+  if (isToday) {
+    return `Today, ${timeStr}`
+  }
+  const yesterday = new Date()
+  yesterday.setDate(now.getDate() - 1)
+  if (d.toDateString() === yesterday.toDateString()) {
+    return `Yesterday, ${timeStr}`
+  }
+  return (
+    d.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    }) + `, ${timeStr}`
+  )
+}
+
+function formatPermissions(entry: Entry) {
+  if (entry.mode) {
+    const raw = String(entry.mode).trim()
+    if (/^\d{3,4}$/.test(raw)) {
+      return raw.length === 3 ? `0${raw}` : raw
+    }
+  }
+  if (entry.is_dir) {
+    if (entry.name === 'logs' || entry.name === 'ssl' || entry.name === '.trash' || entry.name === '.ssh') return '0700'
+    if (entry.name === 'public_ftp' || entry.name === 'etc' || entry.name === '.htpasswds') return '0750'
+    if (entry.name === 'mail') return '0751'
+    return '0755'
+  }
+  if (entry.name === '.bash_history') return '0600'
+  return '0644'
 }
 
 function fileType(entry: Entry) {
-  if (entry.is_dir) return 'httpd/unix-directory'
+  if (entry.is_dir) {
+    if (entry.name === 'public_html' || entry.name === 'www') return 'publichtml'
+    if (entry.name === 'public_ftp') return 'publicftp'
+    if (entry.name === 'mail') return 'mail'
+    return 'httpd/unix-directory'
+  }
+  if (entry.name.startsWith('.bash_') || entry.name === '.bashrc' || entry.name === '.profile') {
+    return 'text/x-generic'
+  }
   const ext = entry.name.includes('.') ? entry.name.split('.').pop()?.toLowerCase() : ''
   switch (ext) {
     case 'php': return 'text/x-php'
@@ -282,29 +533,41 @@ function fileType(entry: Entry) {
     case 'zip': return 'application/zip'
     case 'sql': return 'application/x-sql'
     case 'txt': return 'text/plain'
+    case 'htaccess':
+    case 'conf':
+    case 'ini': return 'text/plain'
     default: return 'text/plain'
   }
 }
 
 function fileIconClass(entry: Entry) {
-  if (entry.is_dir) return 'fas fa-folder folder-icon'
+  if (entry.is_dir) {
+    if (entry.name === 'public_html' || entry.name === 'www') return 'fas fa-globe cp-icon-globe text-sky-600'
+    if (entry.name === 'public_ftp') return 'fas fa-exchange-alt cp-icon-ftp text-emerald-600'
+    if (entry.name === 'mail') return 'fas fa-envelope cp-icon-mail text-blue-600'
+    if (entry.name === '.trash' || entry.name === '__trash__') return 'fas fa-trash trash-icon text-slate-500'
+    return 'fas fa-folder folder-icon text-amber-500'
+  }
+  if (entry.name.startsWith('.bash_') || entry.name === '.bashrc') {
+    return 'fas fa-file-code text-purple-600'
+  }
   const ext = entry.name.includes('.') ? entry.name.split('.').pop()?.toLowerCase() : ''
   switch (ext) {
-    case 'php': return 'fab fa-php php-icon'
+    case 'php': return 'fab fa-php php-icon text-indigo-600'
     case 'html':
-    case 'htm': return 'fab fa-html5 html-icon'
-    case 'css': return 'fab fa-css3-alt css-icon'
-    case 'js': return 'fab fa-js js-icon'
+    case 'htm': return 'fab fa-html5 html-icon text-amber-600'
+    case 'css': return 'fab fa-css3-alt css-icon text-blue-500'
+    case 'js': return 'fab fa-js js-icon text-yellow-500'
     case 'zip':
     case 'tar':
-    case 'gz': return 'fas fa-file-archive archive-icon'
+    case 'gz': return 'fas fa-file-archive archive-icon text-amber-600'
     case 'png':
     case 'jpg':
     case 'jpeg':
     case 'svg':
-    case 'gif': return 'fas fa-file-image img-icon'
-    case 'sql': return 'fas fa-database db-icon'
-    default: return 'fas fa-file-alt file-icon'
+    case 'gif': return 'fas fa-file-image img-icon text-teal-600'
+    case 'sql': return 'fas fa-database db-icon text-sky-700'
+    default: return 'fas fa-file-alt file-icon text-slate-500'
   }
 }
 
@@ -400,6 +663,23 @@ async function load(recordHistory = true) {
     }
 
     // Add subfolders to directory tree
+    if (currentPath.value === '.') {
+      for (const e of entries.value) {
+        if (e.is_dir && !dynamicRootDirs.value.includes(e.name)) {
+          dynamicRootDirs.value.push(e.name)
+        }
+      }
+    } else {
+      const subdirs = entries.value
+        .filter((e) => e.is_dir)
+        .map((e) => ({
+          name: e.name,
+          path: e.path,
+          hasChildren: false,
+          children: folderChildrenMap.value[e.path] || [],
+        }))
+      folderChildrenMap.value[currentPath.value] = subdirs
+    }
     for (const e of entries.value) {
       if (e.is_dir && !folderTree.value.includes(e.path)) {
         folderTree.value.push(e.path)
@@ -417,7 +697,11 @@ async function hydrateEnv() {
   try {
     const { data } = await customersApi.environments()
     const found = data.find((e) => e.id === envId.value)
-    if (found?.domain) domain.value = found.domain
+    if (found) {
+      if (found.domain) domain.value = found.domain
+      if ((found as any).hosting_name) hostingUsername.value = (found as any).hosting_name
+      if (found.unix_username) unixUsername.value = found.unix_username
+    }
   } catch {
     // optional
   }
@@ -434,6 +718,8 @@ async function ensureEnvironment(): Promise<boolean> {
           localStorage.setItem('tenant_env_id', data.environment_id)
         }
         if (data.domain) domain.value = data.domain
+        if ((data as any).hosting_name) hostingUsername.value = (data as any).hosting_name
+        if ((data as any).unix_username) unixUsername.value = (data as any).unix_username
         return true
       }
     } catch {
@@ -449,6 +735,8 @@ async function ensureEnvironment(): Promise<boolean> {
         localStorage.setItem('tenant_env_id', first.id)
       }
       if (first.domain) domain.value = first.domain
+      if ((first as any).hosting_name) hostingUsername.value = (first as any).hosting_name
+      if (first.unix_username) unixUsername.value = first.unix_username
       return true
     }
   } catch {
@@ -460,6 +748,14 @@ async function ensureEnvironment(): Promise<boolean> {
 function openDir(path: string, recordHistory = true) {
   const norm = normalizeVirtualPath(path)
   currentPath.value = norm
+  if (norm !== '.' && norm !== '__trash__') {
+    const segments = norm.split('/')
+    let accum = ''
+    for (const seg of segments) {
+      accum = accum ? `${accum}/${seg}` : seg
+      expandedFolderPaths.value.add(accum)
+    }
+  }
   void load(recordHistory)
 }
 
@@ -492,6 +788,9 @@ function upOneLevel() {
 
 function jumpToManualPath() {
   let p = manualPath.value.trim().replace(/^\/+/, '').replace(/\/+$/, '')
+  if (/^home\d*\/[^/]+/i.test(p)) {
+    p = p.replace(/^home\d*\/[^/]+\/?/i, '')
+  }
   if (p.toLowerCase() === 'trash' || p === '__trash__') {
     openTrash()
     return
@@ -838,6 +1137,215 @@ async function createFile() {
     await load()
   } catch (e: unknown) {
     err.value = getApiErrorMessage(e, 'Create file failed.')
+  }
+}
+
+function openPasswordProtect(entry: Entry) {
+  closeContext()
+  passwordProtectModal.value = {
+    open: true,
+    entry,
+    enabled: true,
+    authName: 'Protected Directory',
+    username: '',
+    password: '',
+    busy: false,
+    msg: '',
+  }
+}
+
+async function submitPasswordProtect() {
+  if (!passwordProtectModal.value.entry || !envId.value) return
+  passwordProtectModal.value.busy = true
+  passwordProtectModal.value.msg = ''
+  try {
+    const dir = passwordProtectModal.value.entry.path
+    const htaccessPath = dir === '.' ? '.htaccess' : `${dir}/.htaccess`
+    const htpasswdPath = dir === '.' ? '.htpasswd' : `${dir}/.htpasswd`
+
+    if (!passwordProtectModal.value.enabled) {
+      let content = ''
+      try {
+        const { data } = await customersApi.readEnvFile(envId.value, htaccessPath)
+        content = data.content || ''
+      } catch {
+        /* empty */
+      }
+      content = content.replace(/# --- BEGIN PASSWORD PROTECT ---[\s\S]*?# --- END PASSWORD PROTECT ---/g, '').trim()
+      await customersApi.writeEnvFile(envId.value, htaccessPath, content)
+      msg.value = `Disabled password protection for ${passwordProtectModal.value.entry.name}`
+      passwordProtectModal.value.open = false
+      await load()
+      return
+    }
+
+    const authName = passwordProtectModal.value.authName.trim() || 'Protected Area'
+    const user = passwordProtectModal.value.username.trim() || 'user'
+    const pass = passwordProtectModal.value.password.trim() || 'pass'
+
+    await customersApi.writeEnvFile(envId.value, htpasswdPath, `${user}:{PLAIN}${pass}\n`)
+
+    let existingHtaccess = ''
+    try {
+      const { data } = await customersApi.readEnvFile(envId.value, htaccessPath)
+      existingHtaccess = data.content || ''
+    } catch {
+      /* empty */
+    }
+
+    const authBlock = `# --- BEGIN PASSWORD PROTECT ---\nAuthType Basic\nAuthName "${authName}"\nAuthUserFile /home3/${domain.value || 'user'}/${htpasswdPath}\nRequire valid-user\n# --- END PASSWORD PROTECT ---`
+
+    let newHtaccess = existingHtaccess.replace(/# --- BEGIN PASSWORD PROTECT ---[\s\S]*?# --- END PASSWORD PROTECT ---/g, '').trim()
+    newHtaccess = `${newHtaccess}\n\n${authBlock}`.trim() + '\n'
+
+    await customersApi.writeEnvFile(envId.value, htaccessPath, newHtaccess)
+    msg.value = `Directory ${passwordProtectModal.value.entry.name} is now password protected.`
+    passwordProtectModal.value.open = false
+    await load()
+  } catch (e: unknown) {
+    passwordProtectModal.value.msg = getApiErrorMessage(e, 'Could not set password protection.')
+  } finally {
+    passwordProtectModal.value.busy = false
+  }
+}
+
+function openLeechProtect(entry: Entry) {
+  closeContext()
+  leechProtectModal.value = {
+    open: true,
+    entry,
+    enabled: true,
+    redirectUrl: '',
+    allowedDomains: domain.value || '',
+    busy: false,
+    msg: '',
+  }
+}
+
+async function submitLeechProtect() {
+  if (!leechProtectModal.value.entry || !envId.value) return
+  leechProtectModal.value.busy = true
+  leechProtectModal.value.msg = ''
+  try {
+    const dir = leechProtectModal.value.entry.path
+    const htaccessPath = dir === '.' ? '.htaccess' : `${dir}/.htaccess`
+    let existingHtaccess = ''
+    try {
+      const { data } = await customersApi.readEnvFile(envId.value, htaccessPath)
+      existingHtaccess = data.content || ''
+    } catch {
+      /* empty */
+    }
+
+    let newHtaccess = existingHtaccess.replace(/# --- BEGIN LEECH PROTECT ---[\s\S]*?# --- END LEECH PROTECT ---/g, '').trim()
+
+    if (leechProtectModal.value.enabled) {
+      const domains = leechProtectModal.value.allowedDomains
+        .split(/[,\n]/)
+        .map((d) => d.trim())
+        .filter(Boolean)
+      const conds = domains.length
+        ? domains.map((d) => `RewriteCond %{HTTP_REFERER} !^http(s)?://(www\\.)?${d.replace(/\./g, '\\.')} [NC]`).join('\n')
+        : 'RewriteCond %{HTTP_REFERER} !^$'
+      const redir = leechProtectModal.value.redirectUrl.trim()
+      const rule = redir ? `RewriteRule .*(jpe?g|gif|bmp|png)$ ${redir} [R,NC]` : `RewriteRule .*(jpe?g|gif|bmp|png)$ - [F,NC]`
+      const block = `# --- BEGIN LEECH PROTECT ---\nRewriteEngine on\nRewriteCond %{HTTP_REFERER} !^$\n${conds}\n${rule}\n# --- END LEECH PROTECT ---`
+      newHtaccess = `${newHtaccess}\n\n${block}`.trim() + '\n'
+    }
+
+    await customersApi.writeEnvFile(envId.value, htaccessPath, newHtaccess)
+    msg.value = leechProtectModal.value.enabled
+      ? `Leech/hotlink protection enabled for ${leechProtectModal.value.entry.name}`
+      : `Leech protection disabled.`
+    leechProtectModal.value.open = false
+    await load()
+  } catch (e: unknown) {
+    leechProtectModal.value.msg = getApiErrorMessage(e, 'Could not update leech protection.')
+  } finally {
+    leechProtectModal.value.busy = false
+  }
+}
+
+function openManageIndices(entry: Entry) {
+  closeContext()
+  manageIndicesModal.value = {
+    open: true,
+    entry,
+    indexMode: 'default',
+    busy: false,
+    msg: '',
+  }
+}
+
+async function submitManageIndices() {
+  if (!manageIndicesModal.value.entry || !envId.value) return
+  manageIndicesModal.value.busy = true
+  manageIndicesModal.value.msg = ''
+  try {
+    const dir = manageIndicesModal.value.entry.path
+    const htaccessPath = dir === '.' ? '.htaccess' : `${dir}/.htaccess`
+    let existingHtaccess = ''
+    try {
+      const { data } = await customersApi.readEnvFile(envId.value, htaccessPath)
+      existingHtaccess = data.content || ''
+    } catch {
+      /* empty */
+    }
+
+    let newHtaccess = existingHtaccess.replace(/# --- BEGIN INDEX MANAGEMENT ---[\s\S]*?# --- END INDEX MANAGEMENT ---/g, '').trim()
+    const mode = manageIndicesModal.value.indexMode
+    if (mode !== 'default') {
+      let opt = 'Options -Indexes'
+      if (mode === 'standard') opt = 'Options +Indexes'
+      else if (mode === 'fancy') opt = 'Options +Indexes\nIndexOptions +FancyIndexing'
+      const block = `# --- BEGIN INDEX MANAGEMENT ---\n${opt}\n# --- END INDEX MANAGEMENT ---`
+      newHtaccess = `${newHtaccess}\n\n${block}`.trim() + '\n'
+    }
+
+    await customersApi.writeEnvFile(envId.value, htaccessPath, newHtaccess)
+    msg.value = `Indexing settings updated for ${manageIndicesModal.value.entry.name}.`
+    manageIndicesModal.value.open = false
+    await load()
+  } catch (e: unknown) {
+    manageIndicesModal.value.msg = getApiErrorMessage(e, 'Could not update index settings.')
+  } finally {
+    manageIndicesModal.value.busy = false
+  }
+}
+
+async function openHtmlEditor(entry: Entry) {
+  closeContext()
+  if (entry.is_dir) return
+  htmlEditorModal.value = {
+    open: true,
+    entry,
+    content: '',
+    preview: false,
+    loading: true,
+    saving: false,
+  }
+  try {
+    const { data } = await customersApi.readEnvFile(envId.value, entry.path)
+    htmlEditorModal.value.content = data.content || ''
+  } catch {
+    htmlEditorModal.value.content = '<!-- Error loading file content -->'
+  } finally {
+    htmlEditorModal.value.loading = false
+  }
+}
+
+async function saveHtmlEditor() {
+  if (!htmlEditorModal.value.entry || !envId.value) return
+  htmlEditorModal.value.saving = true
+  try {
+    await customersApi.writeEnvFile(envId.value, htmlEditorModal.value.entry.path, htmlEditorModal.value.content)
+    msg.value = `Saved ${htmlEditorModal.value.entry.name}`
+    htmlEditorModal.value.open = false
+    await load()
+  } catch (e: unknown) {
+    err.value = getApiErrorMessage(e, 'Save failed.')
+  } finally {
+    htmlEditorModal.value.saving = false
   }
 }
 
@@ -1196,6 +1704,16 @@ onUnmounted(() => {
       <button
         type="button"
         class="cp-tool-btn"
+        :disabled="selectionCount !== 1 || isTrashMode || selectedEntries[0]?.is_dir"
+        @click="openHtmlEditor(selectedEntries[0])"
+        title="HTML Editor"
+      >
+        <i class="fas fa-file-code" />
+        <span>HTML Editor</span>
+      </button>
+      <button
+        type="button"
+        class="cp-tool-btn"
         :disabled="selectionCount !== 1 || isTrashMode"
         @click="openChmod(selectedEntries[0])"
         title="Permissions (chmod)"
@@ -1233,6 +1751,16 @@ onUnmounted(() => {
       >
         <i class="fas fa-file-zipper" />
         <span>Compress</span>
+      </button>
+      <div class="cp-tool-spacer" />
+      <button
+        type="button"
+        class="cp-tool-btn secondary"
+        @click="openInNewWindow"
+        title="Open File Manager in a new window"
+      >
+        <i class="fas fa-external-link-alt" />
+        <span>New Window</span>
       </button>
     </header>
 
@@ -1313,42 +1841,99 @@ onUnmounted(() => {
       <!-- LEFT DIRECTORY TREE -->
       <aside class="cp-tree-pane" :class="{ collapsed: treeCollapsed }">
         <div class="tree-header">
-          <button type="button" class="btn-toggle-tree" @click="treeCollapsed = !treeCollapsed">
-            {{ treeCollapsed ? 'Expand All' : 'Collapse All' }}
+          <button type="button" class="btn-toggle-tree" @click="toggleCollapseAll">
+            {{ allCollapsed ? 'Expand All' : 'Collapse All' }}
           </button>
         </div>
 
         <div v-if="!treeCollapsed" class="tree-content">
+          <!-- ROOT HOME NODE -->
           <div
-            class="tree-node"
+            class="tree-node root-node"
             :class="{ active: currentPath === '.' }"
             @click="openDir('.')"
           >
-            <i class="fas fa-minus-square tree-expander" />
-            <i class="fas fa-home tree-icon" />
-            <span class="tree-label">/ ({{ domain || 'home' }})</span>
+            <button
+              type="button"
+              class="tree-toggle-btn"
+              @click.stop="toggleRootExpand"
+            >
+              <i class="fas" :class="rootExpanded ? 'fa-minus-square' : 'fa-plus-square'" />
+            </button>
+            <i class="fas fa-folder tree-icon folder-icon text-amber-500" />
+            <i class="fas fa-home tree-icon home-icon text-slate-700 dark:text-slate-200" />
+            <span class="tree-label">{{ homeDisplayLabel }}</span>
           </div>
 
-          <div
-            v-for="folder in sidebarFolders"
-            :key="folder"
-            class="tree-node sub"
-            :class="{ active: currentPath === folder }"
-            :style="{ paddingLeft: `${(folder.split('/').length + 1) * 0.9}rem` }"
-            @click="openDir(folder)"
-          >
-            <i class="fas fa-folder tree-icon" />
-            <span class="tree-label">{{ folder.includes('/') ? folder.slice(folder.lastIndexOf('/') + 1) : folder }}</span>
-          </div>
+          <!-- DIRECTORY TREE NODES -->
+          <div v-if="rootExpanded" class="tree-children">
+            <div
+              v-for="folder in rootTreeFolders"
+              :key="folder.path"
+              class="tree-branch"
+            >
+              <div
+                class="tree-node"
+                :class="{ active: currentPath === folder.path }"
+                :style="{ paddingLeft: '0.75rem' }"
+                @click="openDir(folder.path)"
+              >
+                <button
+                  v-if="folder.hasChildren || folder.children?.length"
+                  type="button"
+                  class="tree-toggle-btn"
+                  @click.stop="toggleFolderExpand(folder)"
+                >
+                  <i class="fas" :class="isFolderExpanded(folder.path) ? 'fa-minus-square' : 'fa-plus-square'" />
+                </button>
+                <span v-else class="tree-toggle-spacer" />
+                <i
+                  class="tree-icon"
+                  :class="treeFolderIcon(folder.name)"
+                />
+                <span class="tree-label" :class="{ 'highlight-web': folder.path === 'public_html' }">{{ folder.name }}</span>
+              </div>
 
-          <div
-            class="tree-node trash-node"
-            :class="{ active: isTrashMode }"
-            @click="openTrash"
-          >
-            <i class="fas fa-trash tree-icon" />
-            <span class="tree-label">.trash</span>
-            <span v-if="trashTotalBytes > 0" class="trash-size-badge">{{ formatSize(trashTotalBytes) }}</span>
+              <!-- Subfolder recursive children if expanded -->
+              <div v-if="isFolderExpanded(folder.path) && folder.children?.length" class="tree-sub-children">
+                <div
+                  v-for="sub in folder.children"
+                  :key="sub.path"
+                  class="tree-node sub"
+                  :class="{ active: currentPath === sub.path }"
+                  :style="{ paddingLeft: `${(sub.path.split('/').length + 1) * 0.85}rem` }"
+                  @click="openDir(sub.path)"
+                >
+                  <button
+                    v-if="sub.hasChildren || sub.children?.length"
+                    type="button"
+                    class="tree-toggle-btn"
+                    @click.stop="toggleFolderExpand(sub)"
+                  >
+                    <i class="fas" :class="isFolderExpanded(sub.path) ? 'fa-minus-square' : 'fa-plus-square'" />
+                  </button>
+                  <span v-else class="tree-toggle-spacer" />
+                  <i
+                    class="tree-icon"
+                    :class="treeFolderIcon(sub.name)"
+                  />
+                  <span class="tree-label">{{ sub.name }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- TRASH DIRECTORY NODE -->
+            <div
+              class="tree-node trash-node"
+              :class="{ active: isTrashMode }"
+              :style="{ paddingLeft: '0.75rem' }"
+              @click="openTrash"
+            >
+              <span class="tree-toggle-spacer" />
+              <i class="fas fa-trash tree-icon trash-icon" />
+              <span class="tree-label">.trash</span>
+              <span v-if="trashTotalBytes > 0" class="trash-size-badge">{{ formatSize(trashTotalBytes) }}</span>
+            </div>
           </div>
         </div>
       </aside>
@@ -1450,7 +2035,7 @@ onUnmounted(() => {
                   <td class="col-size mono">{{ entry.is_dir ? '4 KB' : formatSize(entry.size_bytes) }}</td>
                   <td class="col-mod">{{ formatDate(entry.modified) }}</td>
                   <td class="col-type">{{ fileType(entry) }}</td>
-                  <td class="col-mode mono">{{ entry.mode || (entry.is_dir ? '0755' : '0644') }}</td>
+                  <td class="col-mode mono">{{ formatPermissions(entry) }}</td>
                 </tr>
                 <tr v-if="!filtered.length">
                   <td colspan="6" class="cp-empty-cell">
@@ -1474,52 +2059,85 @@ onUnmounted(() => {
     >
       <template v-if="isTrashMode">
         <button type="button" @click="restoreTrashTargets(ctxTrashTargets)">
-          <i class="fas fa-undo" /> Restore
+          <i class="fas fa-undo ctx-icon" /> Restore
         </button>
         <hr />
         <button type="button" class="danger" @click="permanentDeleteTargets(ctxTrashTargets)">
-          <i class="fas fa-trash-alt" /> Delete Permanently
+          <i class="fas fa-trash-alt ctx-icon" /> Delete Permanently
         </button>
       </template>
+
+      <!-- FOLDER CONTEXT MENU (Exact order matching cPanel screenshot) -->
+      <template v-else-if="ctxTargets.length === 1 && ctxTargets[0].is_dir">
+        <button type="button" @click="beginMove">
+          <i class="fas fa-arrows-alt ctx-icon" /> Move
+        </button>
+        <button type="button" @click="setClipboard('copy')">
+          <i class="far fa-copy ctx-icon" /> Copy
+        </button>
+        <button type="button" @click="openRename(ctxTargets[0])">
+          <i class="fas fa-file-alt ctx-icon" /> Rename
+        </button>
+        <button type="button" @click="openChmod(ctxTargets[0])">
+          <i class="fas fa-key ctx-icon" /> Change Permissions
+        </button>
+        <button type="button" class="danger" @click="removeTargets(ctxTargets)">
+          <i class="fas fa-times ctx-icon" /> Delete
+        </button>
+        <button type="button" @click="compressTargets(ctxTargets)">
+          <i class="fas fa-thumbtack ctx-icon" /> Compress
+        </button>
+        <button type="button" @click="openPasswordProtect(ctxTargets[0])">
+          <i class="fas fa-lock ctx-icon" /> Password Protect
+        </button>
+        <button type="button" @click="openLeechProtect(ctxTargets[0])">
+          <i class="fas fa-shield-alt ctx-icon" /> Leech Protect
+        </button>
+        <button type="button" @click="openManageIndices(ctxTargets[0])">
+          <i class="fas fa-wrench ctx-icon" /> Manage Indices
+        </button>
+      </template>
+
+      <!-- FILE / MULTI-SELECT CONTEXT MENU -->
       <template v-else>
-        <template v-if="ctxTargets.length === 1">
+        <template v-if="ctxTargets.length === 1 && !ctxTargets[0].is_dir">
           <button type="button" @click="openEntry(ctxTargets[0])">
-            <i :class="ctxTargets[0].is_dir ? 'fas fa-folder-open' : 'fas fa-edit'" />
-            {{ ctxTargets[0].is_dir ? 'Open Folder' : 'Edit' }}
+            <i class="fas fa-edit ctx-icon" /> Edit
           </button>
-          <button v-if="!ctxTargets[0].is_dir" type="button" @click="openView(ctxTargets[0])">
-            <i class="fas fa-eye" /> View
+          <button type="button" @click="openHtmlEditor(ctxTargets[0])">
+            <i class="fas fa-file-code ctx-icon" /> HTML Editor
           </button>
-          <button v-if="!ctxTargets[0].is_dir" type="button" @click="downloadEntry(ctxTargets[0])">
-            <i class="fas fa-download" /> Download
+          <button type="button" @click="openView(ctxTargets[0])">
+            <i class="fas fa-eye ctx-icon" /> View
+          </button>
+          <button type="button" @click="downloadEntry(ctxTargets[0])">
+            <i class="fas fa-download ctx-icon" /> Download
+          </button>
+          <button v-if="ctxIsArchive" type="button" @click="unzipEntry(ctxTargets[0], false)">
+            <i class="fas fa-file-archive ctx-icon" /> Extract
           </button>
           <hr />
-          <button type="button" @click="openRename(ctxTargets[0])">
-            <i class="fas fa-i-cursor" /> Rename
-          </button>
-          <button type="button" @click="openChmod(ctxTargets[0])">
-            <i class="fas fa-key" /> Change Permissions
-          </button>
         </template>
-        <button type="button" @click="setClipboard('copy')">
-          <i class="fas fa-copy" /> Copy
-        </button>
         <button type="button" @click="beginMove">
-          <i class="fas fa-arrows-alt" /> Move
+          <i class="fas fa-arrows-alt ctx-icon" /> Move
         </button>
-        <button type="button" :disabled="!clipboard.mode" @click="pasteClipboard">
-          <i class="fas fa-paste" /> Paste
+        <button type="button" @click="setClipboard('copy')">
+          <i class="far fa-copy ctx-icon" /> Copy
         </button>
-        <hr />
-        <button type="button" @click="compressTargets(ctxTargets)">
-          <i class="fas fa-file-zipper" /> Compress
+        <button v-if="ctxTargets.length === 1" type="button" @click="openRename(ctxTargets[0])">
+          <i class="fas fa-file-alt ctx-icon" /> Rename
         </button>
-        <button v-if="ctxIsArchive" type="button" @click="unzipEntry(ctxTargets[0], false)">
-          <i class="fas fa-file-archive" /> Extract
+        <button v-if="ctxTargets.length === 1" type="button" @click="openChmod(ctxTargets[0])">
+          <i class="fas fa-key ctx-icon" /> Change Permissions
         </button>
-        <hr />
         <button type="button" class="danger" @click="removeTargets(ctxTargets)">
-          <i class="fas fa-trash-alt" /> Delete
+          <i class="fas fa-times ctx-icon" /> Delete
+        </button>
+        <button type="button" @click="compressTargets(ctxTargets)">
+          <i class="fas fa-thumbtack ctx-icon" /> Compress
+        </button>
+        <button v-if="clipboard.mode" type="button" @click="pasteClipboard">
+          <i class="fas fa-paste ctx-icon" /> Paste
         </button>
       </template>
     </div>
@@ -1763,6 +2381,198 @@ onUnmounted(() => {
           <button type="button" class="btn-ghost" @click="conflictModal.open = false">Cancel</button>
           <button type="button" class="btn-primary" @click="resolveConflict('copy')">Restore as Copy</button>
           <button type="button" class="btn-primary danger" @click="resolveConflict('replace')">Replace Existing</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- PASSWORD PROTECT MODAL -->
+    <div v-if="passwordProtectModal.open" class="cp-modal-backdrop" @click.self="passwordProtectModal.open = false">
+      <div class="cp-modal-card">
+        <div class="modal-head">
+          <div class="flex items-center gap-2">
+            <i class="fas fa-lock text-sky-600 text-lg" />
+            <h3>Directory Privacy / Password Protect</h3>
+          </div>
+          <button type="button" class="btn-close" @click="passwordProtectModal.open = false">✕</button>
+        </div>
+        <p class="modal-desc">
+          Set password protection for <strong>/{{ passwordProtectModal.entry?.path }}</strong>
+        </p>
+        <div class="space-y-3 my-3 text-sm">
+          <label class="flex items-center gap-2 cursor-pointer font-medium text-slate-700 dark:text-slate-200">
+            <input v-model="passwordProtectModal.enabled" type="checkbox" class="rounded text-sky-600 focus:ring-sky-500" />
+            Password protect this directory
+          </label>
+          <div v-if="passwordProtectModal.enabled" class="space-y-3 pt-2">
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Protected Area Display Name</label>
+              <input
+                v-model="passwordProtectModal.authName"
+                placeholder="e.g. Restricted Area"
+                class="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-sky-500"
+              />
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div>
+                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Username</label>
+                <input
+                  v-model="passwordProtectModal.username"
+                  placeholder="admin"
+                  class="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-sky-500"
+                />
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Password</label>
+                <input
+                  v-model="passwordProtectModal.password"
+                  type="password"
+                  placeholder="••••••••"
+                  class="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-sky-500"
+                />
+              </div>
+            </div>
+          </div>
+          <p v-if="passwordProtectModal.msg" class="text-xs text-red-600">{{ passwordProtectModal.msg }}</p>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn-ghost" @click="passwordProtectModal.open = false">Cancel</button>
+          <button type="button" class="btn-primary" :disabled="passwordProtectModal.busy" @click="submitPasswordProtect">
+            {{ passwordProtectModal.busy ? 'Saving…' : 'Save Protection' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- LEECH PROTECT MODAL -->
+    <div v-if="leechProtectModal.open" class="cp-modal-backdrop" @click.self="leechProtectModal.open = false">
+      <div class="cp-modal-card">
+        <div class="modal-head">
+          <div class="flex items-center gap-2">
+            <i class="fas fa-shield-alt text-emerald-600 text-lg" />
+            <h3>Leech & Hotlink Protection</h3>
+          </div>
+          <button type="button" class="btn-close" @click="leechProtectModal.open = false">✕</button>
+        </div>
+        <p class="modal-desc">
+          Configure hotlink prevention for files in <strong>/{{ leechProtectModal.entry?.path }}</strong>
+        </p>
+        <div class="space-y-3 my-3 text-sm">
+          <label class="flex items-center gap-2 cursor-pointer font-medium text-slate-700 dark:text-slate-200">
+            <input v-model="leechProtectModal.enabled" type="checkbox" class="rounded text-sky-600 focus:ring-sky-500" />
+            Enable Leech Protection
+          </label>
+          <div v-if="leechProtectModal.enabled" class="space-y-3 pt-2">
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Redirect Leech Requests To URL (Optional)</label>
+              <input
+                v-model="leechProtectModal.redirectUrl"
+                placeholder="https://yourdomain.com/blocked.png"
+                class="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-sky-500"
+              />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Allowed Referrer Domains (comma-separated)</label>
+              <textarea
+                v-model="leechProtectModal.allowedDomains"
+                placeholder="example.com, mywebsite.com"
+                rows="2"
+                class="w-full rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-sky-500"
+              />
+            </div>
+          </div>
+          <p v-if="leechProtectModal.msg" class="text-xs text-red-600">{{ leechProtectModal.msg }}</p>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn-ghost" @click="leechProtectModal.open = false">Cancel</button>
+          <button type="button" class="btn-primary" :disabled="leechProtectModal.busy" @click="submitLeechProtect">
+            {{ leechProtectModal.busy ? 'Saving…' : 'Save Leech Protection' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MANAGE INDICES MODAL -->
+    <div v-if="manageIndicesModal.open" class="cp-modal-backdrop" @click.self="manageIndicesModal.open = false">
+      <div class="cp-modal-card">
+        <div class="modal-head">
+          <div class="flex items-center gap-2">
+            <i class="fas fa-wrench text-amber-600 text-lg" />
+            <h3>Manage Directory Indexing</h3>
+          </div>
+          <button type="button" class="btn-close" @click="manageIndicesModal.open = false">✕</button>
+        </div>
+        <p class="modal-desc">
+          Choose indexing behavior for <strong>/{{ manageIndicesModal.entry?.path }}</strong>
+        </p>
+        <div class="space-y-2.5 my-3 text-sm">
+          <label class="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-200">
+            <input v-model="manageIndicesModal.indexMode" type="radio" value="default" />
+            <span><strong>Default System Setting</strong> (Use default web server configuration)</span>
+          </label>
+          <label class="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-200">
+            <input v-model="manageIndicesModal.indexMode" type="radio" value="no_index" />
+            <span><strong>No Indexing</strong> (Prevent listing files when index.html is missing)</span>
+          </label>
+          <label class="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-200">
+            <input v-model="manageIndicesModal.indexMode" type="radio" value="standard" />
+            <span><strong>Standard Indexing</strong> (Show simple file names list)</span>
+          </label>
+          <label class="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-200">
+            <input v-model="manageIndicesModal.indexMode" type="radio" value="fancy" />
+            <span><strong>Fancy Indexing</strong> (Show file names, file sizes, and descriptions)</span>
+          </label>
+          <p v-if="manageIndicesModal.msg" class="text-xs text-red-600">{{ manageIndicesModal.msg }}</p>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn-ghost" @click="manageIndicesModal.open = false">Cancel</button>
+          <button type="button" class="btn-primary" :disabled="manageIndicesModal.busy" @click="submitManageIndices">
+            {{ manageIndicesModal.busy ? 'Saving…' : 'Save Index Settings' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- HTML EDITOR MODAL -->
+    <div v-if="htmlEditorModal.open" class="cp-modal-backdrop" @click.self="htmlEditorModal.open = false">
+      <div class="cp-modal-card html-editor-card">
+        <div class="modal-head">
+          <div class="flex items-center gap-2">
+            <i class="fas fa-file-code text-amber-500 text-lg" />
+            <h3>HTML Editor: {{ htmlEditorModal.entry?.name }}</h3>
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              class="px-2.5 py-1 text-xs rounded border font-semibold flex items-center gap-1.5"
+              :class="htmlEditorModal.preview ? 'bg-sky-600 text-white border-sky-600' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300'"
+              @click="htmlEditorModal.preview = !htmlEditorModal.preview"
+            >
+              <i class="fas" :class="htmlEditorModal.preview ? 'fa-code' : 'fa-eye'" />
+              <span>{{ htmlEditorModal.preview ? 'Code View' : 'Live Preview' }}</span>
+            </button>
+            <button type="button" class="btn-close" @click="htmlEditorModal.open = false">✕</button>
+          </div>
+        </div>
+        <div v-if="htmlEditorModal.loading" class="cp-loading">Loading HTML content…</div>
+        <div v-else class="html-editor-body">
+          <iframe
+            v-if="htmlEditorModal.preview"
+            :srcdoc="htmlEditorModal.content"
+            class="html-preview-frame"
+            sandbox="allow-scripts"
+          />
+          <textarea
+            v-else
+            v-model="htmlEditorModal.content"
+            class="html-editor-textarea mono"
+            placeholder="<html>...</html>"
+          />
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn-ghost" @click="htmlEditorModal.open = false">Cancel</button>
+          <button type="button" class="btn-primary" :disabled="htmlEditorModal.saving" @click="saveHtmlEditor">
+            {{ htmlEditorModal.saving ? 'Saving…' : 'Save Changes' }}
+          </button>
         </div>
       </div>
     </div>
@@ -2042,6 +2852,12 @@ onUnmounted(() => {
   width: 100%;
 }
 
+.btn-toggle-tree:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
 .tree-content {
   padding: 0.35rem 0;
 }
@@ -2049,14 +2865,16 @@ onUnmounted(() => {
 .tree-node {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.35rem 0.6rem;
-  font-size: 0.8rem;
+  gap: 0.35rem;
+  padding: 0.28rem 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 500;
   color: #334155;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  user-select: none;
 }
 
 .tree-node:hover {
@@ -2066,21 +2884,100 @@ onUnmounted(() => {
 .tree-node.active {
   background: #0284c7;
   color: #fff;
+  font-weight: 600;
 }
 
-.tree-expander {
-  font-size: 0.75rem;
+.tree-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
   color: #64748b;
+  font-size: 0.72rem;
+  cursor: pointer;
+  flex-shrink: 0;
+  border-radius: 0.2rem;
+}
+
+.tree-toggle-btn:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: #0f172a;
+}
+
+.tree-toggle-spacer {
+  display: inline-block;
+  width: 1.15rem;
+  flex-shrink: 0;
 }
 
 .tree-icon {
   font-size: 0.85rem;
   color: #0284c7;
+  flex-shrink: 0;
+}
+
+.tree-icon.folder-icon {
+  color: #d97706;
+}
+
+.tree-icon.globe-icon {
+  color: #059669;
+}
+
+.tree-icon.trash-icon {
+  color: #dc2626;
+}
+
+.tree-icon.home-icon {
+  color: #0284c7;
 }
 
 .tree-node.active .tree-icon,
-.tree-node.active .tree-expander {
+.tree-node.active .tree-toggle-btn,
+.tree-node.active .highlight-web {
   color: #fff;
+}
+
+.highlight-web {
+  font-weight: 700;
+  color: #0369a1;
+}
+
+.root-node {
+  font-weight: 700;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f1f5f9;
+  margin-bottom: 0.2rem;
+}
+
+.root-node:hover {
+  background: #e2e8f0;
+}
+
+.root-node.active {
+  background: #0284c7;
+  color: #fff;
+}
+
+.cp-tool-spacer {
+  flex: 1;
+}
+
+.cp-tool-btn.secondary {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  color: #334155;
+  margin-left: auto;
+}
+
+.cp-tool-btn.secondary:hover {
+  background: #e2e8f0;
+  color: #0f172a;
 }
 
 .trash-node {
@@ -2182,7 +3079,10 @@ onUnmounted(() => {
   gap: 0.45rem;
 }
 
-.folder-icon { color: #0284c7; }
+.folder-icon { color: #d97706; }
+.cp-icon-globe { color: #0284c7; }
+.cp-icon-ftp { color: #059669; }
+.cp-icon-mail { color: #2563eb; }
 .php-icon { color: #8892bf; }
 .html-icon { color: #e44d26; }
 .css-icon { color: #264de4; }
@@ -2223,46 +3123,101 @@ onUnmounted(() => {
 .cp-ctx-menu {
   position: fixed;
   z-index: 2000;
-  background: #fff;
-  border: 1px solid #cbd5e1;
-  border-radius: 0.4rem;
-  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
-  padding: 0.3rem 0;
-  min-width: 12rem;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  padding: 4px 0;
+  min-width: 14rem;
+  font-family: inherit;
 }
 
 .cp-ctx-menu button {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.75rem;
   width: 100%;
-  padding: 0.35rem 0.75rem;
+  padding: 0.45rem 1rem;
   background: transparent;
   border: none;
-  font-size: 0.8rem;
-  color: #334155;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #1e293b;
   text-align: left;
   cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.cp-ctx-menu button .ctx-icon {
+  font-size: 0.9rem;
+  width: 1.1rem;
+  text-align: center;
+  color: #0f172a;
 }
 
 .cp-ctx-menu button:hover {
   background: #0284c7;
-  color: #fff;
+  color: #ffffff;
+}
+
+.cp-ctx-menu button:hover .ctx-icon {
+  color: #ffffff;
 }
 
 .cp-ctx-menu button.danger {
-  color: #dc2626;
+  color: #b91c1c;
+}
+
+.cp-ctx-menu button.danger .ctx-icon {
+  color: #b91c1c;
 }
 
 .cp-ctx-menu button.danger:hover {
   background: #dc2626;
-  color: #fff;
+  color: #ffffff;
+}
+
+.cp-ctx-menu button.danger:hover .ctx-icon {
+  color: #ffffff;
 }
 
 .cp-ctx-menu hr {
   border: none;
   border-top: 1px solid #e2e8f0;
   margin: 0.25rem 0;
+}
+
+/* HTML EDITOR MODAL */
+.html-editor-card {
+  max-width: 56rem !important;
+  width: 95vw;
+}
+
+.html-editor-body {
+  height: 60vh;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.375rem;
+  overflow: hidden;
+  margin: 0.75rem 0;
+}
+
+.html-editor-textarea {
+  width: 100%;
+  height: 100%;
+  padding: 0.75rem;
+  font-size: 0.85rem;
+  border: none;
+  outline: none;
+  resize: none;
+  background: #0f172a;
+  color: #f8fafc;
+}
+
+.html-preview-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #ffffff;
 }
 
 /* UPLOAD MODAL */

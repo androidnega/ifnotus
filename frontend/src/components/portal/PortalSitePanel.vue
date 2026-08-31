@@ -477,18 +477,7 @@ const importSuccessMsg = ref('')
 const importErrorMsg = ref('')
 const connectionSnippetType = ref<'pdo' | 'mysqli' | 'pgsql' | 'laravel' | 'wordpress' | 'nodejs' | 'python'>('pdo')
 const showDbPassword = ref(false)
-
-const showStackGuideModal = ref(false)
-const selectedGuideTab = ref<'mysql' | 'postgres' | 'laravel' | 'wordpress' | 'react' | 'git'>('mysql')
-
-function openStackGuide(tab: 'mysql' | 'postgres' | 'laravel' | 'wordpress' | 'react' | 'git' = 'mysql') {
-  selectedGuideTab.value = tab
-  showStackGuideModal.value = true
-}
-
-function closeStackGuide() {
-  showStackGuideModal.value = false
-}
+const showCreateDbForm = ref(false)
 
 function openImportModal(dbId?: string) {
   targetImportDbId.value = dbId || props.selectedDbId || ''
@@ -1490,30 +1479,31 @@ function formatBytes(n?: number | null) {
     </div>
     <div v-else-if="siteTab === 'database'" class="block db-management-section">
       <!-- Database Header & Quick Actions -->
-      <div class="db-head">
+      <div class="db-head-compact">
         <div>
           <div class="db-title-row">
             <span class="db-badge-mysql"><i class="fas fa-database" /> MySQL & PostgreSQL</span>
             <h3>Databases</h3>
           </div>
-          <p class="muted">
-            Create databases with dedicated users and full permissions, access phpMyAdmin or Database Studio, and import <code>.sql</code> database dumps.
+          <p class="muted tiny">
+            Manage your MySQL / PostgreSQL databases, users, and phpMyAdmin access.
           </p>
         </div>
         <div class="db-head-actions">
           <button
             type="button"
-            class="btn-primary pma-btn"
-            @click="openPhpMyAdminDirect()"
+            class="btn-primary"
+            @click="showCreateDbForm = !showCreateDbForm"
           >
-            <i class="fas fa-arrow-up-right-from-square" /> Open phpMyAdmin
+            <i class="fas" :class="showCreateDbForm ? 'fa-minus' : 'fa-plus'" />
+            {{ showCreateDbForm ? 'Close Form' : 'Create Database' }}
           </button>
           <button
             type="button"
-            class="btn-ghost"
-            @click="openBuiltinSqlStudio"
+            class="btn-ghost pma-btn"
+            @click="openPhpMyAdminDirect()"
           >
-            <i class="fas fa-table-columns" /> SQL Studio
+            <i class="fas fa-arrow-up-right-from-square" /> phpMyAdmin
           </button>
           <button
             type="button"
@@ -1521,14 +1511,6 @@ function formatBytes(n?: number | null) {
             @click="openImportModal()"
           >
             <i class="fas fa-file-import" /> Import .sql
-          </button>
-          <button
-            type="button"
-            class="btn-ghost btn-guide-trigger"
-            title="Learn how to install MySQL/Postgres & host PHP/Laravel/WordPress/React apps"
-            @click="openStackGuide(dbCreds?.engine === 'postgresql' ? 'postgres' : 'mysql')"
-          >
-            <i class="fas fa-circle-info text-primary" /> (i) Stack & DB Guide
           </button>
           <button
             type="button"
@@ -1541,246 +1523,201 @@ function formatBytes(n?: number | null) {
         </div>
       </div>
 
-      <!-- Step-by-Step Tenant Hosting Guide Banner -->
-      <div class="db-guide-banner mt">
-        <div class="db-guide-header">
-          <div class="guide-header-left">
-            <span class="guide-step-tag">Step 2: MySQL Database & User Setup</span>
-            <span class="guide-tip">Quick Workflow Guide</span>
-          </div>
-          <button
-            type="button"
-            class="guide-info-pill"
-            @click="openStackGuide('mysql')"
-          >
-            <i class="fas fa-circle-info" /> (i) Stack Guide & Docs
-          </button>
-        </div>
-        <div class="db-guide-steps">
-          <div class="guide-step-card">
-            <div class="step-num">1</div>
-            <div class="step-text">
-              <strong>Create Database</strong>
-              <span>Enter database name (e.g. <code>app_db</code>) and select MySQL.</span>
-            </div>
-          </div>
-          <div class="guide-step-card">
-            <div class="step-num">2</div>
-            <div class="step-text">
-              <strong>User & Permissions</strong>
-              <span>User is assigned strong password with <code>ALL PRIVILEGES</code> granted.</span>
-            </div>
-          </div>
-          <div class="guide-step-card">
-            <div class="step-num">3</div>
-            <div class="step-text">
-              <strong>Import .SQL File</strong>
-              <span>Use phpMyAdmin or click <strong>Import .sql</strong> to upload your database dump.</span>
-            </div>
-          </div>
-          <div class="guide-step-card">
-            <div class="step-num">4</div>
-            <div class="step-text">
-              <strong>Connect PHP App</strong>
-              <span>Paste host <code>localhost</code>, user & password in your PHP/Laravel config.</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- Action Message / Alert -->
-      <div v-if="dbActionMsg" class="db-alert-bar mt" :class="{ 'is-err': dbActionMsg.toLowerCase().includes('failed') || dbActionMsg.toLowerCase().includes('error') }">
+      <div v-if="dbActionMsg" class="db-alert-bar mt-sm" :class="{ 'is-err': dbActionMsg.toLowerCase().includes('failed') || dbActionMsg.toLowerCase().includes('error') }">
         <i class="fas" :class="dbActionMsg.toLowerCase().includes('failed') || dbActionMsg.toLowerCase().includes('error') ? 'fa-triangle-exclamation' : 'fa-circle-check'" />
         <span>{{ dbActionMsg }}</span>
       </div>
 
-      <!-- Database Creation Card -->
-      <div class="db-create-card mt">
-        <div class="card-head-simple">
-          <div class="card-icon-title">
-            <i class="fas fa-plus-circle text-primary" />
-            <h4>Create Database & User</h4>
-          </div>
-          <span class="card-badge-muted">Grants Full Permissions Automatically</span>
+      <!-- Database Creation Card (Clean & Compact) -->
+      <div v-if="showCreateDbForm || !dbList?.length" class="db-create-compact mt-sm">
+        <div class="db-compact-head">
+          <span class="db-compact-title"><i class="fas fa-plus-circle text-primary" /> New Database & User</span>
+          <span class="muted tiny">Auto-grants full user privileges</span>
         </div>
 
-        <div class="db-create-form">
-          <div class="db-form-row">
-            <label class="field field-half">
-              <span class="field-label-wrap">
-                <strong>Database Name</strong>
-                <span class="sub-hint">e.g. app_db, store, main</span>
-              </span>
-              <div class="input-with-icon">
-                <i class="fas fa-database field-ico" />
-                <input
-                  :value="newDbName"
-                  type="text"
-                  placeholder="app_db"
-                  spellcheck="false"
-                  @input="emit('update:newDbName', ($event.target as HTMLInputElement).value)"
-                />
-              </div>
-            </label>
+        <div class="db-compact-grid mt-xs">
+          <label class="field-compact">
+            <span class="label-tiny">Database Name</span>
+            <input
+              :value="newDbName"
+              type="text"
+              placeholder="e.g. app_db"
+              class="input-compact"
+              spellcheck="false"
+              @input="emit('update:newDbName', ($event.target as HTMLInputElement).value)"
+            />
+          </label>
 
-            <label class="field field-half">
-              <span class="field-label-wrap">
-                <strong>Database Engine</strong>
-                <span class="sub-hint">Default is MySQL</span>
-              </span>
-              <div class="input-with-icon">
-                <i class="fas fa-server field-ico" />
-                <select
-                  :value="newDbEngine"
-                  @change="emit('update:newDbEngine', ($event.target as HTMLSelectElement).value)"
-                >
-                  <option value="mysql">MySQL (Recommended for PHP / WP / Laravel)</option>
-                  <option value="postgresql">PostgreSQL</option>
-                </select>
-              </div>
-            </label>
-          </div>
-
-          <div class="db-form-row mt-sm">
-            <label class="field field-half">
-              <span class="field-label-wrap">
-                <strong>Database Username</strong>
-                <span class="sub-hint">Leave blank to auto-create matching user</span>
-              </span>
-              <div class="input-with-icon">
-                <i class="fas fa-user field-ico" />
-                <input
-                  :value="newDbUser"
-                  type="text"
-                  placeholder="Optional custom user"
-                  spellcheck="false"
-                  @input="emit('update:newDbUser', ($event.target as HTMLInputElement).value)"
-                />
-              </div>
-            </label>
-
-            <label class="field field-half">
-              <span class="field-label-wrap">
-                <strong>User Password</strong>
-                <span class="sub-hint">Auto-generated if empty</span>
-              </span>
-              <div class="input-with-addon">
-                <div class="input-with-icon full-w">
-                  <i class="fas fa-key field-ico" />
-                  <input
-                    :value="newDbPassword"
-                    :type="showDbPassword ? 'text' : 'password'"
-                    placeholder="Enter password or auto-generate"
-                    spellcheck="false"
-                    @input="emit('update:newDbPassword', ($event.target as HTMLInputElement).value)"
-                  />
-                </div>
-                <button
-                  type="button"
-                  class="btn-addon"
-                  title="Toggle visibility"
-                  @click="showDbPassword = !showDbPassword"
-                >
-                  <i class="fas" :class="showDbPassword ? 'fa-eye-slash' : 'fa-eye'" />
-                </button>
-                <button
-                  type="button"
-                  class="btn-addon btn-generate"
-                  title="Generate strong password"
-                  @click="generateStrongPassword"
-                >
-                  <i class="fas fa-dice" /> Generate
-                </button>
-              </div>
-            </label>
-          </div>
-
-          <div class="db-create-foot mt">
-            <div class="db-privilege-note">
-              <i class="fas fa-shield-halved" />
-              <span>Full permissions (<code>GRANT ALL PRIVILEGES</code>) are automatically granted to the user for this database.</span>
-            </div>
-            <button
-              type="button"
-              class="btn-primary btn-submit-db"
-              :disabled="dbBusy || !newDbName"
-              @click="emit('createDatabase')"
+          <label class="field-compact">
+            <span class="label-tiny">Engine</span>
+            <select
+              :value="newDbEngine"
+              class="input-compact select-compact"
+              @change="emit('update:newDbEngine', ($event.target as HTMLSelectElement).value)"
             >
-              <i class="fas fa-plus" />
-              {{ dbBusy ? 'Creating Database & User…' : 'Create Database & User' }}
-            </button>
-          </div>
+              <option value="mysql">MySQL (Default)</option>
+              <option value="postgresql">PostgreSQL</option>
+            </select>
+          </label>
+
+          <label class="field-compact">
+            <span class="label-tiny">User (Optional)</span>
+            <input
+              :value="newDbUser"
+              type="text"
+              placeholder="Auto-created if empty"
+              class="input-compact"
+              spellcheck="false"
+              @input="emit('update:newDbUser', ($event.target as HTMLInputElement).value)"
+            />
+          </label>
+
+          <label class="field-compact">
+            <span class="label-tiny">Password</span>
+            <div class="input-with-mini-actions">
+              <input
+                :value="newDbPassword"
+                :type="showDbPassword ? 'text' : 'password'"
+                placeholder="Auto-generated if blank"
+                class="input-compact"
+                spellcheck="false"
+                @input="emit('update:newDbPassword', ($event.target as HTMLInputElement).value)"
+              />
+              <button
+                type="button"
+                class="btn-mini-ico"
+                title="Toggle password visibility"
+                @click="showDbPassword = !showDbPassword"
+              >
+                <i class="fas" :class="showDbPassword ? 'fa-eye-slash' : 'fa-eye'" />
+              </button>
+              <button
+                type="button"
+                class="btn-mini-ico"
+                title="Generate strong password"
+                @click="generateStrongPassword"
+              >
+                <i class="fas fa-dice" />
+              </button>
+            </div>
+          </label>
+        </div>
+
+        <div class="db-compact-actions mt-xs">
+          <button
+            type="button"
+            class="btn-primary btn-sm"
+            :disabled="dbBusy || !newDbName"
+            @click="emit('createDatabase')"
+          >
+            <i class="fas fa-plus" />
+            {{ dbBusy ? 'Creating…' : 'Create Database' }}
+          </button>
+          <button
+            v-if="dbList?.length"
+            type="button"
+            class="btn-ghost btn-sm"
+            @click="showCreateDbForm = false"
+          >
+            Cancel
+          </button>
         </div>
       </div>
 
-      <!-- Databases List Section -->
-      <div v-if="dbList?.length" class="db-list-section mt">
-        <div class="section-title-bar">
-          <h4>Your Databases ({{ dbList.length }})</h4>
-          <span class="sub-hint">Click a database to view credentials and quick connection snippets.</span>
-        </div>
-
-        <div class="db-cards-grid mt-sm">
-          <div
-            v-for="db in dbList"
-            :key="db.id"
-            class="db-card"
-            :class="{ on: selectedDbId === db.id }"
-            @click="emit('selectDatabase', db.id)"
-          >
-            <div class="db-card-main">
-              <div class="db-card-top">
-                <div class="db-name-group">
-                  <span class="db-card-engine-tag" :class="db.engine || 'mysql'">{{ (db.engine || 'mysql').toUpperCase() }}</span>
-                  <strong class="db-card-title">{{ db.logical_name || db.name }}</strong>
-                </div>
-                <span v-if="db.legacy" class="badge-primary-site">Primary Stack DB</span>
-              </div>
-
-              <div class="db-card-meta">
-                <span class="meta-item"><i class="fas fa-server" /> {{ db.name }}</span>
-                <span v-if="db.username" class="meta-item"><i class="fas fa-user" /> {{ db.username }}</span>
-                <span v-if="db.size_mb != null" class="meta-item"><i class="fas fa-hard-drive" /> {{ db.size_mb }} MB</span>
-              </div>
-            </div>
-
-            <div class="db-card-actions" @click.stop>
-              <button
-                type="button"
-                class="btn-card-action pma"
-                title="Open in phpMyAdmin"
-                @click="openPhpMyAdminDirect(db.id)"
+      <!-- Databases Table List (Clean & Compact) -->
+      <div v-if="dbList?.length" class="db-table-section mt-sm">
+        <div class="table-responsive">
+          <table class="db-compact-table">
+            <thead>
+              <tr>
+                <th>Database</th>
+                <th>Engine</th>
+                <th>Username</th>
+                <th>Host & Port</th>
+                <th>Size</th>
+                <th class="th-actions">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="db in dbList"
+                :key="db.id"
+                :class="{ 'row-active': selectedDbId === db.id }"
+                @click="emit('selectDatabase', db.id)"
               >
-                <i class="fas fa-arrow-up-right-from-square" /> phpMyAdmin
-              </button>
-              <button
-                type="button"
-                class="btn-card-action import"
-                title="Import .sql dump file"
-                @click="openImportModal(db.id)"
-              >
-                <i class="fas fa-file-import" /> Import .sql
-              </button>
-              <button
-                type="button"
-                class="btn-card-action"
-                title="Reset database user password"
-                :disabled="dbBusy || db.legacy"
-                @click="emit('resetDbPassword', db.id)"
-              >
-                <i class="fas fa-key" /> Reset Pass
-              </button>
-              <button
-                type="button"
-                class="btn-card-action danger"
-                title="Delete database"
-                :disabled="dbBusy || db.legacy"
-                @click="emit('deleteDatabase', db.id)"
-              >
-                <i class="fas fa-trash-can" /> Delete
-              </button>
-            </div>
-          </div>
+                <td class="td-name">
+                  <div class="db-name-cell">
+                    <i class="fas fa-database db-row-ico" />
+                    <strong>{{ db.name }}</strong>
+                    <span v-if="db.logical_name && db.logical_name !== db.name" class="db-sub-name">({{ db.logical_name }})</span>
+                    <span v-if="db.legacy" class="badge-primary-site">Primary</span>
+                  </div>
+                </td>
+                <td>
+                  <span class="db-engine-chip" :class="db.engine || 'mysql'">
+                    {{ (db.engine || 'mysql').toUpperCase() }}
+                  </span>
+                </td>
+                <td>
+                  <span class="mono-text">{{ db.username || '—' }}</span>
+                </td>
+                <td>
+                  <span class="mono-text">{{ db.host || '127.0.0.1' }}:{{ db.port || (db.engine === 'postgresql' ? 5432 : 3306) }}</span>
+                </td>
+                <td>
+                  <span class="size-text">{{ db.size_mb != null ? db.size_mb + ' MB' : '—' }}</span>
+                </td>
+                <td class="td-actions" @click.stop>
+                  <div class="action-btn-group">
+                    <button
+                      type="button"
+                      class="btn-tbl-action pma"
+                      title="Open in phpMyAdmin"
+                      @click="openPhpMyAdminDirect(db.id)"
+                    >
+                      <i class="fas fa-arrow-up-right-from-square" /> phpMyAdmin
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-tbl-action import"
+                      title="Import .sql file"
+                      @click="openImportModal(db.id)"
+                    >
+                      <i class="fas fa-file-import" /> Import
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-tbl-action"
+                      :class="{ 'active-cred-btn': selectedDbId === db.id }"
+                      title="View connection parameters"
+                      @click="emit('selectDatabase', db.id)"
+                    >
+                      <i class="fas fa-key" /> Creds
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-tbl-action"
+                      title="Reset database password"
+                      :disabled="dbBusy || db.legacy"
+                      @click="emit('resetDbPassword', db.id)"
+                    >
+                      <i class="fas fa-arrows-rotate" />
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-tbl-action danger"
+                      title="Delete database"
+                      :disabled="dbBusy || db.legacy"
+                      @click="emit('deleteDatabase', db.id)"
+                    >
+                      <i class="fas fa-trash-can" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -1939,14 +1876,6 @@ function formatBytes(n?: number | null) {
               >
                 Python
               </button>
-              <button
-                type="button"
-                class="snippet-tab guide-btn"
-                title="Full stack architecture and deployment guide"
-                @click="openStackGuide(dbCreds?.engine === 'postgresql' ? 'postgres' : 'mysql')"
-              >
-                <i class="fas fa-circle-info" /> (i) Stack Guide
-              </button>
             </div>
           </div>
 
@@ -2050,380 +1979,6 @@ function formatBytes(n?: number | null) {
               <i class="fas" :class="importBusy ? 'fa-spinner fa-spin' : 'fa-bolt'" />
               {{ importBusy ? 'Importing SQL File…' : 'Run Import' }}
             </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Interactive Stack & Architecture Guide Modal (i) -->
-      <div v-if="showStackGuideModal" class="db-import-modal-backdrop" @click.self="closeStackGuide">
-        <div class="stack-guide-modal-card">
-          <div class="modal-head">
-            <div class="modal-title-row">
-              <div class="modal-ico-wrap info-ico"><i class="fas fa-circle-info" /></div>
-              <div>
-                <h4>Stack & Database Architecture Guide</h4>
-                <p class="muted tiny">Complete setup, connection parameters, and deployment pipelines for IFNOTUS runtimes</p>
-              </div>
-            </div>
-            <button type="button" class="btn-close-modal" @click="closeStackGuide">
-              <i class="fas fa-xmark" />
-            </button>
-          </div>
-
-          <div class="guide-tabs-nav">
-            <button
-              type="button"
-              class="guide-nav-tab"
-              :class="{ active: selectedGuideTab === 'mysql' }"
-              @click="selectedGuideTab = 'mysql'"
-            >
-              <i class="fas fa-database text-orange" /> PHP + MySQL
-            </button>
-            <button
-              type="button"
-              class="guide-nav-tab"
-              :class="{ active: selectedGuideTab === 'postgres' }"
-              @click="selectedGuideTab = 'postgres'"
-            >
-              <i class="fas fa-database text-blue" /> PHP + PostgreSQL
-            </button>
-            <button
-              type="button"
-              class="guide-nav-tab"
-              :class="{ active: selectedGuideTab === 'laravel' }"
-              @click="selectedGuideTab = 'laravel'"
-            >
-              <i class="fa-brands fa-laravel text-red" /> Laravel
-            </button>
-            <button
-              type="button"
-              class="guide-nav-tab"
-              :class="{ active: selectedGuideTab === 'wordpress' }"
-              @click="selectedGuideTab = 'wordpress'"
-            >
-              <i class="fa-brands fa-wordpress text-sky" /> WordPress
-            </button>
-            <button
-              type="button"
-              class="guide-nav-tab"
-              :class="{ active: selectedGuideTab === 'react' }"
-              @click="selectedGuideTab = 'react'"
-            >
-              <i class="fa-brands fa-react text-cyan" /> React / Node.js
-            </button>
-            <button
-              type="button"
-              class="guide-nav-tab"
-              :class="{ active: selectedGuideTab === 'git' }"
-              @click="selectedGuideTab = 'git'"
-            >
-              <i class="fa-brands fa-git-alt text-orange" /> Git Deploy
-            </button>
-          </div>
-
-          <div class="guide-modal-content">
-            <!-- PHP + MySQL Guide -->
-            <div v-if="selectedGuideTab === 'mysql'" class="guide-panel-body">
-              <div class="guide-intro-banner">
-                <div class="intro-badge">Engine: MariaDB / MySQL 8.0 · Port: 3306</div>
-                <h3>Hosting PHP Websites with MySQL</h3>
-                <p>Follow these 4 simple steps to run your custom PHP system, import your existing database, and connect securely.</p>
-              </div>
-
-              <div class="guide-steps-list">
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 1</div>
-                  <div class="step-body">
-                    <strong>Create MySQL Database & User</strong>
-                    <p>In the <strong>Databases</strong> tab, enter your database name (e.g. <code>app_db</code>) and optionally set a username and strong password. Click <em>Create Database & User</em>. The user is automatically granted <code>ALL PRIVILEGES</code> on that database.</p>
-                  </div>
-                </div>
-
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 2</div>
-                  <div class="step-body">
-                    <strong>Import Database Dump (.sql file)</strong>
-                    <p>Click <strong>Import .sql</strong> or launch <strong>phpMyAdmin</strong>. Select your new database and upload your <code>.sql</code> backup. All tables, schemas, and initial rows will be imported immediately.</p>
-                  </div>
-                </div>
-
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 3</div>
-                  <div class="step-body">
-                    <strong>Configure PHP Database Connection</strong>
-                    <p>Copy the database credentials from the <strong>Connection Credentials</strong> card and paste into your PHP config file:</p>
-                    <div class="guide-code-box">
-                      <pre><code>&lt;?php
-$host = 'localhost';
-$db   = '{{ dbCreds?.name || 'app_db' }}';
-$user = '{{ dbCreds?.username || 'app_user' }}';
-$pass = '{{ dbCreds?.password || 'YourPassword' }}';
-$port = 3306;
-
-try {
-    $pdo = new PDO("mysql:host=$host;port=$port;dbname=$db;charset=utf8mb4", $user, $pass, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    ]);
-} catch (PDOException $e) {
-    die("Database error: " . $e->getMessage());
-}</code></pre>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 4</div>
-                  <div class="step-body">
-                    <strong>Deploy Your PHP Project Files</strong>
-                    <p>Upload your PHP scripts, images, and CSS to your web root using the built-in <strong>File Manager</strong>, <strong>SFTP</strong>, or <strong>Git Deploy</strong>. Point your browser to your domain to verify everything is live!</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- PHP + PostgreSQL Guide -->
-            <div v-else-if="selectedGuideTab === 'postgres'" class="guide-panel-body">
-              <div class="guide-intro-banner">
-                <div class="intro-badge">Engine: PostgreSQL 16 · Port: 5432</div>
-                <h3>Connecting PHP Projects with PostgreSQL</h3>
-                <p>IFNOTUS hosting environments feature native <strong>pdo_pgsql</strong> and <strong>pgsql</strong> extensions enabled by default across PHP 8.3 & 8.2 runtimes.</p>
-              </div>
-
-              <div class="guide-steps-list">
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 1</div>
-                  <div class="step-body">
-                    <strong>Create PostgreSQL Database</strong>
-                    <p>In the <strong>Databases</strong> tab, select <em>PostgreSQL</em> as engine, enter the database name, and click create. Dedicated credentials with full database ownership are generated.</p>
-                  </div>
-                </div>
-
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 2</div>
-                  <div class="step-body">
-                    <strong>Connect via PDO (Recommended)</strong>
-                    <p>Use the standard PHP PDO driver with the <code>pgsql:</code> DSN:</p>
-                    <div class="guide-code-box">
-                      <pre><code>&lt;?php
-$host = 'localhost';
-$port = 5432;
-$db   = '{{ dbCreds?.name || 'app_db' }}';
-$user = '{{ dbCreds?.username || 'app_user' }}';
-$pass = '{{ dbCreds?.password || 'YourPassword' }}';
-
-try {
-    $dsn = "pgsql:host=$host;port=$port;dbname=$db;";
-    $pdo = new PDO($dsn, $user, $pass, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    ]);
-} catch (PDOException $e) {
-    die("PostgreSQL connection error: " . $e->getMessage());
-}</code></pre>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 3</div>
-                  <div class="step-body">
-                    <strong>Or Connect with pg_connect()</strong>
-                    <div class="guide-code-box">
-                      <pre><code>&lt;?php
-$conn = pg_connect("host=localhost port=5432 dbname={{ dbCreds?.name || 'app_db' }} user={{ dbCreds?.username || 'app_user' }} password={{ dbCreds?.password || 'YourPassword' }}");
-if (!$conn) {
-    die("PostgreSQL error: " . pg_last_error());
-}</code></pre>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 4</div>
-                  <div class="step-body">
-                    <strong>Manage Schemas & Run Queries</strong>
-                    <p>Use the built-in <strong>SQL Studio</strong> to browse tables, run raw SQL queries, and manage views, sequences, and foreign keys.</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Laravel Guide -->
-            <div v-else-if="selectedGuideTab === 'laravel'" class="guide-panel-body">
-              <div class="guide-intro-banner">
-                <div class="intro-badge">Framework: Laravel 10 / 11 · PHP 8.2 / 8.3</div>
-                <h3>Deploying Laravel Applications</h3>
-                <p>IFNOTUS servers are configured with Nginx FastCGI, Composer, and automated URL rewrites supporting Laravel routing out-of-the-box.</p>
-              </div>
-
-              <div class="guide-steps-list">
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 1</div>
-                  <div class="step-body">
-                    <strong>Set Document Root to /public</strong>
-                    <p>Laravel requires the web server document root to point to the <code>/public</code> directory. Select <em>Laravel</em> in the <strong>Stack</strong> tab to automatically configure Nginx virtual host rewrites.</p>
-                  </div>
-                </div>
-
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 2</div>
-                  <div class="step-body">
-                    <strong>Configure Database in .env</strong>
-                    <p>Update your <code>.env</code> file with your database credentials:</p>
-                    <div class="guide-code-box">
-                      <pre><code>APP_ENV=production
-APP_DEBUG=false
-APP_URL=https://{{ activeEnv?.domain || 'yourdomain.online' }}
-
-# For MySQL:
-DB_CONNECTION=mysql
-DB_HOST=127.0.0.1
-DB_PORT=3306
-DB_DATABASE={{ dbCreds?.name || 'app_db' }}
-DB_USERNAME={{ dbCreds?.username || 'app_user' }}
-DB_PASSWORD={{ dbCreds?.password || 'YourPassword' }}
-
-# Or for PostgreSQL:
-# DB_CONNECTION=pgsql
-# DB_HOST=127.0.0.1
-# DB_PORT=5432
-# DB_DATABASE={{ dbCreds?.name || 'app_db' }}
-# DB_USERNAME={{ dbCreds?.username || 'app_user' }}
-# DB_PASSWORD={{ dbCreds?.password || 'YourPassword' }}</code></pre>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 3</div>
-                  <div class="step-body">
-                    <strong>Run Migrations & Cache Config</strong>
-                    <p>Import your database structure via <strong>Import .sql</strong> or use the SSH terminal to run <code>php artisan migrate --force</code> and <code>php artisan config:cache</code>.</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- WordPress Guide -->
-            <div v-else-if="selectedGuideTab === 'wordpress'" class="guide-panel-body">
-              <div class="guide-intro-banner">
-                <div class="intro-badge">CMS: WordPress 6.x · 1-Click Provisioning</div>
-                <h3>Setting Up WordPress</h3>
-                <p>Deploy WordPress in under 2 minutes with automated database provisioning and SSL.</p>
-              </div>
-
-              <div class="guide-steps-list">
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 1</div>
-                  <div class="step-body">
-                    <strong>1-Click Install or Manual Upload</strong>
-                    <p>Go to the <strong>Stack</strong> tab and click <em>Install WordPress</em>. IFNOTUS downloads the latest release, extracts core files, and links the FastCGI runtime.</p>
-                  </div>
-                </div>
-
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 2</div>
-                  <div class="step-body">
-                    <strong>Configure wp-config.php</strong>
-                    <p>If installing manually, put these constants in your <code>wp-config.php</code>:</p>
-                    <div class="guide-code-box">
-                      <pre><code>define( 'DB_NAME', '{{ dbCreds?.name || 'wordpress_db' }}' );
-define( 'DB_USER', '{{ dbCreds?.username || 'wordpress_user' }}' );
-define( 'DB_PASSWORD', '{{ dbCreds?.password || 'YourPassword' }}' );
-define( 'DB_HOST', 'localhost' );
-define( 'DB_CHARSET', 'utf8mb4' );
-define( 'DB_COLLATE', '' );</code></pre>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 3</div>
-                  <div class="step-body">
-                    <strong>Access Admin & SSL</strong>
-                    <p>Open <code>https://{{ activeEnv?.domain || 'yourdomain.online' }}/wp-admin</code> to complete the 5-minute setup wizard.</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- React / Node.js Guide -->
-            <div v-else-if="selectedGuideTab === 'react'" class="guide-panel-body">
-              <div class="guide-intro-banner">
-                <div class="intro-badge">Frontend: React / Vue / Vite · Backend: Node.js / Express</div>
-                <h3>Deploying React & Node.js Applications</h3>
-                <p>Host lightning-fast static Single Page Applications alongside background Node.js microservices.</p>
-              </div>
-
-              <div class="guide-steps-list">
-                <div class="guide-step-item">
-                  <div class="step-badge">Option A</div>
-                  <div class="step-body">
-                    <strong>Static SPA (React / Vite / Vue / Next static)</strong>
-                    <p>Build your app locally: <code>npm run build</code>. Upload the output <code>dist/</code> or <code>build/</code> folder contents directly into your site document root via File Manager or Git.</p>
-                  </div>
-                </div>
-
-                <div class="guide-step-item">
-                  <div class="step-badge">Option B</div>
-                  <div class="step-body">
-                    <strong>Node.js Backend & API Microservices</strong>
-                    <p>Go to the <strong>Applications</strong> tab, click <em>Create Application</em>, choose Node.js framework, and enter your entry script (e.g. <code>server.js</code>). Connect to databases using <code>pg</code> or <code>mysql2</code>:</p>
-                    <div class="guide-code-box">
-                      <pre><code>// Connecting Node.js to Database
-const { Pool } = require('pg');
-const pool = new Pool({
-  host: 'localhost',
-  port: 5432,
-  database: '{{ dbCreds?.name || 'app_db' }}',
-  user: '{{ dbCreds?.username || 'app_user' }}',
-  password: '{{ dbCreds?.password || 'YourPassword' }}',
-});</code></pre>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Git Pipeline Guide -->
-            <div v-else-if="selectedGuideTab === 'git'" class="guide-panel-body">
-              <div class="guide-intro-banner">
-                <div class="intro-badge">Deployment: Git Pull / CI Pipeline</div>
-                <h3>Git Version Control Deployment</h3>
-                <p>Deploy code directly from GitHub or GitLab to your IFNOTUS webroot in 1-click.</p>
-              </div>
-
-              <div class="guide-steps-list">
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 1</div>
-                  <div class="step-body">
-                    <strong>Initial Repository Clone</strong>
-                    <p>Go to the <strong>Git Deploy</strong> tab. Paste your GitHub / GitLab repository URL (e.g. <code>https://github.com/org/repo.git</code>) and branch (<code>main</code>). Click <em>Clone Repository & Deploy</em>.</p>
-                  </div>
-                </div>
-
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 2</div>
-                  <div class="step-body">
-                    <strong>1-Click Deployment (Pull Commits)</strong>
-                    <p>Whenever you push new changes to GitHub, navigate to <strong>Git Deploy</strong> and click <strong>Pull Latest Commits</strong>. The production files update automatically without having to transfer files via FTP!</p>
-                  </div>
-                </div>
-
-                <div class="guide-step-item">
-                  <div class="step-badge">Step 3</div>
-                  <div class="step-body">
-                    <strong>Private Repositories</strong>
-                    <p>For private repositories, use an authenticated token URL (e.g. <code>https://oauth2:YOUR_TOKEN@github.com/user/repo.git</code>) or set up a Personal Access Token.</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="modal-foot">
-            <button type="button" class="btn-primary" @click="closeStackGuide">Got It, Close Guide</button>
           </div>
         </div>
       </div>
@@ -3823,93 +3378,299 @@ const pool = new Pool({
   color: #5eead4 !important;
 }
 
-/* Step-by-Step Tenant Guide Banner */
-.db-guide-banner {
-  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-  border: 1px solid #e2e8f0;
-  border-radius: 0.85rem;
-  padding: 1rem 1.15rem;
-}
-.dark .db-guide-banner {
-  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-  border-color: #334155;
-}
-.db-guide-header {
+/* Compact Database Header & Toolbar */
+.db-head-compact {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 0.75rem;
-}
-.guide-step-tag {
-  font-size: 0.78rem;
-  font-weight: 750;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #0369a1;
-}
-.dark .guide-step-tag {
-  color: #38bdf8;
-}
-.guide-tip {
-  font-size: 0.72rem;
-  color: #64748b;
-  font-weight: 600;
-}
-.db-guide-steps {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  flex-wrap: wrap;
   gap: 0.75rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--p-border, #e2e8f0);
 }
-.guide-step-card {
+.dark .db-head-compact {
+  border-bottom-color: #334155;
+}
+
+/* Compact Creation Card */
+.db-create-compact {
+  background: var(--p-surface, #f8fafc);
+  border: 1px solid var(--p-border, #e2e8f0);
+  border-radius: 0.75rem;
+  padding: 0.85rem 1rem;
+}
+.dark .db-create-compact {
+  background: #0f172a;
+  border-color: #1e293b;
+}
+.db-compact-head {
   display: flex;
-  align-items: flex-start;
-  gap: 0.65rem;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 0.65rem;
-  padding: 0.65rem 0.75rem;
+  justify-content: space-between;
+  align-items: center;
 }
-.dark .guide-step-card {
+.db-compact-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--p-ink, #0f172a);
+}
+.db-compact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.65rem;
+}
+.field-compact {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.label-tiny {
+  font-size: 0.72rem;
+  font-weight: 650;
+  color: var(--p-muted, #64748b);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.input-compact {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--p-border, #cbd5e1);
+  background: var(--p-card-bg, #ffffff);
+  color: var(--p-ink, #0f172a);
+  font-size: 0.82rem;
+  outline: none;
+}
+.dark .input-compact {
+  background: #1e293b;
+  border-color: #334155;
+  color: #f8fafc;
+}
+.input-compact:focus {
+  border-color: #0284c7;
+  box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.15);
+}
+.input-with-mini-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.btn-mini-ico {
+  background: var(--p-card-bg, #ffffff);
+  border: 1px solid var(--p-border, #cbd5e1);
+  border-radius: 0.5rem;
+  padding: 0.4rem 0.55rem;
+  font-size: 0.75rem;
+  color: #64748b;
+  cursor: pointer;
+}
+.dark .btn-mini-ico {
+  background: #1e293b;
+  border-color: #334155;
+  color: #94a3b8;
+}
+.btn-mini-ico:hover {
+  color: #0284c7;
+  border-color: #0284c7;
+}
+.db-compact-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.btn-sm {
+  padding: 0.4rem 0.85rem !important;
+  font-size: 0.8rem !important;
+}
+
+/* Compact Table Section */
+.db-table-section {
+  background: var(--p-surface, #ffffff);
+  border: 1px solid var(--p-border, #e2e8f0);
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+.dark .db-table-section {
   background: #111827;
   border-color: #1e293b;
 }
-.step-num {
-  width: 1.5rem;
-  height: 1.5rem;
-  border-radius: 999px;
-  background: #0284c7;
-  color: #ffffff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.75rem;
-  font-weight: 750;
-  flex-shrink: 0;
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
 }
-.step-text {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-.step-text strong {
+.db-compact-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
   font-size: 0.82rem;
+}
+.db-compact-table th {
+  background: var(--p-table-head, #f8fafc);
+  color: var(--p-muted, #64748b);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.6rem 0.85rem;
+  border-bottom: 1px solid var(--p-border, #e2e8f0);
+  white-space: nowrap;
+}
+.dark .db-compact-table th {
+  background: #0f172a;
+  border-color: #1e293b;
+  color: #94a3b8;
+}
+.db-compact-table td {
+  padding: 0.65rem 0.85rem;
+  border-bottom: 1px solid var(--p-border, #f1f5f9);
+  vertical-align: middle;
   color: var(--p-ink, #0f172a);
 }
-.step-text span {
+.dark .db-compact-table td {
+  border-color: #1e293b;
+  color: #f1f5f9;
+}
+.db-compact-table tr:last-child td {
+  border-bottom: none;
+}
+.db-compact-table tr {
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.db-compact-table tr:hover {
+  background: #f8fafc;
+}
+.dark .db-compact-table tr:hover {
+  background: rgba(30, 41, 59, 0.5);
+}
+.db-compact-table tr.row-active {
+  background: #f0f9ff;
+}
+.dark .db-compact-table tr.row-active {
+  background: rgba(2, 132, 199, 0.15);
+}
+
+.db-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 650;
+}
+.db-row-ico {
+  color: #0284c7;
+  font-size: 0.85rem;
+}
+.db-sub-name {
   font-size: 0.72rem;
-  color: var(--p-muted, #64748b);
-  line-height: 1.35;
+  color: #64748b;
+  font-weight: normal;
 }
-.step-text code {
-  font-size: 0.7rem;
-  background: #f1f5f9;
-  padding: 0.1rem 0.25rem;
-  border-radius: 0.25rem;
-  color: #0f172a;
+.db-engine-chip {
+  display: inline-block;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+  background: #f0fdf4;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
 }
-.dark .step-text code {
+.db-engine-chip.postgresql {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+}
+.dark .db-engine-chip {
+  background: rgba(22, 101, 52, 0.25);
+  color: #4ade80;
+  border-color: rgba(34, 197, 94, 0.3);
+}
+.dark .db-engine-chip.postgresql {
+  background: rgba(29, 78, 216, 0.25);
+  color: #60a5fa;
+  border-color: rgba(59, 130, 246, 0.3);
+}
+.mono-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
+  color: #334155;
+}
+.dark .mono-text {
+  color: #cbd5e1;
+}
+.size-text {
+  font-size: 0.76rem;
+  color: #64748b;
+}
+
+.th-actions {
+  text-align: right;
+}
+.td-actions {
+  text-align: right;
+}
+.action-btn-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  justify-content: flex-end;
+}
+.btn-tbl-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-radius: 0.45rem;
+  border: 1px solid var(--p-border, #cbd5e1);
+  background: var(--p-card-bg, #ffffff);
+  color: var(--p-ink, #334155);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.dark .btn-tbl-action {
   background: #1e293b;
+  border-color: #334155;
   color: #e2e8f0;
+}
+.btn-tbl-action:hover:not(:disabled) {
+  border-color: #0284c7;
+  color: #0284c7;
+}
+.btn-tbl-action.pma {
+  background: #0284c7;
+  border-color: #0284c7;
+  color: #ffffff !important;
+}
+.btn-tbl-action.pma:hover {
+  background: #0369a1;
+}
+.btn-tbl-action.import {
+  background: #f0fdfa;
+  border-color: #99f6e4;
+  color: #0f766e;
+}
+.dark .btn-tbl-action.import {
+  background: rgba(15, 118, 110, 0.2);
+  border-color: rgba(45, 212, 191, 0.3);
+  color: #5eead4;
+}
+.btn-tbl-action.active-cred-btn {
+  border-color: #0284c7;
+  background: #e0f2fe;
+  color: #0369a1;
+}
+.dark .btn-tbl-action.active-cred-btn {
+  background: rgba(2, 132, 199, 0.25);
+  color: #38bdf8;
+}
+.btn-tbl-action.danger:hover:not(:disabled) {
+  border-color: #ef4444;
+  color: #ef4444;
 }
 
 /* Alert Bar */
@@ -3917,12 +3678,12 @@ const pool = new Pool({
   display: flex;
   align-items: center;
   gap: 0.65rem;
-  padding: 0.75rem 1rem;
-  border-radius: 0.65rem;
+  padding: 0.6rem 0.85rem;
+  border-radius: 0.55rem;
   background: #ecfdf5;
   border: 1px solid #a7f3d0;
   color: #065f46;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   font-weight: 600;
 }
 .db-alert-bar.is-err {

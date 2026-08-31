@@ -21,6 +21,7 @@ onMounted(async () => {
 
   try {
     const { data } = await customersApi.consumeSsoToken(token, window.location.hostname)
+    const auth = useAuthStore()
     localStorage.setItem('access_token', data.access_token)
     if (data.refresh_token) {
       localStorage.setItem('refresh_token', data.refresh_token)
@@ -31,8 +32,7 @@ onMounted(async () => {
     if (data.domain) {
       localStorage.setItem('tenant_domain', String(data.domain))
     }
-
-    const auth = useAuthStore()
+    auth.accessToken = data.access_token
     await auth.fetchUser().catch(() => {})
 
     const target = tab && tab !== 'overview' ? `/${tab.replace(/^\//, '')}` : '/'
