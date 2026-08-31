@@ -2555,12 +2555,24 @@ async def env_monitoring(
     """Resource usage snapshot for the hosting panel overview."""
     _require_customer_user(user)
     customer = await CustomerService(settings, session).require_for_user(user.id)
-    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
-    plan = await TenantService(session).require_capability(env, "monitoring", label="Resource monitoring")
+    tenant = TenantService(session)
+    env = await tenant.get_owned_environment(customer.id, environment_id)
+    plan = await tenant.plan_for_environment(env)
     from app.services.platform.environment_monitoring import EnvironmentMonitoringService
 
     svc = EnvironmentMonitoringService(settings, session)
-    snap = await svc.snapshot(env, plan, full=svc.is_full_monitoring(plan))
+    snap: dict[str, Any] = {}
+    try:
+        snap = await svc.snapshot(env, plan, full=svc.is_full_monitoring(plan))
+    except Exception as exc:
+        logger.warning("env_monitoring_snapshot_fallback", environment_id=str(env.id), error=str(exc))
+        snap = {
+            "level": "limited",
+            "checked_at": datetime.now(UTC).isoformat(),
+            "health_status": env.health_status or "unknown",
+            "site_status": env.status or "active",
+            "note": "Resource snapshot fallback",
+        }
     return EnvironmentMonitoringResponse(
         environment_id=env.id,
         domain=env.domain,
@@ -2568,7 +2580,7 @@ async def env_monitoring(
         checked_at=snap.get("checked_at"),
         disk=dict(snap.get("disk") or {}),
         health_status=str(snap.get("health_status") or "unknown"),
-        site_status=str(snap.get("site_status") or env.status),
+        site_status=str(snap.get("site_status") or env.status or "active"),
         ssl=dict(snap.get("ssl") or {}),
         backups=dict(snap.get("backups") or {}),
         applications=dict(snap.get("applications") or {}),
