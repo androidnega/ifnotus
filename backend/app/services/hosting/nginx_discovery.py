@@ -35,9 +35,10 @@ class NginxDiscoveryService:
         # Filter out IP addresses
         if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", clean):
             return False
-        # Filter out service redirection prefixes (cpanel.*, webmail.*, mail.*, autodiscover.*, autoconfig.*)
+        # Filter out service redirection prefixes (fpanel.*, cpanel.*, webmail.*, mail.*, autodiscover.*, autoconfig.*)
         if (
-            clean.startswith("cpanel.")
+            clean.startswith("fpanel.")
+            or clean.startswith("cpanel.")
             or clean.startswith("webmail.")
             or clean.startswith("mail.")
             or clean.startswith("autodiscover.")

@@ -25,6 +25,23 @@ STAFF_PANEL_HOST = "fpanel.ifnotus.space"
 PLATFORM_APEX = "ifnotus.space"
 
 
+def is_service_hostname(hostname: str | None) -> bool:
+    """True for fpanel./cpanel./webmail./mail. aliases — never standalone customer website vhosts."""
+    clean = (hostname or "").strip().lower().rstrip(".")
+    if clean.startswith("www."):
+        clean = clean[4:]
+    if not clean:
+        return False
+    if clean in {STAFF_PANEL_HOST, "cpanel.ifnotus.space", "mail.ifnotus.space", "api.ifnotus.space"}:
+        return True
+    return (
+        clean.startswith("fpanel.")
+        or clean.startswith("cpanel.")
+        or clean.startswith("webmail.")
+        or clean.startswith("mail.")
+    )
+
+
 def is_platform_hostname(domain: str | None, *, settings: object | None = None) -> bool:
     """True for control-plane and managed student/project hostnames."""
     host = (domain or "").lower().rstrip(".")

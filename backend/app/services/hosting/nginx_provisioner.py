@@ -46,6 +46,10 @@ class DomainNginxProvisioner:
         raw = Path(path).resolve()
         host = (hostname or "").strip() or raw.parent.name or raw.name
         portal = getattr(self._settings, "customer_portal_url", None) or "https://ifnotus.space"
+        from app.services.platform.panel_access import is_service_hostname
+
+        if is_service_hostname(host):
+            return raw if raw.name in {"public", "public_html", "web", "httpdocs"} else raw / "public_html"
         if raw.name in {"public", "public_html", "web", "httpdocs"} and raw.parent.exists():
             site_home = raw.parent
             web_root = raw
@@ -935,6 +939,17 @@ class DomainNginxProvisioner:
         ram_gb: float | None = None,
         unix_user: str | None = None,
     ) -> OperationResult:
+        from app.services.platform.panel_access import is_service_hostname
+
+        # Service aliases (fpanel.*, webmail.*, mail.*) are embedded in the apex domain config —
+        # never provision them as standalone customer website vhosts with parking pages.
+        if is_service_hostname(hostname) and hostname not in {"fpanel.ifnotus.space", "mail.ifnotus.space"}:
+            await self.remove_orphan_service_vhost(hostname)
+            return OperationResult(
+                success=True,
+                message=f"Skipped standalone vhost for service alias {hostname} (handled by apex domain SPA block).",
+            )
+
         root = document_root or f"/var/www/{hostname}"
         if create_docroot and not redirect_url:
             try:
@@ -1070,6 +1085,37 @@ class DomainNginxProvisioner:
             success=True,
             message=f"Nginx site for {hostname} {'enabled' if enabled else 'disabled'}.",
         )
+
+    async def remove_orphan_service_vhost(self, hostname: str) -> None:
+        """Delete a wrongly provisioned standalone fpanel./webmail./mail. site file."""
+        available, enabled_path = self.site_paths(hostname)
+        try:
+            if enabled_path.exists() or enabled_path.is_symlink():
+                enabled_path.unlink()
+            if available.exists():
+                text = available.read_text(encoding="utf-8", errors="replace")
+                if MANAGED_MARKER in text or "managed-by-ifnotus" in text:
+                    available.unlink()
+        except OSError:
+            pass
+
+    async def cleanup_orphan_service_vhosts(self) -> list[str]:
+        """Remove standalone service-alias nginx sites (fpanel.*, webmail.*) that duplicate apex SPA blocks."""
+        from app.services.platform.panel_access import is_service_hostname
+
+        removed: list[str] = []
+        if not self._available.is_dir():
+            return removed
+        keep = {"fpanel.ifnotus.space", "mail.ifnotus.space", "cpanel.ifnotus.space"}
+        for path in sorted(self._available.iterdir()):
+            name = path.name
+            if name in keep or not is_service_hostname(name):
+                continue
+            await self.remove_orphan_service_vhost(name)
+            removed.append(name)
+        if removed:
+            await self._sites.reload()
+        return removed
 
     async def remove(self, hostname: str, *, remove_files: bool = True) -> OperationResult:
         available, enabled_path = self.site_paths(hostname)

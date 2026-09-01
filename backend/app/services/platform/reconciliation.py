@@ -44,8 +44,17 @@ class EnvironmentReconciliationService:
             if env.domain:
                 seen_domains.add(env.domain.strip().lower())
 
+        # Remove wrongly provisioned standalone fpanel.*/webmail.* nginx site files
+        try:
+            removed_svc = await self._nginx.cleanup_orphan_service_vhosts()
+            if removed_svc:
+                reports.append({"orphan_service_vhosts_removed": removed_svc})
+        except Exception as exc:  # noqa: BLE001
+            reports.append({"orphan_service_vhosts_error": str(exc)})
+
         # Also check custom domains from Domain table if any
         from app.services.hosting.nginx_discovery import NginxDiscoveryService
+        from app.services.platform.panel_access import is_service_hostname
         stmt_dom = select(Domain)
         res_dom = await self._session.execute(stmt_dom)
         domains = list(res_dom.scalars().all())
@@ -55,6 +64,7 @@ class EnvironmentReconciliationService:
                 d_name
                 and d_name not in seen_domains
                 and not is_platform_hostname(d_name, settings=self._settings)
+                and not is_service_hostname(d_name)
                 and NginxDiscoveryService.is_actual_domain_or_subdomain(d_name)
             ):
                 seen_domains.add(d_name)
@@ -105,6 +115,7 @@ class EnvironmentReconciliationService:
                 cd_name
                 and cd_name not in seen_domains
                 and not is_platform_hostname(cd_name, settings=self._settings)
+                and not is_service_hostname(cd_name)
                 and NginxDiscoveryService.is_actual_domain_or_subdomain(cd_name)
             ):
                 seen_domains.add(cd_name)
