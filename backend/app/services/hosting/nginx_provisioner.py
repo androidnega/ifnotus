@@ -552,16 +552,16 @@ class DomainNginxProvisioner:
 
     def _webmail_locations(self, *, hostname: str | None = None) -> list[str]:
         """Customer convenience redirects on the primary website vhost:
-        /fpanel & /cpanel -> 302 to https://fpanel.<domain>/
+        /fpanel & /cpanel -> customer portal handoff (subdomains) or fpanel.<domain>
         /webmail -> 302 to https://webmail.<domain>/
         /mail -> 302 to https://webmail.<domain>/
         """
-        from app.services.platform.panel_access import control_panel_hostname, webmail_hostname
+        from app.services.platform.panel_access import customer_panel_redirect_url, webmail_hostname
 
         raw_host = (hostname or "").strip().lower()
         if raw_host.startswith("www."):
             raw_host = raw_host[4:]
-        fpanel_url = f"https://{control_panel_hostname(raw_host)}/" if raw_host else "https://fpanel.$host/"
+        fpanel_url = customer_panel_redirect_url(raw_host, settings=self._settings) or "https://ifnotus.space/go/hosting"
         webmail_url = f"https://{webmail_hostname(raw_host)}/" if raw_host else "https://webmail.$host/"
 
         return [
@@ -570,6 +570,12 @@ class DomainNginxProvisioner:
             f"        return 302 {fpanel_url};",
             "    }",
             "    location = /fpanel/ {",
+            f"        return 302 {fpanel_url};",
+            "    }",
+            "    location = /cpanel {",
+            f"        return 302 {fpanel_url};",
+            "    }",
+            "    location = /cpanel/ {",
             f"        return 302 {fpanel_url};",
             "    }",
             "    location = /webmail {",

@@ -178,6 +178,7 @@ const actions = computed(() => {
   }
   if (role === 'hosting_operator') {
     return [
+      { label: 'Activation Queue', to: '/platform/orders?status=ready_for_activation', icon: IconGlobe, color: '#f59e0b' },
       { label: 'Operations & Jobs', to: '/operations', icon: IconRefresh, color: '#2563eb' },
       { label: 'Domains & DNS', to: '/domains', icon: IconGlobe, color: '#7c3aed' },
       { label: 'Databases', to: '/databases', icon: IconDatabase, color: '#ea580c' },

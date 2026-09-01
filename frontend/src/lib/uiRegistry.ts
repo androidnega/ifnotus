@@ -142,7 +142,7 @@ export const UI_ROUTES: UiRouteEntry[] = [
   { path: '/servers', name: 'servers', shell: 'staff', view: 'ServersView.vue', panel: 'staff', permission: 'servers:read' },
   { path: '/platform/customers', name: 'platform-customers', shell: 'staff', view: 'PlatformCustomersView.vue', panel: 'staff', permission: 'platform:read' },
   { path: '/platform/plans', name: 'platform-plans', shell: 'staff', view: 'PlatformPlansView.vue', panel: 'staff', permission: 'platform:write' },
-  { path: '/platform/orders', name: 'platform-orders', shell: 'staff', view: 'PlatformOrdersView.vue', panel: 'staff', permission: 'customers:manage' },
+    { path: '/platform/orders', name: 'platform-orders', shell: 'staff', view: 'PlatformOrdersView.vue', panel: 'staff', permission: 'platform:read' },
   {
     path: '/platform/orders/:id/receipt',
     name: 'platform-order-receipt',

@@ -2464,7 +2464,7 @@ export const platformAdminApi = {
       message: string
     }>(`/platform/customers/${customerId}/credits/grant`, body),
 
-  listOrders: (params?: { payment_status?: string; limit?: number }) =>
+  listOrders: (params?: { payment_status?: string; provisioning_status?: string; limit?: number }) =>
     apiClient.get<import('@/types/staffPlatform').StaffOrderItem[]>('/platform/orders', { params }),
 
   getOrderInvoice: (orderId: string) =>
@@ -2485,6 +2485,7 @@ export const platformAdminApi = {
   opsInbox: () =>
     apiClient.get<{
       awaiting_payment_confirm: number
+      ready_for_activation?: number
       recently_paid: number
       open_support_tickets?: number
       items: Array<{

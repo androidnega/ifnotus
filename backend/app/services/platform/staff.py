@@ -429,6 +429,7 @@ class StaffPlatformService:
         self,
         *,
         payment_status: str | None = None,
+        provisioning_status: str | None = None,
         limit: int = 100,
         mask_financials: bool = False,
     ) -> list[dict]:
@@ -445,6 +446,8 @@ class StaffPlatformService:
         )
         if payment_status:
             stmt = stmt.where(Order.payment_status == payment_status)
+        if provisioning_status:
+            stmt = stmt.where(Order.provisioning_status == provisioning_status)
         rows = (await self._session.execute(stmt)).all()
         return [
             {
@@ -464,16 +467,16 @@ class StaffPlatformService:
                 "payment_status": order.payment_status,
                 "provisioning_status": order.provisioning_status,
                 "order_kind": order.order_kind,
-                "paystack_reference": order.paystack_reference,
+                "paystack_reference": None if mask_financials else order.paystack_reference,
                 "invoice_number": order.invoice_number,
-                "payment_method": order.payment_method,
-                "momo_transaction_id": order.momo_transaction_id,
+                "payment_method": None if mask_financials else order.payment_method,
+                "momo_transaction_id": None if mask_financials else order.momo_transaction_id,
                 "payment_amount_received": None if mask_financials else order.payment_amount_received,
-                "payment_notes": order.payment_notes,
-                "payment_confirmed_at": order.payment_confirmed_at,
-                "payment_confirmed_by": order.payment_confirmed_by,
-                "payment_confirmed_by_name": staff_user.full_name or staff_user.username if staff_user else None,
-                "payment_confirmed_by_email": staff_user.email if staff_user else None,
+                "payment_notes": None if mask_financials else order.payment_notes,
+                "payment_confirmed_at": None if mask_financials else order.payment_confirmed_at,
+                "payment_confirmed_by": None if mask_financials else order.payment_confirmed_by,
+                "payment_confirmed_by_name": None if mask_financials else (staff_user.full_name or staff_user.username if staff_user else None),
+                "payment_confirmed_by_email": None if mask_financials else (staff_user.email if staff_user else None),
                 "paid_at": order.paid_at,
                 "created_at": order.created_at,
             }
@@ -481,8 +484,14 @@ class StaffPlatformService:
         ]
 
     async def ops_inbox(self, *, paid_within_hours: int = 48, mask_financials: bool = False) -> dict:
-        """Staff cPanel inbox: MoMo awaiting confirm + recently paid invoices."""
+        """Staff cPanel inbox: MoMo awaiting confirm + hosting ready for activation."""
         submitted = await self.list_orders(payment_status="submitted", limit=50, mask_financials=mask_financials)
+        ready = await self.list_orders(
+            payment_status="paid",
+            provisioning_status="ready_for_activation",
+            limit=50,
+            mask_financials=mask_financials,
+        )
         since = datetime.now(UTC) - timedelta(hours=max(1, min(paid_within_hours, 168)))
         paid_stmt = (
             select(Order, Customer, HostingPlan)
@@ -517,6 +526,27 @@ class StaffPlatformService:
                     "severity": "warning",
                     "timestamp": row.get("created_at") or datetime.now(UTC),
                     "href": "/platform/orders",
+                    "order_id": row["id"],
+                    "invoice_number": row.get("invoice_number"),
+                }
+            )
+
+        for row in ready:
+            inv = row.get("invoice_number") or str(row["id"])[:8]
+            who = row.get("customer_name") or row.get("customer_email") or "Customer"
+            domain = row.get("domain_name") or "hosting"
+            items.append(
+                {
+                    "id": f"ready-activation-{row['id']}",
+                    "kind": "ready_for_activation",
+                    "title": "Ready for hosting activation",
+                    "message": (
+                        f"{inv} · {who} · {domain}. "
+                        "Payment cleared — activate hosting."
+                    ),
+                    "severity": "warning",
+                    "timestamp": row.get("paid_at") or row.get("created_at") or datetime.now(UTC),
+                    "href": "/platform/orders?status=ready_for_activation",
                     "order_id": row["id"],
                     "invoice_number": row.get("invoice_number"),
                 }
@@ -560,6 +590,7 @@ class StaffPlatformService:
         )
         return {
             "awaiting_payment_confirm": len(submitted),
+            "ready_for_activation": len(ready),
             "recently_paid": len(paid_rows),
             "open_support_tickets": open_support,
             "items": items,

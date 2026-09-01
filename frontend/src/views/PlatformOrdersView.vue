@@ -8,6 +8,7 @@ import { platformAdminApi } from '@/api'
 import { usePermissions } from '@/composables/usePermissions'
 import { Permission } from '@/lib/permissions'
 import { useAuthStore } from '@/stores/auth'
+import { getCanonicalRole } from '@/lib/roles'
 import { isPlatformOwner } from '@/lib/roles'
 import type { StaffOrderItem } from '@/types/staffPlatform'
 
@@ -18,6 +19,10 @@ const { can } = usePermissions()
 const canConfirm = computed(() => isPlatformOwner(auth.user) || can(Permission.BILLING_MANAGE))
 const canOps = computed(() => isPlatformOwner(auth.user) || can(Permission.PLATFORM_OPS))
 const canSeeBilling = computed(() => isPlatformOwner(auth.user) || can(Permission.BILLING_VIEW))
+const isHostingOpsView = computed(() => {
+  const role = getCanonicalRole(auth.user)
+  return role === 'hosting_operator' && !canSeeBilling.value
+})
 const canEditSubdomain = computed(() => isPlatformOwner(auth.user) || can(Permission.DOMAINS_WRITE))
 const orders = ref<StaffOrderItem[]>([])
 const paymentFilter = ref('submitted')
@@ -54,14 +59,19 @@ let progressInterval: number | null = null
 const acctTotals = ref<{
   awaiting_confirm: number
   awaiting_confirm_count: number
+  ready_for_activation?: number
+  ready_for_activation_count?: number
   outstanding: number
   outstanding_count: number
   collected_period: number
   paid_count_period: number
   failed_count: number
+  invoiced_paid_period?: number
 } | null>(null)
 
-const filterTabs = [
+const opsTotals = ref<{ ready_for_activation: number } | null>(null)
+
+const billingFilterTabs = [
   { id: 'submitted', label: 'Awaiting confirm', icon: 'fa-clock' },
   { id: 'paid', label: 'Paid', icon: 'fa-circle-check' },
   { id: 'pending', label: 'Unpaid invoices', icon: 'fa-file-invoice' },
@@ -69,7 +79,18 @@ const filterTabs = [
   { id: '', label: 'All orders', icon: 'fa-list' },
 ] as const
 
+const opsFilterTabs = [
+  { id: 'ready_for_activation', label: 'Waiting for activation', icon: 'fa-server' },
+  { id: 'active', label: 'Live hosting', icon: 'fa-circle-check' },
+  { id: '', label: 'All hostings', icon: 'fa-list' },
+] as const
+
+const filterTabs = computed(() => (isHostingOpsView.value ? opsFilterTabs : billingFilterTabs))
+
 function tabBadgeCount(tabId: string): number {
+  if (tabId === 'ready_for_activation') {
+    return opsTotals.value?.ready_for_activation ?? acctTotals.value?.ready_for_activation_count ?? 0
+  }
   if (!acctTotals.value) return 0
   if (tabId === 'submitted') return acctTotals.value.awaiting_confirm_count || 0
   if (tabId === 'paid') return acctTotals.value.paid_count_period || 0
@@ -84,10 +105,19 @@ const awaitingCount = computed(
 
 // LIVE SEARCH FILTER
 const filteredOrders = computed(() => {
-  const q = searchQuery.value.trim().toLowerCase()
-  if (!q) return orders.value
+  let base = orders.value
+  if (paymentFilter.value === 'active') {
+    base = base.filter((o) => (o.provisioning_status || '').toLowerCase() === 'active')
+  } else if (paymentFilter.value === 'ready_for_activation') {
+    base = base.filter((o) => (o.provisioning_status || '').toLowerCase() === 'ready_for_activation')
+  } else if (isHostingOpsView.value && !paymentFilter.value) {
+    base = base.filter((o) => o.payment_status === 'paid')
+  }
 
-  return orders.value.filter((o) => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return base
+
+  return base.filter((o) => {
     const inv = (o.invoice_number || '').toLowerCase()
     const momo = (o.momo_transaction_id || '').toLowerCase()
     const payRef = (o.paystack_reference || '').toLowerCase()
@@ -156,11 +186,23 @@ function money(n: number | string, currency = 'GHS') {
 }
 
 async function loadSummary() {
-  try {
-    const { data } = await platformAdminApi.accountingSummary()
-    acctTotals.value = data.totals
-  } catch {
+  if (canSeeBilling.value) {
+    try {
+      const { data } = await platformAdminApi.accountingSummary()
+      acctTotals.value = data.totals
+    } catch {
+      acctTotals.value = null
+    }
+  } else {
     acctTotals.value = null
+  }
+  if (canOps.value) {
+    try {
+      const { data } = await platformAdminApi.opsInbox()
+      opsTotals.value = { ready_for_activation: data.ready_for_activation ?? 0 }
+    } catch {
+      opsTotals.value = null
+    }
   }
 }
 
@@ -168,9 +210,18 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const { data } = await platformAdminApi.listOrders({
-      payment_status: paymentFilter.value || undefined,
-    })
+    const params: { payment_status?: string; provisioning_status?: string } = {}
+    if (paymentFilter.value === 'ready_for_activation') {
+      params.payment_status = 'paid'
+      params.provisioning_status = 'ready_for_activation'
+    } else if (paymentFilter.value === 'active') {
+      params.payment_status = 'paid'
+    } else if (paymentFilter.value) {
+      params.payment_status = paymentFilter.value
+    } else if (isHostingOpsView.value) {
+      params.payment_status = 'paid'
+    }
+    const { data } = await platformAdminApi.listOrders(params)
     orders.value = data
     for (const o of data) {
       if (amountByOrder.value[o.id] == null) {
@@ -242,6 +293,7 @@ function openReceipt(id: string) {
 function provisionLabel(status: string) {
   const s = (status || '').toLowerCase()
   if (s === 'active') return 'Live'
+  if (s === 'ready_for_activation') return 'Waiting for activation'
   if (s === 'queued' || s === 'pending' || s === 'running') return 'Setting up…'
   if (s === 'failed') return 'Failed'
   if (s === 'n/a') return '—'
@@ -321,6 +373,10 @@ onMounted(() => {
   const s = route.query.status
   if (typeof s === 'string' && s) {
     paymentFilter.value = s
+  } else if (isHostingOpsView.value) {
+    paymentFilter.value = 'ready_for_activation'
+  } else if (canSeeBilling.value) {
+    paymentFilter.value = 'submitted'
   }
   void loadSummary()
   void load()
@@ -534,8 +590,10 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
       <!-- HEADER -->
       <header class="orders-head">
         <UiPageHeader
-          title="Orders &amp; Payments"
-          lede="Confirm MoMo transactions, customize student subdomains, and activate tenant hosting."
+          :title="isHostingOpsView ? 'Hosting Activation Queue' : 'Orders &amp; Payments'"
+          :lede="isHostingOpsView
+            ? 'Customers cleared by billing — assign subdomains and activate tenant hosting.'
+            : 'Confirm MoMo transactions, customize student subdomains, and activate tenant hosting.'"
         >
           <template #actions>
             <button type="button" class="head-btn" @click="load">
@@ -565,7 +623,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
             <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-wallet" /></span>
             <div class="stat-body">
               <span class="stat-k">Collected this month</span>
-              <span class="stat-v">{{ money(acctTotals.collected_period) }}</span>
+              <span class="stat-v">{{ money(acctTotals.invoiced_paid_period ?? acctTotals.collected_period) }}</span>
               <span class="stat-s">{{ acctTotals.paid_count_period }} completed &amp; active hosting{{ acctTotals.paid_count_period === 1 ? '' : 's' }}</span>
             </div>
           </article>
@@ -575,6 +633,18 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
               <span class="stat-k">Unpaid Invoices</span>
               <span class="stat-v">{{ money(acctTotals.outstanding) }}</span>
               <span class="stat-s">{{ acctTotals.outstanding_count }} proforma awaiting payment</span>
+            </div>
+          </article>
+        </div>
+
+        <!-- HOSTING OPERATOR ACTIVATION STATS -->
+        <div v-else-if="opsTotals && isHostingOpsView" class="stats-bar stats-bar-ops">
+          <article class="stat-card tone-await">
+            <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-server" /></span>
+            <div class="stat-body">
+              <span class="stat-k">Waiting for activation</span>
+              <span class="stat-v">{{ opsTotals.ready_for_activation }}</span>
+              <span class="stat-s">Cleared by billing — ready to provision hosting</span>
             </div>
           </article>
         </div>
@@ -674,7 +744,8 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
                 <tr>
                   <th class="col-order">Order &amp; Customer</th>
                   <th class="col-plan">Plan &amp; Domain</th>
-                  <th class="col-payment">Payment &amp; Ref</th>
+                  <th v-if="canSeeBilling" class="col-payment">Payment &amp; Ref</th>
+                  <th v-else class="col-payment">Status</th>
                   <th class="col-actions text-right">Actions</th>
                 </tr>
               </thead>
@@ -745,7 +816,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
                         {{ isCompOrder(o) ? '0.00 GHS (Comp)' : `${o.currency} ${Number(o.total_price).toFixed(2)}` }}
                       </span>
                     </div>
-                    <div v-if="o.momo_transaction_id" class="momo-inline-box" @click.stop>
+                    <div v-if="canSeeBilling && o.momo_transaction_id" class="momo-inline-box" @click.stop>
                       <span class="momo-lbl">MoMo:</span>
                       <code class="momo-code">{{ o.momo_transaction_id }}</code>
                       <button
@@ -789,6 +860,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
                       </button>
 
                       <button
+                        v-if="canSeeBilling"
                         type="button"
                         class="btn-tbl-receipt"
                         title="View Invoice / Receipt"
@@ -994,7 +1066,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
             </div>
 
             <!-- PAYMENT & TRANSACTION DATA CARD -->
-            <div class="modal-card span-full">
+            <div v-if="canSeeBilling" class="modal-card span-full">
               <h4 class="card-title">
                 <i class="fa-solid fa-money-bill-wave text-emerald-600" /> Payment &amp; Reference Verification
               </h4>
@@ -1041,7 +1113,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
             </div>
 
             <!-- AUDIT / ACTION LOG CARD -->
-            <div v-if="selectedOrder.payment_confirmed_by || selectedOrder.payment_confirmed_at || selectedOrder.payment_notes" class="modal-card span-full">
+            <div v-if="canSeeBilling && (selectedOrder.payment_confirmed_by || selectedOrder.payment_confirmed_at || selectedOrder.payment_notes)" class="modal-card span-full">
               <h4 class="card-title">
                 <i class="fa-solid fa-shield-halved text-indigo-600" /> Action Audit &amp; Staff Attribution
               </h4>

@@ -104,6 +104,8 @@ export interface StaffAccountingSummary {
     collected_all_time: number
     awaiting_confirm: number
     awaiting_confirm_count: number
+    ready_for_activation?: number
+    ready_for_activation_count?: number
     outstanding: number
     outstanding_count: number
     failed_count: number

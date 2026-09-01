@@ -374,7 +374,7 @@ const routes: RouteRecordRaw[] = [
     path: '/platform/orders',
     name: 'platform-orders',
     component: () => import('@/views/PlatformOrdersView.vue'),
-    meta: { requiresAuth: true, panel: 'staff', permission: 'billing:view' },
+    meta: { requiresAuth: true, panel: 'staff', permission: 'platform:read' },
   },
   {
     path: '/platform/orders/:id/receipt',
@@ -669,6 +669,20 @@ router.beforeEach(async (to) => {
         if (to.name === 'login' || to.path === '/login') return true
         return { name: 'login' }
       }
+      const { useAuthStore } = await import('@/stores/auth')
+      const auth = useAuthStore()
+      if (!auth.user) {
+        try {
+          await auth.fetchUser()
+        } catch {
+          auth.clearSession()
+          return { name: 'login' }
+        }
+      }
+      syncPanelFlag(auth.user)
+      if (isPureCustomer(auth.user)) {
+        return { name: 'portal-dashboard' }
+      }
       return { name: 'dashboard' }
     }
   }
@@ -777,7 +791,7 @@ router.beforeEach(async (to) => {
         return { name: 'dashboard' }
       }
     } else if (role === 'hosting_operator') {
-      const bizRoutes = ['/platform/orders', '/platform/accounting', '/platform/plans', '/security', '/terminal', '/settings']
+      const bizRoutes = ['/platform/accounting', '/platform/plans', '/security', '/terminal', '/settings']
       if (bizRoutes.some((prefix) => targetPath === prefix || targetPath.startsWith(`${prefix}/`))) {
         return { name: 'dashboard' }
       }

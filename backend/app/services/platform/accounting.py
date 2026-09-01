@@ -103,6 +103,18 @@ class AccountingService:
             .scalars()
             .all()
         )
+        ready_for_activation = list(
+            (
+                await self._session.execute(
+                    active.where(
+                        Order.payment_status == "paid",
+                        Order.provisioning_status == "ready_for_activation",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
         all_paid = list(
             (await self._session.execute(active.where(Order.payment_status == "paid")))
             .scalars()
@@ -116,6 +128,9 @@ class AccountingService:
         invoiced_period = sum((Decimal(str(o.total_price or 0)) for o in paid_in_period), Decimal("0"))
         receivables = sum((Decimal(str(o.total_price or 0)) for o in pending), Decimal("0"))
         awaiting = sum((Decimal(str(o.total_price or 0)) for o in submitted), Decimal("0"))
+        ready_activation_total = sum(
+            (Decimal(str(o.total_price or 0)) for o in ready_for_activation), Decimal("0")
+        )
 
         by_kind: dict[str, Decimal] = {}
         by_channel: dict[str, Decimal] = {"momo": Decimal("0"), "cash": Decimal("0"), "card": Decimal("0"), "bank": Decimal("0"), "staff": Decimal("0"), "other": Decimal("0")}
@@ -191,14 +206,16 @@ class AccountingService:
                 # Pipeline
                 "awaiting_confirm": float(awaiting),
                 "awaiting_confirm_count": len(submitted),
+                "ready_for_activation": float(ready_activation_total),
+                "ready_for_activation_count": len(ready_for_activation),
                 "outstanding": float(receivables),
                 "outstanding_count": len(pending),
                 "failed_count": len(failed),
                 "paid_count_period": len(paid_in_period),
                 "cash_count_period": sum(1 for o in paid_in_period if _is_cash(o)),
                 # Back-compat aliases used by older UI
-                "collected_period": float(cash_period),
-                "collected_all_time": float(cash_all),
+                "collected_period": float(invoiced_period),
+                "collected_all_time": float(cash_all + comp_all),
             },
             "by_kind": {k: float(v) for k, v in sorted(by_kind.items())},
             "by_channel": {k: float(v) for k, v in by_channel.items() if v > 0},

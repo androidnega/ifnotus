@@ -257,11 +257,15 @@ async def list_orders(
     settings: SettingsDep,
     user: CurrentUser,
     payment_status: str | None = Query(default=None),
+    provisioning_status: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> list[StaffOrderItem]:
     can_view = _can_view_billing(user)
     rows = await StaffPlatformService(settings, session).list_orders(
-        payment_status=payment_status, limit=limit, mask_financials=not can_view
+        payment_status=payment_status,
+        provisioning_status=provisioning_status,
+        limit=limit,
+        mask_financials=not can_view,
     )
     return [StaffOrderItem.model_validate(r) for r in rows]
 

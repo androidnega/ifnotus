@@ -129,21 +129,57 @@ def mail_server_hostname(domain: str | None, *, settings: object | None = None) 
     return f"mail.{host}"
 
 
-def site_fpanel_url(domain: str | None, *, tab: str | None = None) -> str | None:
-    """Canonical customer hosting panel: https://fpanel.{domain}/ (clean paths, no UUID in URL)."""
+def _is_subdomain_host(host: str, *, settings: object | None = None) -> bool:
+    h = (host or "").lower().rstrip(".")
+    if h.startswith("www."):
+        h = h[4:]
+    return bool(
+        h.endswith(".ifnotus.space")
+        or h.endswith(".customers.ifnotus.space")
+        or h.endswith(".serverlabsttu.space")
+        or is_student_hostname(h, settings=settings)
+    )
+
+
+def customer_panel_redirect_url(
+    domain: str | None,
+    *,
+    portal_base: str = "https://ifnotus.space",
+    tab: str | None = None,
+    settings: object | None = None,
+) -> str | None:
+    """Where /fpanel and /cpanel shortcuts send customers.
+
+    Subdomains (*.ifnotus.space) never get fpanel.<subdomain> — they open the portal handoff.
+    Custom apex domains use https://fpanel.<domain>/.
+    """
     host = (domain or "").lower().rstrip(".")
     if host.startswith("www."):
         host = host[4:]
+    if host.startswith("fpanel."):
+        host = host[len("fpanel.") :]
+    elif host.startswith("cpanel."):
+        host = host[len("cpanel.") :]
     if not host or "." not in host:
         return None
-    fpanel_host = control_panel_hostname(host)
-    if not fpanel_host:
+    if _is_subdomain_host(host, settings=settings):
+        base = (portal_base or "https://ifnotus.space").rstrip("/")
+        url = f"{base}/go/hosting?host={quote(host)}"
+        if tab and tab != "overview":
+            url = f"{url}&tab={quote(tab.lstrip('/'))}"
+        return url
+    fpanel_host = control_panel_hostname(host, settings=settings)
+    if not fpanel_host or fpanel_host == STAFF_PANEL_HOST:
         return None
-    base = f"https://{fpanel_host}"
+    url = f"https://{fpanel_host}/"
     if tab and tab != "overview":
-        clean_tab = tab.lstrip("/")
-        return f"{base}/{clean_tab}"
-    return f"{base}/"
+        url = f"https://{fpanel_host}/{tab.lstrip('/')}"
+    return url
+
+
+def site_fpanel_url(domain: str | None, *, tab: str | None = None, settings: object | None = None) -> str | None:
+    """Canonical customer hosting panel entry URL."""
+    return customer_panel_redirect_url(domain, tab=tab, settings=settings)
 
 
 def site_cpanel_url(domain: str | None, *, tab: str | None = None) -> str | None:
@@ -198,6 +234,7 @@ def panel_sso_url(
     portal_base: str = "https://ifnotus.space",
     *,
     tab: str | None = None,
+    settings: object | None = None,
 ) -> str:
     """Portal SSO handoff redirect URL."""
     from app.services.platform.host_routing import sanitize_panel_hostname
@@ -206,11 +243,8 @@ def panel_sso_url(
     host = sanitize_panel_hostname(hostname)
     if not host:
         return f"{base}/account"
-    cpanel = control_panel_hostname(host) or host
-    url = f"https://{cpanel}/"
-    if tab and tab != "overview":
-        url = f"https://{cpanel}/{tab.lstrip('/')}"
-    return url
+    url = customer_panel_redirect_url(host, portal_base=portal_base, tab=tab, settings=settings)
+    return url or f"{base}/account"
 
 
 def find_letsencrypt_cert(hostname: str) -> tuple[str | None, str | None]:

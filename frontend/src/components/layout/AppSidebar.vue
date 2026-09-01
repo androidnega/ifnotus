@@ -121,6 +121,7 @@ const navGroups = computed<NavGroup[]>(() => {
         label: 'Hosting Operations',
         items: [
           { to: '/panel', name: 'dashboard', label: 'Operations Dashboard', icon: IconDashboard },
+          { to: '/platform/orders?status=ready_for_activation', name: 'platform-orders', label: 'Activation Queue', icon: IconGlobe, permission: Permission.PLATFORM_OPS, badgeKey: 'orders' },
           { to: '/files', name: 'files', label: 'File Manager', icon: IconFolder, permission: Permission.FILES_READ },
           { to: '/applications', name: 'applications', label: 'Modern Apps', icon: IconApp, permission: Permission.APPS_READ },
           { to: '/domains', name: 'domains', label: 'Domains & DNS', icon: IconGlobe, permission: Permission.DOMAINS_READ },
