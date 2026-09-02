@@ -15,7 +15,7 @@ from app.services.platform.systemd_env_slice import (
 def test_slice_name_is_stable_and_safe() -> None:
     eid = uuid4()
     name = slice_name_for(eid)
-    assert name.startswith("ifnotus-env-")
+    assert name.startswith("ifnotus-workloads-tenants-env-")
     assert name.endswith(".slice")
     assert slice_name_for(eid) == name
     assert ".." not in name
