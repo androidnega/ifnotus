@@ -414,7 +414,15 @@ def _load_environment(environment_id: str):
     return asyncio.run(_load())
 
 
-def run_php_fpm_environment_migrate(*, environment_id: str, apply: bool = False, allow_vps: bool = False) -> None:
+def run_php_fpm_environment_migrate(
+    *,
+    environment_id: str,
+    apply: bool = False,
+    allow_vps: bool = False,
+    allow_legacy_www_data: bool = False,
+    allow_excluded_domain: bool = False,
+    require_tenant_unix_user: bool = False,
+) -> None:
     import json
 
     from app.services.platform.php_fpm_environment import PhpFpmEnvironmentService
@@ -426,9 +434,20 @@ def run_php_fpm_environment_migrate(*, environment_id: str, apply: bool = False,
         print(f"Environment not found: {environment_id}")
         sys.exit(1)
     svc = PhpFpmEnvironmentService()
-    plan = svc.plan_migrate(env, extra_hostnames=extra, allow_vps=allow_vps)
+    plan = svc.plan_migrate(
+        env,
+        extra_hostnames=extra,
+        allow_vps=allow_vps,
+        require_tenant_unix_user=require_tenant_unix_user,
+        allow_legacy_www_data=allow_legacy_www_data,
+        allow_excluded_domain=allow_excluded_domain,
+    )
     mode = "APPLY" if apply else "DRY-RUN"
     print(f"IFNOTUS php-fpm environment migrate [{mode}] env={plan.short_id} pools={len(plan.pools)}")
+    if plan.warnings:
+        print("Warnings:")
+        for w in plan.warnings:
+            print(f"  ~ {w}")
     if plan.errors:
         print("Errors:")
         for e in plan.errors:
@@ -808,6 +827,75 @@ def run_php_fpm_rollout(
     print(json.dumps({"batches": batch_reports, "checkpoint": str(svc.checkpoint.path)}, indent=2))
 
 
+def run_tenant_containment_status(*, environment_id: str | None = None, as_json: bool = False) -> None:
+    import json
+    from collections import Counter
+
+    from app.services.platform.tenant_containment import TenantContainmentService
+    from app.services.platform.workload_slices import env_short_id
+
+    settings = get_settings()
+    setup_logging(settings)
+    svc = TenantContainmentService()
+    if environment_id:
+        env, extra = _load_environment(environment_id)
+        if env is None:
+            print(f"Environment not found: {environment_id}")
+            sys.exit(1)
+        rep = svc.report_environment(env, extra_hostnames=extra)
+        print(json.dumps(rep.to_dict(), indent=2))
+        return
+
+    rows = _load_all_environments_with_plans()
+    reports = []
+    for env, extra, _plan, _meta in rows:
+        reports.append(svc.report_environment(env, extra_hostnames=extra).to_dict())
+    counts = Counter(r["aggregate"] for r in reports)
+    global_pools = svc.classify_global_pools()
+    node_escapes = svc.detect_node_escapes()
+    summary = {
+        "total": len(reports),
+        "aggregates": dict(counts),
+        "global_fpm_tenant_legacy": global_pools.get("tenant_global_legacy_pools"),
+        "node_cgroup_escapes": len(node_escapes),
+        "sum_ok": len(reports) == 32 or len(reports) == sum(counts.values()),
+    }
+    print(json.dumps(summary, indent=2))
+    if as_json:
+        print(json.dumps({"environments": reports, "global_pools": global_pools}, indent=2)[:12000])
+
+
+def run_sftp_cgroup_attach_install(*, apply: bool = False, refresh_map: bool = False) -> None:
+    import json
+
+    from app.services.platform.tenant_containment import TenantContainmentService, ensure_pam_sshd_attach
+    from app.services.platform.workload_slices import env_short_id, slice_name_for
+
+    settings = get_settings()
+    setup_logging(settings)
+    svc = TenantContainmentService()
+    if refresh_map or apply:
+        rows = []
+        for env, _extra, _plan, _meta in _load_all_environments_with_plans():
+            unix = getattr(env, "unix_username", None)
+            if not unix:
+                continue
+            rows.append(
+                {
+                    "unix_username": unix,
+                    "environment_id": str(env.id),
+                    "short_id": env_short_id(env.id),
+                    "slice": slice_name_for(env.id),
+                }
+            )
+        path = svc.write_unix_slice_map(rows)
+        print(f"Wrote map entries={len(rows)} path={path}")
+    report = ensure_pam_sshd_attach(dry_run=not apply)
+    print(json.dumps(report, indent=2))
+    if apply and not report.get("ok"):
+        sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="IFNOTUS Infrastructure Management CLI")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -846,6 +934,21 @@ def main() -> None:
     p_php.add_argument("--dry-run", action="store_true", default=True, help="Plan only (default)")
     p_php.add_argument("--apply", action="store_true", help="Perform cutover for this environment only")
     p_php.add_argument("--allow-vps", action="store_true", help="Allow VPS/VDS-style environments")
+    p_php.add_argument(
+        "--allow-legacy-www-data",
+        action="store_true",
+        help="Phase 2B-4: allow www-data pools without converting Unix identity",
+    )
+    p_php.add_argument(
+        "--allow-excluded-domain",
+        action="store_true",
+        help="Phase 2B-4: allow domains on the special exclude list when PHP containment is intentional",
+    )
+    p_php.add_argument(
+        "--require-tenant-unix-user",
+        action="store_true",
+        help="Require env unix_username ifn_* (legacy www-data still needs --allow-legacy-www-data)",
+    )
 
     p_php_st = subparsers.add_parser(
         "php-fpm-environment-status",
@@ -874,6 +977,21 @@ def main() -> None:
     p_roll.add_argument("--resume", action="store_true", help="Resume after a previous stop")
     p_roll.add_argument("--inventory-only", action="store_true", help="Classify only; no migrate planning")
 
+    p_tc = subparsers.add_parser(
+        "tenant-containment-status",
+        help="Phase 2B-4: read-only tenant containment status (PHP/Node/cron/SFTP)",
+    )
+    p_tc.add_argument("--environment", default=None, help="Optional single environment UUID")
+    p_tc.add_argument("--json", action="store_true", help="Print full JSON")
+
+    p_sftp = subparsers.add_parser(
+        "sftp-cgroup-attach-install",
+        help="Phase 2B-4: install pam_exec SFTP/SSH session cgroup attach helper (default: dry-run)",
+    )
+    p_sftp.add_argument("--dry-run", action="store_true", default=True)
+    p_sftp.add_argument("--apply", action="store_true")
+    p_sftp.add_argument("--refresh-map", action="store_true", help="Rewrite unix→slice map from DB")
+
     args = parser.parse_args()
 
     if args.command in {"reconcile-hosting", "reconcile-zones"}:
@@ -891,6 +1009,9 @@ def main() -> None:
             environment_id=str(args.environment),
             apply=bool(getattr(args, "apply", False)),
             allow_vps=bool(getattr(args, "allow_vps", False)),
+            allow_legacy_www_data=bool(getattr(args, "allow_legacy_www_data", False)),
+            allow_excluded_domain=bool(getattr(args, "allow_excluded_domain", False)),
+            require_tenant_unix_user=bool(getattr(args, "require_tenant_unix_user", False)),
         )
     elif args.command == "php-fpm-environment-status":
         run_php_fpm_environment_status(environment_id=str(args.environment))
@@ -908,6 +1029,16 @@ def main() -> None:
             resume=bool(getattr(args, "resume", False)),
             inventory_only=bool(getattr(args, "inventory_only", False)),
             batch_number=getattr(args, "batch", None),
+        )
+    elif args.command == "tenant-containment-status":
+        run_tenant_containment_status(
+            environment_id=getattr(args, "environment", None),
+            as_json=bool(getattr(args, "json", False)),
+        )
+    elif args.command == "sftp-cgroup-attach-install":
+        run_sftp_cgroup_attach_install(
+            apply=bool(getattr(args, "apply", False)),
+            refresh_map=bool(getattr(args, "refresh_map", False)),
         )
     else:
         parser.print_help()

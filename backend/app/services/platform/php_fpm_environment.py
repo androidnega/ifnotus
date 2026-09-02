@@ -326,7 +326,14 @@ class PhpFpmEnvironmentService:
         pools: list[EnvPoolRef],
         *,
         require_tenant_unix_user: bool = False,
+        allow_legacy_www_data: bool = False,
     ) -> list[str]:
+        """Validate pool Unix users.
+
+        ``allow_legacy_www_data`` permits www-data pools for the target env without
+        rewriting identity (recorded as LEGACY_IDENTITY_DEBT by plan_migrate).
+        Cross-tenant ifn_* and root remain hard failures.
+        """
         errors: list[str] = []
         expected = (getattr(env, "unix_username", None) or "").strip()
         if require_tenant_unix_user and (not expected or not expected.startswith("ifn_")):
@@ -334,15 +341,19 @@ class PhpFpmEnvironmentService:
             return errors
         for p in pools:
             user = (p.user or "").strip()
+            if user == "root":
+                errors.append(f"ROOT_PHP_POOL_SECURITY_VIOLATION: pool {p.pool_name} user=root")
+                continue
+            if expected and user.startswith("ifn_") and user != expected:
+                errors.append(
+                    f"CROSS_TENANT_POOL_IDENTITY: pool {p.pool_name} user={user} expected={expected}"
+                )
+                continue
             if require_tenant_unix_user:
-                if user == "root":
-                    errors.append(f"ROOT_PHP_POOL: pool {p.pool_name} user=root")
-                elif user == "www-data":
+                if user == "www-data":
+                    if allow_legacy_www_data:
+                        continue
                     errors.append(f"LEGACY_SHARED_USER: pool {p.pool_name} user=www-data")
-                elif expected and user.startswith("ifn_") and user != expected:
-                    errors.append(
-                        f"CROSS_TENANT_POOL_IDENTITY: pool {p.pool_name} user={user} expected={expected}"
-                    )
                 elif expected and user != expected:
                     errors.append(
                         f"POOL_IDENTITY_MISMATCH: pool {p.pool_name} user={user} expected={expected}"
@@ -361,6 +372,8 @@ class PhpFpmEnvironmentService:
         allow_vps: bool = False,
         plan_class: str | None = None,
         require_tenant_unix_user: bool = False,
+        allow_legacy_www_data: bool = False,
+        allow_excluded_domain: bool = False,
     ) -> MigratePlan:
         short = env_short_id(env.id)
         plan = MigratePlan(
@@ -374,7 +387,7 @@ class PhpFpmEnvironmentService:
             plan.errors.append(f"plan class {plan_class} excluded unless allow_vps")
             return plan
         domain = (getattr(env, "domain", None) or "").lower()
-        if is_excluded_canary_domain(domain):
+        if is_excluded_canary_domain(domain) and not allow_excluded_domain:
             plan.errors.append(f"domain {domain} excluded from migrate")
             return plan
 
@@ -385,9 +398,16 @@ class PhpFpmEnvironmentService:
             return plan
         plan.errors.extend(
             self.validate_pools_belong_only_to_env(
-                env, pools, require_tenant_unix_user=require_tenant_unix_user
+                env,
+                pools,
+                require_tenant_unix_user=require_tenant_unix_user,
+                allow_legacy_www_data=allow_legacy_www_data,
             )
         )
+        if any((p.user or "").strip() == "www-data" for p in pools):
+            plan.warnings.append(
+                "LEGACY_IDENTITY_DEBT: www-data pool user preserved (not converted to ifn_*)"
+            )
         if plan.errors:
             return plan
 
@@ -494,7 +514,15 @@ class PhpFpmEnvironmentService:
                     src, dst = Path(a["from"]), Path(a["to"])
                     if src.is_file():
                         (self.backup_root / src.name).write_bytes(src.read_bytes())
+                        if dst.exists():
+                            dst.unlink()
                         src.rename(dst)
+                    elif dst.is_file():
+                        # Already disabled; ensure no active duplicate remains.
+                        report["steps"].append({"already_disabled": dst.name})
+                    else:
+                        report["warnings"] = report.get("warnings") or []
+                        report["warnings"].append(f"global pool missing for disable: {src}")
                 elif act == "reload_global_fpm":
                     self._systemctl("reload", "php8.3-fpm.service")
                 elif act == "start_env_fpm":

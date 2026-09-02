@@ -107,13 +107,13 @@ PHASE_2B_PHP_FPM_RECOMMENDATION: dict[str, Any] = {
 }
 
 SFTP_ACCOUNTING_STATUS = {
-    "accounting_supported": "PHASE_2B_LIMITATION",
+    "accounting_supported": "PHASE_2B4_PAM_ATTACH",
     "detail": (
-        "OpenSSH internal-sftp sessions inherit sshd cgroup; per-session placement "
-        "into env slices is not straightforward without ForceCommand wrappers that "
-        "risk breaking chroot. Deferred to Phase 2B."
+        "OpenSSH internal-sftp remains chrooted. Session PIDs are attached to "
+        "ifnotus-workloads-tenants-env-*.slice via pam_exec "
+        "/usr/local/sbin/ifnotus-sftp-cgroup-attach using authenticated Unix username → slice map."
     ),
-    "changed": False,
+    "changed": True,
 }
 
 
