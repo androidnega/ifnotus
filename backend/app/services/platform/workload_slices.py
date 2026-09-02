@@ -110,7 +110,7 @@ SFTP_ACCOUNTING_STATUS = {
     "accounting_supported": "PHASE_2B4_PAM_ATTACH",
     "detail": (
         "OpenSSH internal-sftp remains chrooted. Session PIDs are attached to "
-        "ifnotus-workloads-tenants-env-*.slice via pam_exec "
+        "a leaf cgroup under ifnotus-workloads-tenants-env-*.slice (sftp-sessions) via pam_exec "
         "/usr/local/sbin/ifnotus-sftp-cgroup-attach using authenticated Unix username → slice map."
     ),
     "changed": True,
