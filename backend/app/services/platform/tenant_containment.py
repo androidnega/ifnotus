@@ -111,10 +111,16 @@ def resolve_slice_for_unix_user(username: str, *, map_path: Path | None = None) 
 
 
 def render_sftp_attach_script() -> str:
-    """Root-only pam_exec helper: move session PIDs into the env slice."""
+    """Root-only pam_exec helper: move session PIDs into a leaf scope under the env slice.
+
+    Must run as root (no pam_exec seteuid): cgroup.procs writes require privilege.
+    Must use a leaf scope — env slices already host php-fpm units, so writing PIDs
+    directly into the slice cgroup fails with EBUSY on cgroup v2.
+    """
     return r'''#!/bin/bash
 # IFNOTUS Phase 2B-4 — attach SSH/SFTP session processes to tenant env slice.
 # Invoked via pam_exec on sshd session open. Never trusts client env IDs.
+# Runs as root (no seteuid). Only moves PIDs owned by PAM_USER.
 set -euo pipefail
 USER_NAME="${PAM_USER:-}"
 [[ -n "$USER_NAME" ]] || exit 0
@@ -154,35 +160,63 @@ case "$SLICE" in
 esac
 
 systemctl start "$SLICE" >/dev/null 2>&1 || true
-CG=$(systemctl show -p ControlGroup --value "$SLICE" 2>/dev/null || true)
-[[ -n "$CG" && "$CG" != "/" ]] || exit 0
-CG_PATH="/sys/fs/cgroup${CG}"
-[[ -d "$CG_PATH" ]] || exit 0
 
-attach_pid() {
-  local pid="$1"
-  [[ -d "/proc/$pid" ]] || return 0
-  # Only move processes owned by the authenticated user
-  local owner
-  owner=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ' || true)
-  [[ "$owner" == "$USER_NAME" ]] || return 0
-  echo "$pid" > "${CG_PATH}/cgroup.procs" 2>/dev/null || true
+# Move PAM_USER PIDs into a leaf scope under the env slice.
+# Do not write to the slice cgroup directly (non-leaf / EBUSY when php-fpm is active).
+# Do not keep a sleeper in the tenant slice (would consume tenant memory).
+attach_pids_via_scope() {
+  local pids=()
+  local pid tgid owner
+  for pid in $(pgrep -u "$USER_NAME" 2>/dev/null || true); do
+    [[ -d "/proc/$pid" ]] || continue
+    owner=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+    [[ "$owner" == "$USER_NAME" ]] || continue
+    tgid=$(awk '/^Tgid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null || echo "$pid")
+    pids+=("$tgid")
+  done
+  [[ ${#pids[@]} -gt 0 ]] || return 1
+  # Unique PIDs
+  local uniq
+  uniq=$(printf '%s\n' "${pids[@]}" | awk 'NF && !seen[$0]++' | tr '\n' ' ')
+  [[ -n "${uniq// /}" ]] || return 1
+  local scope="ifnotus-sftp-${USER_NAME}-$$.scope"
+  # shellcheck disable=SC2086
+  systemd-run --quiet --collect --unit="$scope" --slice="$SLICE" --scope \
+    -p "PIDs=${uniq}" \
+    /bin/true >/dev/null 2>&1 || return 1
+  # Confirm at least one process landed under the env slice
+  local cg
+  for pid in $uniq; do
+    cg=$(awk -F: 'NR==1{print $3}' "/proc/$pid/cgroup" 2>/dev/null || true)
+    case "$cg" in
+      */"${SLICE}"/*) return 0 ;;
+    esac
+  done
+  return 1
 }
 
-# Attach current session tree and brief follow-up for late sftp children.
-for _ in 1 2 3 4 5 6 7 8; do
-  for pid in $(pgrep -u "$USER_NAME" 2>/dev/null || true); do
-    attach_pid "$pid"
+# pam_exec waits for this script; if we sleep here, ForceCommand/internal-sftp
+# never starts and there is nothing to attach. Fork and return immediately.
+(
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if attach_pids_via_scope; then
+      exit 0
+    fi
+    sleep 0.25
   done
-  sleep 0.25
-done
+) >/dev/null 2>&1 &
 exit 0
 '''
 
 
 def ensure_pam_sshd_attach(*, dry_run: bool = True) -> dict[str, Any]:
-    """Install pam_exec line for sshd session attach (idempotent)."""
-    line = f"session optional pam_exec.so seteuid {SFTP_ATTACH_BIN}"
+    """Install pam_exec line for sshd session attach (idempotent).
+
+    Intentionally omits ``seteuid`` so the helper runs as root and can write
+    ``cgroup.procs``. The script only attaches PIDs owned by ``PAM_USER``.
+    """
+    line = f"session optional pam_exec.so {SFTP_ATTACH_BIN}"
+    legacy_seteuid = f"session optional pam_exec.so seteuid {SFTP_ATTACH_BIN}"
     report: dict[str, Any] = {"dry_run": dry_run, "ok": False, "actions": []}
     if dry_run:
         report["actions"].append({"would_write": str(SFTP_ATTACH_BIN), "would_ensure_pam": line})
@@ -193,14 +227,23 @@ def ensure_pam_sshd_attach(*, dry_run: bool = True) -> dict[str, Any]:
     SFTP_ATTACH_BIN.chmod(0o755)
     report["actions"].append({"wrote": str(SFTP_ATTACH_BIN)})
     text = PAM_SSHD.read_text(encoding="utf-8") if PAM_SSHD.exists() else ""
+    changed = False
+    if legacy_seteuid in text:
+        text = text.replace(legacy_seteuid, line)
+        changed = True
+        report["actions"].append({"replaced_seteuid_pam": True})
     if str(SFTP_ATTACH_BIN) not in text:
         if not text.endswith("\n"):
             text += "\n"
         text += f"\n{PAM_MARKER}\n{line}\n"
-        PAM_SSHD.write_text(text, encoding="utf-8")
+        changed = True
+        report["actions"].append({"updated_pam": str(PAM_SSHD)})
+    elif changed:
         report["actions"].append({"updated_pam": str(PAM_SSHD)})
     else:
         report["actions"].append({"pam_already_present": True})
+    if changed:
+        PAM_SSHD.write_text(text, encoding="utf-8")
     report["ok"] = True
     return report
 

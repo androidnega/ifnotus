@@ -123,6 +123,22 @@ def test_sftp_unknown_user_rejection(tmp_path: Path) -> None:
     assert ok["slice"].endswith("known.slice")
 
 
+def test_sftp_attach_runs_as_root_into_leaf_scope() -> None:
+    from app.services.platform.tenant_containment import ensure_pam_sshd_attach, render_sftp_attach_script
+
+    script = render_sftp_attach_script()
+    assert "PIDs=" in script
+    assert "--slice=" in script
+    assert "sleep infinity" not in script
+    assert "ForceCommand/internal-sftp" in script
+    assert ") >/dev/null 2>&1 &" in script
+    dry = ensure_pam_sshd_attach(dry_run=True)
+    assert dry["ok"]
+    pam_line = dry["actions"][0]["would_ensure_pam"]
+    assert "pam_exec.so" in pam_line
+    assert " seteuid " not in f" {pam_line} "
+
+
 def test_no_customer_fs_mutation_on_legacy_plan(tmp_path: Path) -> None:
     pool_dir = tmp_path / "pool.d"
     pool_dir.mkdir()
