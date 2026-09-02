@@ -524,7 +524,13 @@ class PhpFpmEnvironmentService:
                         report["warnings"] = report.get("warnings") or []
                         report["warnings"].append(f"global pool missing for disable: {src}")
                 elif act == "reload_global_fpm":
-                    self._systemctl("reload", "php8.3-fpm.service")
+                    # Prefer start if inactive — reload alone fails and leaves collisions risky.
+                    st = self._systemctl("is-active", "php8.3-fpm.service")
+                    if (st.stdout or "").strip() == "active":
+                        self._systemctl("reload", "php8.3-fpm.service")
+                    else:
+                        self._systemctl("reset-failed", "php8.3-fpm.service")
+                        self._systemctl("start", "php8.3-fpm.service")
                 elif act == "start_env_fpm":
                     self._systemctl("daemon-reload")
                     self._systemctl("enable", a["unit"])
@@ -538,6 +544,17 @@ class PhpFpmEnvironmentService:
                         report["rolled_back"] = True
                         return report
                 report["steps"].append({"done": act})
+            # Final safety: never leave global active duplicates of migrated pools.
+            for p in plan.pools:
+                active = self.pool_dir / f"{p.pool_name}.conf"
+                disabled = self.pool_dir / f"{p.pool_name}.conf{DISABLED_SUFFIX}"
+                if active.is_file():
+                    if not disabled.is_file():
+                        active.rename(disabled)
+                        report["steps"].append({"final_disable": active.name})
+                    else:
+                        active.unlink()
+                        report["steps"].append({"final_remove_dup": active.name})
             report["ok"] = True
         except OSError as exc:
             report["errors"].append(str(exc))

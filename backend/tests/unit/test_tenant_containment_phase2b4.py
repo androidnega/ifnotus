@@ -127,8 +127,7 @@ def test_sftp_attach_runs_as_root_into_leaf_scope() -> None:
     from app.services.platform.tenant_containment import ensure_pam_sshd_attach, render_sftp_attach_script
 
     script = render_sftp_attach_script()
-    assert "PIDs=" in script
-    assert "--slice=" in script
+    assert "sftp-sessions" in script
     assert "sleep infinity" not in script
     assert "ForceCommand/internal-sftp" in script
     assert ") >/dev/null 2>&1 &" in script

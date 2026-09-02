@@ -161,47 +161,34 @@ esac
 
 systemctl start "$SLICE" >/dev/null 2>&1 || true
 
-# Move PAM_USER PIDs into a leaf scope under the env slice.
-# Do not write to the slice cgroup directly (non-leaf / EBUSY when php-fpm is active).
-# Do not keep a sleeper in the tenant slice (would consume tenant memory).
-attach_pids_via_scope() {
-  local pids=()
-  local pid tgid owner
-  for pid in $(pgrep -u "$USER_NAME" 2>/dev/null || true); do
-    [[ -d "/proc/$pid" ]] || continue
-    owner=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ' || true)
-    [[ "$owner" == "$USER_NAME" ]] || continue
-    tgid=$(awk '/^Tgid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null || echo "$pid")
-    pids+=("$tgid")
-  done
-  [[ ${#pids[@]} -gt 0 ]] || return 1
-  # Unique PIDs
-  local uniq
-  uniq=$(printf '%s\n' "${pids[@]}" | awk 'NF && !seen[$0]++' | tr '\n' ' ')
-  [[ -n "${uniq// /}" ]] || return 1
-  local scope="ifnotus-sftp-${USER_NAME}-$$.scope"
-  # shellcheck disable=SC2086
-  systemd-run --quiet --collect --unit="$scope" --slice="$SLICE" --scope \
-    -p "PIDs=${uniq}" \
-    /bin/true >/dev/null 2>&1 || return 1
-  # Confirm at least one process landed under the env slice
-  local cg
-  for pid in $uniq; do
-    cg=$(awk -F: 'NR==1{print $3}' "/proc/$pid/cgroup" 2>/dev/null || true)
-    case "$cg" in
-      */"${SLICE}"/*) return 0 ;;
-    esac
-  done
-  return 1
+# Leaf cgroup under the env slice (slice itself is non-leaf when php-fpm is active).
+# Prefer an unmanaged leaf dir — no sleeper process billed to the tenant.
+CG=$(systemctl show -p ControlGroup --value "$SLICE" 2>/dev/null || true)
+[[ -n "$CG" && "$CG" != "/" ]] || exit 0
+LEAF_PATH="/sys/fs/cgroup${CG}/sftp-sessions"
+mkdir -p "$LEAF_PATH" 2>/dev/null || exit 0
+[[ -d "$LEAF_PATH" ]] || exit 0
+
+attach_pid() {
+  local pid="$1"
+  [[ -d "/proc/$pid" ]] || return 0
+  # Only move processes owned by the authenticated user
+  local owner
+  owner=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+  [[ "$owner" == "$USER_NAME" ]] || return 0
+  # Prefer thread-group leader
+  local tgid
+  tgid=$(awk '/^Tgid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null || echo "$pid")
+  echo "$tgid" > "${LEAF_PATH}/cgroup.procs" 2>/dev/null || true
 }
 
 # pam_exec waits for this script; if we sleep here, ForceCommand/internal-sftp
 # never starts and there is nothing to attach. Fork and return immediately.
 (
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    if attach_pids_via_scope; then
-      exit 0
-    fi
+    for pid in $(pgrep -u "$USER_NAME" 2>/dev/null || true); do
+      attach_pid "$pid"
+    done
     sleep 0.25
   done
 ) >/dev/null 2>&1 &
