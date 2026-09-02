@@ -80,6 +80,53 @@ async def run_reconciliation(target_domain: str | None = None) -> None:
         print("Reconciliation complete.")
 
 
+def run_resource_policy_status(*, with_plans: bool = False) -> None:
+    """Read-only resource governance policy dump (Phase 1). No system changes."""
+    from app.services.platform.resource_policy import (
+        PlanView,
+        format_resource_policy_status,
+        host_resource_policy_from_settings,
+        resource_policy_status_report,
+        validate_resource_policy,
+    )
+
+    settings = get_settings()
+    setup_logging(settings)
+    policy = host_resource_policy_from_settings(settings)
+    plans: list[PlanView] = []
+
+    if with_plans:
+        async def _load_plans() -> list[PlanView]:
+            container = create_container()
+            session_factory = container.db_session_factory()
+            from app.models.platform import HostingPlan
+
+            async with session_factory() as session:
+                result = await session.execute(select(HostingPlan).order_by(HostingPlan.price_monthly))
+                rows = result.scalars().all()
+                out: list[PlanView] = []
+                for p in rows:
+                    out.append(
+                        PlanView(
+                            slug=p.slug,
+                            name=p.name,
+                            price_monthly=float(p.price_monthly or 0),
+                            ram_gb=float(p.ram_gb or 0),
+                            storage_gb=float(p.storage_gb or 0),
+                            features=dict(p.features or {}),
+                        )
+                    )
+                return out
+
+        plans = asyncio.run(_load_plans())
+
+    report = resource_policy_status_report(policy=policy, plans=plans or None)
+    print(format_resource_policy_status(report))
+    validation = validate_resource_policy(policy)
+    if not validation.ok:
+        sys.exit(2)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="IFNOTUS Infrastructure Management CLI")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -88,11 +135,23 @@ def main() -> None:
     p_recon.add_argument("--domain", help="Optional specific domain to reconcile", default=None)
     subparsers.add_parser("reconcile-zones", help="Alias for reconcile-hosting")
 
+    p_policy = subparsers.add_parser(
+        "resource-policy-status",
+        help="Print centralized resource policy snapshot (read-only; Phase 1)",
+    )
+    p_policy.add_argument(
+        "--with-plans",
+        action="store_true",
+        help="Include live HostingPlan compatibility rows (DB read-only)",
+    )
+
     args = parser.parse_args()
 
     if args.command in {"reconcile-hosting", "reconcile-zones"}:
         domain = getattr(args, "domain", None)
         asyncio.run(run_reconciliation(target_domain=domain))
+    elif args.command == "resource-policy-status":
+        run_resource_policy_status(with_plans=bool(getattr(args, "with_plans", False)))
     else:
         parser.print_help()
         sys.exit(1)

@@ -305,6 +305,21 @@ class Settings(BaseSettings):
     infra_ram_reserved_pct: int = 20
     infra_storage_reserved_pct: int = 15
     infra_min_free_storage_gb: int = 20
+
+    # Resource governance policy (Phase 1) — configured capacity class, not live MemAvailable.
+    # Optional env overrides; defaults match approved 1+8+30+9=48 and storage 40/140.
+    ifnotus_host_ram_gb: float = 48.0
+    ifnotus_os_reserve_gb: float = 1.0
+    ifnotus_core_normal_gb: float = 8.0
+    ifnotus_tenant_pool_gb: float = 30.0
+    ifnotus_emergency_pool_gb: float = 9.0
+    ifnotus_shared_low_normal_gb: float = 2.0
+    ifnotus_shared_standard_normal_gb: float = 6.0
+    ifnotus_shared_burst_max_gb: float = 12.0
+    ifnotus_core_storage_reserve_gb: float = 40.0
+    ifnotus_tenant_storage_pool_gb: float = 140.0
+    ifnotus_shared_price_threshold_ghs: float = 100.0
+
     customer_isolation_mode: str = "docker"  # docker | filesystem
     web_run_user: str = "www-data"
     ftp_enabled: bool = True
