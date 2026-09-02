@@ -482,6 +482,332 @@ def run_php_fpm_environment_rollback(*, environment_id: str, apply: bool = False
         sys.exit(1)
 
 
+def _load_all_environments_with_plans():
+    from sqlalchemy import text
+    from app.models.platform import CustomerEnvironment
+
+    async def _load():
+        container = create_container()
+        session_factory = container.db_session_factory()
+        async with session_factory() as session:
+            rows = await session.execute(
+                text(
+                    """
+                    SELECT ce.id,
+                           hp.slug, hp.name, hp.price_monthly, hp.features, hp.ram_gb
+                    FROM customer_environments ce
+                    JOIN subscriptions sub ON sub.id = ce.subscription_id
+                    JOIN hosting_plans hp ON hp.id = sub.plan_id
+                    ORDER BY ce.created_at
+                    """
+                )
+            )
+            plan_meta = {
+                str(r[0]): {
+                    "slug": r[1],
+                    "name": r[2],
+                    "price_monthly": float(r[3] or 0),
+                    "features": r[4] or {},
+                    "ram_gb": float(r[5] or 0),
+                }
+                for r in rows
+            }
+            envs = []
+            for eid in plan_meta:
+                env = await session.get(CustomerEnvironment, __import__("uuid").UUID(eid))
+                if env is None:
+                    continue
+                erows = await session.execute(
+                    text("SELECT domain_name FROM customer_domains WHERE environment_id = :eid"),
+                    {"eid": eid},
+                )
+                extras = [r[0] for r in erows if r[0]]
+                meta = plan_meta[eid]
+                plan = type(
+                    "PlanView",
+                    (),
+                    {
+                        "name": meta["name"],
+                        "slug": meta["slug"],
+                        "price_monthly": meta["price_monthly"],
+                        "ram_gb": meta["ram_gb"],
+                        "features": meta["features"] or {},
+                    },
+                )()
+                envs.append((env, extras, plan, meta))
+            return envs
+
+    return asyncio.run(_load())
+
+
+def run_php_fpm_rollout(
+    *,
+    batch_size: int = 5,
+    apply: bool = False,
+    environment: str | None = None,
+    exclude: list[str] | None = None,
+    resume: bool = False,
+    inventory_only: bool = False,
+    batch_number: int | None = None,
+) -> None:
+    """Phase 2B-3 controlled shared PHP-FPM mass rollout (default: dry-run)."""
+    import json
+    from collections import Counter
+
+    from app.services.platform.php_fpm_rollout import (
+        CLASS_ALREADY_MIGRATED,
+        CLASS_ELIGIBLE,
+        CLASS_MANUAL,
+        CLASS_NO_PHP,
+        CLASS_POOL_MISMATCH,
+        PhpFpmRolloutService,
+        idle_fpm_stats,
+        recommended_tasksmax,
+    )
+    from app.services.platform.workload_slices import (
+        read_cgroup_memory_current,
+        resolve_slice_cgroup_path,
+        slice_name_for,
+    )
+
+    settings = get_settings()
+    setup_logging(settings)
+    svc = PhpFpmRolloutService()
+    state = svc.checkpoint.load()
+    if not resume and apply and state.get("stopped") and not environment:
+        print(f"Checkpoint stopped: {state.get('stop_reason')}. Use --resume after review.")
+        sys.exit(3)
+
+    # Verify already-migrated first
+    print("=== VERIFY EXISTING MIGRATED ===")
+    rows_all = _load_all_environments_with_plans()
+    inventory_rows = []
+    migrated_ok = True
+    for env, extra, plan, meta in rows_all:
+        row = svc.classify_environment(
+            env,
+            extra_hostnames=extra,
+            plan=plan,
+            plan_slug=meta.get("slug"),
+            plan_name=meta.get("name"),
+            price_monthly=meta.get("price_monthly"),
+            check_http=False,
+        )
+        inventory_rows.append(row)
+        if row.classification == CLASS_ALREADY_MIGRATED:
+            ver = svc.verify_migrated(env, extra_hostnames=extra)
+            print(f"  {row.short_id} drift={ver.get('drift_state')} ok={ver.get('ok')}")
+            if not ver.get("ok"):
+                migrated_ok = False
+    if not migrated_ok:
+        print("STOP: existing migrated environment unhealthy")
+        sys.exit(4)
+
+    counts = Counter(r.classification for r in inventory_rows)
+    print("=== INVENTORY ===")
+    print(json.dumps(dict(counts), indent=2))
+    print(
+        json.dumps(
+            {
+                "total": len(inventory_rows),
+                "eligible": counts.get(CLASS_ELIGIBLE, 0),
+                "already_migrated": counts.get(CLASS_ALREADY_MIGRATED, 0),
+                "no_php": counts.get(CLASS_NO_PHP, 0),
+                "manual_or_mismatch": counts.get(CLASS_MANUAL, 0) + counts.get(CLASS_POOL_MISMATCH, 0),
+            },
+            indent=2,
+        )
+    )
+    if inventory_only:
+        print(json.dumps([r.to_dict() for r in inventory_rows], indent=2)[:8000])
+        return
+
+    eligible = [r for r in inventory_rows if r.classification == CLASS_ELIGIBLE]
+    exclude_set = set(exclude or [])
+    only = {environment} if environment else None
+
+    # Batch plan: 1→5, 2→8, 3→rest unless batch_number/batch_size override
+    batch_sizes = [5, 8, 10_000]
+    if batch_number is not None:
+        idx = max(1, batch_number) - 1
+        batch_sizes = batch_sizes[idx : idx + 1] if idx < len(batch_sizes) else [batch_size]
+    elif batch_size and batch_number is None and environment:
+        batch_sizes = [1]
+    elif batch_size != 5 and batch_number is None:
+        # single custom batch size for one batch invocation
+        batch_sizes = [batch_size]
+
+    mode = "APPLY" if apply else "DRY-RUN"
+    print(f"IFNOTUS php-fpm rollout [{mode}] batch_sizes={batch_sizes}")
+    host_before = svc.host_memory_snapshot()
+    print("host_before", json.dumps(host_before))
+
+    batch_reports = []
+    env_by_id = {str(env.id): (env, extra, plan, meta) for env, extra, plan, meta in rows_all}
+
+    for bi, size in enumerate(batch_sizes, start=1):
+        if state.get("stopped") and apply and resume:
+            # clear stop only when resuming intentionally after operator review
+            state["stopped"] = False
+            state["stop_reason"] = None
+            svc.checkpoint.save(state)
+        if state.get("stopped") and apply:
+            print(f"Stopped before batch {bi}: {state.get('stop_reason')}")
+            break
+
+        targets = svc.select_batch(
+            eligible,
+            batch_size=size,
+            exclude=exclude_set,
+            only=only,
+            state=state,
+        )
+        if not targets:
+            print(f"Batch {bi}: nothing to migrate")
+            batch_reports.append({"batch": bi, "attempted": 0, "migrated": 0, "rolled_back": 0, "failed": 0, "status": "EMPTY"})
+            continue
+
+        print(f"=== BATCH {bi} targets={len(targets)} ===")
+        for t in targets:
+            print(f"  - {t.short_id} pools={t.pool_count} hosts={t.hostname_count}")
+
+        attempted = migrated = rolled = failed = 0
+        batch_status = "OK"
+        for t in targets:
+            attempted += 1
+            env, extra, plan, meta = env_by_id[t.environment_id]
+            print(f"--- migrate {t.short_id} ---")
+            result = svc.migrate_one(
+                env,
+                extra_hostnames=extra,
+                plan_class=None,
+                dry_run=not apply,
+                state=state,
+            )
+            state = result.get("state") or state
+            if result.get("ok"):
+                migrated += 1
+                print(f"  OK phase={result.get('phase')}")
+            elif result.get("phase") == "preflight":
+                # Preflight rejects are explicit manual-review — continue batch.
+                failed += 1
+                svc.checkpoint.set_env(
+                    state,
+                    t.environment_id,
+                    status="MANUAL_REVIEW",
+                    short_id=t.short_id,
+                    reject_codes=(result.get("preflight") or {}).get("reject_codes"),
+                )
+                svc.checkpoint.save(state)
+                print(f"  SKIP preflight codes={(result.get('preflight') or {}).get('reject_codes')}")
+            else:
+                failed += 1
+                if "roll" in str(result.get("phase")):
+                    rolled += 1
+                batch_status = "STOPPED"
+                print(f"  FAIL phase={result.get('phase')} codes={result.get('preflight', {}).get('reject_codes')}")
+                if apply:
+                    break
+            # global FPM quick check
+            if apply and (svc._systemctl("is-active", "php8.3-fpm.service").stdout or "").strip() != "active":
+                state["stopped"] = True
+                state["stop_reason"] = "global_fpm_inactive"
+                svc.checkpoint.save(state)
+                batch_status = "STOPPED"
+                print("STOP: global php8.3-fpm inactive")
+                break
+
+        # If preflight skips reduced successes, pull more eligible targets to fill batch.
+        if apply and batch_status == "OK" and migrated < size and not environment:
+            refill = svc.select_batch(
+                eligible,
+                batch_size=size - migrated,
+                exclude=exclude_set,
+                only=only,
+                state=state,
+            )
+            for t in refill:
+                if migrated >= size:
+                    break
+                attempted += 1
+                env, extra, plan, meta = env_by_id[t.environment_id]
+                print(f"--- refill migrate {t.short_id} ---")
+                result = svc.migrate_one(
+                    env,
+                    extra_hostnames=extra,
+                    plan_class=None,
+                    dry_run=False,
+                    state=state,
+                )
+                state = result.get("state") or state
+                if result.get("ok"):
+                    migrated += 1
+                    print(f"  OK phase={result.get('phase')}")
+                elif result.get("phase") == "preflight":
+                    failed += 1
+                    svc.checkpoint.set_env(
+                        state,
+                        t.environment_id,
+                        status="MANUAL_REVIEW",
+                        short_id=t.short_id,
+                        reject_codes=(result.get("preflight") or {}).get("reject_codes"),
+                    )
+                    svc.checkpoint.save(state)
+                    print(f"  SKIP preflight")
+                else:
+                    failed += 1
+                    if "roll" in str(result.get("phase")):
+                        rolled += 1
+                    batch_status = "STOPPED"
+                    print(f"  FAIL phase={result.get('phase')}")
+                    break
+
+        # Batch considered OK if no post-cutover failures (preflight skips allowed).
+        if batch_status == "OK" and rolled == 0 and not state.get("stopped"):
+            batch_status = "OK"
+        elif rolled or state.get("stopped"):
+            batch_status = "STOPPED"
+        else:
+            batch_status = "OK"
+
+        # Batch validation
+        services = svc.service_health()
+        host_after = svc.host_memory_snapshot()
+        print("services", json.dumps(services))
+        print("host_after", json.dumps(host_after))
+        if apply and host_before.get("mem_available_gb") and host_after.get("mem_available_gb") is not None:
+            # stop if available memory collapses below 1.5 GiB absolute OS headroom
+            if float(host_after["mem_available_gb"]) < 1.5:
+                state["stopped"] = True
+                state["stop_reason"] = "host_mem_available_low"
+                svc.checkpoint.save(state)
+                batch_status = "STOPPED"
+                print("STOP: host MemAvailable < 1.5 GiB")
+
+        batch_reports.append(
+            {
+                "batch": bi,
+                "attempted": attempted,
+                "migrated": migrated,
+                "rolled_back": rolled,
+                "failed": failed,
+                "status": batch_status,
+                "services": services,
+            }
+        )
+        state.setdefault("batches", []).append(batch_reports[-1])
+        svc.checkpoint.save(state)
+
+        # Between batches require no hard stop
+        if apply and state.get("stopped"):
+            break
+        if apply and rolled:
+            break
+
+    print("=== ROLLOUT SUMMARY ===")
+    print(json.dumps({"batches": batch_reports, "checkpoint": str(svc.checkpoint.path)}, indent=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="IFNOTUS Infrastructure Management CLI")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -535,6 +861,19 @@ def main() -> None:
     p_php_rb.add_argument("--dry-run", action="store_true", default=True, help="Plan only (default)")
     p_php_rb.add_argument("--apply", action="store_true", help="Perform rollback for this environment only")
 
+    p_roll = subparsers.add_parser(
+        "php-fpm-rollout",
+        help="Phase 2B-3: controlled shared PHP-FPM mass rollout (default: dry-run)",
+    )
+    p_roll.add_argument("--batch-size", type=int, default=5, help="Max environments in this invocation batch")
+    p_roll.add_argument("--batch", type=int, default=None, help="Run only batch N of the 1/2/3 strategy")
+    p_roll.add_argument("--dry-run", action="store_true", default=True, help="Plan only (default)")
+    p_roll.add_argument("--apply", action="store_true", help="Apply migrations sequentially")
+    p_roll.add_argument("--environment", default=None, help="Limit to one environment UUID/short-id")
+    p_roll.add_argument("--exclude", action="append", default=[], help="Exclude environment id/short-id (repeatable)")
+    p_roll.add_argument("--resume", action="store_true", help="Resume after a previous stop")
+    p_roll.add_argument("--inventory-only", action="store_true", help="Classify only; no migrate planning")
+
     args = parser.parse_args()
 
     if args.command in {"reconcile-hosting", "reconcile-zones"}:
@@ -559,6 +898,16 @@ def main() -> None:
         run_php_fpm_environment_rollback(
             environment_id=str(args.environment),
             apply=bool(getattr(args, "apply", False)),
+        )
+    elif args.command == "php-fpm-rollout":
+        run_php_fpm_rollout(
+            batch_size=int(getattr(args, "batch_size", 5) or 5),
+            apply=bool(getattr(args, "apply", False)),
+            environment=getattr(args, "environment", None),
+            exclude=list(getattr(args, "exclude", []) or []),
+            resume=bool(getattr(args, "resume", False)),
+            inventory_only=bool(getattr(args, "inventory_only", False)),
+            batch_number=getattr(args, "batch", None),
         )
     else:
         parser.print_help()

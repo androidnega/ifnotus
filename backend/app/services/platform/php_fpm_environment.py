@@ -320,13 +320,36 @@ class PhpFpmEnvironmentService:
                 seen.add(name)
         return refs
 
-    def validate_pools_belong_only_to_env(self, env, pools: list[EnvPoolRef]) -> list[str]:
+    def validate_pools_belong_only_to_env(
+        self,
+        env,
+        pools: list[EnvPoolRef],
+        *,
+        require_tenant_unix_user: bool = False,
+    ) -> list[str]:
         errors: list[str] = []
         expected = (getattr(env, "unix_username", None) or "").strip()
+        if require_tenant_unix_user and (not expected or not expected.startswith("ifn_")):
+            errors.append("INVALID_ENV_IDENTITY: missing ifn_* unix_username")
+            return errors
         for p in pools:
-            if expected and p.user not in {expected, "www-data"}:
+            user = (p.user or "").strip()
+            if require_tenant_unix_user:
+                if user == "root":
+                    errors.append(f"ROOT_PHP_POOL: pool {p.pool_name} user=root")
+                elif user == "www-data":
+                    errors.append(f"LEGACY_SHARED_USER: pool {p.pool_name} user=www-data")
+                elif expected and user.startswith("ifn_") and user != expected:
+                    errors.append(
+                        f"CROSS_TENANT_POOL_IDENTITY: pool {p.pool_name} user={user} expected={expected}"
+                    )
+                elif expected and user != expected:
+                    errors.append(
+                        f"POOL_IDENTITY_MISMATCH: pool {p.pool_name} user={user} expected={expected}"
+                    )
+            elif expected and user not in {expected, "www-data"}:
                 errors.append(
-                    f"pool {p.pool_name} user={p.user} does not match env unix_username={expected}"
+                    f"pool {p.pool_name} user={user} does not match env unix_username={expected}"
                 )
         return errors
 
@@ -337,6 +360,7 @@ class PhpFpmEnvironmentService:
         extra_hostnames: Iterable[str] | None = None,
         allow_vps: bool = False,
         plan_class: str | None = None,
+        require_tenant_unix_user: bool = False,
     ) -> MigratePlan:
         short = env_short_id(env.id)
         plan = MigratePlan(
@@ -359,7 +383,11 @@ class PhpFpmEnvironmentService:
         if not pools:
             plan.errors.append("no global PHP pools found for environment hostnames")
             return plan
-        plan.errors.extend(self.validate_pools_belong_only_to_env(env, pools))
+        plan.errors.extend(
+            self.validate_pools_belong_only_to_env(
+                env, pools, require_tenant_unix_user=require_tenant_unix_user
+            )
+        )
         if plan.errors:
             return plan
 
