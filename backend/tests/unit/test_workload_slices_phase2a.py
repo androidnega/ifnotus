@@ -204,6 +204,11 @@ def test_resolve_slice_cgroup_prefers_leaf(tmp_path, monkeypatch) -> None:
     )
     leaf.mkdir(parents=True)
     monkeypatch.setattr(ws, "_CGROUP_ROOT", root)
+
+    class _Empty:
+        stdout = ""
+
+    monkeypatch.setattr(ws.subprocess, "run", lambda *a, **k: _Empty())
     got = ws.resolve_slice_cgroup_path("ifnotus-workloads-tenants-env-34a9a20e.slice")
     assert got == leaf
     assert ws.resolve_slice_cgroup_path("missing-env.slice") is None

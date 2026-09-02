@@ -322,12 +322,48 @@ def resolve_slice_cgroup_path(slice_name: str) -> Path | None:
     Prefer the leaf path whose basename equals ``slice_name``. Intermediate
     parents (e.g. ``ifnotus.slice`` for ``ifnotus-workloads-….slice``) must not
     win — that would attribute host-wide usage to one environment.
+
+    Also consult ``systemctl show -p ControlGroup`` when available so nested
+    paths under ``ifnotus.slice/…`` are found reliably.
     """
+    # Fast path: ask systemd for the live ControlGroup.
+    try:
+        proc = subprocess.run(
+            ["systemctl", "show", slice_name, "-p", "ControlGroup", "--value"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        cg = (proc.stdout or "").strip()
+        if cg and cg != "/":
+            # ControlGroup is like /ifnotus.slice/ifnotus-workloads.slice/...
+            candidate = _CGROUP_ROOT / cg.lstrip("/")
+            if candidate.is_dir() and candidate.name == slice_name:
+                return candidate
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
     candidates = slice_cgroup_candidates(slice_name)
     for path in candidates:
         if path.is_dir() and path.name == slice_name:
             return path
     return None
+
+
+def read_cgroup_memory_current(cgroup_path: Path) -> int | None:
+    """Kernel cgroup-charged memory (source of truth for MemoryMax enforcement)."""
+    try:
+        return int((cgroup_path / "memory.current").read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+MEMORY_ACCOUNTING_NOTE = (
+    "memory.current is cgroup-charged memory (enforcement source of truth). "
+    "Summed process RSS is typically higher because shared library/file pages "
+    "are counted once in the cgroup but appear in each process RSS."
+)
 
 
 def examflow_health_classification(*, user: str | None, slice_path: str | None) -> dict[str, Any]:

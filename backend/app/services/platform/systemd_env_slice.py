@@ -22,7 +22,9 @@ from app.models.platform import CustomerEnvironment
 from app.services.platform.resource_enforcement import limits_for_plan
 from app.services.platform.workload_slices import (
     ENV_SLICE_PREFIX,
+    MEMORY_ACCOUNTING_NOTE,
     legacy_slice_name_for,
+    read_cgroup_memory_current,
     render_env_slice_unit,
     resolve_slice_cgroup_path,
     slice_name_for,
@@ -177,17 +179,31 @@ class EnvironmentSliceService:
         if cg is not None:
             out["cgroup_path"] = str(cg)
             out["slice"] = name if ENV_SLICE_PREFIX in cg.name else legacy
-            mem = self._read_int(cg / "memory.current")
+            mem = read_cgroup_memory_current(cg)
             pids = self._read_int(cg / "pids.current")
             cpu_usec = self._read_cpu_usage_usec(cg / "cpu.stat")
             out["source"] = "cgroup"
             out["available"] = True
+            out["memory_accounting_note"] = MEMORY_ACCOUNTING_NOTE
             if mem is not None:
                 out["memory_bytes"] = mem
                 out["memory_mb"] = round(mem / (1024 * 1024), 1)
+                out["memory_current_bytes"] = mem
+                out["memory_current_mb"] = out["memory_mb"]
             if pids is not None:
                 out["process_count"] = pids
             out["cpu_usage_usec"] = cpu_usec
+            # Optional process RSS (informational; not used for enforcement).
+            try:
+                anon = None
+                for line in (cg / "memory.stat").read_text(encoding="utf-8").splitlines():
+                    if line.startswith("anon "):
+                        anon = int(line.split()[1])
+                        break
+                if anon is not None:
+                    out["memory_anon_mb"] = round(anon / (1024 * 1024), 1)
+            except (OSError, ValueError, IndexError):
+                pass
 
         from app.services.platform.environment_monitoring import environment_live_stats
 
@@ -205,7 +221,9 @@ class EnvironmentSliceService:
                 out["source"] = f"cgroup+{proc.get('source')}"
             out["cpu_percent"] = float(proc.get("cpu_percent") or 0)
             proc_mem = float(proc.get("memory_rss_mb") or 0)
-            if out.get("memory_mb") is None or (float(out.get("memory_mb") or 0) <= 0 and proc_mem > 0):
+            out["process_rss_mb"] = proc_mem
+            # Never overwrite cgroup memory.current with process RSS — different metric.
+            if out.get("memory_current_mb") is None and proc_mem > 0:
                 out["memory_mb"] = proc_mem
                 out["memory_bytes"] = int(proc_mem * 1024 * 1024)
             proc_count = int(proc.get("process_count") or 0)

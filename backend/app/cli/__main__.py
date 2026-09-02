@@ -456,6 +456,32 @@ def run_php_fpm_environment_status(*, environment_id: str) -> None:
     print(json.dumps(status, indent=2))
 
 
+def run_php_fpm_environment_rollback(*, environment_id: str, apply: bool = False) -> None:
+    """Restore global php8.3-fpm pools for one environment (Phase 2B-2 rollback test)."""
+    import json
+
+    from app.services.platform.php_fpm_environment import PhpFpmEnvironmentService
+
+    settings = get_settings()
+    setup_logging(settings)
+    env, extra = _load_environment(environment_id)
+    if env is None:
+        print(f"Environment not found: {environment_id}")
+        sys.exit(1)
+    svc = PhpFpmEnvironmentService()
+    plan = svc.plan_migrate(env, extra_hostnames=extra)
+    mode = "APPLY" if apply else "DRY-RUN"
+    print(f"IFNOTUS php-fpm environment rollback [{mode}] env={plan.short_id}")
+    print(json.dumps({"rollback_steps": plan.rollback_steps, "pools": [p.pool_name for p in plan.pools]}, indent=2))
+    if not apply:
+        print("dry-run — no system changes")
+        return
+    report = svc.rollback(plan)
+    print(json.dumps(report, indent=2)[:4000])
+    if not report.get("ok"):
+        sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="IFNOTUS Infrastructure Management CLI")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -501,6 +527,14 @@ def main() -> None:
     )
     p_php_st.add_argument("--environment", required=True, help="CustomerEnvironment UUID")
 
+    p_php_rb = subparsers.add_parser(
+        "php-fpm-environment-rollback",
+        help="Phase 2B: restore global php8.3-fpm pools for one environment (default: dry-run)",
+    )
+    p_php_rb.add_argument("--environment", required=True, help="CustomerEnvironment UUID")
+    p_php_rb.add_argument("--dry-run", action="store_true", default=True, help="Plan only (default)")
+    p_php_rb.add_argument("--apply", action="store_true", help="Perform rollback for this environment only")
+
     args = parser.parse_args()
 
     if args.command in {"reconcile-hosting", "reconcile-zones"}:
@@ -521,6 +555,11 @@ def main() -> None:
         )
     elif args.command == "php-fpm-environment-status":
         run_php_fpm_environment_status(environment_id=str(args.environment))
+    elif args.command == "php-fpm-environment-rollback":
+        run_php_fpm_environment_rollback(
+            environment_id=str(args.environment),
+            apply=bool(getattr(args, "apply", False)),
+        )
     else:
         parser.print_help()
         sys.exit(1)

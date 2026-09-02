@@ -28,6 +28,24 @@ from app.services.platform.workload_slices import env_short_id, slice_name_for
 
 logger = get_logger(__name__)
 
+# Migration health states for drift detection.
+STATE_MIGRATED_HEALTHY = "MIGRATED_HEALTHY"
+STATE_GLOBAL_LEGACY = "GLOBAL_LEGACY"
+STATE_PARTIAL_MIGRATION = "PARTIAL_MIGRATION"
+STATE_SOCKET_CONFLICT = "SOCKET_CONFLICT"
+STATE_DUPLICATE_POOL = "DUPLICATE_POOL"
+STATE_BROKEN_ENV_FPM = "BROKEN_ENV_FPM"
+STATE_STALE_DISABLED = "STALE_DISABLED"
+DRIFT_STATES = (
+    STATE_MIGRATED_HEALTHY,
+    STATE_GLOBAL_LEGACY,
+    STATE_PARTIAL_MIGRATION,
+    STATE_SOCKET_CONFLICT,
+    STATE_DUPLICATE_POOL,
+    STATE_BROKEN_ENV_FPM,
+    STATE_STALE_DISABLED,
+)
+
 PHP_VERSION = "8.3"
 PHP_FPM_BIN = Path("/usr/sbin/php-fpm8.3")
 GLOBAL_POOL_DIR = Path(f"/etc/php/{PHP_VERSION}/fpm/pool.d")
@@ -62,7 +80,65 @@ def fpm_socket_for(hostname: str) -> Path:
     return Path(f"/run/php/{fpm_pool_name(hostname)}.sock")
 
 
-def is_excluded_canary_domain(domain: str) -> bool:
+def estimate_tasksmax_risk(
+    *,
+    tasks_max: int,
+    pm_max_children: int,
+    has_node_runtime: bool = False,
+    cron_slots: int = 2,
+    other_processes: int = 2,
+) -> dict[str, Any]:
+    """Estimate TasksMax headroom for an env with a dedicated FPM master."""
+    fpm_master = 1
+    theoretical = fpm_master + pm_max_children + cron_slots + other_processes
+    if has_node_runtime:
+        theoretical += 4
+    headroom = tasks_max - theoretical
+    risk = headroom < 4
+    return {
+        "tasks_max": tasks_max,
+        "pm_max_children": pm_max_children,
+        "theoretical_peak": theoretical,
+        "headroom": headroom,
+        "code": "TASKSMAX_RISK" if risk else None,
+        "risk": risk,
+    }
+
+
+def diagnose_migration_state(
+    *,
+    env_unit_active: bool,
+    global_pools_active: list[str],
+    global_pools_disabled: list[str],
+    sockets_exist: list[bool],
+    socket_conflicts: list[str],
+    duplicate_pool_names: list[str],
+) -> str:
+    """Classify migration drift for one environment."""
+    if socket_conflicts:
+        return STATE_SOCKET_CONFLICT
+    if duplicate_pool_names:
+        return STATE_DUPLICATE_POOL
+    if env_unit_active and global_pools_active and global_pools_disabled:
+        return STATE_PARTIAL_MIGRATION
+    if env_unit_active and global_pools_active and not global_pools_disabled:
+        return STATE_DUPLICATE_POOL
+    if env_unit_active and global_pools_disabled and not global_pools_active:
+        if sockets_exist and not all(sockets_exist):
+            return STATE_BROKEN_ENV_FPM
+        return STATE_MIGRATED_HEALTHY
+    if (not env_unit_active) and global_pools_active and not global_pools_disabled:
+        return STATE_GLOBAL_LEGACY
+    if (not env_unit_active) and global_pools_disabled and not global_pools_active:
+        return STATE_STALE_DISABLED
+    if env_unit_active and not global_pools_disabled and not global_pools_active:
+        return STATE_BROKEN_ENV_FPM
+    if not env_unit_active:
+        return STATE_GLOBAL_LEGACY
+    return STATE_PARTIAL_MIGRATION
+
+
+def is_excluded_canary_domain(domain: str | None) -> bool:
     d = (domain or "").lower()
     if d in CANARY_EXCLUDE_EXACT:
         return True
@@ -483,6 +559,36 @@ class PhpFpmEnvironmentService:
             state = "env_master_running"
         else:
             state = "unknown"
+        sock_ok = []
+        for p in pools:
+            listen = p.listen
+            if listen.startswith("/"):
+                sock_ok.append(Path(listen).exists())
+            else:
+                sock_ok.append(True)
+        drift = diagnose_migration_state(
+            env_unit_active=(active == "active"),
+            global_pools_active=global_active,
+            global_pools_disabled=global_disabled,
+            sockets_exist=sock_ok,
+            socket_conflicts=[],
+            duplicate_pool_names=[],
+        )
+        # TasksMax risk: sum pm.max_children across all pools for this env master
+        tasks_risk = None
+        if pools:
+            children = 0
+            for p in pools:
+                m = re.search(r"^pm\.max_children\s*=\s*(\d+)", p.body, re.M)
+                children += int(m.group(1)) if m else 2
+            tasks_max = 40
+            show = self._systemctl("show", slice_name_for(env.id), "-p", "TasksMax")
+            for line in (show.stdout or "").splitlines():
+                if line.startswith("TasksMax="):
+                    raw = line.split("=", 1)[1].strip()
+                    if raw.isdigit():
+                        tasks_max = int(raw)
+            tasks_risk = estimate_tasksmax_risk(tasks_max=tasks_max, pm_max_children=children)
         return {
             "environment_id": str(env.id),
             "short_id": short,
@@ -502,7 +608,9 @@ class PhpFpmEnvironmentService:
             "worker_rss_mb": sum(float(w.get("rss_mb") or 0) for w in workers),
             "slice": slice_name_for(env.id),
             "migration_state": state,
+            "drift_state": drift,
             "sockets": [p.listen for p in pools],
+            "tasksmax_risk": tasks_risk,
         }
 
     def _list_fpm_workers(self, master_pid: int, pool_names: list[str]) -> list[dict[str, Any]]:
