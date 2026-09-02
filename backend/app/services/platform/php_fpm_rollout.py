@@ -233,8 +233,9 @@ class PhpFpmRolloutService:
         }
         for label, unit in (
             ("tenants", "ifnotus-workloads-tenants.slice"),
-            ("core", "ifnotus-workloads-core.slice"),
-            ("products", "ifnotus-workloads-products.slice"),
+            ("priority", "ifnotus-workloads-priority.slice"),
+            ("core", "ifnotus-workloads-priority-core.slice"),
+            ("products", "ifnotus-workloads-priority-products.slice"),
         ):
             cg = resolve_slice_cgroup_path(unit)
             cur = read_cgroup_memory_current(cg) if cg else None

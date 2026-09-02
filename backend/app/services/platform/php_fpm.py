@@ -48,6 +48,16 @@ class PhpFpmPoolService:
             return None
         name = self.pool_name(hostname)
         sock = self.socket_for(hostname)
+        # Phase 2B+/3B-1: never reintroduce a global pool whose listen is owned by
+        # an environment FPM master (duplicate socket → php8.3-fpm status 78).
+        if self._listen_owned_by_env_fpm(str(sock)):
+            logger.info(
+                "php_fpm_skip_global_pool_env_owned",
+                pool=name,
+                listen=str(sock),
+            )
+            # Prefer existing env socket path for callers.
+            return sock if sock.exists() else sock
         root = Path(document_root).resolve()
         base = root.parent if root.name in ("public", "public_html", "web", "httpdocs") else root
         children = max(2, min(12, int(round(float(ram_gb or 0.5) * 4)) or 2))
@@ -146,6 +156,23 @@ class PhpFpmPoolService:
         conf.unlink(missing_ok=True)
         logger.info("php_fpm_pool_removed", pool=name)
         self._reload_or_start_fpm(pool=name, sock=self.socket_for(hostname))
+
+    @staticmethod
+    def _listen_owned_by_env_fpm(listen: str) -> bool:
+        env_root = Path("/etc/php/8.3/ifnotus-envs")
+        if not env_root.is_dir():
+            return False
+        target = listen.strip()
+        for conf in env_root.glob("*/pool.d/*.conf"):
+            try:
+                for line in conf.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if line.strip().startswith("listen"):
+                        if line.split("=", 1)[1].strip() == target:
+                            return True
+                        break
+            except OSError:
+                continue
+        return False
 
     def _fpm_config_ok(self) -> bool:
         binary = Path("/usr/sbin/php-fpm8.3")

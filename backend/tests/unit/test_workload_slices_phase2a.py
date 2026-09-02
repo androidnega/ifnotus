@@ -37,8 +37,9 @@ def test_hierarchy_names_are_valid_nested() -> None:
     assert CORE_SLICE.startswith("ifnotus-workloads-")
     assert PRODUCTS_SLICE.startswith("ifnotus-workloads-")
     assert TENANTS_SLICE.startswith("ifnotus-workloads-")
-    # Core is NOT a sibling ifnotus-core.slice (would nest under ifnotus.slice)
-    assert CORE_SLICE == "ifnotus-workloads-core.slice"
+    # Phase 3B-1: core/products nest under priority (encoded in slice names)
+    assert CORE_SLICE == "ifnotus-workloads-priority-core.slice"
+    assert PRODUCTS_SLICE == "ifnotus-workloads-priority-products.slice"
 
 
 def test_hierarchy_unit_bodies_enable_accounting() -> None:
@@ -46,7 +47,16 @@ def test_hierarchy_unit_bodies_enable_accounting() -> None:
         body = render_hierarchy_slice_unit(spec)
         assert "MemoryAccounting=yes" in body
         assert "[Slice]" in body
-        assert "MemoryMax=" not in body  # Phase 2A: no parent MemoryMax
+        # Phase 3B-1: only priority may emit MemoryHigh; tenants keep MemoryMax=30G
+        if spec.name == "ifnotus-workloads-priority.slice":
+            assert "MemoryHigh=" in body
+            assert "MemoryMax=" not in body
+        elif spec.name == "ifnotus-workloads-tenants.slice":
+            assert "MemoryMax=" in body
+            assert "MemoryHigh=" not in body
+        else:
+            assert "MemoryHigh=" not in body
+            assert "MemoryMax=" not in body
 
 
 def test_core_and_product_dropins() -> None:
@@ -226,7 +236,8 @@ def test_resolve_slice_cgroup_prefers_leaf(tmp_path, monkeypatch) -> None:
 
     good = classify_process_hierarchy(
         cgroup_path=(
-            "0::/ifnotus-workloads.slice/ifnotus-workloads-core.slice/ifnotus-api.service"
+            "0::/ifnotus-workloads.slice/ifnotus-workloads-priority.slice/"
+            "ifnotus-workloads-priority-core.slice/ifnotus-api.service"
         ),
         expected="core",
     )

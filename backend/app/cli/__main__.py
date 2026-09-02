@@ -132,7 +132,14 @@ def run_reconcile_resource_slices(*, apply: bool = False, fix_examflow: bool = F
     """Phase 2A: hierarchy drop-ins + env slice re-parent (preserve legacy limits)."""
     from app.services.platform.unix_identity import UnixIdentityService
     from app.services.platform.workload_slices import (
+        ADDITIONAL_FIRST_PARTY_UNITS,
         CORE_SLICE,
+        FIRST_PARTY_UNITS,
+        PLATFORM_CORE_UNITS,
+        PRIORITY_CORE_SLICE,
+        PRIORITY_PRODUCTS_SLICE,
+        PRIORITY_MEMORY_HIGH,
+        PRIORITY_SLICE,
         PRODUCTS_SLICE,
         TENANTS_SLICE,
         WORKLOADS_ROOT,
@@ -148,8 +155,9 @@ def run_reconcile_resource_slices(*, apply: bool = False, fix_examflow: bool = F
     mode = "APPLY" if apply else "DRY-RUN"
     print(f"IFNOTUS resource slice reconciliation [{mode}]")
     print(f"  root={WORKLOADS_ROOT}")
-    print(f"  core={CORE_SLICE}")
-    print(f"  products={PRODUCTS_SLICE}")
+    print(f"  priority={PRIORITY_SLICE} (MemoryHigh={PRIORITY_MEMORY_HIGH})")
+    print(f"  core={PRIORITY_CORE_SLICE}")
+    print(f"  products={PRIORITY_PRODUCTS_SLICE}")
     print(f"  tenants={TENANTS_SLICE}")
 
     reconciler = WorkloadSliceReconciler()
@@ -157,6 +165,8 @@ def run_reconcile_resource_slices(*, apply: bool = False, fix_examflow: bool = F
     actions.extend(reconciler.plan_hierarchy())
     actions.extend(reconciler.plan_service_dropins())
     actions.extend(reconciler.plan_quizsnap_schedule_units())
+    actions.extend(reconciler.plan_quiz_legacy_schedule_units())
+    actions.extend(reconciler.plan_retire_legacy_core_product_slices())
 
     async def _load_envs():
         container = create_container()
@@ -168,20 +178,23 @@ def run_reconcile_resource_slices(*, apply: bool = False, fix_examflow: bool = F
             return list(rows)
 
     envs = asyncio.run(_load_envs())
-    for env in envs:
-        cpu = float(env.cpu_limit or 0) or 0.25
-        ram_gb = float(env.ram_limit_gb or 0) or 0.25
-        mem_bytes = max(64 * 1024 * 1024, int(ram_gb * 1024 * 1024 * 1024))
-        cpu_pct = max(5, min(400, int(round(cpu * 100))))
-        # Only used as fallback when neither legacy nor new slice unit exists.
-        actions.extend(
-            reconciler.plan_env_reparent(
-                environment_id=env.id,
-                fallback_cpu_quota=f"{cpu_pct}%",
-                fallback_memory_max=str(mem_bytes),
-                fallback_tasks_max="40",
+    # Phase 3B-1: do NOT rewrite env MemoryHigh/Max via reparent fallbacks — that would
+    # regress Phase 2C 2/6/12 policy. Env reparent only when explicitly requested later.
+    skip_env_reparent = True
+    if not skip_env_reparent:
+        for env in envs:
+            cpu = float(env.cpu_limit or 0) or 0.25
+            ram_gb = float(env.ram_limit_gb or 0) or 0.25
+            mem_bytes = max(64 * 1024 * 1024, int(ram_gb * 1024 * 1024 * 1024))
+            cpu_pct = max(5, min(400, int(round(cpu * 100))))
+            actions.extend(
+                reconciler.plan_env_reparent(
+                    environment_id=env.id,
+                    fallback_cpu_quota=f"{cpu_pct}%",
+                    fallback_memory_max=str(mem_bytes),
+                    fallback_tasks_max="40",
+                )
             )
-        )
 
     examflow_note = None
     if fix_examflow:
@@ -316,8 +329,9 @@ def run_reconcile_resource_slices(*, apply: bool = False, fix_examflow: bool = F
         ok, msg = systemd_analyze_verify(
             [
                 WORKLOADS_ROOT,
-                CORE_SLICE,
-                PRODUCTS_SLICE,
+                PRIORITY_SLICE,
+                PRIORITY_CORE_SLICE,
+                PRIORITY_PRODUCTS_SLICE,
                 TENANTS_SLICE,
             ]
         )
@@ -327,20 +341,18 @@ def run_reconcile_resource_slices(*, apply: bool = False, fix_examflow: bool = F
         from app.services.platform.workload_slices import WorkloadSliceReconciler as _W
 
         _W._systemctl("daemon-reload")
-        for name in (WORKLOADS_ROOT, CORE_SLICE, PRODUCTS_SLICE, TENANTS_SLICE):
+        for name in (WORKLOADS_ROOT, PRIORITY_SLICE, PRIORITY_CORE_SLICE, PRIORITY_PRODUCTS_SLICE, TENANTS_SLICE):
             _W._systemctl("start", name)
         for act in actions:
             if act.action == "write_slice" and "tenants-env-" in act.path:
                 _W._systemctl("start", Path(act.path).name)
-        # Restart only slice-assigned app services (not nginx/postgres/redis/php-fpm)
-        restart_units = [
-            "ifnotus-api.service",
-            "ifnotus-worker.service",
-            "votebridge.service",
-            "votebridge-celery.service",
-            "votebridge-daphne.service",
-            "quizsnap.service",
-            "quizsnap-reverb.service",
+        # Restart only slice-assigned app services (not nginx/postgres/redis/php-fpm/mysql)
+        # Phase 3B-1 migration order: core → VoteBridge → QuizSnap → additional first-party
+        restart_batches = [
+            list(PLATFORM_CORE_UNITS),
+            [u for u in FIRST_PARTY_UNITS if u.startswith("votebridge")],
+            [u for u in FIRST_PARTY_UNITS if u.startswith("quizsnap")],
+            list(ADDITIONAL_FIRST_PARTY_UNITS),
         ]
         if fix_examflow:
             # Only restart ExamFlow when isolation drop-in was written this run.
@@ -351,37 +363,70 @@ def run_reconcile_resource_slices(*, apply: bool = False, fix_examflow: bool = F
                 and "User=<ifn" not in (a.content or "")
                 for a in actions
             ):
-                restart_units.append("examflow-ifnotus.service")
+                restart_batches.append(["examflow-ifnotus.service"])
             else:
                 print("ExamFlow restart skipped (isolation drop-in not applied)")
-        for unit in restart_units:
-            print(f"Restarting {unit} …")
-            proc = _W._systemctl("restart", unit)
-            if proc.returncode != 0:
-                print(f"  FAIL {unit}: {(proc.stderr or proc.stdout or '')[:300]}")
-            else:
-                print(f"  OK {unit}")
+        for batch in restart_batches:
+            for unit in batch:
+                print(f"Restarting {unit} …")
+                proc = _W._systemctl("restart", unit)
+                if proc.returncode != 0:
+                    print(f"  FAIL {unit}: {(proc.stderr or proc.stdout or '')[:300]}")
+                else:
+                    print(f"  OK {unit}")
+                # Verify slice placement after each unit
+                show = _W._systemctl("show", unit, "-p", "Slice", "-p", "ActiveState", "--value")
+                print(f"  state/slice: {(show.stdout or '').strip()!r}")
         _W._systemctl("enable", "--now", "quizsnap-schedule.timer")
-        # Remove quizsnap from root crontab if timer enabled
+        _W._systemctl("enable", "--now", "quiz-schedule.timer")
+        # Apply priority MemoryHigh=8G after migrations (Phase 3B-1: no MemoryMax/MemoryMin)
+        _W._systemctl("set-property", PRIORITY_SLICE, f"MemoryHigh={PRIORITY_MEMORY_HIGH}", "MemoryMin=")
+        print(f"Applied MemoryHigh={PRIORITY_MEMORY_HIGH} on {PRIORITY_SLICE}")
+        # Remove quizsnap + legacy quiz schedule lines from root crontab (now timers)
         try:
             import subprocess
 
             cur = subprocess.run(["crontab", "-l"], capture_output=True, text=True, check=False)
             if cur.returncode == 0 and cur.stdout:
-                lines = [
-                    ln
-                    for ln in cur.stdout.splitlines()
-                    if "/srv/apps/quizsnap" not in ln and "quizsnap" not in ln.lower()
-                ]
-                # keep /srv/apps/quiz line unless it's clearly quizsnap
+                lines = []
+                for ln in cur.stdout.splitlines():
+                    low = ln.lower()
+                    if "/srv/apps/quizsnap" in ln or "quizsnap" in low:
+                        continue
+                    if "/srv/apps/quiz" in ln and "artisan schedule:run" in ln:
+                        continue
+                    lines.append(ln)
                 new = "\n".join(lines) + ("\n" if lines else "")
                 subprocess.run(["crontab", "-"], input=new, text=True, check=False)
-                print("Updated root crontab (removed quizsnap schedule lines)")
+                print("Updated root crontab (removed quiz/quizsnap schedule lines → systemd timers)")
         except Exception as exc:  # noqa: BLE001
             print(f"crontab update skipped: {exc}")
         print(f"Env slices reparented (writes): {report.env_reparented}")
     else:
         print("Dry-run complete. Re-run with --apply to write units and restart affected services.")
+
+
+def run_host_safety_status() -> None:
+    """Phase 3B-1: read-only host MemAvailable safety floor + emergency capacity."""
+    import json
+
+    from app.services.platform.host_safety import build_host_safety_snapshot
+    from app.services.platform.workload_slices import (
+        PRIORITY_SLICE,
+        TENANTS_SLICE,
+        read_cgroup_memory_current,
+        resolve_slice_cgroup_path,
+    )
+
+    settings = get_settings()
+    setup_logging(settings)
+    tenant_cg = resolve_slice_cgroup_path(TENANTS_SLICE)
+    priority_cg = resolve_slice_cgroup_path(PRIORITY_SLICE)
+    snap = build_host_safety_snapshot(
+        tenant_memory_current_bytes=read_cgroup_memory_current(tenant_cg) if tenant_cg else None,
+        priority_memory_current_bytes=read_cgroup_memory_current(priority_cg) if priority_cg else None,
+    )
+    print(json.dumps(snap.to_dict(), indent=2))
 
 
 def _load_environment(environment_id: str):
@@ -1140,6 +1185,11 @@ def main() -> None:
     p_mem.add_argument("--batch-size", type=int, default=None, help="Max environments to apply in this run")
     p_mem.add_argument("--json", action="store_true", help="Emit JSON report")
 
+    subparsers.add_parser(
+        "host-safety-status",
+        help="Phase 3B-1: print host MemAvailable safety floor + safe emergency capacity (read-only)",
+    )
+
     args = parser.parse_args()
 
     if args.command in {"reconcile-hosting", "reconcile-zones"}:
@@ -1196,6 +1246,8 @@ def main() -> None:
             batch_size=getattr(args, "batch_size", None),
             json_out=bool(getattr(args, "json", False)),
         )
+    elif args.command == "host-safety-status":
+        run_host_safety_status()
     else:
         parser.print_help()
         sys.exit(1)

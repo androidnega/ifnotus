@@ -1,18 +1,15 @@
-"""IFNOTUS systemd/cgroup v2 workload hierarchy (Phase 2A).
+"""IFNOTUS systemd/cgroup v2 workload hierarchy (Phase 2A → 3B-1).
 
 Valid systemd slice naming encodes parentage with dashes:
 
   ifnotus-workloads.slice
-  ├── ifnotus-workloads-core.slice
-  ├── ifnotus-workloads-products.slice
-  └── ifnotus-workloads-tenants.slice
+  ├── ifnotus-workloads-priority.slice          (MemoryHigh=8 GiB normal)
+  │   ├── ifnotus-workloads-priority-core.slice
+  │   └── ifnotus-workloads-priority-products.slice
+  └── ifnotus-workloads-tenants.slice           (MemoryMax=30 GiB)
       └── ifnotus-workloads-tenants-env-<shortid>.slice
 
-Do NOT invent siblings like ``ifnotus-core.slice`` under ``ifnotus-workloads.slice`` —
-that would nest under ``ifnotus.slice`` instead.
-
-Phase 2A: hierarchy + accounting + placement. Does NOT raise tenant MemoryMax
-to 2/6/12 GiB and does NOT enforce the 30 GiB tenants parent MemoryMax by default.
+Phase 3B-1: priority MemoryHigh=8G, MemoryMax unlimited; no MemoryMin; no emergency grants.
 """
 
 from __future__ import annotations
@@ -26,17 +23,32 @@ from typing import Any
 from uuid import UUID
 
 from app.core.logging import get_logger
+from app.services.platform.resource_policy import gib_to_bytes
 
 logger = get_logger(__name__)
+
+# Phase 2C tenant parent — preserved unchanged in 3B-1.
+TENANTS_MEMORY_MAX_BYTES = gib_to_bytes(30)
+TENANTS_MEMORY_MAX = str(TENANTS_MEMORY_MAX_BYTES)
 
 _SLICE_DIR = Path("/etc/systemd/system")
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _BACKUP_DIR = Path("/var/backups/ifnotus/systemd-phase2a")
 
 WORKLOADS_ROOT = "ifnotus-workloads.slice"
-CORE_SLICE = "ifnotus-workloads-core.slice"
-PRODUCTS_SLICE = "ifnotus-workloads-products.slice"
+PRIORITY_SLICE = "ifnotus-workloads-priority.slice"
+PRIORITY_CORE_SLICE = "ifnotus-workloads-priority-core.slice"
+PRIORITY_PRODUCTS_SLICE = "ifnotus-workloads-priority-products.slice"
 TENANTS_SLICE = "ifnotus-workloads-tenants.slice"
+
+# Back-compat aliases (pre-3B-1 names → priority children)
+CORE_SLICE = PRIORITY_CORE_SLICE
+PRODUCTS_SLICE = PRIORITY_PRODUCTS_SLICE
+LEGACY_CORE_SLICE = "ifnotus-workloads-core.slice"
+LEGACY_PRODUCTS_SLICE = "ifnotus-workloads-products.slice"
+
+PRIORITY_MEMORY_HIGH_BYTES = gib_to_bytes(8)
+PRIORITY_MEMORY_HIGH = str(PRIORITY_MEMORY_HIGH_BYTES)
 
 # Legacy env slice prefix (pre-Phase 2A). Still recognized for migration/read_usage.
 LEGACY_ENV_SLICE_PREFIX = "ifnotus-env-"
@@ -55,12 +67,27 @@ FIRST_PARTY_UNITS: tuple[str, ...] = (
     "quizsnap-reverb.service",
 )
 
+# Confirmed IFNOTUS-owned apps under /srv/apps/csdttu (no CustomerEnvironment).
+ADDITIONAL_FIRST_PARTY_UNITS: tuple[str, ...] = (
+    "documento.service",
+    "cliq_tech_hangout.service",
+    "gunicorn-ceeu.service",
+)
+
+# Legacy Quiz app still scheduled from root crontab (/srv/apps/quiz).
+QUIZ_LEGACY_SCHEDULE_UNITS: tuple[str, ...] = (
+    "quiz-schedule.service",
+    "quiz-schedule.timer",
+)
+
 SHARED_INFRASTRUCTURE_UNITS: tuple[str, ...] = (
     "nginx.service",
     "postgresql.service",
     "postgresql@16-main.service",
     "redis-server.service",
     "php8.3-fpm.service",
+    "mysql.service",
+    "named.service",
 )
 
 # Phase 2B — PHP worker isolation options (design only; not deployed in 2A).
@@ -125,8 +152,8 @@ class SliceSpec:
     cpu_accounting: bool = True
     tasks_accounting: bool = True
     io_accounting: bool = True
-    # Phase 2A: do not set MemoryMax on parent tenants/core by default.
     memory_max: str | None = None
+    memory_high: str | None = None
     extra_slice_lines: tuple[str, ...] = ()
 
 
@@ -173,22 +200,29 @@ def legacy_slice_name_for(environment_id: UUID | str) -> str:
 
 
 def hierarchy_slice_specs() -> tuple[SliceSpec, ...]:
+    """Phase 3B-1 hierarchy: priority (MemoryHigh=8G) + tenants (MemoryMax may be set live)."""
     return (
         SliceSpec(
             name=WORKLOADS_ROOT,
-            description="IFNOTUS managed workloads root (Phase 2A accounting)",
+            description="IFNOTUS managed workloads root",
         ),
         SliceSpec(
-            name=CORE_SLICE,
-            description="IFNOTUS PLATFORM_CORE (API + worker) — future 8 GiB normal budget",
+            name=PRIORITY_SLICE,
+            description="IFNOTUS priority normal pool (core + first-party) — MemoryHigh 8 GiB",
+            memory_high=PRIORITY_MEMORY_HIGH,
         ),
         SliceSpec(
-            name=PRODUCTS_SLICE,
-            description="IFNOTUS FIRST_PARTY_PRODUCT (VoteBridge, QuizSnap) — not tenant pool",
+            name=PRIORITY_CORE_SLICE,
+            description="IFNOTUS PLATFORM_CORE under priority pool (API + worker)",
+        ),
+        SliceSpec(
+            name=PRIORITY_PRODUCTS_SLICE,
+            description="IFNOTUS FIRST_PARTY_PRODUCT under priority pool",
         ),
         SliceSpec(
             name=TENANTS_SLICE,
-            description="IFNOTUS SHARED_TENANT parent — future 30 GiB pool (not enforced in 2A)",
+            description="IFNOTUS SHARED_TENANT parent — MemoryMax 30 GiB (Phase 2C)",
+            memory_max=TENANTS_MEMORY_MAX,
         ),
     )
 
@@ -209,8 +243,11 @@ def render_hierarchy_slice_unit(spec: SliceSpec) -> str:
         lines.append("TasksAccounting=yes")
     if spec.io_accounting:
         lines.append("IOAccounting=yes")
+    if spec.memory_high:
+        lines.append(f"MemoryHigh={spec.memory_high}")
     if spec.memory_max:
         lines.append(f"MemoryMax={spec.memory_max}")
+    # Never emit MemoryMin in hierarchy units.
     lines.extend(spec.extra_slice_lines)
     lines += ["", "[Install]", "WantedBy=slices.target", ""]
     return "\n".join(lines)
@@ -383,30 +420,36 @@ def examflow_health_classification(*, user: str | None, slice_path: str | None) 
 def classify_process_hierarchy(*, cgroup_path: str | None, expected: str) -> dict[str, Any]:
     """Detect whether a process cgroup sits under the expected workload hierarchy.
 
-    ``expected`` is one of: core | products | tenants | infrastructure | unknown
+    ``expected`` is one of: core | products | priority | tenants | infrastructure | unknown
     """
     path = (cgroup_path or "").strip()
     under_workloads = WORKLOADS_ROOT.removesuffix(".slice") in path or "/ifnotus-workloads.slice/" in path
-    under_core = "workloads-core" in path
-    under_products = "workloads-products" in path
+    under_priority = "workloads-priority" in path
+    under_core = "workloads-priority-core" in path or (
+        "workloads-core" in path and "priority" not in path
+    )
+    under_products = "workloads-priority-products" in path or (
+        "workloads-products" in path and "priority" not in path
+    )
     under_tenants = "workloads-tenants" in path
     under_system = "/system.slice/" in path or path.endswith("system.slice")
 
     ok = False
     if expected == "core":
-        ok = under_core
+        ok = under_core and under_priority
     elif expected == "products":
-        ok = under_products
+        ok = under_products and under_priority
+    elif expected == "priority":
+        ok = under_priority
     elif expected == "tenants":
         ok = under_tenants
     elif expected == "infrastructure":
-        # Shared infra stays outside the 30 GiB tenants parent intentionally.
-        ok = under_system or (not under_tenants)
+        ok = under_system or (not under_tenants and not under_priority)
     else:
         ok = False
 
     escaped = False
-    if expected in {"core", "products", "tenants"} and under_system and not under_workloads:
+    if expected in {"core", "products", "priority", "tenants"} and under_system and not under_workloads:
         escaped = True
 
     return {
@@ -414,6 +457,7 @@ def classify_process_hierarchy(*, cgroup_path: str | None, expected: str) -> dic
         "ok": ok,
         "escaped_workload_hierarchy": escaped,
         "under_workloads": under_workloads,
+        "under_priority": under_priority,
         "under_core": under_core,
         "under_products": under_products,
         "under_tenants": under_tenants,
@@ -451,24 +495,41 @@ class WorkloadSliceReconciler:
                 ReconcileAction(
                     action="write_dropin",
                     path=str(drop),
-                    detail=f"Place {unit} under {CORE_SLICE}",
+                    detail=f"Place {unit} under {PRIORITY_CORE_SLICE}",
                     content=render_service_slice_dropin(
-                        CORE_SLICE, comment="Phase 2A PLATFORM_CORE slice assignment"
+                        PRIORITY_CORE_SLICE,
+                        comment="Phase 3B-1 PLATFORM_CORE under priority-core slice",
                     ),
                 )
             )
-        for unit in FIRST_PARTY_UNITS:
+        for unit in (*FIRST_PARTY_UNITS, *ADDITIONAL_FIRST_PARTY_UNITS):
             drop = self.slice_dir / f"{unit}.d" / "10-ifnotus-workload-slice.conf"
             actions.append(
                 ReconcileAction(
                     action="write_dropin",
                     path=str(drop),
-                    detail=f"Place {unit} under {PRODUCTS_SLICE}",
+                    detail=f"Place {unit} under {PRIORITY_PRODUCTS_SLICE}",
                     content=render_service_slice_dropin(
-                        PRODUCTS_SLICE, comment="Phase 2A FIRST_PARTY_PRODUCT slice assignment"
+                        PRIORITY_PRODUCTS_SLICE,
+                        comment="Phase 3B-1 FIRST_PARTY_PRODUCT under priority-products slice",
                     ),
                 )
             )
+        return actions
+
+    def plan_retire_legacy_core_product_slices(self) -> list[ReconcileAction]:
+        """Stop/remove pre-3B-1 ifnotus-workloads-core/products.slice unit files after reparent."""
+        actions: list[ReconcileAction] = []
+        for name in (LEGACY_CORE_SLICE, LEGACY_PRODUCTS_SLICE):
+            path = self.slice_dir / name
+            if path.is_file():
+                actions.append(
+                    ReconcileAction(
+                        action="remove_legacy_slice",
+                        path=str(path),
+                        detail=f"Retire {name} after priority-* children are active",
+                    )
+                )
         return actions
 
     def plan_env_reparent(
@@ -548,7 +609,7 @@ class WorkloadSliceReconciler:
                 "",
                 "[Service]",
                 "Type=oneshot",
-                f"Slice={PRODUCTS_SLICE}",
+                f"Slice={PRIORITY_PRODUCTS_SLICE}",
                 "User=www-data",
                 "Group=www-data",
                 "WorkingDirectory=/srv/apps/quizsnap",
@@ -576,13 +637,64 @@ class WorkloadSliceReconciler:
             ReconcileAction(
                 action="write_unit",
                 path=str(service),
-                detail="QuizSnap schedule oneshot in products slice",
+                detail="QuizSnap schedule oneshot in priority-products slice",
                 content=svc_body,
             ),
             ReconcileAction(
                 action="write_unit",
                 path=str(timer),
                 detail="QuizSnap schedule timer",
+                content=timer_body,
+            ),
+        ]
+
+    def plan_quiz_legacy_schedule_units(self) -> list[ReconcileAction]:
+        """Contain root-crontab /srv/apps/quiz artisan schedule under priority-products."""
+        service = self.slice_dir / "quiz-schedule.service"
+        timer = self.slice_dir / "quiz-schedule.timer"
+        svc_body = "\n".join(
+            [
+                "[Unit]",
+                "Description=Legacy Quiz artisan schedule:run (priority-products slice)",
+                "After=network.target",
+                "",
+                "[Service]",
+                "Type=oneshot",
+                f"Slice={PRIORITY_PRODUCTS_SLICE}",
+                "User=www-data",
+                "Group=www-data",
+                "WorkingDirectory=/srv/apps/quiz",
+                "ExecStart=/usr/bin/php artisan schedule:run",
+                "Nice=5",
+                "",
+            ]
+        )
+        timer_body = "\n".join(
+            [
+                "[Unit]",
+                "Description=Run legacy Quiz scheduler every minute",
+                "",
+                "[Timer]",
+                "OnCalendar=*:*:00",
+                "AccuracySec=1s",
+                "Persistent=true",
+                "",
+                "[Install]",
+                "WantedBy=timers.target",
+                "",
+            ]
+        )
+        return [
+            ReconcileAction(
+                action="write_unit",
+                path=str(service),
+                detail="Legacy Quiz schedule oneshot in priority-products",
+                content=svc_body,
+            ),
+            ReconcileAction(
+                action="write_unit",
+                path=str(timer),
+                detail="Legacy Quiz schedule timer",
                 content=timer_body,
             ),
         ]
