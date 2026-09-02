@@ -137,11 +137,16 @@ class UnixIdentityService:
         *,
         shell: str | None = None,
         actor: str = "system",
+        apply_home_ownership: bool = True,
     ) -> dict[str, Any]:
         """Create or refresh the OS user/group for this environment.
 
         Default shell is nologin (no interactive login). Pass a restricted
         shell path only when SSH jail is entitled (Phase 9/19 consumers).
+
+        Set ``apply_home_ownership=False`` to create the Unix identity without
+        ``chown`` / mode walks on the environment home (resource-governance path).
+        Prefer :meth:`ensure_unix_account_exists` from RESOURCE_RECONCILIATION code.
         """
         if env.status == "terminated":
             raise AppException("Cannot create Unix identity for a terminated environment.", code="unix_terminated")
@@ -216,23 +221,31 @@ class UnixIdentityService:
         except KeyError as exc:
             raise AppException("Unix user missing after create.", code="unix_user_missing") from exc
 
-        self.apply_ownership(env, prepare_sftp_jail=False)
-        # PHASE 32 — best-effort OS user quota (no-op if quotas not enabled on FS)
-        try:
-            from app.services.platform.environment_storage import apply_os_user_quota
+        if apply_home_ownership:
+            self.apply_ownership(env, prepare_sftp_jail=False)
+            # PHASE 32 — best-effort OS user quota (no-op if quotas not enabled on FS)
+            try:
+                from app.services.platform.environment_storage import apply_os_user_quota
 
-            apply_os_user_quota(
-                self._settings,
-                username=username,
-                home=home,
-                storage_limit_gb=env.storage_limit_gb,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("os_quota_apply_skipped", error=str(exc))
+                apply_os_user_quota(
+                    self._settings,
+                    username=username,
+                    home=home,
+                    storage_limit_gb=env.storage_limit_gb,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("os_quota_apply_skipped", error=str(exc))
         self._audit(
             env,
             "unix.ensure",
-            detail={"username": username, "uid": uid, "gid": gid, "home": str(home), "actor": actor},
+            detail={
+                "username": username,
+                "uid": uid,
+                "gid": gid,
+                "home": str(home),
+                "actor": actor,
+                "apply_home_ownership": apply_home_ownership,
+            },
         )
         return {
             "username": username,
@@ -242,6 +255,26 @@ class UnixIdentityService:
             "shell": shell_path,
             "primary_gid": primary_gid,
         }
+
+    def ensure_unix_account_exists(
+        self,
+        env: CustomerEnvironment,
+        *,
+        shell: str | None = None,
+        actor: str = "system",
+    ) -> dict[str, Any]:
+        """RESOURCE_RECONCILIATION-safe: create passwd/group identity only.
+
+        Never calls :meth:`apply_ownership`, never walks the tenant tree, never
+        changes file modes. Use this from cgroup/slice reconciliation. Ownership
+        repair belongs in explicit OWNERSHIP_RECONCILIATION / provisioning paths.
+        """
+        return self.ensure_identity(
+            env,
+            shell=shell,
+            actor=actor,
+            apply_home_ownership=False,
+        )
 
     def apply_ownership(self, env: CustomerEnvironment, *, prepare_sftp_jail: bool = False) -> None:
         """chown tree to tenant; never chmod 777.
