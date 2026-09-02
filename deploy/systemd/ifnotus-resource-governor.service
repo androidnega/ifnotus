@@ -1,0 +1,24 @@
+[Unit]
+Description=IFNOTUS Resource Emergency Governor
+Documentation=https://ifnotus.space
+After=network-online.target ifnotus-workloads.slice ifnotus-workloads-tenants.slice ifnotus-workloads-priority.slice
+Wants=network-online.target ifnotus-workloads.slice
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/apps/ifnotus/backend
+EnvironmentFile=-/srv/apps/ifnotus/backend/.env
+ExecStart=/srv/apps/ifnotus/backend/.venv/bin/python -m app.cli resource-governor --run --apply
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=60
+# Needs capability to set-property on workload slices (runs as root like ifnotus-api).
+User=root
+Nice=5
+# Structured logs via journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ifnotus-resource-governor
+
+[Install]
+WantedBy=multi-user.target

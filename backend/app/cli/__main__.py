@@ -429,6 +429,66 @@ def run_host_safety_status() -> None:
     print(json.dumps(snap.to_dict(), indent=2))
 
 
+def run_resource_governor_status(*, as_json: bool = False) -> None:
+    """Phase 3B-2: print emergency governor status (read-only)."""
+    import json
+
+    from app.services.platform.resource_governor import ResourceEmergencyGovernor
+
+    settings = get_settings()
+    setup_logging(settings)
+    gov = ResourceEmergencyGovernor(dry_run=True)
+    gov.reconcile_from_kernel()
+    snap = gov.snapshot()
+    if as_json:
+        print(json.dumps(snap.to_dict(), indent=2))
+    else:
+        print(gov.format_status(snap))
+
+
+def run_resource_governor(
+    *,
+    dry_run: bool = True,
+    run_loop: bool = False,
+    apply_baseline: bool = False,
+    grant: str | None = None,
+    release: str | None = None,
+    apply: bool = False,
+) -> None:
+    """Phase 3B-2 emergency governor: dry-run tick, controlled grant/release, or service loop."""
+    from app.services.platform.resource_governor import (
+        SAMPLE_INTERVAL_SEC,
+        ResourceEmergencyGovernor,
+    )
+
+    settings = get_settings()
+    setup_logging(settings)
+    mutate = bool(apply) and not dry_run
+    gov = ResourceEmergencyGovernor(dry_run=not mutate)
+
+    if run_loop:
+        # Service mode — always mutate unless --dry-run without --apply
+        gov.dry_run = dry_run and not apply
+        gov.run_loop(interval_sec=SAMPLE_INTERVAL_SEC, apply=not gov.dry_run)
+        return
+
+    gov.reconcile_from_kernel()
+    if apply_baseline:
+        planned = gov.ensure_priority_baseline(apply=mutate)
+        print(f"baseline: {planned.action} reason={planned.reason} mutate={mutate}")
+    if grant:
+        snap = gov.force_grant(grant, apply=mutate)
+        print(gov.format_status(snap))
+        return
+    if release:
+        snap = gov.force_release(release, apply=mutate)
+        print(gov.format_status(snap))
+        return
+
+    snap = gov.tick(apply=mutate)
+    print(gov.format_status(snap))
+
+
 def _load_environment(environment_id: str):
     from uuid import UUID
 
@@ -1190,6 +1250,27 @@ def main() -> None:
         help="Phase 3B-1: print host MemAvailable safety floor + safe emergency capacity (read-only)",
     )
 
+    p_gov_status = subparsers.add_parser(
+        "resource-governor-status",
+        help="Phase 3B-2: print emergency governor host/tenant/priority/ledger status",
+    )
+    p_gov_status.add_argument("--json", action="store_true")
+
+    p_gov = subparsers.add_parser(
+        "resource-governor",
+        help="Phase 3B-2: dry-run tick, controlled grant/release, baseline, or --run service loop",
+    )
+    p_gov.add_argument("--dry-run", action="store_true", default=True)
+    p_gov.add_argument("--apply", action="store_true", help="Allow mutating MemoryMax")
+    p_gov.add_argument("--run", action="store_true", help="Run continuous 10s polling loop (service)")
+    p_gov.add_argument(
+        "--apply-priority-baseline",
+        action="store_true",
+        help="Set priority MemoryMax=8GiB when usage is safely below 8GiB",
+    )
+    p_gov.add_argument("--grant", choices=["tenants", "priority"], default=None)
+    p_gov.add_argument("--release", choices=["tenants", "priority"], default=None)
+
     args = parser.parse_args()
 
     if args.command in {"reconcile-hosting", "reconcile-zones"}:
@@ -1248,6 +1329,17 @@ def main() -> None:
         )
     elif args.command == "host-safety-status":
         run_host_safety_status()
+    elif args.command == "resource-governor-status":
+        run_resource_governor_status(as_json=bool(getattr(args, "json", False)))
+    elif args.command == "resource-governor":
+        run_resource_governor(
+            dry_run=not bool(getattr(args, "apply", False)),
+            run_loop=bool(getattr(args, "run", False)),
+            apply_baseline=bool(getattr(args, "apply_priority_baseline", False)),
+            grant=getattr(args, "grant", None),
+            release=getattr(args, "release", None),
+            apply=bool(getattr(args, "apply", False)),
+        )
     else:
         parser.print_help()
         sys.exit(1)

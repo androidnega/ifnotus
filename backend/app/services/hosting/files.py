@@ -31,6 +31,29 @@ from app.services.applications.path_scanner import ApplicationPathScanner
 
 MAX_FILE_UPLOAD_BYTES = 512 * 1024 * 1024  # 512 MB upload limit
 
+# Structural account roots — deletable contents OK; the roots themselves are protected.
+PROTECTED_STRUCTURAL_NAMES = frozenset({"public_html", "www", "public_ftp"})
+
+
+def is_protected_structural_path(base: Path, target: Path) -> bool:
+    """True when target is a top-level structural account root under site home.
+
+    Allows deleting public_html/index.php etc. Blocks delete/rename/move of
+    public_html, www, and public_ftp themselves.
+    """
+    try:
+        base_r = base.resolve()
+        target_r = target.resolve()
+        if target_r == base_r:
+            return True
+        rel = target_r.relative_to(base_r)
+    except (OSError, ValueError):
+        return False
+    parts = rel.parts
+    if len(parts) != 1:
+        return False
+    return parts[0] in PROTECTED_STRUCTURAL_NAMES
+
 
 def safe_upload_basename(filename: str | None) -> str:
     """Strip directories from an upload name so it cannot escape the destination dir."""
@@ -225,7 +248,11 @@ class FileManagerService:
                 if child.name in {".ifnotus", ".ifnotus-trash"}:
                     # Hide internal platform metadata from all views
                     continue
-                detail = self._file_detail(child, base)
+                try:
+                    detail = self._file_detail(child, base)
+                except OSError:
+                    # Broken symlinks or entries removed during listing
+                    continue
                 entries.append(
                     FileEntry(
                         name=detail.name,
@@ -295,6 +322,11 @@ class FileManagerService:
         src = self._safe_path(base, source)
         if not src.exists():
             raise NotFoundError("Source not found.")
+        if is_protected_structural_path(base, src):
+            raise ValidationError(
+                "This system directory cannot be moved or renamed.",
+                code="protected_structural_path",
+            )
 
         dst = self._safe_path(base, destination)
         # If destination is an existing directory, move source inside it (e.g. public_html/file.txt)
@@ -355,6 +387,11 @@ class FileManagerService:
         target = self._safe_path(base, path)
         if not target.exists():
             raise NotFoundError("Path not found.")
+        if is_protected_structural_path(base, target):
+            raise ValidationError(
+                "This system directory cannot be deleted.",
+                code="protected_structural_path",
+            )
         if not permanent:
             res = await self.move_to_trash([path], deleted_by=deleted_by, app_id=app_id, root_id=root_id)
             if res.get("moved", 0) > 0:
@@ -445,6 +482,9 @@ class FileManagerService:
                     continue
                 rel_path = str(target.relative_to(base)) if target != base else "."
                 if rel_path in {".", ""}:
+                    failed += 1
+                    continue
+                if is_protected_structural_path(base, target):
                     failed += 1
                     continue
                 trash_id = str(uuid.uuid4())
@@ -961,9 +1001,9 @@ class FileManagerService:
         name = safe_upload_basename(archive_name or f"{sources[0].stem}.zip")
         if not name.lower().endswith(".zip"):
             name = f"{name}.zip"
-        archive_path = (dest_dir / name).resolve()
-        if not any(archive_path == root or archive_path.is_relative_to(root) for root in self.allowed_roots()):
-            raise AppException("Path traversal denied.", code="forbidden")
+        dest_rel = "." if dest_dir == base else str(dest_dir.relative_to(base))
+        archive_rel = name if dest_rel == "." else f"{dest_rel}/{name}"
+        archive_path = self._safe_path(base, archive_rel)
 
         # Rough upper bound: sum of source sizes (ZIP usually smaller).
         projected = sum(self._path_size_bytes(s) for s in sources)
@@ -972,16 +1012,21 @@ class FileManagerService:
         def _build() -> None:
             dest_dir.mkdir(parents=True, exist_ok=True)
             self._apply_owner(dest_dir)
+            archive_resolved = archive_path.resolve()
             with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                 for src in sources:
-                    if src.is_dir():
+                    if src.is_dir() and not src.is_symlink():
                         for child in src.rglob("*"):
                             if child.is_symlink():
                                 continue
-                            if child.is_file():
-                                arcname = str(child.relative_to(src.parent))
-                                zf.write(child, arcname=arcname)
-                    else:
+                            if not child.is_file():
+                                continue
+                            child_resolved = child.resolve()
+                            if child_resolved == archive_resolved:
+                                continue
+                            arcname = str(child.relative_to(src.parent))
+                            zf.write(child, arcname=arcname)
+                    elif src.is_file() and src.resolve() != archive_resolved:
                         zf.write(src, arcname=src.name)
             self._apply_owner(archive_path)
 
