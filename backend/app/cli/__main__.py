@@ -384,6 +384,78 @@ def run_reconcile_resource_slices(*, apply: bool = False, fix_examflow: bool = F
         print("Dry-run complete. Re-run with --apply to write units and restart affected services.")
 
 
+def _load_environment(environment_id: str):
+    from uuid import UUID
+
+    from app.models.platform import CustomerEnvironment
+
+    eid = UUID(environment_id)
+
+    async def _load():
+        container = create_container()
+        session_factory = container.db_session_factory()
+        async with session_factory() as session:
+            from sqlalchemy import text
+
+            env = await session.get(CustomerEnvironment, eid)
+            if env is None:
+                return None, []
+            extra = []
+            try:
+                rows = await session.execute(
+                    text("SELECT domain_name FROM customer_domains WHERE environment_id = :eid"),
+                    {"eid": str(eid)},
+                )
+                extra = [r[0] for r in rows if r[0]]
+            except Exception:  # noqa: BLE001
+                extra = []
+            return env, extra
+
+    return asyncio.run(_load())
+
+
+def run_php_fpm_environment_migrate(*, environment_id: str, apply: bool = False, allow_vps: bool = False) -> None:
+    import json
+
+    from app.services.platform.php_fpm_environment import PhpFpmEnvironmentService
+
+    settings = get_settings()
+    setup_logging(settings)
+    env, extra = _load_environment(environment_id)
+    if env is None:
+        print(f"Environment not found: {environment_id}")
+        sys.exit(1)
+    svc = PhpFpmEnvironmentService()
+    plan = svc.plan_migrate(env, extra_hostnames=extra, allow_vps=allow_vps)
+    mode = "APPLY" if apply else "DRY-RUN"
+    print(f"IFNOTUS php-fpm environment migrate [{mode}] env={plan.short_id} pools={len(plan.pools)}")
+    if plan.errors:
+        print("Errors:")
+        for e in plan.errors:
+            print(f"  ! {e}")
+        sys.exit(2)
+    print(json.dumps(plan.to_dict(), indent=2)[:4000])
+    report = svc.apply_migrate(plan, dry_run=not apply)
+    print(json.dumps(report, indent=2)[:4000])
+    if not report.get("ok"):
+        sys.exit(1)
+
+
+def run_php_fpm_environment_status(*, environment_id: str) -> None:
+    import json
+
+    from app.services.platform.php_fpm_environment import PhpFpmEnvironmentService
+
+    settings = get_settings()
+    setup_logging(settings)
+    env, extra = _load_environment(environment_id)
+    if env is None:
+        print(f"Environment not found: {environment_id}")
+        sys.exit(1)
+    status = PhpFpmEnvironmentService().status(env, extra_hostnames=extra)
+    print(json.dumps(status, indent=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="IFNOTUS Infrastructure Management CLI")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -414,6 +486,21 @@ def main() -> None:
         help="Also remove ExamFlow root execution and place in tenant slice",
     )
 
+    p_php = subparsers.add_parser(
+        "php-fpm-environment-migrate",
+        help="Phase 2B: migrate one environment's PHP pools to ifnotus-php-fpm@ (default: dry-run)",
+    )
+    p_php.add_argument("--environment", required=True, help="CustomerEnvironment UUID")
+    p_php.add_argument("--dry-run", action="store_true", default=True, help="Plan only (default)")
+    p_php.add_argument("--apply", action="store_true", help="Perform cutover for this environment only")
+    p_php.add_argument("--allow-vps", action="store_true", help="Allow VPS/VDS-style environments")
+
+    p_php_st = subparsers.add_parser(
+        "php-fpm-environment-status",
+        help="Phase 2B: show per-environment PHP-FPM migration status",
+    )
+    p_php_st.add_argument("--environment", required=True, help="CustomerEnvironment UUID")
+
     args = parser.parse_args()
 
     if args.command in {"reconcile-hosting", "reconcile-zones"}:
@@ -426,6 +513,14 @@ def main() -> None:
             apply=bool(getattr(args, "apply", False)),
             fix_examflow=bool(getattr(args, "fix_examflow", False)),
         )
+    elif args.command == "php-fpm-environment-migrate":
+        run_php_fpm_environment_migrate(
+            environment_id=str(args.environment),
+            apply=bool(getattr(args, "apply", False)),
+            allow_vps=bool(getattr(args, "allow_vps", False)),
+        )
+    elif args.command == "php-fpm-environment-status":
+        run_php_fpm_environment_status(environment_id=str(args.environment))
     else:
         parser.print_help()
         sys.exit(1)
