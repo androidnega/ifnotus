@@ -31,6 +31,7 @@ def main() -> None:
         RestoreEnvironmentBackupTask,
         StorageUsageTickTask,
         AbuseProtectionTickTask,
+        BandwidthGovernanceTickTask,
         DeployStackTask,
         EnvCronTickTask,
         RegisterDomainTask,
@@ -51,6 +52,7 @@ def main() -> None:
     task_registry.register(HealthCheckEnvironmentTask(settings=settings, session_factory=factory))
     task_registry.register(HealthCheckTickTask(settings=settings, session_factory=factory))
     task_registry.register(StorageUsageTickTask(settings=settings, session_factory=factory))
+    task_registry.register(BandwidthGovernanceTickTask(settings=settings, session_factory=factory))
     task_registry.register(AbuseProtectionTickTask(settings=settings, session_factory=factory))
     task_registry.register(DeployStackTask(settings=settings, session_factory=factory))
     task_registry.register(EnvCronTickTask(settings=settings, session_factory=factory))

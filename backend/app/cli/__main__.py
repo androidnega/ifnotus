@@ -466,7 +466,8 @@ def run_resource_governance_status(*, as_json: bool = False) -> None:
 
 
 def run_reconcile_resource_governance(*, apply: bool = False, as_json: bool = False) -> None:
-    """Detect drift; optionally apply safe memory-policy remediations (never mount quotas)."""
+    """Detect drift; optionally apply safe remediations (memory + OS quotas when ready)."""
+    import asyncio
     import json
     from pathlib import Path
 
@@ -486,6 +487,22 @@ def run_reconcile_resource_governance(*, apply: bool = False, as_json: bool = Fa
             report["mutations"].append(
                 {"action": "reconcile_memory_policy", "ok": False, "error": str(exc)[:200]}
             )
+        # Apply OS user quotas when kernel quotas are active.
+        try:
+            quota_summary = asyncio.run(_apply_all_os_quotas(settings))
+            report["mutations"].append({"action": "apply_os_user_quotas", **quota_summary})
+        except Exception as exc:  # noqa: BLE001
+            report["mutations"].append(
+                {"action": "apply_os_user_quotas", "ok": False, "error": str(exc)[:200]}
+            )
+        # Ensure bandwidth log snippet + one governance tick (may soft-block if over).
+        try:
+            bw_summary = asyncio.run(_bandwidth_tick(settings, apply=True))
+            report["mutations"].append({"action": "bandwidth_governance_tick", **bw_summary})
+        except Exception as exc:  # noqa: BLE001
+            report["mutations"].append(
+                {"action": "bandwidth_governance_tick", "ok": False, "error": str(exc)[:200]}
+            )
     if as_json:
         print(json.dumps(report, indent=2, default=str))
     else:
@@ -493,6 +510,54 @@ def run_reconcile_resource_governance(*, apply: bool = False, as_json: bool = Fa
         for m in report["mutations"]:
             print(f"  {m}")
         print(f"findings: {len(report.get('findings') or [])}")
+
+
+async def _apply_all_os_quotas(settings) -> dict:
+    from sqlalchemy import select
+
+    from app.core.container import create_container
+    from app.models.platform import CustomerEnvironment
+    from app.services.platform.environment_storage import apply_os_user_quota
+
+    factory = create_container().db_session_factory()
+    applied = 0
+    failed = 0
+    skipped = 0
+    async with factory() as session:
+        rows = (
+            await session.execute(
+                select(CustomerEnvironment).where(
+                    CustomerEnvironment.unix_username.is_not(None),
+                    CustomerEnvironment.status.in_(["active", "provisioned", "ready"]),
+                )
+            )
+        ).scalars().all()
+        for env in rows:
+            r = apply_os_user_quota(
+                settings,
+                username=env.unix_username,
+                home=env.document_root,
+                storage_limit_gb=env.storage_limit_gb,
+            )
+            if r.get("applied"):
+                applied += 1
+            elif r.get("soft_tracking_only"):
+                skipped += 1
+            else:
+                failed += 1
+    return {"ok": True, "applied": applied, "skipped": skipped, "failed": failed, "total": applied + skipped + failed}
+
+
+async def _bandwidth_tick(settings, *, apply: bool = True) -> dict:
+    from app.core.container import create_container
+    from app.services.platform.bandwidth_governance import BandwidthGovernanceService
+
+    factory = create_container().db_session_factory()
+    async with factory() as session:
+        summary = await BandwidthGovernanceService(settings, session).tick(apply=apply)
+        await session.commit()
+        summary["ok"] = True
+        return summary
 
 
 def run_resource_governor(

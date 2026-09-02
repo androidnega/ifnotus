@@ -79,12 +79,39 @@ def _quota_enabled() -> dict[str, Any]:
         opts = (proc.stdout or "").strip()
     except (OSError, subprocess.SubprocessError):
         opts = ""
-    has = any(x in opts for x in ("usrquota", "grpquota", "prjquota", "quota"))
+    has_mount = any(x in opts for x in ("usrquota", "grpquota", "prjquota", "quota"))
+    active = False
+    try:
+        q = subprocess.run(
+            ["quotaon", "-p", "/"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        text = f"{q.stdout or ''}\n{q.stderr or ''}".lower()
+        active = "user quota" in text and "is on" in text
+    except (OSError, subprocess.SubprocessError):
+        active = False
+    # Project quotas require offline tune2fs -O project / remount prjquota.
+    prj_maintenance = "prjquota" not in opts
+    backend = "none"
+    if "prjquota" in opts:
+        backend = "prjquota"
+    elif "usrquota" in opts or active:
+        backend = "usrquota"
+    elif has_mount:
+        backend = "unknown"
     return {
-        "kernel_quota_enabled": has,
+        "kernel_quota_enabled": bool(active or has_mount),
+        "quotas_actively_on": active,
         "mount_options": opts,
-        "quota_backend": "usrquota" if "usrquota" in opts else ("none" if not has else "unknown"),
-        "maintenance_required": not has,
+        "quota_backend": backend,
+        "project_quota_maintenance_required": prj_maintenance,
+        "maintenance_required": not active,
+        "maintenance_code": None
+        if active
+        else "FILESYSTEM_QUOTA_MAINTENANCE_REQUIRED",
     }
 
 
@@ -134,13 +161,35 @@ def collect_resource_governance_status(
         findings.append(GovernanceFinding("vsftpd", "PASS", "vsftpd not active"))
 
     quota = _quota_enabled()
-    if not quota["kernel_quota_enabled"]:
+    if not quota.get("quotas_actively_on"):
         findings.append(
             GovernanceFinding(
                 "filesystem_quota",
                 "WARNING",
-                "Kernel filesystem quotas not enabled (maintenance-gated)",
+                quota.get("maintenance_code") or "Kernel filesystem quotas not active",
                 quota,
+            )
+        )
+    elif quota.get("project_quota_maintenance_required"):
+        findings.append(
+            GovernanceFinding(
+                "filesystem_project_quota",
+                "WARNING",
+                "USRQUOTA active; PRJQUOTA needs offline tune2fs (SAFE_LEGACY www-data bypass)",
+                quota,
+            )
+        )
+    else:
+        findings.append(GovernanceFinding("filesystem_quota", "PASS", "Kernel quotas active"))
+
+    # Bandwidth soft-block path present
+    bw_mod = Path(__file__).resolve().parent / "bandwidth_enforcement.py"
+    if bw_mod.is_file():
+        findings.append(
+            GovernanceFinding(
+                "bandwidth_soft_block",
+                "PASS",
+                "SOFT_BLOCK enforcement module present (nginx edge)",
             )
         )
 
@@ -168,6 +217,11 @@ def collect_resource_governance_status(
             "port_21_listening": ftp_listen,
         },
         "storage_quota": quota,
+        "bandwidth": {
+            "enforcement": "SOFT_BLOCK",
+            "persistent_accounting": True,
+            "limit_enforced": True,
+        },
         "deployment": {
             "git_head": head,
             "repo": str(repo),

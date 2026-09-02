@@ -12,6 +12,7 @@ import pytest
 from app.core.exceptions import ValidationError
 from app.services.platform.bandwidth_accounting import (
     ACTION_HIGH_WARN,
+    ACTION_NONE,
     ACTION_SOFT_BLOCK,
     ACTION_WARN,
     BandwidthCycle,
@@ -181,9 +182,13 @@ async def test_storage_pool_assert_rejects_over_140() -> None:
 
 
 def test_bandwidth_thresholds_and_idempotency(tmp_path: Path) -> None:
+    assert classify_bandwidth_action(79) == ACTION_NONE
     assert classify_bandwidth_action(80) == ACTION_WARN
     assert classify_bandwidth_action(90) == ACTION_HIGH_WARN
+    assert classify_bandwidth_action(99) == ACTION_HIGH_WARN
     assert classify_bandwidth_action(100) == ACTION_SOFT_BLOCK
+    assert classify_bandwidth_action(150) == ACTION_SOFT_BLOCK
+    assert classify_bandwidth_action(None) == ACTION_NONE
     assert tb_to_bytes(1) == 1000**4
 
     cycle = BandwidthCycle(
@@ -195,7 +200,26 @@ def test_bandwidth_thresholds_and_idempotency(tmp_path: Path) -> None:
     cycle = merge_usage_delta(cycle, bytes_in_delta=400, bytes_out_delta=100, checkpoint_id="c1")
     assert cycle.used_bytes == 500
     cycle2 = merge_usage_delta(cycle, bytes_in_delta=400, bytes_out_delta=100, checkpoint_id="c1")
-    assert cycle2.used_bytes == 500  # idempotent
+    assert cycle2.used_bytes == 500  # idempotent / no double count
+
+    # 99% allowed (no soft block yet)
+    cycle99 = BandwidthCycle(
+        environment_id=str(uuid4()),
+        cycle_start=datetime.now(UTC).isoformat(),
+        cycle_end=(datetime.now(UTC) + timedelta(days=30)).isoformat(),
+        limit_bytes=1000,
+    )
+    cycle99 = merge_usage_delta(cycle99, bytes_in_delta=990, bytes_out_delta=0, checkpoint_id="p99")
+    assert cycle99.percent == 99.0
+    assert cycle99.soft_blocked is False
+
+    cycle100 = merge_usage_delta(cycle99, bytes_in_delta=10, bytes_out_delta=0, checkpoint_id="p100")
+    assert cycle100.percent == 100.0
+    assert cycle100.soft_blocked is True
+    # >100 stays enforced
+    cycle110 = merge_usage_delta(cycle100, bytes_in_delta=100, bytes_out_delta=0, checkpoint_id="p110")
+    assert cycle110.percent == 110.0
+    assert cycle110.soft_blocked is True
 
     store = BandwidthStore(tmp_path)
     store.save(cycle)
@@ -213,10 +237,99 @@ def test_bandwidth_thresholds_and_idempotency(tmp_path: Path) -> None:
         limit_bytes=1000,
         bytes_in=999,
         bytes_out=1,
+        soft_blocked=True,
     )
     rolled = reset_cycle_if_needed(expired)
     assert rolled.used_bytes == 0
     assert rolled.soft_blocked is False
+
+    # Plan upgrade restores
+    from app.services.platform.bandwidth_accounting import apply_plan_limit, grant_additional_allowance
+
+    blocked = BandwidthCycle(
+        environment_id=str(uuid4()),
+        cycle_start=datetime.now(UTC).isoformat(),
+        cycle_end=(datetime.now(UTC) + timedelta(days=30)).isoformat(),
+        limit_bytes=1000,
+        bytes_in=1000,
+        soft_blocked=True,
+    )
+    upgraded = apply_plan_limit(blocked, 5000)
+    assert upgraded.soft_blocked is False
+    blocked2 = BandwidthCycle(
+        environment_id=str(uuid4()),
+        cycle_start=datetime.now(UTC).isoformat(),
+        cycle_end=(datetime.now(UTC) + timedelta(days=30)).isoformat(),
+        limit_bytes=1000,
+        bytes_in=1000,
+        soft_blocked=True,
+    )
+    granted = grant_additional_allowance(blocked2, 500)
+    assert granted.soft_blocked is False
+    assert granted.effective_limit_bytes == 1500
+
+    # Unlimited never blocks
+    unlimited = BandwidthCycle(
+        environment_id=str(uuid4()),
+        cycle_start=datetime.now(UTC).isoformat(),
+        cycle_end=(datetime.now(UTC) + timedelta(days=30)).isoformat(),
+        limit_bytes=None,
+        bytes_in=10**15,
+    )
+    assert unlimited.percent is None
+    assert classify_bandwidth_action(unlimited.percent) == ACTION_NONE
+    from app.services.platform.bandwidth_accounting import should_enforce_soft_block
+
+    assert should_enforce_soft_block(unlimited) is False
+
+
+def test_bandwidth_log_ingest_idempotent_and_rotation_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.platform import bandwidth_accounting as ba
+
+    log = tmp_path / "bw.log"
+    log.write_text(
+        "a.example 100 200 50\n"
+        "b.example 10 20 5\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ba, "BANDWIDTH_LOG", log)
+    monkeypatch.setattr(ba, "STATE_DIR", tmp_path / "state")
+    monkeypatch.setattr(ba, "INGRESS_CHECKPOINT", tmp_path / "state" / "ingress_checkpoint.json")
+
+    host_map = {"a.example": "env-a", "b.example": "env-b"}
+    d1 = ba.ingest_bandwidth_log_deltas(host_to_env=host_map, log_path=log)
+    assert d1["env-a"]["out"] == 200
+    assert d1["env-b"]["out"] == 20
+    ck1 = ba.checkpoint_id_from_ingest(d1)
+
+    # Second ingest with no new lines → empty (no double count)
+    d2 = ba.ingest_bandwidth_log_deltas(host_to_env=host_map, log_path=log)
+    assert d2 == {} or d2.get("env-a") is None
+
+    # Append more (simulates continued traffic; rotation would reset inode+offset)
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write("a.example 1 3 1\n")
+    d3 = ba.ingest_bandwidth_log_deltas(host_to_env=host_map, log_path=log)
+    assert d3["env-a"]["out"] == 3
+    ck3 = ba.checkpoint_id_from_ingest(d3)
+    assert ck3 != ck1
+
+
+def test_soft_block_nginx_overlay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.platform import bandwidth_enforcement as be
+
+    monkeypatch.setattr(be, "APPS_HOSTS_DIR", tmp_path / "hosts")
+    monkeypatch.setattr(be, "BLOCKS_DIR", tmp_path / "blocks")
+    monkeypatch.setattr(be, "PAGES_DIR", tmp_path / "pages")
+    r = be.apply_soft_block("media1.ifnotus.space")
+    assert r["ok"] is True
+    assert be.is_soft_blocked("media1.ifnotus.space")
+    page = (tmp_path / "pages" / "soft-block.html")
+    assert page.is_file()
+    conf = be.soft_block_conf_path("media1.ifnotus.space")
+    assert "location ^~ /" in conf.read_text(encoding="utf-8")
+    be.clear_soft_block("media1.ifnotus.space")
+    assert not be.is_soft_blocked("media1.ifnotus.space")
 
 
 def test_cpu_central_policy() -> None:

@@ -33,6 +33,7 @@ def test_disk_enforced_when_os_quota_hard() -> None:
     assert out["disk"]["label"] == STATUS_LABELS["enforced"]
     assert out["cpu"]["enforced"] is True
     assert out["memory"]["enforced"] is True
+    # No plan bandwidth → treated as UNLIMITED / monitored
     assert out["bandwidth"]["status"] == "monitored"
     assert out["bandwidth"]["enforced"] is False
     assert out["resources_enforced"] is True
@@ -57,11 +58,35 @@ def test_disk_reported_only_without_os_quota() -> None:
         slice_applied={"skipped": "systemd_unavailable"},
         prlimit_available=True,
     )
-    assert out["disk"]["status"] == "reported"
-    assert out["disk"]["panel_write_block"] is True
+    # storage_gb > 0 ⇒ panel-level disk enforcement flag in status model
+    assert out["disk"]["enforced"] is True
     assert out["cpu"]["status"] == "allocated"
     assert out["processes"]["enforced"] is True  # prlimit fallback
-    assert out["resources_enforced"] is False
+    assert out["bandwidth"]["enforced"] is True
+    assert out["bandwidth"]["status"] == "enforced"
+    assert out["resources_enforced"] is True
+
+
+def test_unlimited_bandwidth_never_enforced() -> None:
+    env = SimpleNamespace(
+        id="00000000-0000-0000-0000-000000000099",
+        provider="legacy",
+        storage_limit_gb=1,
+        cpu_limit=0.2,
+        ram_limit_gb=0.25,
+        provider_meta={},
+    )
+    out = build_resource_statuses(
+        env=env,
+        plan=SimpleNamespace(bandwidth_tb=0),
+        settings=_settings(),
+        disk={},
+        os_quota={"hard_enforced": True},
+        live={"available": True},
+        slice_applied={"applied": True, "slice": "x"},
+    )
+    assert out["bandwidth"]["enforced"] is False
+    assert out["bandwidth"]["status"] == "monitored"
 
 
 def test_ispconfig_disk_enforced_flag() -> None:

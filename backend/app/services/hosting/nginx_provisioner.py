@@ -613,9 +613,20 @@ class DomainNginxProvisioner:
             lines.append("    index index.html index.htm index.php;")
         # Webmail must win over whole-site redirect and app proxy_pass.
         lines += self._webmail_locations(hostname=hostname)
-        # Per-app proxy locations written by application_runtime (/apps/<slug>/).
+        # Per-app proxy locations + bandwidth soft-block overlays.
         host_apps = Path(f"/etc/nginx/ifnotus-apps/hosts/{hostname}")
+        try:
+            host_apps.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
         if host_apps.is_dir():
+            # Keep a harmless placeholder so empty globs never break nginx -t.
+            placeholder = host_apps / "zz-ifnotus-placeholder.conf"
+            if not placeholder.is_file() and not any(host_apps.glob("*.conf")):
+                try:
+                    placeholder.write_text("# ifnotus apps / bandwidth overlay\n", encoding="utf-8")
+                except OSError:
+                    pass
             lines.append(f"    include /etc/nginx/ifnotus-apps/hosts/{hostname}/*.conf;")
         seen_sources: set[str] = set()
         for redir in path_redirects:

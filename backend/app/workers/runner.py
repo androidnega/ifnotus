@@ -37,6 +37,7 @@ class WorkerRunner:
         health_ticker = asyncio.create_task(self._health_ticker())
         dns_ticker = asyncio.create_task(self._dns_sweep_ticker())
         storage_ticker = asyncio.create_task(self._storage_ticker())
+        bandwidth_ticker = asyncio.create_task(self._bandwidth_ticker())
         cron_ticker = asyncio.create_task(self._env_cron_ticker())
         abuse_ticker = asyncio.create_task(self._abuse_ticker())
         discovery_ticker = asyncio.create_task(self._discovery_ticker())
@@ -47,6 +48,7 @@ class WorkerRunner:
             health_ticker,
             dns_ticker,
             storage_ticker,
+            bandwidth_ticker,
             cron_ticker,
             abuse_ticker,
             discovery_ticker,
@@ -193,6 +195,19 @@ class WorkerRunner:
             except Exception:  # noqa: BLE001
                 logger.exception("storage_tick_enqueue_failed")
             for _ in range(120):  # 120 * 30s ≈ 1 hour
+                if not self._running:
+                    return
+                await asyncio.sleep(30)
+
+    async def _bandwidth_ticker(self) -> None:
+        """Ingest nginx bandwidth log + SOFT_BLOCK about every 5 minutes."""
+        await asyncio.sleep(120)
+        while self._running:
+            try:
+                await self._queue.enqueue("bandwidth_governance_tick", {})
+            except Exception:  # noqa: BLE001
+                logger.exception("bandwidth_tick_enqueue_failed")
+            for _ in range(10):  # 10 * 30s ≈ 5 minutes
                 if not self._running:
                     return
                 await asyncio.sleep(30)

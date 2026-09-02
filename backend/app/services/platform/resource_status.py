@@ -156,18 +156,29 @@ def build_resource_statuses(
         detail=proc_detail,
     )
 
-    # --- Bandwidth: monitored only until provider traffic caps are verified ---
-    bw_status = _dim(
-        allocated=bw_tb > 0,
-        reported=bw_tb > 0,
-        enforced=False,
-        limit=bw_tb if bw_tb > 0 else None,
-        unit="TB/month",
-        detail="Usage tracked; hard bandwidth cap not enforced on this host yet",
-        monitored=True,
-    )
+    # --- Bandwidth: SOFT_BLOCK at 100% via nginx edge (portal/mail remain up) ---
+    bw_unlimited = bw_tb <= 0
+    if bw_unlimited:
+        bw_status = _dim(
+            allocated=True,
+            reported=True,
+            enforced=False,
+            limit=None,
+            unit="TB/month",
+            detail="UNLIMITED — no soft-block",
+            monitored=True,
+        )
+    else:
+        bw_status = _dim(
+            allocated=True,
+            reported=True,
+            enforced=True,
+            limit=bw_tb,
+            unit="TB/month",
+            detail="Persistent cycle meter; SOFT_BLOCK at 100% (hosted site only)",
+        )
 
-    any_runtime_enforced = slice_ok or os_hard
+    any_runtime_enforced = slice_ok or os_hard or (not bw_unlimited)
     return {
         "disk": disk_status,
         "cpu": cpu_status,

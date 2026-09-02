@@ -526,6 +526,33 @@ class StorageUsageTickTask(BaseTask):
                 return TaskResult(status=TaskStatus.FAILED, error=str(exc))
 
 
+class BandwidthGovernanceTickTask(BaseTask):
+    name = "bandwidth_governance_tick"
+    queue = "default"
+    max_attempts = 1
+
+    def __init__(
+        self,
+        settings: Settings,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        self._settings = settings
+        self._session_factory = session_factory
+
+    async def execute(self, payload: dict[str, Any], context: TaskContext) -> TaskResult:
+        from app.services.platform.bandwidth_governance import BandwidthGovernanceService
+
+        async with self._session_factory() as session:
+            try:
+                summary = await BandwidthGovernanceService(self._settings, session).tick(apply=True)
+                await session.commit()
+                return TaskResult(status=TaskStatus.COMPLETED, data=summary)
+            except Exception as exc:
+                await session.rollback()
+                logger.exception("bandwidth_governance_tick_failed")
+                return TaskResult(status=TaskStatus.FAILED, error=str(exc))
+
+
 class AbuseProtectionTickTask(BaseTask):
     name = "abuse_protection_tick"
     queue = "default"

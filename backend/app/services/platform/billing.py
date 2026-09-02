@@ -236,6 +236,19 @@ class SubscriptionBillingService:
                 )
             except Exception:  # noqa: BLE001
                 pass
+            try:
+                from app.services.platform.bandwidth_accounting import tb_to_bytes
+                from app.services.platform.bandwidth_governance import BandwidthGovernanceService
+
+                limit = tb_to_bytes(float(plan.bandwidth_tb or 0))
+                await BandwidthGovernanceService(self._settings, self._session).restore_environment(
+                    env,
+                    new_limit_bytes=limit,
+                    reason="plan_change",
+                    update_limit=True,
+                )
+            except Exception:  # noqa: BLE001
+                pass
             if env.domain:
                 try:
                     from app.services.platform.php_fpm import PhpFpmPoolService
