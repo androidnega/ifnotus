@@ -446,6 +446,55 @@ def run_resource_governor_status(*, as_json: bool = False) -> None:
         print(gov.format_status(snap))
 
 
+def run_resource_governance_status(*, as_json: bool = False) -> None:
+    """Full read-only resource governance summary."""
+    from pathlib import Path
+
+    from app.services.platform.resource_governance_status import (
+        collect_resource_governance_status,
+        dump_governance_json,
+        format_governance_status,
+    )
+
+    settings = get_settings()
+    setup_logging(settings)
+    report = collect_resource_governance_status(repo_path=Path("/srv/apps/ifnotus"))
+    if as_json:
+        print(dump_governance_json(report))
+    else:
+        print(format_governance_status(report))
+
+
+def run_reconcile_resource_governance(*, apply: bool = False, as_json: bool = False) -> None:
+    """Detect drift; optionally apply safe memory-policy remediations (never mount quotas)."""
+    import json
+    from pathlib import Path
+
+    from app.services.platform.resource_governance_status import collect_resource_governance_status
+
+    settings = get_settings()
+    setup_logging(settings)
+    report = collect_resource_governance_status(repo_path=Path("/srv/apps/ifnotus"))
+    report["mode"] = "apply" if apply else "dry-run"
+    report["mutations"] = []
+    if apply:
+        # Safe: reconcile memory policy including suspended prepare / legacy tiny limits.
+        try:
+            run_reconcile_memory_policy(apply=True, apply_parent=False, json_out=False)
+            report["mutations"].append({"action": "reconcile_memory_policy", "ok": True})
+        except Exception as exc:  # noqa: BLE001
+            report["mutations"].append(
+                {"action": "reconcile_memory_policy", "ok": False, "error": str(exc)[:200]}
+            )
+    if as_json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print(f"reconcile-resource-governance ({report['mode']})")
+        for m in report["mutations"]:
+            print(f"  {m}")
+        print(f"findings: {len(report.get('findings') or [])}")
+
+
 def run_resource_governor(
     *,
     dry_run: bool = True,
@@ -1271,6 +1320,24 @@ def main() -> None:
     p_gov.add_argument("--grant", choices=["tenants", "priority"], default=None)
     p_gov.add_argument("--release", choices=["tenants", "priority"], default=None)
 
+    p_rgs = subparsers.add_parser(
+        "resource-governance-status",
+        help="Read-only full resource governance summary (host/governor/ftp/quota/deploy)",
+    )
+    p_rgs.add_argument("--json", action="store_true")
+
+    p_rrg = subparsers.add_parser(
+        "reconcile-resource-governance",
+        help="Detect resource governance drift (default: dry-run)",
+    )
+    p_rrg.add_argument("--dry-run", action="store_true", default=True)
+    p_rrg.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply safe remediations (memory policy for suspended/legacy; never mount quotas)",
+    )
+    p_rrg.add_argument("--json", action="store_true")
+
     args = parser.parse_args()
 
     if args.command in {"reconcile-hosting", "reconcile-zones"}:
@@ -1339,6 +1406,13 @@ def main() -> None:
             grant=getattr(args, "grant", None),
             release=getattr(args, "release", None),
             apply=bool(getattr(args, "apply", False)),
+        )
+    elif args.command == "resource-governance-status":
+        run_resource_governance_status(as_json=bool(getattr(args, "json", False)))
+    elif args.command == "reconcile-resource-governance":
+        run_reconcile_resource_governance(
+            apply=bool(getattr(args, "apply", False)),
+            as_json=bool(getattr(args, "json", False)),
         )
     else:
         parser.print_help()

@@ -322,7 +322,7 @@ class Settings(BaseSettings):
 
     customer_isolation_mode: str = "docker"  # docker | filesystem
     web_run_user: str = "www-data"
-    ftp_enabled: bool = True
+    ftp_enabled: bool = False  # Legacy plain FTP disabled; SFTP is default
     ftp_port: int = 21
     ftp_public_host: str = "ftp.ifnotus.space"
     ftp_pasv_address: str = ""

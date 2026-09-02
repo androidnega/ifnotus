@@ -17,10 +17,20 @@ EMERGENCY_BUDGET_MAX_GIB = 9.0
 # Operational MemAvailable floor — NOT MemoryMin.
 HOST_MEMAVAILABLE_SAFETY_FLOOR_GIB = 6.0
 
+# Host-pressure bands (independent of emergency grants; configurable).
+HOST_PRESSURE_SAFE_GIB = 10.0
+HOST_PRESSURE_WATCH_GIB = 10.0  # MemAvailable < this → WATCH
+HOST_PRESSURE_LOW_GIB = 8.0  # < this → LOW_HEADROOM (deny new grants)
+HOST_PRESSURE_CRITICAL_GIB = 6.0  # < this → CRITICAL_HEADROOM
+
 STATUS_SAFE = "SAFE"
-STATUS_REDUCED_HEADROOM = "REDUCED_HEADROOM"
-STATUS_DENY_BURST = "DENY_BURST"
-STATUS_CRITICAL_PRESSURE = "CRITICAL_PRESSURE"
+STATUS_WATCH = "WATCH"
+STATUS_LOW_HEADROOM = "LOW_HEADROOM"
+STATUS_CRITICAL_HEADROOM = "CRITICAL_HEADROOM"
+# Legacy aliases (governor / callers)
+STATUS_REDUCED_HEADROOM = "REDUCED_HEADROOM"  # maps toward WATCH/LOW
+STATUS_DENY_BURST = "DENY_BURST"  # maps to LOW_HEADROOM
+STATUS_CRITICAL_PRESSURE = "CRITICAL_PRESSURE"  # maps to CRITICAL_HEADROOM
 
 
 def read_meminfo_bytes() -> dict[str, int]:
@@ -114,21 +124,55 @@ def safe_emergency_capacity_gib(
     return round(grantable / BYTES_PER_GIB, 4)
 
 
+def classify_host_pressure_band(
+    *,
+    mem_available_bytes: int,
+    watch_gib: float = HOST_PRESSURE_WATCH_GIB,
+    low_gib: float = HOST_PRESSURE_LOW_GIB,
+    critical_gib: float = HOST_PRESSURE_CRITICAL_GIB,
+    psi_some_avg10: float | None = None,
+) -> str:
+    """Host MemAvailable pressure independent of emergency ledger."""
+    avail_gib = mem_available_bytes / BYTES_PER_GIB
+    if avail_gib < critical_gib or (psi_some_avg10 is not None and psi_some_avg10 >= 20.0):
+        return STATUS_CRITICAL_HEADROOM
+    if avail_gib < low_gib:
+        return STATUS_LOW_HEADROOM
+    if avail_gib < watch_gib:
+        return STATUS_WATCH
+    return STATUS_SAFE
+
+
 def classify_host_safety_status(
     *,
     mem_available_bytes: int,
     safety_floor_gib: float = HOST_MEMAVAILABLE_SAFETY_FLOOR_GIB,
     psi_some_avg10: float | None = None,
 ) -> str:
-    avail_gib = mem_available_bytes / BYTES_PER_GIB
-    floor = float(safety_floor_gib)
-    if avail_gib < floor * 0.5 or (psi_some_avg10 is not None and psi_some_avg10 >= 20.0):
+    """Classify host pressure; keep legacy status names for existing callers."""
+    band = classify_host_pressure_band(
+        mem_available_bytes=mem_available_bytes,
+        critical_gib=float(safety_floor_gib),
+        low_gib=max(float(safety_floor_gib), HOST_PRESSURE_LOW_GIB),
+        watch_gib=HOST_PRESSURE_WATCH_GIB,
+        psi_some_avg10=psi_some_avg10,
+    )
+    if band == STATUS_CRITICAL_HEADROOM:
         return STATUS_CRITICAL_PRESSURE
-    if avail_gib < floor:
+    if band == STATUS_LOW_HEADROOM:
         return STATUS_DENY_BURST
-    if avail_gib < floor + 4.0:
+    if band == STATUS_WATCH:
         return STATUS_REDUCED_HEADROOM
     return STATUS_SAFE
+
+
+def grants_blocked_by_host_pressure(status_or_band: str) -> bool:
+    return status_or_band in {
+        STATUS_LOW_HEADROOM,
+        STATUS_CRITICAL_HEADROOM,
+        STATUS_DENY_BURST,
+        STATUS_CRITICAL_PRESSURE,
+    }
 
 
 def build_host_safety_snapshot(

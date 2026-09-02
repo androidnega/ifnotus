@@ -631,6 +631,52 @@ def resolve_storage_entitlement(
     )
 
 
+def resolve_cpu_quota_percent(
+    plan: PlanLike | PlanView | None,
+    *,
+    env_cpu_limit: float | None = None,
+    default_percent: int = 25,
+) -> int:
+    """Central CPUQuota percent from plan/env — preserves existing entitlements.
+
+    cpu_limit of 0.25 → 25%. Never invents new business entitlements.
+    """
+    if env_cpu_limit is not None and float(env_cpu_limit) > 0:
+        return max(1, min(100, int(round(float(env_cpu_limit) * 100))))
+    if plan is None:
+        return int(default_percent)
+    cores = getattr(plan, "cpu_cores", None)
+    if cores is not None and float(cores) > 0:
+        return max(1, min(100, int(round(float(cores) * 100))))
+    return int(default_percent)
+
+
+CPU_DRIFT_OK = "POLICY_OK"
+CPU_DRIFT_MISSING = "MISSING_CPU_QUOTA"
+CPU_DRIFT_LEGACY = "LEGACY_CPU_POLICY"
+CPU_DRIFT_MISMATCH = "CPU_QUOTA_MISMATCH"
+
+
+def detect_cpu_quota_drift(
+    *,
+    live_cpu_quota: str | None,
+    expected_percent: int,
+) -> str:
+    raw = (live_cpu_quota or "").strip()
+    if not raw or raw.lower() in {"infinity", ""}:
+        return CPU_DRIFT_MISSING
+    try:
+        live = int(raw.rstrip("%").strip())
+    except ValueError:
+        return CPU_DRIFT_LEGACY
+    if live != int(expected_percent):
+        # Preserve legacy distinct values as LEGACY rather than auto-rewrite.
+        if live in {20, 25, 40, 100}:
+            return CPU_DRIFT_LEGACY
+        return CPU_DRIFT_MISMATCH
+    return CPU_DRIFT_OK
+
+
 def resolve_environment_resource_policy(
     *,
     plan: PlanLike | PlanView,

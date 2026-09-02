@@ -228,6 +228,24 @@ class ProvisioningEngine:
 
         # --- CREATING_STORAGE ---
         await self._set_step(job, env, "CREATING_STORAGE")
+        # Shared 140 GB pool gate (VPS/VDS excluded inside ledger).
+        from app.services.platform.resource_policy import PlanView
+        from app.services.platform.storage_pool_ledger import StoragePoolLedgerService
+
+        pv = PlanView(
+            slug=str(plan.slug or ""),
+            name=str(plan.name or ""),
+            price_monthly=float(plan.price_monthly or 0),
+            ram_gb=float(plan.ram_gb or 0),
+            storage_gb=float(plan.storage_gb or 0),
+            features=dict(plan.features or {}) if isinstance(getattr(plan, "features", None), dict) else {},
+        )
+        # Only charge delta for brand-new envs (reuse already counted).
+        if env is None or env.status not in {"active", "suspended"}:
+            await StoragePoolLedgerService(self._session).assert_can_allocate(
+                requested_gb=float(plan.storage_gb or 0),
+                plan=pv,
+            )
         # Readable customer folder + hostname site folder.
         doc_root = environment_public_root(self._settings, customer, hostname)
         Path(doc_root).parent.mkdir(parents=True, exist_ok=True)

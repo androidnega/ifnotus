@@ -21,10 +21,20 @@ from app.core.logging import get_logger
 from app.services.platform.host_safety import (
     EMERGENCY_BUDGET_MAX_GIB,
     HOST_MEMAVAILABLE_SAFETY_FLOOR_GIB,
+    HOST_PRESSURE_CRITICAL_GIB,
+    HOST_PRESSURE_LOW_GIB,
+    HOST_PRESSURE_WATCH_GIB,
+    STATUS_CRITICAL_HEADROOM,
     STATUS_CRITICAL_PRESSURE,
     STATUS_DENY_BURST,
+    STATUS_LOW_HEADROOM,
+    STATUS_REDUCED_HEADROOM,
+    STATUS_SAFE,
+    STATUS_WATCH,
     _psi_avg10,
+    classify_host_pressure_band,
     classify_host_safety_status,
+    grants_blocked_by_host_pressure,
     read_meminfo_bytes,
     read_memory_psi,
     safe_emergency_capacity_gib,
@@ -45,10 +55,20 @@ PRIORITY_NORMAL_MAX_GIB = 8
 PRIORITY_NORMAL_HIGH_GIB = 8
 INCREMENT_GIB = 1
 PRESSURE_RATIO = 0.90
+# Fast-path: require usage at/above this fraction of normal max AND rapid growth.
+FAST_PRESSURE_RATIO = 0.80
+# Guard band before hard max (proportionate): priority ~1 GiB, tenants ~2 GiB.
+PRIORITY_GUARD_GIB = 1.0
+TENANT_GUARD_GIB = 2.0
+# If estimated seconds_to_max is below this, allow FAST_PRESSURE_REQUEST (still gated).
+FAST_SECONDS_TO_MAX = 30.0
+# Minimum positive growth (bytes/sec) to treat as "rapid".
+FAST_MIN_GROWTH_BPS = 8 * 1024 * 1024  # 8 MiB/s
 
 SAMPLE_INTERVAL_SEC = 10
 TRIGGER_SAMPLES = 3
 RELEASE_COOLDOWN_SEC = 120
+CURRENT_HISTORY_LEN = 6
 
 PSI_SOME_DENY_AVG10 = 10.0
 PSI_FULL_DENY_AVG10 = 5.0
@@ -124,6 +144,7 @@ class HostLive:
     psi_some: str
     psi_full: str
     safety_status: str
+    pressure_band: str = STATUS_SAFE
 
     @property
     def swap_used_bytes(self) -> int:
@@ -178,6 +199,10 @@ class GovernorSnapshot:
                 "mem_available_gib": round(self.host.mem_available_bytes / BYTES_PER_GIB, 3),
                 "safety_floor_gib": HOST_MEMAVAILABLE_SAFETY_FLOOR_GIB,
                 "safety_status": self.host.safety_status,
+                "pressure_band": self.host.pressure_band,
+                "pressure_watch_gib": HOST_PRESSURE_WATCH_GIB,
+                "pressure_low_gib": HOST_PRESSURE_LOW_GIB,
+                "pressure_critical_gib": HOST_PRESSURE_CRITICAL_GIB,
                 "swap_used_mib": round(self.host.swap_used_bytes / (1024 * 1024), 2),
                 "psi_some": self.host.psi_some,
                 "psi_full": self.host.psi_full,
@@ -248,6 +273,76 @@ def effective_memory_max_bytes(*, normal_gib: int, emergency_gib: int) -> int:
 
 def pressure_threshold_bytes(normal_gib: int) -> int:
     return int(gib_to_bytes(normal_gib) * PRESSURE_RATIO)
+
+
+def fast_pressure_threshold_bytes(normal_gib: int) -> int:
+    return int(gib_to_bytes(normal_gib) * FAST_PRESSURE_RATIO)
+
+
+def guard_band_bytes(normal_gib: int) -> int:
+    if normal_gib <= PRIORITY_NORMAL_MAX_GIB:
+        return gib_to_bytes(PRIORITY_GUARD_GIB)
+    return gib_to_bytes(TENANT_GUARD_GIB)
+
+
+def estimate_seconds_to_max(
+    *,
+    memory_current_bytes: int,
+    memory_max_bytes: int | None,
+    growth_bytes_per_sec: float,
+) -> float | None:
+    """ETA to MemoryMax given positive growth. None if not approaching."""
+    if memory_max_bytes is None or growth_bytes_per_sec <= 0:
+        return None
+    remaining = memory_max_bytes - memory_current_bytes
+    if remaining <= 0:
+        return 0.0
+    return remaining / growth_bytes_per_sec
+
+
+def growth_rate_bps(history: list[tuple[float, int]]) -> float:
+    """Bytes/sec from sample history of (timestamp, current_bytes)."""
+    if len(history) < 2:
+        return 0.0
+    t0, b0 = history[0]
+    t1, b1 = history[-1]
+    dt = t1 - t0
+    if dt <= 0:
+        return 0.0
+    return (b1 - b0) / dt
+
+
+def fast_pressure_request(
+    *,
+    memory_current_bytes: int,
+    memory_max_bytes: int | None,
+    normal_max_gib: int,
+    history: list[tuple[float, int]],
+    seconds_to_max_limit: float = FAST_SECONDS_TO_MAX,
+) -> bool:
+    """True when usage is high, growing fast, and ETA to max is short.
+
+    Does NOT grant by itself — caller must still pass safety gates.
+    """
+    if memory_current_bytes < fast_pressure_threshold_bytes(normal_max_gib):
+        return False
+    rate = growth_rate_bps(history)
+    if rate < FAST_MIN_GROWTH_BPS:
+        # Also allow when inside guard band with any positive growth.
+        mx = memory_max_bytes if memory_max_bytes is not None else gib_to_bytes(normal_max_gib)
+        remaining = mx - memory_current_bytes
+        if remaining > guard_band_bytes(normal_max_gib) or rate <= 0:
+            return False
+    eta = estimate_seconds_to_max(
+        memory_current_bytes=memory_current_bytes,
+        memory_max_bytes=memory_max_bytes
+        if memory_max_bytes is not None
+        else gib_to_bytes(normal_max_gib),
+        growth_bytes_per_sec=max(rate, 1.0),
+    )
+    if eta is None:
+        return False
+    return eta < seconds_to_max_limit
 
 
 def round_grantable_to_increment(
@@ -399,6 +494,11 @@ class ResourceEmergencyGovernor:
     state: GovernorState = GovernorState.NORMAL
     ledger: EmergencyLedger = field(default_factory=EmergencyLedger)
     pressure_streak: dict[str, int] = field(default_factory=lambda: {"tenants": 0, "priority": 0})
+    current_history: dict[str, list[tuple[float, int]]] = field(
+        default_factory=lambda: {"tenants": [], "priority": []}
+    )
+    last_host_alert_band: str | None = None
+    last_host_alert_at: float | None = None
     below_normal_since: dict[str, float | None] = field(
         default_factory=lambda: {"tenants": None, "priority": None}
     )
@@ -421,11 +521,17 @@ class ResourceEmergencyGovernor:
         mi = self.meminfo_reader()
         psi = self.psi_reader()
         avail = int(mi.get("MemAvailable") or 0)
+        avg10 = _psi_avg10(psi.get("some") or "")
+        band = classify_host_pressure_band(
+            mem_available_bytes=avail,
+            psi_some_avg10=avg10,
+        )
         status = classify_host_safety_status(
             mem_available_bytes=avail,
             safety_floor_gib=HOST_MEMAVAILABLE_SAFETY_FLOOR_GIB,
-            psi_some_avg10=_psi_avg10(psi.get("some") or ""),
+            psi_some_avg10=avg10,
         )
+        self._maybe_alert_host_pressure(band, avail)
         return HostLive(
             mem_total_bytes=int(mi.get("MemTotal") or 0),
             mem_available_bytes=avail,
@@ -434,6 +540,35 @@ class ResourceEmergencyGovernor:
             psi_some=psi.get("some") or "",
             psi_full=psi.get("full") or "",
             safety_status=status,
+            pressure_band=band,
+        )
+
+    def _maybe_alert_host_pressure(self, band: str, avail_bytes: int) -> None:
+        if band == STATUS_SAFE:
+            return
+        now = self.now_fn()
+        # Dedup: same band within 5 minutes
+        if (
+            self.last_host_alert_band == band
+            and self.last_host_alert_at is not None
+            and (now - self.last_host_alert_at) < 300
+        ):
+            return
+        self.last_host_alert_band = band
+        self.last_host_alert_at = now
+        severity = "warning"
+        if band in {STATUS_LOW_HEADROOM, STATUS_CRITICAL_HEADROOM}:
+            severity = "high" if band == STATUS_LOW_HEADROOM else "critical"
+        logger.warning(
+            "resource_host_pressure",
+            band=band,
+            severity=severity,
+            mem_available_gib=round(avail_bytes / BYTES_PER_GIB, 3),
+            mitigation="ALERT_ONLY_CRITICAL"
+            if band == STATUS_CRITICAL_HEADROOM
+            else "deny_new_emergency_grants"
+            if band == STATUS_LOW_HEADROOM
+            else "telemetry",
         )
 
     def reconcile_from_kernel(self) -> GovernorSnapshot:
@@ -547,8 +682,10 @@ class ResourceEmergencyGovernor:
 
     def deny_reasons(self, host: HostLive, tenants: SliceLive, priority: SliceLive) -> list[str]:
         reasons: list[str] = []
-        if host.safety_status in {STATUS_DENY_BURST, STATUS_CRITICAL_PRESSURE}:
-            reasons.append(f"host_safety_{host.safety_status.lower()}")
+        if grants_blocked_by_host_pressure(host.pressure_band) or grants_blocked_by_host_pressure(
+            host.safety_status
+        ):
+            reasons.append(f"host_safety_{host.pressure_band.lower()}")
         some = host.psi_some_avg10
         full = host.psi_full_avg10
         if some is not None and some >= PSI_SOME_DENY_AVG10:
@@ -704,6 +841,13 @@ class ResourceEmergencyGovernor:
         denies: list[str],
     ) -> PlannedAction:
         now = self.now_fn()
+        # Record current samples for growth / fast-path.
+        for key, sl in (("tenants", tenants), ("priority", priority)):
+            hist = self.current_history[key]
+            hist.append((now, int(sl.memory_current_bytes)))
+            if len(hist) > CURRENT_HISTORY_LEN:
+                del hist[: len(hist) - CURRENT_HISTORY_LEN]
+
         t_press = tenants.memory_current_bytes >= pressure_threshold_bytes(TENANT_NORMAL_MAX_GIB)
         p_press = priority.memory_current_bytes >= pressure_threshold_bytes(PRIORITY_NORMAL_MAX_GIB)
         self.pressure_streak["tenants"] = self.pressure_streak["tenants"] + 1 if t_press else 0
@@ -741,10 +885,29 @@ class ResourceEmergencyGovernor:
             )
 
         order: list[Borrower] = []
+        fast_reasons: dict[str, str] = {}
+        # Sustained path (unchanged semantics).
         if self.pressure_streak["priority"] >= TRIGGER_SAMPLES:
             order.append("priority")
+            fast_reasons["priority"] = f"sustained_{TRIGGER_SAMPLES}_samples"
         if self.pressure_streak["tenants"] >= TRIGGER_SAMPLES:
             order.append("tenants")
+            fast_reasons["tenants"] = f"sustained_{TRIGGER_SAMPLES}_samples"
+        # Fast path — only if not already queued; never bypasses denies above.
+        for borrower, sl, normal in (
+            ("priority", priority, PRIORITY_NORMAL_MAX_GIB),
+            ("tenants", tenants, TENANT_NORMAL_MAX_GIB),
+        ):
+            if borrower in order:
+                continue
+            if fast_pressure_request(
+                memory_current_bytes=sl.memory_current_bytes,
+                memory_max_bytes=sl.memory_max_bytes,
+                normal_max_gib=normal,
+                history=self.current_history[borrower],
+            ):
+                order.append(borrower)
+                fast_reasons[borrower] = "fast_pressure_request"
 
         if order:
             self.state = GovernorState.PRESSURE_REQUESTED
@@ -754,7 +917,7 @@ class ResourceEmergencyGovernor:
                 old_max=None,
                 new_max=None,
                 host=host,
-                reason=f"sustained_pressure:{order}",
+                reason=f"pressure:{order}:{fast_reasons.get(order[0])}",
             )
 
         capacity = round_grantable_to_increment(
@@ -810,7 +973,7 @@ class ResourceEmergencyGovernor:
                 tenants,
                 priority,
                 host,
-                reason=f"sustained_{TRIGGER_SAMPLES}_samples",
+                reason=fast_reasons.get(borrower, f"sustained_{TRIGGER_SAMPLES}_samples"),
             )
 
         if self.ledger.total_emergency_gib > 0:

@@ -166,3 +166,30 @@ def repair_explicit_structural_paths(
         entry["changed"] = True
         results.append(entry)
     return results
+
+
+def plan_sftp_chroot_structural_repairs(
+    site_home: str | Path,
+    *,
+    tenant_user: str | None = None,
+) -> list[ExplicitPathRepair]:
+    """Exact-path repairs for OpenSSH chroot structural safety (never recursive)."""
+    home = Path(site_home)
+    # Refuse treating public_html (content root) as the chroot home.
+    if home.name in {"public_html", "public", "www"}:
+        return []
+    repairs: list[ExplicitPathRepair] = [
+        ExplicitPathRepair(path=str(home), owner="root", group="root", mode=0o755),
+    ]
+    www = home / "www"
+    if www.exists() or www.is_symlink():
+        repairs.append(ExplicitPathRepair(path=str(www), owner="root", group="root", mode=None))
+    pftp = home / "public_ftp"
+    if pftp.exists():
+        repairs.append(ExplicitPathRepair(path=str(pftp), owner="root", group="root", mode=0o750))
+    ph = home / "public_html"
+    if ph.exists() and not ph.is_symlink() and tenant_user:
+        repairs.append(
+            ExplicitPathRepair(path=str(ph), owner=tenant_user, group="www-data", mode=0o2750)
+        )
+    return repairs

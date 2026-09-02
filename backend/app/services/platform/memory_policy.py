@@ -51,6 +51,7 @@ DRIFT_MISSING_SLICE = "MISSING_SLICE"
 DRIFT_DEDICATED_POLICY_REQUIRED = "DEDICATED_POLICY_REQUIRED"
 DRIFT_PLAN_CLASSIFICATION_REVIEW = "PLAN_CLASSIFICATION_REVIEW"
 DRIFT_SUSPENDED_SKIP = "SUSPENDED_SKIP"
+DRIFT_SUSPENDED_PREPARE = "SUSPENDED_PREPARE"
 DRIFT_FIRST_PARTY_EXCLUDED = "FIRST_PARTY_EXCLUDED"
 
 USAGE_NORMAL = "NORMAL"
@@ -281,22 +282,33 @@ def detect_drift(
     targets: SharedMemoryTargets,
     env_status: str,
 ) -> str:
+    high = live.get("memory_high_bytes")
+    mx = live.get("memory_max_bytes")
+    legacy = mx is not None and mx < _LEGACY_MEMORY_MAX_CEILING
+
     if env_status == "suspended":
+        # Prepare unit for reactivation: rewrite legacy tiny limits / wrong policy.
+        if not live.get("unit_exists"):
+            return DRIFT_SUSPENDED_PREPARE
+        if legacy:
+            return DRIFT_LEGACY_MEMORY_MAX
+        if high is None or abs(high - targets.memory_high_bytes) > 1024 * 1024:
+            return DRIFT_SUSPENDED_PREPARE
+        if mx is None or abs(mx - targets.memory_max_bytes) > 1024 * 1024:
+            return DRIFT_SUSPENDED_PREPARE
         return DRIFT_SUSPENDED_SKIP
+
     if targets.warnings and DRIFT_DEDICATED_POLICY_REQUIRED in targets.warnings:
         return DRIFT_DEDICATED_POLICY_REQUIRED
     if not live.get("unit_exists"):
         return DRIFT_MISSING_SLICE
-    high = live.get("memory_high_bytes")
-    mx = live.get("memory_max_bytes")
     # infinity / unset high counts as wrong for Phase 2C shared
     if high is None or abs(high - targets.memory_high_bytes) > 1024 * 1024:
-        # legacy often had no MemoryHigh
-        if mx is not None and mx < _LEGACY_MEMORY_MAX_CEILING:
+        if legacy:
             return DRIFT_LEGACY_MEMORY_MAX
         return DRIFT_WRONG_MEMORY_HIGH
     if mx is None or abs(mx - targets.memory_max_bytes) > 1024 * 1024:
-        if mx is not None and mx < _LEGACY_MEMORY_MAX_CEILING:
+        if legacy:
             return DRIFT_LEGACY_MEMORY_MAX
         return DRIFT_WRONG_MEMORY_MAX
     if targets.source == "unknown_conservative" or DRIFT_PLAN_CLASSIFICATION_REVIEW in targets.warnings:

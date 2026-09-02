@@ -7,6 +7,7 @@ from app.services.platform.host_safety import (
     HOST_MEMAVAILABLE_SAFETY_FLOOR_GIB,
     STATUS_CRITICAL_PRESSURE,
     STATUS_DENY_BURST,
+    STATUS_REDUCED_HEADROOM,
     STATUS_SAFE,
     classify_host_safety_status,
     safe_emergency_capacity_gib,
@@ -140,7 +141,10 @@ def test_safe_emergency_capacity_uses_memavailable_not_48() -> None:
 
 def test_host_safety_status_bands() -> None:
     assert classify_host_safety_status(mem_available_bytes=gib_to_bytes(40)) == STATUS_SAFE
-    assert classify_host_safety_status(mem_available_bytes=gib_to_bytes(5)) == STATUS_DENY_BURST
+    # <6 GiB floor → CRITICAL; 6–8 → DENY_BURST (LOW_HEADROOM); 8–10 → REDUCED (WATCH)
+    assert classify_host_safety_status(mem_available_bytes=gib_to_bytes(5)) == STATUS_CRITICAL_PRESSURE
+    assert classify_host_safety_status(mem_available_bytes=gib_to_bytes(7)) == STATUS_DENY_BURST
+    assert classify_host_safety_status(mem_available_bytes=gib_to_bytes(9)) == STATUS_REDUCED_HEADROOM
     assert (
         classify_host_safety_status(mem_available_bytes=gib_to_bytes(2), psi_some_avg10=25.0)
         == STATUS_CRITICAL_PRESSURE
