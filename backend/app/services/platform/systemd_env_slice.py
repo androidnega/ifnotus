@@ -19,7 +19,14 @@ from typing import Any
 
 from app.core.logging import get_logger
 from app.models.platform import CustomerEnvironment
+from app.services.platform.memory_policy import (
+    DRIFT_DEDICATED_POLICY_REQUIRED,
+    plan_view_from_orm,
+    render_env_slice_unit_with_high,
+    resolve_shared_memory_targets,
+)
 from app.services.platform.resource_enforcement import limits_for_plan
+from app.services.platform.resource_policy import host_resource_policy_from_settings
 from app.services.platform.workload_slices import (
     ENV_SLICE_PREFIX,
     MEMORY_ACCOUNTING_NOTE,
@@ -53,20 +60,46 @@ class EnvSliceLimits:
     memory_max_bytes: int
     tasks_max: int
     slice_name: str
+    memory_high_bytes: int | None = None
 
 
 def limits_from_env(env: CustomerEnvironment, plan=None) -> EnvSliceLimits:
+    """Derive slice limits.
+
+    Phase 2C: ordinary shared plans use MemoryHigh 2/6 GiB + MemoryMax 12 GiB from
+    ResourcePolicy. Legacy ``env.ram_limit_gb`` remains plan marketing metadata and is
+    NOT used as MemoryMax for shared hosting once a plan is classifiable as shared.
+    CPUQuota and TasksMax stay plan/env derived (unchanged in Phase 2C).
+    """
     cpu = float(env.cpu_limit or 0) or 0.25
-    ram_gb = float(env.ram_limit_gb or 0) or 0.25
     app_limits = limits_for_plan(plan)
     cpu_pct = max(5, min(400, int(round(cpu * 100))))
-    mem_bytes = max(64 * 1024 * 1024, int(ram_gb * 1024 * 1024 * 1024))
     tasks = max(16, int(app_limits.max_processes or 10) * 4)
+
+    try:
+        from app.core.config import get_settings
+
+        policy = host_resource_policy_from_settings(get_settings())
+    except Exception:  # noqa: BLE001
+        policy = host_resource_policy_from_settings(None)
+
+    plan_view = plan_view_from_orm(plan) if plan is not None else None
+    targets = resolve_shared_memory_targets(plan_view, policy=policy)
+    dedicated = bool(targets.warnings) and DRIFT_DEDICATED_POLICY_REQUIRED in targets.warnings
+    if dedicated:
+        ram_gb = float(env.ram_limit_gb or 0) or float(getattr(plan_view, "ram_gb", 0) or 0) or 0.25
+        mem_bytes = max(64 * 1024 * 1024, int(ram_gb * 1024 * 1024 * 1024))
+        memory_high = None
+    else:
+        memory_high = targets.memory_high_bytes
+        mem_bytes = targets.memory_max_bytes
+
     return EnvSliceLimits(
         cpu_quota_percent=cpu_pct,
         memory_max_bytes=mem_bytes,
         tasks_max=tasks,
         slice_name=slice_name_for(env.id),
+        memory_high_bytes=memory_high,
     )
 
 
@@ -94,6 +127,7 @@ class EnvironmentSliceService:
             "slice": limits.slice_name,
             "cpu_quota_percent": limits.cpu_quota_percent,
             "memory_max_bytes": limits.memory_max_bytes,
+            "memory_high_bytes": limits.memory_high_bytes,
             "tasks_max": limits.tasks_max,
             "legacy_slice": legacy_slice_name_for(env.id),
         }
@@ -113,13 +147,14 @@ class EnvironmentSliceService:
                 unit_path.write_text(body, encoding="utf-8")
                 self._systemctl("daemon-reload")
             self._systemctl("start", limits.slice_name)
-            self._systemctl(
-                "set-property",
-                limits.slice_name,
+            props = [
                 f"CPUQuota={limits.cpu_quota_percent}%",
                 f"MemoryMax={limits.memory_max_bytes}",
                 f"TasksMax={limits.tasks_max}",
-            )
+            ]
+            if limits.memory_high_bytes is not None:
+                props.append(f"MemoryHigh={limits.memory_high_bytes}")
+            self._systemctl("set-property", limits.slice_name, *props)
             if legacy_path.exists() and legacy_path != unit_path:
                 self._systemctl("stop", legacy_path.name)
                 try:
@@ -190,6 +225,33 @@ class EnvironmentSliceService:
                 out["memory_mb"] = round(mem / (1024 * 1024), 1)
                 out["memory_current_bytes"] = mem
                 out["memory_current_mb"] = out["memory_mb"]
+            # Phase 2C diagnostics
+            try:
+                from app.services.platform.memory_policy import (
+                    classify_usage_band,
+                    read_memory_events,
+                    _parse_bytes,
+                )
+
+                events = read_memory_events(cg)
+                out["memory_events"] = events
+                high_raw = (cg / "memory.high").read_text(encoding="utf-8").strip() if (cg / "memory.high").is_file() else None
+                max_raw = (cg / "memory.max").read_text(encoding="utf-8").strip() if (cg / "memory.max").is_file() else None
+                high_b = _parse_bytes(high_raw)
+                max_b = _parse_bytes(max_raw)
+                out["memory_high_bytes"] = high_b
+                out["memory_max_bytes"] = max_b
+                out["memory_high"] = high_raw
+                out["memory_max"] = max_raw
+                out["usage_band"] = classify_usage_band(
+                    current_bytes=mem,
+                    memory_high_bytes=high_b,
+                    memory_max_bytes=max_b,
+                    oom=int(events.get("oom") or 0),
+                    oom_kill=int(events.get("oom_kill") or 0),
+                )
+            except Exception:  # noqa: BLE001
+                pass
             if pids is not None:
                 out["process_count"] = pids
             out["cpu_usage_usec"] = cpu_usec
@@ -262,6 +324,14 @@ class EnvironmentSliceService:
 
     @staticmethod
     def _unit_body(limits: EnvSliceLimits) -> str:
+        if limits.memory_high_bytes is not None:
+            return render_env_slice_unit_with_high(
+                slice_name=limits.slice_name,
+                cpu_quota=f"{limits.cpu_quota_percent}%",
+                memory_high=str(limits.memory_high_bytes),
+                memory_max=str(limits.memory_max_bytes),
+                tasks_max=str(limits.tasks_max),
+            )
         return render_env_slice_unit(
             slice_name=limits.slice_name,
             cpu_quota=f"{limits.cpu_quota_percent}%",

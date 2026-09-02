@@ -865,6 +865,139 @@ def run_tenant_containment_status(*, environment_id: str | None = None, as_json:
         print(json.dumps({"environments": reports, "global_pools": global_pools}, indent=2)[:12000])
 
 
+def run_reconcile_memory_policy(
+    *,
+    apply: bool = False,
+    apply_parent: bool = False,
+    environment: str | None = None,
+    batch_size: int | None = None,
+    json_out: bool = False,
+) -> None:
+    """Phase 2C: reconcile shared MemoryHigh/MemoryMax (default dry-run)."""
+    from app.models.platform import CustomerEnvironment, HostingPlan, Order, Subscription
+    from app.services.platform.memory_policy import (
+        MemoryPolicyService,
+        format_reconcile_report,
+        plan_view_from_orm,
+        read_live_slice_limits,
+        tasksmax_warning,
+    )
+    from app.services.platform.resource_policy import gib_to_bytes, host_resource_policy_from_settings
+    from app.services.platform.workload_slices import TENANTS_SLICE, slice_name_for
+    import json
+
+    settings = get_settings()
+    setup_logging(settings)
+    policy = host_resource_policy_from_settings(settings)
+    svc = MemoryPolicyService(policy=policy)
+    dry_run = not apply
+    mode = "APPLY" if apply else "DRY-RUN"
+    if not json_out:
+        print(f"IFNOTUS memory policy reconciliation [{mode}]")
+
+    async def _load() -> list[tuple[CustomerEnvironment, object | None, str, int]]:
+        container = create_container()
+        async with container.db_session_factory()() as session:
+            envs = list((await session.execute(select(CustomerEnvironment))).scalars().all())
+            out: list[tuple[CustomerEnvironment, object | None, str, int]] = []
+            for env in envs:
+                if environment:
+                    eid = str(env.id)
+                    short = eid.split("-")[0]
+                    needle = environment.strip().lower()
+                    if needle not in {eid.lower(), short.lower(), (env.domain or "").lower()}:
+                        continue
+                plan = None
+                source = "subscription_plan"
+                sub = await session.get(Subscription, env.subscription_id) if env.subscription_id else None
+                if sub and sub.plan_id:
+                    plan = await session.get(HostingPlan, sub.plan_id)
+                if plan is None:
+                    from sqlalchemy import desc
+
+                    ord_row = (
+                        await session.execute(
+                            select(Order)
+                            .where(Order.customer_id == env.customer_id)
+                            .order_by(desc(Order.created_at))
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
+                    if ord_row is not None and getattr(ord_row, "plan_id", None):
+                        plan = await session.get(HostingPlan, ord_row.plan_id)
+                        source = "order_plan"
+                from sqlalchemy import func
+                from app.models.platform import CustomerDomain
+
+                dcount = (
+                    await session.execute(
+                        select(func.count()).select_from(CustomerDomain).where(CustomerDomain.environment_id == env.id)
+                    )
+                ).scalar() or 0
+                out.append((env, plan, source, int(dcount)))
+            return out
+
+    rows_src = asyncio.run(_load())
+    rows = []
+    for env, plan, source, dcount in rows_src:
+        row = svc.build_row(
+            env_id=env.id,
+            domain=env.domain,
+            status=str(env.status or "active"),
+            plan=plan_view_from_orm(plan),
+            source=source,
+            domain_count=dcount,
+        )
+        # TasksMax warning
+        live = read_live_slice_limits(slice_name_for(env.id))
+        tw = tasksmax_warning(
+            tasks_current=None,
+            tasks_max=int(live.get("TasksMax") or 0) or None,
+        )
+        if tw:
+            row.warnings.append(tw)
+        rows.append(row)
+
+    # Optional batch limit (for controlled apply) — skip already-compliant rows.
+    apply_rows = [r for r in rows if not r.skipped and r.drift != "POLICY_OK"]
+    if batch_size is not None and apply:
+        apply_rows = apply_rows[: max(0, int(batch_size))]
+
+    applied = []
+    if apply:
+        for row in apply_rows:
+            applied.append(svc.apply_row(row, dry_run=False))
+    else:
+        applied = rows
+
+    parent = svc.read_parent_tenants()
+    parent_report = None
+    if apply_parent:
+        parent_report = svc.apply_parent_tenants_memory_max(dry_run=dry_run)
+        parent = parent_report.get("after") or svc.read_parent_tenants()
+
+    payload = {
+        "mode": mode,
+        "rows": [r.to_dict() for r in (applied if apply else rows)],
+        "parent": parent,
+        "parent_apply": parent_report,
+        "policy": {
+            "tenant_parent_memory_max_gib": policy.tenant_normal_pool_gb,
+            "shared_low_memory_high_gib": policy.tenant_low_plan_normal_gb,
+            "shared_standard_memory_high_gib": policy.tenant_standard_plan_normal_gb,
+            "shared_memory_max_gib": policy.tenant_individual_burst_max_gb,
+            "parent_slice": TENANTS_SLICE,
+            "parent_target_bytes": gib_to_bytes(policy.tenant_normal_pool_gb),
+        },
+    }
+    if json_out:
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        print(format_reconcile_report(applied if apply else rows, parent=parent))
+        if parent_report:
+            print(json.dumps({"parent_apply": parent_report}, indent=2, default=str))
+
+
 def run_sftp_cgroup_attach_install(*, apply: bool = False, refresh_map: bool = False) -> None:
     import json
 
@@ -992,6 +1125,21 @@ def main() -> None:
     p_sftp.add_argument("--apply", action="store_true")
     p_sftp.add_argument("--refresh-map", action="store_true", help="Rewrite unix→slice map from DB")
 
+    p_mem = subparsers.add_parser(
+        "reconcile-memory-policy",
+        help="Phase 2C: apply shared MemoryHigh/MemoryMax + optional parent 30GiB (default: dry-run)",
+    )
+    p_mem.add_argument("--dry-run", action="store_true", default=True)
+    p_mem.add_argument("--apply", action="store_true", help="Apply child MemoryHigh/MemoryMax")
+    p_mem.add_argument(
+        "--apply-parent",
+        action="store_true",
+        help="Also set ifnotus-workloads-tenants.slice MemoryMax=30G",
+    )
+    p_mem.add_argument("--environment", default=None, help="Limit to one environment UUID/short-id/domain")
+    p_mem.add_argument("--batch-size", type=int, default=None, help="Max environments to apply in this run")
+    p_mem.add_argument("--json", action="store_true", help="Emit JSON report")
+
     args = parser.parse_args()
 
     if args.command in {"reconcile-hosting", "reconcile-zones"}:
@@ -1039,6 +1187,14 @@ def main() -> None:
         run_sftp_cgroup_attach_install(
             apply=bool(getattr(args, "apply", False)),
             refresh_map=bool(getattr(args, "refresh_map", False)),
+        )
+    elif args.command == "reconcile-memory-policy":
+        run_reconcile_memory_policy(
+            apply=bool(getattr(args, "apply", False)),
+            apply_parent=bool(getattr(args, "apply_parent", False)),
+            environment=getattr(args, "environment", None),
+            batch_size=getattr(args, "batch_size", None),
+            json_out=bool(getattr(args, "json", False)),
         )
     else:
         parser.print_help()

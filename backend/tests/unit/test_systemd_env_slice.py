@@ -28,19 +28,26 @@ def test_limits_from_env_maps_vcpu_and_ram() -> None:
         cpu_limit=0.2,
         ram_limit_gb=0.25,
     )
+    # Without plan → Phase 2C conservative shared unknown (2/12)
     limits = limits_from_env(env, plan=None)
     assert limits.cpu_quota_percent == 20
-    assert limits.memory_max_bytes == int(0.25 * 1024 * 1024 * 1024)
+    assert limits.memory_high_bytes == int(2 * 1024 * 1024 * 1024)
+    assert limits.memory_max_bytes == int(12 * 1024 * 1024 * 1024)
     assert limits.tasks_max >= 16
     assert limits.slice_name == slice_name_for(env.id)
 
 
 def test_unit_body_contains_enforcement_directives() -> None:
     env = SimpleNamespace(id=uuid4(), cpu_limit=1.0, ram_limit_gb=1.0)
-    limits = limits_from_env(env)
+    plan = SimpleNamespace(
+        slug="x", name="x", price_monthly=30, ram_gb=0.25, storage_gb=2, features={}
+    )
+    limits = limits_from_env(env, plan)
     body = EnvironmentSliceService._unit_body(limits)
     assert f"CPUQuota={limits.cpu_quota_percent}%" in body
     assert f"MemoryMax={limits.memory_max_bytes}" in body
+    assert f"MemoryHigh={limits.memory_high_bytes}" in body
+    assert "MemoryMin=" not in body
     assert f"TasksMax={limits.tasks_max}" in body
     assert "[Slice]" in body
 

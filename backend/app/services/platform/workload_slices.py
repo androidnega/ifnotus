@@ -103,7 +103,7 @@ PHASE_2B_PHP_FPM_RECOMMENDATION: dict[str, Any] = {
         "Preserve per-hostname sockets for Nginx. Canary one low-risk shared PHP tenant first. "
         "See app.services.platform.php_fpm_env_design. Do not change MemoryMax in 2B."
     ),
-    "production_php_architecture_changed": False,
+    "production_php_architecture_changed": True,
 }
 
 SFTP_ACCOUNTING_STATUS = {

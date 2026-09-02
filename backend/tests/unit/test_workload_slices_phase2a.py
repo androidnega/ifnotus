@@ -123,7 +123,9 @@ def test_limits_from_env_uses_nested_slice_name() -> None:
     limits = limits_from_env(env)
     assert limits.slice_name == slice_name_for(env.id)
     assert limits.slice_name.startswith(ENV_SLICE_PREFIX)
-    assert limits.memory_max_bytes == int(0.25 * 1024**3)
+    # Phase 2C: unknown/missing plan → conservative shared 2/12 GiB
+    assert limits.memory_high_bytes == int(2 * 1024**3)
+    assert limits.memory_max_bytes == int(12 * 1024**3)
 
 
 def test_cron_and_node_wrap_use_nested_slice(monkeypatch) -> None:
@@ -164,10 +166,10 @@ def test_examflow_not_healthy_as_root() -> None:
 
 
 def test_php_fpm_phase_2b_recommendation_present() -> None:
-    assert PHASE_2B_PHP_FPM_RECOMMENDATION["production_php_architecture_changed"] is False
+    assert PHASE_2B_PHP_FPM_RECOMMENDATION["production_php_architecture_changed"] is True
     assert PHASE_2B_PHP_FPM_RECOMMENDATION["recommendation"] == "A-env"
-    assert SFTP_ACCOUNTING_STATUS["changed"] is False
-    assert SFTP_ACCOUNTING_STATUS["accounting_supported"] == "PHASE_2B_LIMITATION"
+    assert SFTP_ACCOUNTING_STATUS["changed"] is True
+    assert SFTP_ACCOUNTING_STATUS["accounting_supported"] == "PHASE_2B4_PAM_ATTACH"
 
 
 def test_vps_not_converted_by_slice_phase() -> None:
