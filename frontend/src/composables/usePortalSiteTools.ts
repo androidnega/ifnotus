@@ -1195,16 +1195,17 @@ export function usePortalSiteTools(
     try {
       const { data } = await customersApi.listEnvApplicationCatalog(activeEnv.value.id)
       appCatalog.value = data
-      const firstAllowed = data.find((f) => f.allowed)
-      if (firstAllowed && !newAppFramework.value) newAppFramework.value = firstAllowed.id
+      const pythonIds = new Set(['python', 'fastapi', 'flask', 'django'])
+      if (!pythonIds.has(String(newAppFramework.value || '').toLowerCase())) {
+        const firstPython = data.find((f) => pythonIds.has(String(f.id || '').toLowerCase()) && f.allowed)
+        newAppFramework.value = firstPython?.id || 'fastapi'
+      }
 
-      // Default runtime version for the currently selected framework.
-      // Backend expects this as `runtime_version` (optional).
-      const fw = newAppFramework.value || firstAllowed?.id
+      const fw = newAppFramework.value
       if (fw && !newAppRuntimeVersion.value) {
         const hit = data.find((f) => f.id === fw)
-        const versions = hit?.runtime_versions?.length ? hit.runtime_versions : hit?.runtime_version ? [hit.runtime_version] : []
-        newAppRuntimeVersion.value = versions.includes('3.12') ? '3.12' : versions[0] ?? null
+        const versions = hit?.runtime_versions?.length ? hit.runtime_versions : ['3.9', '3.10', '3.11', '3.12', '3.13']
+        newAppRuntimeVersion.value = versions.includes('3.12') ? '3.12' : versions[0] ?? '3.12'
       }
     } catch {
       appCatalog.value = []

@@ -419,8 +419,24 @@ const canCron = computed(() => envCan(props.activeEnv, 'cron'))
 const canDb = computed(() => envCan(props.activeEnv, 'db_manage'))
 const canMail = computed(() => envCan(props.activeEnv, 'mail'))
 const canFtp = computed(() => envCan(props.activeEnv, 'sftp'))
+const PYTHON_FRAMEWORKS = [
+  { id: 'fastapi', label: 'FastAPI' },
+  { id: 'flask', label: 'Flask' },
+  { id: 'django', label: 'Django' },
+  { id: 'python', label: 'Python (ASGI)' },
+] as const
+const PYTHON_RUNTIME_VERSIONS = ['3.9', '3.10', '3.11', '3.12', '3.13']
+
 const pythonFrameworkOptions = computed(() =>
-  (props.appCatalog || []).filter((item) => ['python', 'fastapi', 'django'].includes(String(item.id || '').toLowerCase())),
+  PYTHON_FRAMEWORKS.map((fw) => {
+    const catalog = (props.appCatalog || []).find((item) => String(item.id).toLowerCase() === fw.id)
+    return {
+      id: fw.id,
+      label: fw.label,
+      allowed: catalog ? Boolean(catalog.allowed) : true,
+      runtime_versions: catalog?.runtime_versions?.length ? catalog.runtime_versions : PYTHON_RUNTIME_VERSIONS,
+    }
+  }),
 )
 const selectedPythonFramework = computed(
   () => pythonFrameworkOptions.value.find((item) => item.id === props.newAppFramework) || pythonFrameworkOptions.value[0] || null,
@@ -428,11 +444,10 @@ const selectedPythonFramework = computed(
 
 const pythonRuntimeOptions = computed(() => {
   const fw = selectedPythonFramework.value
-  if (!fw) return []
-  const versions = (fw.runtime_versions?.length ? fw.runtime_versions : [fw.runtime_version || '3.12']).filter(Boolean)
+  const versions = fw?.runtime_versions?.length ? fw.runtime_versions : PYTHON_RUNTIME_VERSIONS
   return versions.map((version) => ({
     runtime_version: String(version),
-    allowed: fw.allowed,
+    allowed: fw?.allowed ?? true,
     recommended: String(version) === '3.12',
   }))
 })
@@ -446,6 +461,24 @@ watch(
     if (hasCurrent) return
     const first = pythonRuntimeOptions.value.find((o) => o.allowed)?.runtime_version || pythonRuntimeOptions.value[0]?.runtime_version
     if (first && first !== current) emit('update:newAppRuntimeVersion', String(first))
+  },
+  { immediate: true },
+)
+
+const pythonApplications = computed(() =>
+  (props.applications || []).filter((app) => {
+    const runtime = String(app.runtime || '').toLowerCase()
+    const framework = String(app.framework || '').toLowerCase()
+    return runtime === 'python' || ['python', 'fastapi', 'flask', 'django'].includes(framework)
+  }),
+)
+
+watch(
+  () => props.newAppFramework,
+  (fw) => {
+    if (!PYTHON_FRAMEWORKS.some((item) => item.id === fw)) {
+      emit('update:newAppFramework', 'fastapi')
+    }
   },
   { immediate: true },
 )
@@ -1080,15 +1113,15 @@ function formatBytes(n?: number | null) {
         </div>
       </div>
 
-      <div class="apps-container mt" :class="{ 'apps-container--single': !(applications?.length) }">
-        <div v-if="applications?.length" class="apps-list-card">
+      <div class="apps-container mt">
+        <div v-if="pythonApplications.length" class="apps-list-card">
           <div class="apps-card-header">
             <h4>Active Applications</h4>
-            <span class="apps-count-badge">{{ applications?.length || 0 }} deployed</span>
+            <span class="apps-count-badge">{{ pythonApplications.length }} deployed</span>
           </div>
 
-          <div v-if="applications?.length" class="app-items-grid">
-            <div v-for="app in applications" :key="app.id" class="app-card-item">
+          <div class="app-items-grid">
+            <div v-for="app in pythonApplications" :key="app.id" class="app-card-item">
               <div class="app-card-main">
                 <div class="app-title-row">
                   <span class="app-icon-tag"><i class="fas fa-cube" /></span>
@@ -1123,18 +1156,13 @@ function formatBytes(n?: number | null) {
             </div>
           </div>
 
-          <div v-else class="apps-empty-box">
-            <i class="fas fa-box-open empty-icon" />
-            <p>No Python applications created yet.</p>
-            <span class="muted tiny">Use the form to create a clean Python application workspace for this hosting account.</span>
-          </div>
         </div>
 
         <div class="app-create-card rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950">
           <div class="apps-card-header app-create-header border-b border-slate-200 pb-3 dark:border-slate-800">
             <div>
               <h4 class="text-sm font-semibold tracking-tight text-slate-900 dark:text-slate-100">Deploy New Python Application</h4>
-              <p class="app-create-subtitle text-xs text-slate-500 dark:text-slate-400">Compact Python deployment setup with internal scrolling.</p>
+              <p class="app-create-subtitle text-xs text-slate-500 dark:text-slate-400">Full-page Python setup. Frameworks are FastAPI, Flask, Django, or generic ASGI only.</p>
             </div>
             <span
               v-if="selectedPythonFramework"
@@ -1143,7 +1171,7 @@ function formatBytes(n?: number | null) {
               {{ selectedPythonFramework.label }}
             </span>
           </div>
-          <div class="app-create-form max-h-[70vh] overflow-y-auto pr-1">
+          <div class="app-create-form">
             <div class="app-form-section rounded-xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-900/60">
               <div class="app-section-label mb-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Application setup</div>
               <div class="app-control-list">
@@ -3144,17 +3172,10 @@ function formatBytes(n?: number | null) {
   margin-bottom: 1.25rem;
 }
 .apps-container {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 1.5rem;
-}
-.apps-container--single {
-  grid-template-columns: 1fr !important;
-}
-@media (min-width: 900px) {
-  .apps-container {
-    grid-template-columns: 1.15fr 0.85fr;
-  }
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  width: 100%;
 }
 .apps-list-card,
 .app-create-card {
