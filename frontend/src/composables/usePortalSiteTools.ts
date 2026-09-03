@@ -1234,7 +1234,6 @@ export function usePortalSiteTools(
     }
     appBusy.value = true
     appMsg.value = ''
-    const gitUrl = newAppGitUrl.value.trim() || undefined
     let startCommand: string | undefined = undefined
     if (newAppFramework.value === 'python' || newAppFramework.value === 'fastapi') {
       const mod = newAppPythonModule.value.trim()
@@ -1252,28 +1251,25 @@ export function usePortalSiteTools(
       const { data } = await customersApi.createEnvApplication(activeEnv.value.id, {
         name: newAppName.value.trim(),
         framework: newAppFramework.value,
-        git_url: gitUrl,
         runtime_version: newAppRuntimeVersion.value || undefined,
         start_command: startCommand,
       })
       newAppName.value = ''
-      newAppGitUrl.value = ''
       await loadApplications()
-      if (gitUrl && data.id) {
-        appMsg.value = data.message || 'Application created. Deploying from Git…'
+      if (data.id) {
         try {
           const deployed = await customersApi.deployEnvApplication(activeEnv.value.id, data.id)
-          appMsg.value = deployed.data.message || 'Application created and deployed from Git.'
+          appMsg.value = deployed.data.message || data.message || 'Application created.'
           await loadApplications()
         } catch (deployErr: unknown) {
           const err = deployErr as { response?: { data?: { error?: { message?: string }; message?: string } } }
           appMsg.value =
             err.response?.data?.error?.message ||
             err.response?.data?.message ||
-            'Application created, but Deploy failed. Use Deploy on the app to retry the Git clone.'
+            'Application created. Use Deploy if it did not start.'
         }
       } else {
-        appMsg.value = data.message || 'Application created. Use Deploy to start it.'
+        appMsg.value = data.message || 'Application created.'
       }
     } catch (e: unknown) {
       const err = e as { response?: { data?: { error?: { message?: string } } } }

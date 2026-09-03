@@ -38,6 +38,7 @@ _PORT_ALLOC_LOCK_KEY = 0x1F38A
 _ACTIVE_APP_STATUSES = ("pending", "deploying", "running", "failed", "restarting", "stopped")
 PYTHON_RUNTIME_VERSIONS = ("3.9", "3.10", "3.11", "3.12", "3.13")
 PYTHON_RUNTIME_RECOMMENDED = "3.12"
+NODE_RUNTIME_VERSIONS = ("18", "20", "22")
 
 
 @dataclass(frozen=True)
@@ -261,7 +262,13 @@ class ApplicationRuntimeService:
         out: list[dict[str, Any]] = []
         for spec in FRAMEWORKS.values():
             allowed = stack_allowed(plan, spec.stack_key)
-            runtime_versions = list(PYTHON_RUNTIME_VERSIONS) if spec.runtime == "python" else []
+            runtime_versions = (
+                list(PYTHON_RUNTIME_VERSIONS)
+                if spec.runtime == "python"
+                else list(NODE_RUNTIME_VERSIONS)
+                if spec.runtime == "nodejs"
+                else []
+            )
             out.append(
                 {
                     "id": spec.id,
