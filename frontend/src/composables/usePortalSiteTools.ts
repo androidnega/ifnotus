@@ -244,6 +244,7 @@ export function usePortalSiteTools(
       stack_key: string
       allowed: boolean
       runtime_version?: string
+      runtime_versions?: string[]
     }>
   >([])
   const applications = ref<
@@ -264,6 +265,7 @@ export function usePortalSiteTools(
   const newAppName = ref('')
   const newAppFramework = ref('fastapi')
   const newAppGitUrl = ref('')
+  const newAppRuntimeVersion = ref<string | null>(null)
   // Python/FastAPI entry wiring (maps to `module:object` used by gunicorn+uvicorn).
   const newAppPythonModule = ref('app.main')
   const newAppPythonObject = ref('app')
@@ -1195,8 +1197,18 @@ export function usePortalSiteTools(
       appCatalog.value = data
       const firstAllowed = data.find((f) => f.allowed)
       if (firstAllowed && !newAppFramework.value) newAppFramework.value = firstAllowed.id
+
+      // Default runtime version for the currently selected framework.
+      // Backend expects this as `runtime_version` (optional).
+      const fw = newAppFramework.value || firstAllowed?.id
+      if (fw && !newAppRuntimeVersion.value) {
+        const hit = data.find((f) => f.id === fw)
+        const versions = hit?.runtime_versions?.length ? hit.runtime_versions : hit?.runtime_version ? [hit.runtime_version] : []
+        newAppRuntimeVersion.value = versions.includes('3.12') ? '3.12' : versions[0] ?? null
+      }
     } catch {
       appCatalog.value = []
+      newAppRuntimeVersion.value = null
     }
   }
 
@@ -1240,6 +1252,7 @@ export function usePortalSiteTools(
         name: newAppName.value.trim(),
         framework: newAppFramework.value,
         git_url: gitUrl,
+        runtime_version: newAppRuntimeVersion.value || undefined,
         start_command: startCommand,
       })
       newAppName.value = ''
@@ -1667,6 +1680,7 @@ export function usePortalSiteTools(
     appBusy,
     newAppName,
     newAppFramework,
+    newAppRuntimeVersion,
     newAppGitUrl,
     newAppPythonModule,
     newAppPythonObject,

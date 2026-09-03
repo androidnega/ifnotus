@@ -240,6 +240,11 @@ class SubmitMomoRequest(SchemaBase):
     transaction_id: str = Field(min_length=6, max_length=80)
 
 
+class ClaimPaymentRequest(SchemaBase):
+    """Customer says they paid; MoMo transaction ID optional on first claim."""
+    transaction_id: str | None = Field(default=None, max_length=80)
+
+
 class OrderResponse(SchemaBase):
     id: UUID
     customer_id: UUID
@@ -1145,6 +1150,7 @@ class ApplicationCatalogEntry(SchemaBase):
     stack_key: str
     stack_label: str
     runtime_version: str
+    runtime_versions: list[str] = Field(default_factory=list)
     default_build: str
     default_start: str
     allowed: bool

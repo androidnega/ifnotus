@@ -1772,6 +1772,7 @@ export const customersApi = {
         stack_key: string
         stack_label: string
         runtime_version: string
+        runtime_versions?: string[]
         default_build: string
         default_start: string
         allowed: boolean

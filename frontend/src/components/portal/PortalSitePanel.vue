@@ -64,11 +64,13 @@ const props = defineProps<{
     label: string
     allowed: boolean
     runtime_version?: string
+    runtime_versions?: string[]
   }>
   appMsg?: string
   appBusy?: boolean
   newAppName?: string
   newAppFramework?: string
+  newAppRuntimeVersion?: string | null
   newAppGitUrl?: string
   newAppPythonModule?: string
   newAppPythonObject?: string
@@ -321,6 +323,7 @@ const emit = defineEmits<{
   deleteApplication: [string]
   'update:newAppName': [string]
   'update:newAppFramework': [string]
+  'update:newAppRuntimeVersion': [string]
   'update:newAppGitUrl': [string]
   'update:newAppPythonModule': [string]
   'update:newAppPythonObject': [string]
@@ -416,6 +419,36 @@ const canCron = computed(() => envCan(props.activeEnv, 'cron'))
 const canDb = computed(() => envCan(props.activeEnv, 'db_manage'))
 const canMail = computed(() => envCan(props.activeEnv, 'mail'))
 const canFtp = computed(() => envCan(props.activeEnv, 'sftp'))
+const pythonFrameworkOptions = computed(() =>
+  (props.appCatalog || []).filter((item) => ['python', 'fastapi', 'django'].includes(String(item.id || '').toLowerCase())),
+)
+const selectedPythonFramework = computed(
+  () => pythonFrameworkOptions.value.find((item) => item.id === props.newAppFramework) || pythonFrameworkOptions.value[0] || null,
+)
+
+const pythonRuntimeOptions = computed(() => {
+  const fw = selectedPythonFramework.value
+  if (!fw) return []
+  const versions = (fw.runtime_versions?.length ? fw.runtime_versions : [fw.runtime_version || '3.12']).filter(Boolean)
+  return versions.map((version) => ({
+    runtime_version: String(version),
+    allowed: fw.allowed,
+    recommended: String(version) === '3.12',
+  }))
+})
+
+watch(
+  () => [props.newAppFramework, props.newAppRuntimeVersion, pythonRuntimeOptions.value],
+  () => {
+    if (!pythonRuntimeOptions.value.length) return
+    const current = String(props.newAppRuntimeVersion || '').trim()
+    const hasCurrent = current && pythonRuntimeOptions.value.some((o) => String(o.runtime_version) === current)
+    if (hasCurrent) return
+    const first = pythonRuntimeOptions.value.find((o) => o.allowed)?.runtime_version || pythonRuntimeOptions.value[0]?.runtime_version
+    if (first && first !== current) emit('update:newAppRuntimeVersion', String(first))
+  },
+  { immediate: true },
+)
 
 const siteTabItems = computed(() =>
   SITE_WORKSPACE_TABS.filter((t) => {
@@ -1040,16 +1073,15 @@ function formatBytes(n?: number | null) {
     <div v-else-if="siteTab === 'applications'" class="block">
       <div class="apps-head-box">
         <div>
-          <h3>Custom Application Services</h3>
+          <h3>Python Application Hosting</h3>
           <p class="muted">
-            Deploy independent Node.js, FastAPI, Python, or Go microservices alongside your website.
-            IFNOTUS orchestrates application runtimes, environment variables, reverse proxies, and process lifetimes automatically.
+            Create and deploy Python web apps cleanly. Choose your domain or subdomain, then deploy a Python, FastAPI, or Django service for that site.
           </p>
         </div>
       </div>
 
-      <div class="apps-container mt">
-        <div class="apps-list-card">
+      <div class="apps-container mt" :class="{ 'apps-container--single': !(applications?.length) }">
+        <div v-if="applications?.length" class="apps-list-card">
           <div class="apps-card-header">
             <h4>Active Applications</h4>
             <span class="apps-count-badge">{{ applications?.length || 0 }} deployed</span>
@@ -1093,96 +1125,170 @@ function formatBytes(n?: number | null) {
 
           <div v-else class="apps-empty-box">
             <i class="fas fa-box-open empty-icon" />
-            <p>No custom application services created yet.</p>
-            <span class="muted tiny">Use the form to spin up a new application from Git or template.</span>
+            <p>No Python applications created yet.</p>
+            <span class="muted tiny">Use the form to create a clean Python application workspace for this hosting account.</span>
           </div>
         </div>
 
-        <div class="app-create-card">
-          <div class="apps-card-header">
-            <h4>Deploy New Application</h4>
+        <div class="app-create-card rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950">
+          <div class="apps-card-header app-create-header border-b border-slate-200 pb-3 dark:border-slate-800">
+            <div>
+              <h4 class="text-sm font-semibold tracking-tight text-slate-900 dark:text-slate-100">Deploy New Python Application</h4>
+              <p class="app-create-subtitle text-xs text-slate-500 dark:text-slate-400">Compact Python deployment setup with internal scrolling.</p>
+            </div>
+            <span
+              v-if="selectedPythonFramework"
+              class="apps-count-badge framework-badge rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300"
+            >
+              {{ selectedPythonFramework.label }}
+            </span>
           </div>
-          <div class="app-create-form">
-            <label class="field">
-              <span>Application Name *</span>
-              <input
-                :value="newAppName"
-                type="text"
-                placeholder="e.g. API Service, Payment Webhook"
-                @input="emit('update:newAppName', ($event.target as HTMLInputElement).value)"
-              />
-            </label>
-            <label class="field">
-              <span>Framework / Runtime *</span>
-              <select
-                :value="newAppFramework"
-                @change="emit('update:newAppFramework', ($event.target as HTMLSelectElement).value)"
-              >
-                <option v-for="f in appCatalog || []" :key="f.id" :value="f.id" :disabled="!f.allowed">
-                  {{ f.label }}{{ f.allowed ? '' : ' (Requires Plan Upgrade)' }}
-                </option>
-              </select>
-            </label>
+          <div class="app-create-form max-h-[70vh] overflow-y-auto pr-1">
+            <div class="app-form-section rounded-xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-900/60">
+              <div class="app-section-label mb-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Application setup</div>
+              <div class="app-control-list">
+                <div
+                  class="app-control-row rounded-xl border border-slate-200 bg-white px-3 py-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)] dark:border-slate-800 dark:bg-slate-950/80"
+                >
+                  <div class="app-control-meta">
+                    <span class="app-control-title">Python framework</span>
+                    <p class="app-control-help">Choose the Python framework style for this application.</p>
+                  </div>
+                  <label class="field app-control-input">
+                    <span class="sr-only">Python framework</span>
+                    <select
+                      :value="newAppFramework"
+                      @change="emit('update:newAppFramework', ($event.target as HTMLSelectElement).value)"
+                    >
+                      <option v-for="f in pythonFrameworkOptions" :key="f.id" :value="f.id" :disabled="!f.allowed">
+                        {{ f.label }}{{ f.allowed ? '' : ' (Requires Plan Upgrade)' }}
+                      </option>
+                    </select>
+                  </label>
+                </div>
 
-            <label class="field">
-              <span>Application domain / subdomain *</span>
-              <select
-                :value="activeEnv.id"
-                @change="emit('selectEnv', ($event.target as HTMLSelectElement).value)"
-              >
-                <option v-for="e in environments" :key="e.id" :value="e.id">
-                  {{ e.domain || e.id }}
-                </option>
-              </select>
-            </label>
+                <div class="app-control-row rounded-xl border border-slate-200 bg-white px-3 py-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)] dark:border-slate-800 dark:bg-slate-950/80">
+                  <div class="app-control-meta">
+                    <span class="app-control-title">Python version</span>
+                    <p class="app-control-help">Choose which Python runtime version to run.</p>
+                  </div>
+                  <label class="field app-control-input">
+                    <span class="sr-only">Python runtime version</span>
+                    <select
+                      :value="newAppRuntimeVersion || ''"
+                      @change="emit('update:newAppRuntimeVersion', ($event.target as HTMLSelectElement).value)"
+                      class="w-full"
+                    >
+                      <option v-for="opt in pythonRuntimeOptions" :key="String(opt.runtime_version)" :value="opt.runtime_version" :disabled="!opt.allowed">
+                        {{ opt.runtime_version }}{{ opt.recommended ? ' (recommended)' : '' }}{{ opt.allowed ? '' : ' (Requires Plan Upgrade)' }}
+                      </option>
+                    </select>
+                  </label>
+                </div>
 
-            <label class="field">
-              <span>Git Repository URL (Optional)</span>
-              <input
-                :value="newAppGitUrl"
-                type="text"
-                inputmode="url"
-                spellcheck="false"
-                autocapitalize="off"
-                placeholder="https://github.com/username/repo.git"
-                @input="emit('update:newAppGitUrl', ($event.target as HTMLInputElement).value)"
-              />
-            </label>
-            <p class="muted tiny">
-              <i class="fas fa-info-circle" /> Repositories with a Git URL start deployment automatically upon creation.
-            </p>
+                <div class="app-control-row rounded-xl border border-slate-200 bg-white px-3 py-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)] dark:border-slate-800 dark:bg-slate-950/80">
+                  <div class="app-control-meta">
+                    <span class="app-control-title">Application root</span>
+                    <p class="app-control-help">Folder name (stored under <code>/apps/&lt;slug&gt;</code>) for this application.</p>
+                  </div>
+                  <label class="field app-control-input">
+                    <span class="sr-only">Application root</span>
+                    <input
+                      :value="newAppName"
+                      type="text"
+                      placeholder="e.g. student-api"
+                      @input="emit('update:newAppName', ($event.target as HTMLInputElement).value)"
+                    />
+                  </label>
+                </div>
 
-            <div v-if="newAppFramework === 'python' || newAppFramework === 'fastapi'" class="mt-3">
-              <label class="field">
-                <span>ASGI module (e.g. <code>app.main</code>)</span>
-                <input
-                  :value="newAppPythonModule"
-                  type="text"
-                  placeholder="app.main"
-                  spellcheck="false"
-                  autocapitalize="off"
-                  @input="emit('update:newAppPythonModule', ($event.target as HTMLInputElement).value)"
-                />
-              </label>
-              <label class="field">
-                <span>ASGI app variable (e.g. <code>app</code>)</span>
-                <input
-                  :value="newAppPythonObject"
-                  type="text"
-                  placeholder="app"
-                  spellcheck="false"
-                  autocapitalize="off"
-                  @input="emit('update:newAppPythonObject', ($event.target as HTMLInputElement).value)"
-                />
-              </label>
-              <p class="muted tiny">
-                <i class="fas fa-lock" /> For safety, only module/object identifiers are accepted.
-              </p>
+                <div class="app-control-row rounded-xl border border-slate-200 bg-white px-3 py-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)] dark:border-slate-800 dark:bg-slate-950/80">
+                  <div class="app-control-meta">
+                    <span class="app-control-title">Application URL</span>
+                    <p class="app-control-help">Choose the domain or subdomain that should serve the app.</p>
+                  </div>
+                  <label class="field app-control-input">
+                    <span class="sr-only">Application URL</span>
+                    <select
+                      :value="activeEnv.id"
+                      @change="emit('selectEnv', ($event.target as HTMLSelectElement).value)"
+                    >
+                      <option v-for="e in environments" :key="e.id" :value="e.id">
+                        {{ e.domain || e.id }}
+                      </option>
+                    </select>
+                  </label>
+                </div>
+
+                <div class="app-control-row rounded-xl border border-slate-200 bg-white px-3 py-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)] dark:border-slate-800 dark:bg-slate-950/80">
+                  <div class="app-control-meta">
+                    <span class="app-control-title">Git Repository URL</span>
+                    <p class="app-control-help">Optional. Leave empty if you will upload files manually.</p>
+                  </div>
+                  <label class="field app-control-input">
+                    <span class="sr-only">Git Repository URL</span>
+                    <input
+                      :value="newAppGitUrl"
+                      type="text"
+                      inputmode="url"
+                      spellcheck="false"
+                      autocapitalize="off"
+                      placeholder="https://github.com/username/repo.git"
+                      @input="emit('update:newAppGitUrl', ($event.target as HTMLInputElement).value)"
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="newAppFramework === 'python' || newAppFramework === 'fastapi'" class="mt-1">
+              <div class="app-form-section rounded-xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-900/60">
+                <div class="app-section-label mb-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">ASGI startup</div>
+                <div class="app-control-list">
+                  <div class="app-control-row rounded-xl border border-slate-200 bg-white px-3 py-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)] dark:border-slate-800 dark:bg-slate-950/80">
+                    <div class="app-control-meta">
+                      <span class="app-control-title">Application startup file</span>
+                      <p class="app-control-help">Module path for the ASGI entry, for example <code>app.main</code>.</p>
+                    </div>
+                    <label class="field app-control-input">
+                      <span class="sr-only">ASGI module</span>
+                      <input
+                        :value="newAppPythonModule"
+                        type="text"
+                        placeholder="app.main"
+                        spellcheck="false"
+                        autocapitalize="off"
+                        @input="emit('update:newAppPythonModule', ($event.target as HTMLInputElement).value)"
+                      />
+                    </label>
+                  </div>
+                  <div class="app-control-row rounded-xl border border-slate-200 bg-white px-3 py-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)] dark:border-slate-800 dark:bg-slate-950/80">
+                    <div class="app-control-meta">
+                      <span class="app-control-title">Application entry point</span>
+                      <p class="app-control-help">Callable object name, for example <code>app</code>.</p>
+                    </div>
+                    <label class="field app-control-input">
+                      <span class="sr-only">ASGI app variable</span>
+                      <input
+                        :value="newAppPythonObject"
+                        type="text"
+                        placeholder="app"
+                        spellcheck="false"
+                        autocapitalize="off"
+                        @input="emit('update:newAppPythonObject', ($event.target as HTMLInputElement).value)"
+                      />
+                    </label>
+                  </div>
+                </div>
+                <p class="muted tiny app-help-note">
+                  <i class="fas fa-lock" /> For safety, only module/object identifiers are accepted.
+                </p>
+              </div>
             </div>
 
             <button
               type="button"
-              class="btn-primary btn-create-app"
+              class="btn-primary btn-create-app sticky bottom-0 mt-1 rounded-xl px-4 py-3 text-sm font-semibold shadow-lg shadow-brand-600/10"
               :disabled="appBusy || !(newAppName || '').trim()"
               @click="emit('createApplication')"
             >
@@ -3042,6 +3148,9 @@ function formatBytes(n?: number | null) {
   grid-template-columns: 1fr;
   gap: 1.5rem;
 }
+.apps-container--single {
+  grid-template-columns: 1fr !important;
+}
 @media (min-width: 900px) {
   .apps-container {
     grid-template-columns: 1.15fr 0.85fr;
@@ -3074,6 +3183,15 @@ function formatBytes(n?: number | null) {
   font-weight: 700;
   color: var(--p-ink, #0f172a);
 }
+.app-create-header {
+  align-items: flex-start;
+  gap: 0.8rem;
+}
+.app-create-subtitle {
+  margin: 0.3rem 0 0;
+  font-size: 0.82rem;
+  color: #64748b;
+}
 .apps-count-badge {
   font-size: 0.72rem;
   font-weight: 600;
@@ -3085,6 +3203,9 @@ function formatBytes(n?: number | null) {
 .dark .apps-count-badge {
   background: #1e293b;
   color: #94a3b8;
+}
+.framework-badge {
+  white-space: nowrap;
 }
 .app-items-grid {
   display: flex;
@@ -3160,7 +3281,101 @@ function formatBytes(n?: number | null) {
 .app-create-form {
   display: flex;
   flex-direction: column;
+  gap: 1rem;
+}
+.app-form-section {
+  border: 1px solid var(--p-border, #e2e8f0);
+  border-radius: 0.85rem;
+  background: #f8fafc;
+  padding: 1rem 1.05rem;
+}
+.dark .app-form-section {
+  background: #0f172a;
+  border-color: #334155;
+}
+.app-control-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.95rem;
+}
+.app-control-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+.app-control-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  padding-top: 0.2rem;
+}
+.app-control-title {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--p-ink, #0f172a);
+}
+.dark .app-control-title {
+  color: #f8fafc;
+}
+.app-control-help {
+  margin: 0;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: #64748b;
+}
+.app-control-input {
+  margin: 0;
+}
+.app-readonly-pill {
+  min-height: 2.65rem;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.68rem 0.85rem;
+  border-radius: 0.7rem;
+  border: 1px solid var(--p-border, #d7dee8);
+  background: #fff;
+  color: var(--p-ink, #0f172a);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.dark .app-readonly-pill {
+  background: #111827;
+  border-color: #334155;
+  color: #f8fafc;
+}
+.app-form-grid {
+  display: grid;
+  grid-template-columns: 1fr;
   gap: 0.85rem;
+}
+.app-form-grid.compact {
+  gap: 0.75rem;
+}
+.field-span-full {
+  grid-column: 1 / -1;
+}
+.app-section-label {
+  margin-bottom: 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #475569;
+}
+.app-help-note {
+  margin: 0.75rem 0 0;
+}
+@media (min-width: 720px) {
+  .app-form-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (max-width: 820px) {
+  .app-control-row {
+    grid-template-columns: 1fr;
+    gap: 0.55rem;
+  }
 }
 .btn-create-app {
   width: 100%;

@@ -2,9 +2,11 @@
 
 from app.services.platform.application_runtime import (
     FRAMEWORKS,
+    PYTHON_RUNTIME_VERSIONS,
     ApplicationRuntimeService,
     app_display_name,
     app_to_response,
+    normalize_python_version,
     slugify,
     supervisor_program_name,
 )
@@ -64,3 +66,10 @@ def test_list_catalog_respects_plan(test_settings) -> None:
     assert "fastapi" in by_id
     assert "static" in by_id
     assert isinstance(by_id["fastapi"]["allowed"], bool)
+    assert by_id["fastapi"]["runtime_versions"] == list(PYTHON_RUNTIME_VERSIONS)
+
+
+def test_normalize_python_version() -> None:
+    assert normalize_python_version("3.12.14") == "3.12"
+    assert normalize_python_version("3.13") == "3.13"
+    assert normalize_python_version("") == "3.12"

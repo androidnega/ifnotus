@@ -36,6 +36,8 @@ APP_PORT_MAX = 39999
 # Transaction-scoped advisory lock so concurrent creates cannot collide.
 _PORT_ALLOC_LOCK_KEY = 0x1F38A
 _ACTIVE_APP_STATUSES = ("pending", "deploying", "running", "failed", "restarting", "stopped")
+PYTHON_RUNTIME_VERSIONS = ("3.9", "3.10", "3.11", "3.12", "3.13")
+PYTHON_RUNTIME_RECOMMENDED = "3.12"
 
 
 @dataclass(frozen=True)
@@ -73,7 +75,7 @@ FRAMEWORKS: dict[str, FrameworkSpec] = {
         "python",
         "Python",
         "python",
-        "3.13",
+        PYTHON_RUNTIME_RECOMMENDED,
         "pip install -r requirements.txt",
         "gunicorn -k uvicorn.workers.UvicornWorker -b 127.0.0.1:{port} app.main:app",
     ),
@@ -82,7 +84,7 @@ FRAMEWORKS: dict[str, FrameworkSpec] = {
         "python",
         "Flask",
         "flask",
-        "3.13",
+        PYTHON_RUNTIME_RECOMMENDED,
         "pip install -r requirements.txt",
         "gunicorn -b 127.0.0.1:{port} app:app",
     ),
@@ -91,7 +93,7 @@ FRAMEWORKS: dict[str, FrameworkSpec] = {
         "python",
         "FastAPI",
         "fastapi",
-        "3.13",
+        PYTHON_RUNTIME_RECOMMENDED,
         "pip install -r requirements.txt",
         "gunicorn -k uvicorn.workers.UvicornWorker -b 127.0.0.1:{port} app.main:app",
     ),
@@ -100,7 +102,7 @@ FRAMEWORKS: dict[str, FrameworkSpec] = {
         "python",
         "Django",
         "django",
-        "3.13",
+        PYTHON_RUNTIME_RECOMMENDED,
         "pip install -r requirements.txt && python manage.py collectstatic --noinput",
         "gunicorn -b 127.0.0.1:{port} project.wsgi:application",
     ),
@@ -123,6 +125,27 @@ FRAMEWORKS: dict[str, FrameworkSpec] = {
         "vue", "nodejs", "Vue", "vue", "20", "npm install && npm run build", "npx serve -s dist -l {port}"
     ),
 }
+
+
+def normalize_python_version(value: str | None) -> str:
+    raw = str(value or "").strip()
+    match = re.match(r"^(\d+)\.(\d+)", raw)
+    if not match:
+        return PYTHON_RUNTIME_RECOMMENDED
+    return f"{match.group(1)}.{match.group(2)}"
+
+
+def resolve_python_binary(version: str | None) -> str:
+    major_minor = normalize_python_version(version)
+    names = [f"python{major_minor}", f"/usr/bin/python{major_minor}", f"/usr/local/bin/python{major_minor}"]
+    for name in names:
+        found = shutil.which(name) if not name.startswith("/") else (name if Path(name).is_file() else None)
+        if found:
+            return found
+    raise AppException(
+        f"Python {major_minor} is not installed on this server. Install python{major_minor} and retry.",
+        code="python_runtime_missing",
+    )
 
 
 def slugify(name: str) -> str:
@@ -238,6 +261,7 @@ class ApplicationRuntimeService:
         out: list[dict[str, Any]] = []
         for spec in FRAMEWORKS.values():
             allowed = stack_allowed(plan, spec.stack_key)
+            runtime_versions = list(PYTHON_RUNTIME_VERSIONS) if spec.runtime == "python" else []
             out.append(
                 {
                     "id": spec.id,
@@ -246,6 +270,7 @@ class ApplicationRuntimeService:
                     "stack_key": spec.stack_key,
                     "stack_label": STACK_LABELS.get(spec.stack_key, spec.stack_key),
                     "runtime_version": spec.runtime_version,
+                    "runtime_versions": runtime_versions,
                     "default_build": spec.default_build,
                     "default_start": spec.default_start,
                     "allowed": allowed,
@@ -447,6 +472,15 @@ class ApplicationRuntimeService:
             else str(start_command).strip()
         )
 
+        effective_runtime_version = spec.runtime_version
+        if spec.runtime == "python":
+            effective_runtime_version = normalize_python_version(runtime_version or spec.runtime_version)
+            if effective_runtime_version not in PYTHON_RUNTIME_VERSIONS:
+                raise ValidationError(
+                    f"Unsupported Python version '{effective_runtime_version}'.",
+                    code="runtime_version_invalid",
+                )
+
         # Safety: for python/fastapi runtimes, only allow the known gunicorn/uvicorn template.
         # This prevents arbitrary shell injection through `start_command`.
         if fw in {"python", "fastapi"} and effective_start_command:
@@ -465,7 +499,7 @@ class ApplicationRuntimeService:
             "name": name.strip(),
             "slug": slug,
             "git_url": (git_url or "").strip() or None,
-            "runtime_version": runtime_version or spec.runtime_version,
+            "runtime_version": effective_runtime_version,
             # Empty string means "no build" (explicit); None means use framework default.
             "build_command": spec.default_build if build_command is None else build_command,
             # Blank start → framework default (Express needs `node server.js`, not a static serve).
@@ -536,6 +570,8 @@ class ApplicationRuntimeService:
                 cpu_shares=int(limits_cfg.get("cpu_shares", 256)),
             )
             if build:
+                if app.runtime == "python":
+                    build = self._python_build_command(app_root, cfg.get("runtime_version"), build)
                 self._run_shell(
                     build,
                     app_root,
@@ -596,6 +632,8 @@ class ApplicationRuntimeService:
 
             if needs_supervisor and start and not static_disk:
                 start_cmd = start.replace("{port}", str(port))
+                if app.runtime == "python":
+                    start_cmd = self._python_start_command(app_root, start_cmd)
                 self._install_supervisor(app, env, app_root, start_cmd, cfg.get("env_vars") or {}, limits)
                 self._supervisor_action(cfg["supervisor_program"], "reread")
                 self._supervisor_action(cfg["supervisor_program"], "update")
@@ -727,6 +765,31 @@ class ApplicationRuntimeService:
             "registered_not_listening": registry_only,
             "orphan_listeners": orphan_listeners,
         }
+
+    def _python_venv_bin(self, app_root: Path) -> Path:
+        return app_root / ".venv" / "bin"
+
+    def _python_build_command(self, app_root: Path, runtime_version: str | None, build: str) -> str:
+        python_bin = resolve_python_binary(runtime_version)
+        venv = app_root / ".venv"
+        venv_bin = venv / "bin"
+        pip = shlex_quote(str(venv_bin / "pip"))
+        py = shlex_quote(str(venv_bin / "python"))
+        build_cmd = build.replace("pip install", f"{pip} install")
+        build_cmd = re.sub(r"(?<![/])python ", f"{py} ", build_cmd)
+        return (
+            f"{shlex_quote(python_bin)} -m venv {shlex_quote(str(venv))} && "
+            f"{pip} install --upgrade pip && "
+            f"{build_cmd}"
+        )
+
+    def _python_start_command(self, app_root: Path, start_cmd: str) -> str:
+        venv_bin = self._python_venv_bin(app_root)
+        if start_cmd.startswith("gunicorn "):
+            return start_cmd.replace("gunicorn ", f"{shlex_quote(str(venv_bin / 'gunicorn'))} ", 1)
+        if start_cmd.startswith("uvicorn "):
+            return start_cmd.replace("uvicorn ", f"{shlex_quote(str(venv_bin / 'uvicorn'))} ", 1)
+        return start_cmd
 
     def _run_shell(
         self,
