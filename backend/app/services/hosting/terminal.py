@@ -28,10 +28,16 @@ _BLOCKED_PATTERNS = [
 
 
 class TerminalService:
-    def __init__(self, settings: Settings, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        *,
+        only_roots: list[Path] | None = None,
+    ) -> None:
         self._settings = settings
         self._audit = TerminalAuditRepository(session)
-        self._files = FileManagerService(settings)
+        self._files = FileManagerService(settings, only_roots=only_roots)
 
     async def execute(
         self,

@@ -264,6 +264,9 @@ export function usePortalSiteTools(
   const newAppName = ref('')
   const newAppFramework = ref('fastapi')
   const newAppGitUrl = ref('')
+  // Python/FastAPI entry wiring (maps to `module:object` used by gunicorn+uvicorn).
+  const newAppPythonModule = ref('app.main')
+  const newAppPythonObject = ref('app')
 
   const lockedEnvId = computed(() => {
     if (!options?.lockEnvId) return ''
@@ -1219,11 +1222,25 @@ export function usePortalSiteTools(
     appBusy.value = true
     appMsg.value = ''
     const gitUrl = newAppGitUrl.value.trim() || undefined
+    let startCommand: string | undefined = undefined
+    if (newAppFramework.value === 'python' || newAppFramework.value === 'fastapi') {
+      const mod = newAppPythonModule.value.trim()
+      const obj = newAppPythonObject.value.trim()
+      const modOk = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(mod)
+      const objOk = /^[A-Za-z_][A-Za-z0-9_]*$/.test(obj)
+      if (!modOk || !objOk) {
+        appMsg.value = 'Invalid ASGI entry. Use module like `app.main` and object like `app`.'
+        appBusy.value = false
+        return
+      }
+      startCommand = `gunicorn -k uvicorn.workers.UvicornWorker -b 127.0.0.1:{port} ${mod}:${obj}`
+    }
     try {
       const { data } = await customersApi.createEnvApplication(activeEnv.value.id, {
         name: newAppName.value.trim(),
         framework: newAppFramework.value,
         git_url: gitUrl,
+        start_command: startCommand,
       })
       newAppName.value = ''
       newAppGitUrl.value = ''
@@ -1651,6 +1668,8 @@ export function usePortalSiteTools(
     newAppName,
     newAppFramework,
     newAppGitUrl,
+    newAppPythonModule,
+    newAppPythonObject,
     setActiveEnvId,
     selectEnv,
     hydrateActiveEnv,

@@ -6,9 +6,20 @@ import PortalSitePanel from '@/components/portal/PortalSitePanel.vue'
 import PortalFilesView from '@/views/portal/PortalFilesView.vue'
 import PortalAiPanel from '@/components/ai/PortalAiPanel.vue'
 import PortalDomainTools from '@/components/portal/PortalDomainTools.vue'
+import PortalTerminalPanel from '@/components/portal/PortalTerminalPanel.vue'
 import { usePortalSiteTools, type PortalSiteTab } from '@/composables/usePortalSiteTools'
 import { getApiErrorMessage } from '@/lib/apiError'
 import { formatCpu, formatRamGb } from '@/lib/planResources'
+
+function formatRamFromMb(mb: number): string {
+  if (!Number.isFinite(mb) || mb <= 0) return '—'
+  if (mb >= 1024) {
+    const gb = mb / 1024
+    const nice = Number.isInteger(gb) ? String(gb) : String(Number(gb.toFixed(2)))
+    return `${nice} GB`
+  }
+  return `${Math.round(mb)} MB`
+}
 import {
   processPct,
   resourceStatusClass,
@@ -16,7 +27,7 @@ import {
 } from '@/lib/resourceUsage'
 import { envCan } from '@/lib/planMatrix'
 import { HOSTING_PANEL_TABS } from '@/lib/uiRegistry'
-import { hostnameNow, isCustomerCpanelHost, tenantCpanelUrl, tenantMailUrl } from '@/lib/platformHosts'
+import { isCustomerCpanelHost, isStaffPanelHost, isTenantPanelHost, isTenantSubdomainHost, tenantCpanelUrl, tenantMailUrl, staffPanelHref } from '@/lib/platformHosts'
 import type { CustomerDashboard, CustomerEnvironment, HostingPlan } from '@/types/platform'
 
 type HostingTab =
@@ -26,6 +37,7 @@ type HostingTab =
   | 'domains'
   | 'email'
   | 'transfer'
+  | 'terminal'
   | 'stack'
   | 'apps'
   | 'cron'
@@ -44,6 +56,10 @@ const TABS = computed(() => {
     if (t.id === 'email') return envCan(env.value, 'mail')
     if (t.id === 'transfer') return envCan(env.value, 'sftp')
     if (t.id === 'cron') return envCan(env.value, 'cron')
+    if (t.id === 'terminal') {
+      const mode = String(env.value?.capabilities?.ssh_mode || '')
+      return ['limited', 'jail', 'root'].includes(mode)
+    }
     return true
   })
 })
@@ -85,6 +101,8 @@ const panelTheme = ref<{
 } | null>(null)
 const themeBusy = ref(false)
 const themeMsg = ref('')
+const cacheBusy = ref(false)
+const cacheMsg = ref('')
 
 const resolvedEnvId = ref('')
 const environmentId = computed(() => {
@@ -221,6 +239,20 @@ async function buyPanelTheme(themeId: string) {
   }
 }
 
+async function clearSiteCache() {
+  if (!environmentId.value || cacheBusy.value) return
+  cacheBusy.value = true
+  cacheMsg.value = ''
+  try {
+    const { data } = await customersApi.clearEnvCache(environmentId.value)
+    cacheMsg.value = data.message || 'Site cache cleared.'
+  } catch (e) {
+    cacheMsg.value = getApiErrorMessage(e, 'Could not clear site cache.')
+  } finally {
+    cacheBusy.value = false
+  }
+}
+
 const {
   activeEnv,
   dbCanWrite,
@@ -283,6 +315,8 @@ const {
   newAppName,
   newAppFramework,
   newAppGitUrl,
+  newAppPythonModule,
+  newAppPythonObject,
   setActiveEnvId,
   selectEnv,
   hydrateActiveEnv,
@@ -357,9 +391,15 @@ const plan = computed(() => {
 const spec = computed(() => {
   const e = env.value
   const p = plan.value
+  // Prefer live enforced MemoryHigh/Max from usage snapshot when available.
+  const liveMb = usageSnapshot.value?.memory_limit_mb
+  const ram =
+    liveMb && liveMb > 0
+      ? formatRamFromMb(liveMb)
+      : formatRamGb(e?.ram_limit_gb ?? p?.ram_gb ?? 0)
   return {
     cpu: formatCpu(e?.cpu_limit ?? p?.cpu_cores ?? 0),
-    ram: formatRamGb(e?.ram_limit_gb ?? p?.ram_gb ?? 0),
+    ram,
     disk: e?.storage_limit_gb ?? p?.storage_gb ?? 0,
   }
 })
@@ -410,6 +450,10 @@ const navManage = computed(() => {
     if (t.id === 'email') return envCan(env.value, 'mail')
     if (t.id === 'transfer') return envCan(env.value, 'sftp')
     if (t.id === 'cron') return envCan(env.value, 'cron')
+    if (t.id === 'terminal') {
+      const mode = String(env.value?.capabilities?.ssh_mode || '')
+      return ['limited', 'jail', 'root'].includes(mode)
+    }
     return true
   })
 })
@@ -477,7 +521,7 @@ function resolveTabFromRoute(): HostingTab {
 
 function goTab(next: HostingTab) {
   if (next === 'files') {
-    if (isCustomerCpanelHost()) {
+    if (isTenantPanelHost()) {
       window.open('/files', '_blank')
     } else if (environmentId.value) {
       window.open(`/hosting/${encodeURIComponent(environmentId.value)}/files`, '_blank')
@@ -604,6 +648,11 @@ watch(tab, (next) => {
 
 const isCollapsed = ref(typeof window !== 'undefined' && localStorage.getItem('hp_sidebar_collapsed') === 'true')
 
+const errorBackHref = computed(() =>
+  isStaffPanelHost() ? staffPanelHref('/panel') : 'https://ifnotus.space/account',
+)
+const errorBackLabel = computed(() => (isStaffPanelHost() ? 'staff panel' : 'account'))
+
 function toggleCollapse() {
   isCollapsed.value = !isCollapsed.value
   try {
@@ -691,7 +740,7 @@ onMounted(() => {
       <div v-else-if="error" class="hp-card pad">
         <h2>Unavailable</h2>
         <p class="muted">{{ error }}</p>
-        <a class="hp-btn primary" href="https://ifnotus.space/account">Back to account</a>
+        <a class="hp-btn primary" :href="errorBackHref">Back to {{ errorBackLabel }}</a>
       </div>
 
       <template v-else-if="env">
@@ -710,7 +759,15 @@ onMounted(() => {
               <div>
                 <p class="lbl"><span>RAM Usage</span> <em class="rs-badge" :class="resourceStatusClass(rs?.memory)">{{ resourceStatusLabel(rs?.memory) }}</em></p>
                 <p class="val">{{ memPct != null ? Math.round(memPct) + '%' : '—' }}</p>
-                <p class="hint">{{ Math.round(usageSnapshot?.memory_usage_mb || 0) }} / {{ Math.round(usageSnapshot?.memory_limit_mb || 0) || spec.ram }} MB</p>
+                <p class="hint">
+                  {{ Math.round(usageSnapshot?.memory_usage_mb || 0) }}
+                  /
+                  {{
+                    usageSnapshot?.memory_limit_mb
+                      ? formatRamFromMb(usageSnapshot.memory_limit_mb)
+                      : spec.ram
+                  }}
+                </p>
               </div>
             </article>
             <article class="hp-metric tone-purple">
@@ -831,6 +888,17 @@ onMounted(() => {
                   <i class="fas" :class="currentStack ? 'fa-sliders-h' : 'fa-plus-circle'" />
                   <span>{{ currentStack ? 'Manage Application' : 'Install stack' }}</span>
                 </button>
+
+                <button
+                  type="button"
+                  class="btn-card-action secondary"
+                  :disabled="cacheBusy"
+                  @click="clearSiteCache"
+                >
+                  <i class="fas" :class="cacheBusy ? 'fa-spinner fa-spin' : 'fa-broom'" />
+                  <span>{{ cacheBusy ? 'Clearing cache…' : 'Clear cache' }}</span>
+                </button>
+                <p v-if="cacheMsg" class="cache-msg">{{ cacheMsg }}</p>
               </div>
             </article>
 
@@ -1052,10 +1120,25 @@ onMounted(() => {
           </div>
         </section>
 
+        <section v-else-if="tab === 'terminal'" class="hp-terminal-embed">
+          <div v-if="loading && !env" class="hp-ai-loading">
+            <i class="fa-solid fa-spinner fa-spin" aria-hidden="true" />
+            <p>Loading terminal…</p>
+          </div>
+          <PortalTerminalPanel
+            v-else-if="env"
+            :environment-id="env.id"
+            :can-execute="['limited', 'jail', 'root'].includes(String(env?.capabilities?.ssh_mode || ''))"
+          />
+          <div v-else class="hp-ai-loading">
+            <p>No hosting environment active on this domain.</p>
+          </div>
+        </section>
+
         <div v-else-if="showSitePanel" class="hp-embed">
-<PortalSitePanel
+          <PortalSitePanel
           hide-subnav
-          :environments="[env]"
+          :environments="dash?.environments?.length ? dash.environments : [env]"
           :active-env="env"
           :active-plan="plan"
           :initial-tab="siteInitialTab"
@@ -1122,6 +1205,8 @@ onMounted(() => {
           :new-app-name="newAppName"
           :new-app-framework="newAppFramework"
           :new-app-git-url="newAppGitUrl"
+          :new-app-python-module="newAppPythonModule"
+          :new-app-python-object="newAppPythonObject"
           @select-env="selectEnv"
           @load-files="loadFiles"
           @load-logs="loadLogs"
@@ -1132,6 +1217,8 @@ onMounted(() => {
           @update:new-app-name="(v) => (newAppName = v)"
           @update:new-app-framework="(v) => (newAppFramework = v)"
           @update:new-app-git-url="(v) => (newAppGitUrl = v)"
+          @update:new-app-python-module="(v) => (newAppPythonModule = v)"
+          @update:new-app-python-object="(v) => (newAppPythonObject = v)"
           @go-up="goUp"
           @open-entry="openEntry"
           @save-file="saveFile"
@@ -1770,6 +1857,23 @@ onMounted(() => {
   color: var(--hp-accent);
   background: color-mix(in srgb, var(--hp-accent) 6%, #fff);
   transform: translateY(-1px);
+}
+
+.btn-card-action.secondary {
+  margin-top: 0.65rem;
+}
+
+.btn-card-action:disabled {
+  opacity: 0.65;
+  cursor: wait;
+  transform: none;
+}
+
+.cache-msg {
+  margin: 0.5rem 0 0;
+  font-size: 0.78rem;
+  color: var(--hp-muted);
+  line-height: 1.4;
 }
 
 .card-footer-action {

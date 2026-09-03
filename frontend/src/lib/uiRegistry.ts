@@ -47,6 +47,7 @@ export const HOSTING_PANEL_TABS = [
   { id: 'domains', label: 'Domains' },
   { id: 'email', label: 'Email' },
   { id: 'transfer', label: 'Transfer' },
+  { id: 'terminal', label: 'Terminal' },
   { id: 'stack', label: 'Stack' },
   { id: 'apps', label: 'Apps' },
   { id: 'cron', label: 'Cron' },

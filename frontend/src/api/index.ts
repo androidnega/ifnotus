@@ -794,6 +794,41 @@ export const terminalApi = {
   clearAudit: () => apiClient.delete<OperationResult>('/terminal/audit'),
 }
 
+export const portalTerminalApi = {
+  execute: (
+    environmentId: string,
+    body: {
+      command: string
+      cwd?: string | undefined
+      scope?: import('@/types/inventory').TerminalScope
+      appId?: string | undefined
+      rootId?: string | undefined
+      confirm_password?: string | undefined
+    },
+  ) =>
+    apiClient.post<TerminalExecuteResponse>(
+      `/customers/environments/${environmentId}/terminal/execute`,
+      {
+        command: body.command,
+        cwd: body.cwd,
+        scope: body.scope ?? 'hosting',
+        app_id: body.appId,
+        root_id: body.rootId,
+        confirm_password: body.confirm_password,
+      },
+    ),
+
+  audit: (environmentId: string, limit = 50) =>
+    apiClient.get<TerminalAuditEntry[]>(`/customers/environments/${environmentId}/terminal/audit`, {
+      params: { limit },
+    }),
+
+  clearAudit: (environmentId: string) =>
+    apiClient.delete<OperationResult>(
+      `/customers/environments/${environmentId}/terminal/audit`,
+    ),
+}
+
 export const aiApi = {
   status: () => apiClient.get<import('@/types/ai').AiSettings>('/ai/status'),
   getSettings: () => apiClient.get<import('@/types/ai').AiSettings>('/ai/settings'),
@@ -1097,6 +1132,11 @@ export const customersApi = {
 
   submitMomo: (orderId: string, transactionId: string) =>
     apiClient.post('/customers/orders/' + orderId + '/momo', { transaction_id: transactionId }),
+
+  claimPayment: (orderId: string, transactionId?: string) =>
+    apiClient.post('/customers/orders/' + orderId + '/claim-payment', {
+      transaction_id: transactionId || undefined,
+    }),
 
   verifyPayment: (reference: string) =>
     apiClient.post('/customers/orders/verify-payment', { reference }),
@@ -2128,6 +2168,9 @@ export const customersApi = {
       checked_at?: string | null
       message?: string | null
     }>(`/customers/environments/${environmentId}/health/check`),
+
+  clearEnvCache: (environmentId: string) =>
+    apiClient.post<OperationResult>(`/customers/environments/${environmentId}/cache/clear`),
 
   listEnvStacks: (environmentId: string) =>
     apiClient.get<{

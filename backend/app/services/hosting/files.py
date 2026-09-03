@@ -34,6 +34,44 @@ MAX_FILE_UPLOAD_BYTES = 512 * 1024 * 1024  # 512 MB upload limit
 # Structural account roots — deletable contents OK; the roots themselves are protected.
 PROTECTED_STRUCTURAL_NAMES = frozenset({"public_html", "www", "public_ftp"})
 
+# Platform / unused default clutter — hide from customer File Manager listings.
+HIDDEN_FILE_MANAGER_NAMES = frozenset(
+    {
+        ".ifnotus",
+        ".ifnotus-trash",
+        ".trash",
+        ".fpanel",
+        ".cpanel",
+        ".cache",
+        ".config",
+        ".caldav",
+        ".cl.selector",
+        ".fpaddons",
+        ".cpaddons",
+        ".htpasswds",
+        ".local",
+        ".pip",
+        ".putty",
+        ".razor",
+        ".sitepad",
+        ".softaculous",
+        ".spamassassin",
+        ".ssh",
+        ".subaccounts",
+        ".bash_history",
+        ".bash_logout",
+        ".bash_profile",
+        ".bashrc",
+        "virtualenv",
+        "mail",
+        "ssl",
+        "etc",
+        "logs",
+        "public_ftp",
+        "cgi-bin",
+    }
+)
+
 
 def is_protected_structural_path(base: Path, target: Path) -> bool:
     """True when target is a top-level structural account root under site home.
@@ -217,6 +255,10 @@ class FileManagerService:
         return FileRootsResponse(timestamp=datetime.now(UTC), roots=roots)
 
     def hosting_roots(self) -> list[Path]:
+        # Tenant portal mode may pass `only_roots`; in that case all "hosting scope"
+        # execution should be restricted to those roots too.
+        if self._only_roots is not None:
+            return list(self._only_roots)
         return self._hosting_roots()
 
     def resolve_base(self, app_id: str | None, root_id: str | None = None) -> Path:
@@ -245,8 +287,10 @@ class FileManagerService:
         entries: list[FileEntry] = []
         if target.is_dir():
             for child in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
-                if child.name in {".ifnotus", ".ifnotus-trash"}:
-                    # Hide internal platform metadata from all views
+                # Hide internal platform metadata and unused default clutter
+                if child.name in HIDDEN_FILE_MANAGER_NAMES:
+                    continue
+                if child.name.startswith(".ifnotus"):
                     continue
                 try:
                     detail = self._file_detail(child, base)
@@ -335,6 +379,29 @@ class FileManagerService:
         else:
             target_dest = dst
 
+        try:
+            if src.resolve() == target_dest.resolve():
+                return OperationResult(success=True, message="Already in destination.")
+        except OSError:
+            pass
+
+        # Refuse moving a directory into itself / a descendant
+        if src.is_dir():
+            try:
+                target_dest.resolve().relative_to(src.resolve())
+                raise ValidationError(
+                    "Cannot move a folder into itself.",
+                    code="move_into_self",
+                )
+            except ValueError:
+                pass
+
+        if target_dest.exists() and target_dest.is_dir():
+            raise ValidationError(
+                f"A folder named “{src.name}” already exists in the destination.",
+                code="destination_exists",
+            )
+
         # Ensure parent exists
         target_dest.parent.mkdir(parents=True, exist_ok=True)
         self._apply_owner(target_dest.parent)
@@ -343,12 +410,25 @@ class FileManagerService:
         if target_dest.exists() and target_dest.is_file():
             try:
                 target_dest.unlink()
-            except OSError:
-                pass
+            except OSError as exc:
+                raise AppException(
+                    f"Could not replace existing file: {exc}",
+                    code="move_replace_failed",
+                ) from exc
 
-        shutil.move(str(src), str(target_dest))
+        try:
+            shutil.move(str(src), str(target_dest))
+        except OSError as exc:
+            raise AppException(
+                f"Could not move “{src.name}”: {exc}",
+                code="move_failed",
+            ) from exc
         self._apply_owner(target_dest)
-        return OperationResult(success=True, message=f"Moved to {destination}")
+        try:
+            rel = str(target_dest.relative_to(base))
+        except ValueError:
+            rel = destination
+        return OperationResult(success=True, message=f"Moved to {rel}")
 
     async def copy(
         self,

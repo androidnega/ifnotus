@@ -31,3 +31,9 @@ class TerminalAuditRepository(BaseRepository[TerminalAuditLog]):
         result = await self._session.execute(delete(TerminalAuditLog))
         await self._session.flush()
         return int(result.rowcount or 0)
+
+    async def clear_for_user(self, user_id: UUID) -> int:
+        """Delete terminal audit rows for a single user."""
+        result = await self._session.execute(delete(TerminalAuditLog).where(TerminalAuditLog.user_id == user_id))
+        await self._session.flush()
+        return int(result.rowcount or 0)

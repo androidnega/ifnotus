@@ -69,7 +69,13 @@ FRAMEWORKS: dict[str, FrameworkSpec] = {
         needs_proxy=True,
     ),
     "python": FrameworkSpec(
-        "python", "python", "Python", "python", "3.13", "pip install -r requirements.txt", ""
+        "python",
+        "python",
+        "Python",
+        "python",
+        "3.13",
+        "pip install -r requirements.txt",
+        "gunicorn -k uvicorn.workers.UvicornWorker -b 127.0.0.1:{port} app.main:app",
     ),
     "flask": FrameworkSpec(
         "flask",
@@ -434,6 +440,27 @@ class ApplicationRuntimeService:
             app_root = (doc_root / "apps" / slug).resolve()
 
         port = await self._allocate_port(env)
+
+        effective_start_command = (
+            spec.default_start
+            if start_command is None or not str(start_command).strip()
+            else str(start_command).strip()
+        )
+
+        # Safety: for python/fastapi runtimes, only allow the known gunicorn/uvicorn template.
+        # This prevents arbitrary shell injection through `start_command`.
+        if fw in {"python", "fastapi"} and effective_start_command:
+            if not re.match(
+                r"^gunicorn -k uvicorn\.workers\.UvicornWorker -b 127\.0\.0\.1:\{port\} "
+                r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*:"
+                r"[A-Za-z_][A-Za-z0-9_]*$",
+                effective_start_command,
+            ):
+                raise ValidationError(
+                    "Invalid start_command for python/fastapi.",
+                    code="invalid_start_command",
+                )
+
         cfg: dict[str, Any] = {
             "name": name.strip(),
             "slug": slug,
@@ -442,11 +469,7 @@ class ApplicationRuntimeService:
             # Empty string means "no build" (explicit); None means use framework default.
             "build_command": spec.default_build if build_command is None else build_command,
             # Blank start → framework default (Express needs `node server.js`, not a static serve).
-            "start_command": (
-                spec.default_start
-                if start_command is None or not str(start_command).strip()
-                else start_command
-            ),
+            "start_command": effective_start_command,
             "env_vars": env_vars or {},
             "app_root": str(app_root),
         }

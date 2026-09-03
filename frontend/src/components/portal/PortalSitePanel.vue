@@ -70,6 +70,8 @@ const props = defineProps<{
   newAppName?: string
   newAppFramework?: string
   newAppGitUrl?: string
+  newAppPythonModule?: string
+  newAppPythonObject?: string
   cronJobs: Array<{
     id: string
     schedule: string
@@ -320,6 +322,8 @@ const emit = defineEmits<{
   'update:newAppName': [string]
   'update:newAppFramework': [string]
   'update:newAppGitUrl': [string]
+  'update:newAppPythonModule': [string]
+  'update:newAppPythonObject': [string]
 }>()
 
 const siteTab = ref<'files' | 'stack' | 'applications' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail' | 'git'>('stack')
@@ -1119,6 +1123,19 @@ function formatBytes(n?: number | null) {
                 </option>
               </select>
             </label>
+
+            <label class="field">
+              <span>Application domain / subdomain *</span>
+              <select
+                :value="activeEnv.id"
+                @change="emit('selectEnv', ($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="e in environments" :key="e.id" :value="e.id">
+                  {{ e.domain || e.id }}
+                </option>
+              </select>
+            </label>
+
             <label class="field">
               <span>Git Repository URL (Optional)</span>
               <input
@@ -1134,6 +1151,35 @@ function formatBytes(n?: number | null) {
             <p class="muted tiny">
               <i class="fas fa-info-circle" /> Repositories with a Git URL start deployment automatically upon creation.
             </p>
+
+            <div v-if="newAppFramework === 'python' || newAppFramework === 'fastapi'" class="mt-3">
+              <label class="field">
+                <span>ASGI module (e.g. <code>app.main</code>)</span>
+                <input
+                  :value="newAppPythonModule"
+                  type="text"
+                  placeholder="app.main"
+                  spellcheck="false"
+                  autocapitalize="off"
+                  @input="emit('update:newAppPythonModule', ($event.target as HTMLInputElement).value)"
+                />
+              </label>
+              <label class="field">
+                <span>ASGI app variable (e.g. <code>app</code>)</span>
+                <input
+                  :value="newAppPythonObject"
+                  type="text"
+                  placeholder="app"
+                  spellcheck="false"
+                  autocapitalize="off"
+                  @input="emit('update:newAppPythonObject', ($event.target as HTMLInputElement).value)"
+                />
+              </label>
+              <p class="muted tiny">
+                <i class="fas fa-lock" /> For safety, only module/object identifiers are accepted.
+              </p>
+            </div>
+
             <button
               type="button"
               class="btn-primary btn-create-app"

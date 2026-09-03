@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.routers.v1 import alerts, applications, auth, catalog, customers, dashboard, health, hosting, inventory, logs, monitoring, operations, platform_admin, processes, public, security, server, services, support
+from app.routers.v1 import alerts, applications, auth, catalog, customer_terminal, customers, dashboard, health, hosting, inventory, logs, monitoring, operations, platform_admin, processes, public, security, server, services, support
 
 api_v1_router = APIRouter()
 
@@ -23,5 +23,6 @@ api_v1_router.include_router(inventory.router, prefix="/inventory", tags=["inven
 api_v1_router.include_router(catalog.router, prefix="/catalog", tags=["catalog"])
 api_v1_router.include_router(public.router, prefix="/public", tags=["public"])
 api_v1_router.include_router(customers.router, prefix="/customers", tags=["customers"])
+api_v1_router.include_router(customer_terminal.router, prefix="/customers", tags=["customers"])
 api_v1_router.include_router(support.router, prefix="/support", tags=["support"])
 api_v1_router.include_router(platform_admin.router, prefix="/platform", tags=["platform"])
