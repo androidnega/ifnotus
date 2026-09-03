@@ -314,6 +314,7 @@ const {
   appBusy,
   newAppName,
   newAppFramework,
+  newAppRuntimeVersion,
   newAppGitUrl,
   newAppPythonModule,
   newAppPythonObject,
@@ -427,6 +428,10 @@ const statusLabel = computed(() => {
 })
 
 const shortEnvId = computed(() => (environmentId.value || '').replace(/-/g, '').slice(0, 8))
+const terminalEnabled = computed(() => {
+  const mode = String(env.value?.capabilities?.ssh_mode || '')
+  return ['limited', 'jail', 'root'].includes(mode)
+})
 
 const allNavManage = [
   { id: 'files' as HostingTab, label: 'File Manager', icon: 'fa-folder-open' },
@@ -434,6 +439,7 @@ const allNavManage = [
   { id: 'domains' as HostingTab, label: 'Domains & DNS', icon: 'fa-globe' },
   { id: 'email' as HostingTab, label: 'Email Accounts', icon: 'fa-envelope-open-text' },
   { id: 'transfer' as HostingTab, label: 'FTP / SFTP', icon: 'fa-network-wired' },
+  { id: 'terminal' as HostingTab, label: 'Terminal', icon: 'fa-terminal' },
   { id: 'stack' as HostingTab, label: 'One-Click Stacks', icon: 'fa-layer-group' },
   { id: 'apps' as HostingTab, label: 'Applications', icon: 'fa-cubes' },
   { id: 'ai' as HostingTab, label: 'AI Engineer', icon: 'fa-wand-magic-sparkles' },
@@ -450,10 +456,7 @@ const navManage = computed(() => {
     if (t.id === 'email') return envCan(env.value, 'mail')
     if (t.id === 'transfer') return envCan(env.value, 'sftp')
     if (t.id === 'cron') return envCan(env.value, 'cron')
-    if (t.id === 'terminal') {
-      const mode = String(env.value?.capabilities?.ssh_mode || '')
-      return ['limited', 'jail', 'root'].includes(mode)
-    }
+    if (t.id === 'terminal') return terminalEnabled.value
     return true
   })
 })
@@ -463,6 +466,7 @@ const allQuickTools = [
   { id: 'databases' as HostingTab, label: 'Databases', tone: 'purple', icon: 'fa-database' },
   { id: 'domains' as HostingTab, label: 'Domains', tone: 'green', icon: 'fa-globe' },
   { id: 'email' as HostingTab, label: 'Email', tone: 'orange', icon: 'fa-envelope' },
+  { id: 'terminal' as HostingTab, label: 'Terminal', tone: 'slate', icon: 'fa-terminal' },
   { id: 'ai' as HostingTab, label: 'AI Engineer', tone: 'purple', icon: 'fa-wand-magic-sparkles' },
   { id: 'stack' as HostingTab, label: 'Install stack', tone: 'teal', icon: 'fa-layer-group' },
   { id: 'apps' as HostingTab, label: 'Applications', tone: 'indigo', icon: 'fa-cubes' },
@@ -482,6 +486,7 @@ const quickTools = computed(() => {
     if (t.id === 'transfer') return envCan(env.value, 'sftp')
     if (t.id === 'cron') return envCan(env.value, 'cron')
     if (t.id === 'git') return envCan(env.value, 'git')
+    if (t.id === 'terminal') return terminalEnabled.value
     return true
   })
 })
@@ -1128,7 +1133,7 @@ onMounted(() => {
           <PortalTerminalPanel
             v-else-if="env"
             :environment-id="env.id"
-            :can-execute="['limited', 'jail', 'root'].includes(String(env?.capabilities?.ssh_mode || ''))"
+            :can-execute="terminalEnabled"
           />
           <div v-else class="hp-ai-loading">
             <p>No hosting environment active on this domain.</p>
@@ -1204,6 +1209,7 @@ onMounted(() => {
           :app-busy="appBusy"
           :new-app-name="newAppName"
           :new-app-framework="newAppFramework"
+          :new-app-runtime-version="newAppRuntimeVersion"
           :new-app-git-url="newAppGitUrl"
           :new-app-python-module="newAppPythonModule"
           :new-app-python-object="newAppPythonObject"
@@ -1216,6 +1222,7 @@ onMounted(() => {
           @delete-application="deleteApplication"
           @update:new-app-name="(v) => (newAppName = v)"
           @update:new-app-framework="(v) => (newAppFramework = v)"
+          @update:new-app-runtime-version="(v) => (newAppRuntimeVersion = v)"
           @update:new-app-git-url="(v) => (newAppGitUrl = v)"
           @update:new-app-python-module="(v) => (newAppPythonModule = v)"
           @update:new-app-python-object="(v) => (newAppPythonObject = v)"

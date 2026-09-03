@@ -8,7 +8,29 @@ import {
   isStaffUser,
   syncPanelFlag,
 } from '@/lib/roles'
-import { isCustomerCpanelHost, isStaffPanelHost } from '@/lib/platformHosts'
+import { isCustomerCpanelHost, hostnameNow, isStaffPanelHost, isTenantPanelHost, isTenantSubdomainHost, isReservedPanelHost, normalizeGoHostingHost, portalAccountUrl, portalLoginRedirectForTenantHost, redirectToStaffPanel, PLATFORM_APEX } from '@/lib/platformHosts'
+
+function isCustomerPanelSurface(): boolean {
+  if (typeof window === 'undefined') return false
+  return isTenantPanelHost()
+}
+
+const TENANT_PANEL_TOOL_PREFIXES = [
+  '/files',
+  '/databases',
+  '/domains',
+  '/apps',
+  '/cron',
+  '/backups',
+  '/logs',
+  '/transfer',
+  '/stack',
+  '/ai',
+]
+
+function isTenantPanelToolPath(path: string): boolean {
+  return TENANT_PANEL_TOOL_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`))
+}
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -174,6 +196,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true, panel: 'portal' },
   },
   {
+    path: '/hosting/sso',
+    name: 'hosting-sso-landing',
+    component: () => import('@/views/portal/SsoLandingView.vue'),
+    meta: { panel: 'portal' },
+  },
+  {
     path: '/hosting/:environmentId',
     name: 'hosting-panel',
     component: () => import('@/views/hosting/HostingPanelView.vue'),
@@ -196,16 +224,16 @@ const routes: RouteRecordRaw[] = [
     name: 'cpanel-files',
     alias: '/files-portal',
     component: () => {
-      if (typeof window !== 'undefined' && isCustomerCpanelHost()) {
+      if (typeof window !== 'undefined' && isCustomerPanelSurface()) {
         return import('@/views/hosting/HostingPanelView.vue')
       }
       return import('@/views/FilesView.vue')
     },
     meta: {
       requiresAuth: true,
-      panel: typeof window !== 'undefined' && isCustomerCpanelHost() ? 'portal' : 'staff',
+      panel: typeof window !== 'undefined' && isCustomerPanelSurface() ? 'portal' : 'staff',
       hostingTab: 'files',
-      permission: typeof window !== 'undefined' && isCustomerCpanelHost() ? undefined : 'files:read',
+      permission: typeof window !== 'undefined' && isCustomerPanelSurface() ? undefined : 'files:read',
     },
   },
   {
@@ -220,32 +248,32 @@ const routes: RouteRecordRaw[] = [
     path: '/databases',
     name: 'cpanel-databases',
     component: () => {
-      if (typeof window !== 'undefined' && isCustomerCpanelHost()) {
+      if (typeof window !== 'undefined' && isCustomerPanelSurface()) {
         return import('@/views/hosting/HostingPanelView.vue')
       }
       return import('@/views/DatabasesView.vue')
     },
     meta: {
       requiresAuth: true,
-      panel: typeof window !== 'undefined' && isCustomerCpanelHost() ? 'portal' : 'staff',
+      panel: typeof window !== 'undefined' && isCustomerPanelSurface() ? 'portal' : 'staff',
       hostingTab: 'databases',
-      permission: typeof window !== 'undefined' && isCustomerCpanelHost() ? undefined : 'databases:read',
+      permission: typeof window !== 'undefined' && isCustomerPanelSurface() ? undefined : 'databases:read',
     },
   },
   {
     path: '/domains',
     name: 'cpanel-domains',
     component: () => {
-      if (typeof window !== 'undefined' && isCustomerCpanelHost()) {
+      if (typeof window !== 'undefined' && isCustomerPanelSurface()) {
         return import('@/views/hosting/HostingPanelView.vue')
       }
       return import('@/views/DomainsView.vue')
     },
     meta: {
       requiresAuth: true,
-      panel: typeof window !== 'undefined' && isCustomerCpanelHost() ? 'portal' : 'staff',
+      panel: typeof window !== 'undefined' && isCustomerPanelSurface() ? 'portal' : 'staff',
       hostingTab: 'domains',
-      permission: typeof window !== 'undefined' && isCustomerCpanelHost() ? undefined : 'domains:read',
+      permission: typeof window !== 'undefined' && isCustomerPanelSurface() ? undefined : 'domains:read',
     },
   },
   {
@@ -258,16 +286,16 @@ const routes: RouteRecordRaw[] = [
     path: '/apps',
     name: 'cpanel-apps',
     component: () => {
-      if (typeof window !== 'undefined' && isCustomerCpanelHost()) {
+      if (typeof window !== 'undefined' && isCustomerPanelSurface()) {
         return import('@/views/hosting/HostingPanelView.vue')
       }
       return import('@/views/ApplicationsView.vue')
     },
     meta: {
       requiresAuth: true,
-      panel: typeof window !== 'undefined' && isCustomerCpanelHost() ? 'portal' : 'staff',
+      panel: typeof window !== 'undefined' && isCustomerPanelSurface() ? 'portal' : 'staff',
       hostingTab: 'apps',
-      permission: typeof window !== 'undefined' && isCustomerCpanelHost() ? undefined : 'apps:read',
+      permission: typeof window !== 'undefined' && isCustomerPanelSurface() ? undefined : 'apps:read',
     },
   },
   {
@@ -555,8 +583,29 @@ function safeRedirect(raw: unknown, fallback: string): string {
   return fallback
 }
 
+function portalRedirectOffStaffHost(fullPath: string): string {
+  const path = fullPath.split('?')[0]?.split('#')[0] || fullPath
+  if (path.startsWith('/go/hosting')) {
+    const hostMatch = /[?&]host=([^&]+)/.exec(fullPath)
+    const host = hostMatch ? normalizeGoHostingHost(decodeURIComponent(hostMatch[1])) : ''
+    if (host && !isReservedPanelHost(host)) {
+      return portalAccountUrl(fullPath)
+    }
+    return portalAccountUrl('/account')
+  }
+  if (path.startsWith('/hosting')) {
+    return portalAccountUrl('/account')
+  }
+  return portalAccountUrl(fullPath)
+}
+
 function loginRouteForTarget(toPath: string, panel: unknown) {
-  // Tenant hosting SSO / panel → panel username+password login (not staff).
+  // Tenant subdomains never host account login — canonical portal only.
+  if (typeof window !== 'undefined' && isTenantSubdomainHost()) {
+    window.location.href = portalLoginRedirectForTenantHost(undefined, toPath)
+    return false
+  }
+  // Tenant hosting SSO / panel → portal account login (not hosting_username panel password).
   if (toPath.startsWith('/go/hosting') || toPath.startsWith('/hosting')) {
     const hostMatch = /[?&]host=([^&]+)/.exec(toPath)
     const host = hostMatch ? decodeURIComponent(hostMatch[1]) : ''
@@ -580,6 +629,190 @@ function loginRouteForTarget(toPath: string, panel: unknown) {
 
 router.beforeEach(async (to) => {
   const token = localStorage.getItem('access_token')
+
+  // Staff WHM host (fpanel.ifnotus.space) is separate from customer portal/account.
+  if (typeof window !== 'undefined' && isStaffPanelHost()) {
+    if (to.name === 'go-hosting' || to.path.startsWith('/go/hosting')) {
+      if (!token) {
+        return { name: 'login', query: { redirect: '/panel' } }
+      }
+      const { useAuthStore } = await import('@/stores/auth')
+      const auth = useAuthStore()
+      if (!auth.user) {
+        try {
+          await auth.fetchUser()
+        } catch {
+          auth.clearSession()
+          return { name: 'login', query: { redirect: '/panel' } }
+        }
+      }
+      syncPanelFlag(auth.user)
+      if (isPureCustomer(auth.user)) {
+        window.location.href = portalAccountUrl('/account')
+        return false
+      }
+      redirectToStaffPanel('/panel')
+      return false
+    }
+    const portalSurface =
+      to.path.startsWith('/account') ||
+      to.path.startsWith('/hosting') ||
+      to.path.startsWith('/go/') ||
+      to.path.startsWith('/billing') ||
+      to.path.startsWith('/invoice') ||
+      to.meta.panel === 'portal'
+    if (portalSurface && to.name !== 'hosting-sso-landing' && to.path !== '/sso') {
+      if (!token) {
+        return { name: 'login', query: { redirect: to.fullPath } }
+      }
+      const { useAuthStore } = await import('@/stores/auth')
+      const auth = useAuthStore()
+      if (!auth.user) {
+        try {
+          await auth.fetchUser()
+        } catch {
+          auth.clearSession()
+          return { name: 'login', query: { redirect: to.fullPath } }
+        }
+      }
+      syncPanelFlag(auth.user)
+      if (isPureCustomer(auth.user)) {
+        window.location.href = portalRedirectOffStaffHost(to.fullPath)
+        return false
+      }
+      return { name: 'dashboard' }
+    }
+  }
+
+  // Staff WHM belongs on fpanel.ifnotus.space — never ifnotus.space/panel or staff tool paths.
+  if (
+    typeof window !== 'undefined' &&
+    !isStaffPanelHost() &&
+    !isTenantSubdomainHost() &&
+    !isCustomerCpanelHost()
+  ) {
+    const apex = hostnameNow()
+    if (apex === PLATFORM_APEX || apex === 'www.ifnotus.space') {
+      const bare = to.path.split('?')[0]?.split('#')[0] || to.path
+      const staffSurface =
+        to.name === 'dashboard' ||
+        (isStaffPath(bare) && !isPortalPath(bare))
+      if (staffSurface) {
+        if (!token) {
+          redirectToStaffPanel(bare === '/' ? '/login' : bare)
+          return false
+        }
+        const { useAuthStore } = await import('@/stores/auth')
+        const auth = useAuthStore()
+        if (!auth.user) {
+          try {
+            await auth.fetchUser()
+          } catch {
+            auth.clearSession()
+            redirectToStaffPanel('/login')
+            return false
+          }
+        }
+        if (isStaffUser(auth.user) && !isPureCustomer(auth.user)) {
+          redirectToStaffPanel(bare === '/' ? '/panel' : bare)
+          return false
+        }
+      }
+      if (to.name === 'go-hosting' || bare.startsWith('/go/hosting')) {
+        const hostMatch = /[?&]host=([^&]+)/.exec(to.fullPath)
+        const host = hostMatch ? normalizeGoHostingHost(decodeURIComponent(hostMatch[1])) : ''
+        if (!host || isReservedPanelHost(host)) {
+          if (token) {
+            const { useAuthStore } = await import('@/stores/auth')
+            const auth = useAuthStore()
+            if (!auth.user) {
+              try {
+                await auth.fetchUser()
+              } catch {
+                auth.clearSession()
+              }
+            }
+            if (isStaffUser(auth.user) && !isPureCustomer(auth.user)) {
+              redirectToStaffPanel('/panel')
+              return false
+            }
+          }
+          return { name: 'portal-dashboard' }
+        }
+      }
+    }
+  }
+
+  // Platform tenant subdomain (user.ifnotus.space): panel at /hosting/* on same host.
+  // Explicitly exclude staff WHM — fpanel.ifnotus.space must never use tenant login bounce.
+  if (isTenantSubdomainHost() && !isStaffPanelHost()) {
+    if (
+      to.name === 'hosting-sso-landing' ||
+      to.name === 'sso-landing' ||
+      to.path === '/sso' ||
+      to.path === '/hosting/sso'
+    ) {
+      return true
+    }
+    if (
+      to.name === 'login' ||
+      to.path === '/login' ||
+      to.name === 'portal-signup' ||
+      to.path === '/signup'
+    ) {
+      if (typeof window !== 'undefined') {
+        const raw = to.query.redirect
+        const redir = Array.isArray(raw) ? raw[0] : raw
+        window.location.href = portalLoginRedirectForTenantHost(
+          undefined,
+          typeof redir === 'string' ? redir : undefined,
+        )
+        return false
+      }
+    }
+    if (
+      to.path === '/account' ||
+      to.path.startsWith('/account/') ||
+      to.path === '/billing' ||
+      to.path === '/invoices' ||
+      to.path.startsWith('/invoice/') ||
+      to.path === '/support' ||
+      to.path === '/settings' ||
+      to.path === '/profile'
+    ) {
+      if (typeof window !== 'undefined') {
+        window.location.href = `https://ifnotus.space${to.fullPath}`
+        return false
+      }
+    }
+    if (to.path.startsWith('/hosting/') || isTenantPanelToolPath(to.path)) {
+      if (!token && to.name !== 'hosting-sso-landing') {
+        if (typeof window !== 'undefined') {
+          window.location.href = portalLoginRedirectForTenantHost(undefined, to.fullPath)
+          return false
+        }
+        return loginRouteForTarget(to.fullPath, to.meta.panel)
+      }
+      if (token && to.meta.requiresAuth) {
+        const { useAuthStore } = await import('@/stores/auth')
+        const auth = useAuthStore()
+        if (!auth.user) {
+          try {
+            await auth.fetchUser()
+          } catch {
+            auth.clearSession()
+            if (typeof window !== 'undefined') {
+              window.location.href = portalLoginRedirectForTenantHost(undefined, to.fullPath)
+              return false
+            }
+            return loginRouteForTarget(to.fullPath, to.meta.panel)
+          }
+        }
+      }
+      return true
+    }
+    return true
+  }
 
   // Custom-domain panel host (cpanel.customer.com): stay on this origin — never bounce to ifnotus.space.
   if (isCustomerCpanelHost()) {
@@ -733,6 +966,10 @@ router.beforeEach(async (to) => {
       if (isPureCustomer(auth.user) && (isPortalPath(preferred) || preferred.startsWith('/portal'))) {
         return preferred
       }
+      if (isStaffUser(auth.user) && isStaffPath(preferred) && !isStaffPanelHost()) {
+        redirectToStaffPanel(preferred)
+        return false
+      }
       if (isStaffUser(auth.user) && isStaffPath(preferred)) {
         return preferred
       }
@@ -767,6 +1004,10 @@ router.beforeEach(async (to) => {
         !roles.has('superadmin') &&
         !roles.has('admin')
       ) {
+        if (!isStaffPanelHost()) {
+          redirectToStaffPanel('/panel')
+          return false
+        }
         return { name: 'dashboard' }
       }
     }
