@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 56" role="img" aria-label="IFNOTUS">
+  <title>IFNOTUS</title>
+  <!-- Clean IF mark -->
+  <rect x="0" y="6" width="44" height="44" rx="10" fill="#1e3a5f"/>
+  <!-- I -->
+  <rect x="11" y="17" width="5" height="22" rx="1.5" fill="#fff"/>
+  <!-- F -->
+  <rect x="22" y="17" width="5" height="22" rx="1.5" fill="#fff"/>
+  <rect x="22" y="17" width="14" height="5" rx="1.5" fill="#fff"/>
+  <rect x="22" y="26" width="11" height="5" rx="1.5" fill="#fff"/>
+  <!-- Wordmark -->
+  <g fill="#0f172a" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="24" font-weight="700" letter-spacing="-0.8">
+    <text x="56" y="38">IFNOTUS</text>
+  </g>
+</svg>

@@ -73,6 +73,19 @@ watch(
   },
 )
 
+/** Preview only — server derives yearly from billing terms on save. */
+const yearlyFromTermsPreview = computed(() => {
+  const monthly = Number(form.value.price_monthly || 0)
+  if (!Number.isFinite(monthly) || monthly <= 0) return null
+  const twelve = termRows.value.find((t) => Number(t.months) === 12)
+  if (twelve && twelve.fixed_price != null && Number.isFinite(Number(twelve.fixed_price))) {
+    return Number(twelve.fixed_price)
+  }
+  const pct = Number(twelve?.discount_pct || 0)
+  const subtotal = monthly * 12
+  return Math.round((subtotal - subtotal * (pct / 100)) * 100) / 100
+})
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -199,9 +212,9 @@ async function save() {
       ...form.value,
       features,
       slug: form.value.slug || undefined,
-      price_yearly: form.value.price_yearly === '' ? null : form.value.price_yearly,
       size_from_price: sizeFromPrice.value,
     }
+    delete (body as { price_yearly?: unknown }).price_yearly
     if (editingId.value) {
       await platformAdminApi.updatePlan(editingId.value, body)
       msg.value = 'Plan updated.'
@@ -316,6 +329,9 @@ onMounted(load)
               required
               class="w-full rounded border border-slate-300 px-2 py-1.5"
             />
+            <span v-if="yearlyFromTermsPreview != null" class="mt-1 block text-xs text-slate-500">
+              12‑month total from billing terms: GHS {{ yearlyFromTermsPreview }}
+            </span>
           </label>
           <label class="flex items-center gap-2 text-sm sm:col-span-2 lg:col-span-3">
             <input v-model="sizeFromPrice" type="checkbox" />

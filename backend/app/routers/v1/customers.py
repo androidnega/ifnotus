@@ -9,7 +9,7 @@ from fastapi import APIRouter, File, Query, Request, UploadFile
 from sqlalchemy import select
 
 from app.api.deps import AccessControlDep, CurrentUser, DbSession, SettingsDep
-from app.core.exceptions import AppException, AuthenticationError, AuthorizationError, NotFoundError
+from app.core.exceptions import AppException, AuthenticationError, AuthorizationError, NotFoundError, ValidationError
 from app.core.permissions import Permission, Role
 from app.core.security import create_token_pair, hash_password
 from app.models.platform import CustomerEnvironment, EnvironmentDatabase, HostingPlan, PlatformAuditLog, Subscription
@@ -71,6 +71,7 @@ from app.schemas.platform import (
     EnvironmentDomainEntry,
     EnvironmentDomainListResponse,
     EnvironmentGitCloneRequest,
+    EnvironmentGitRepoRequest,
     EnvironmentRedirectCreateRequest,
     HostingPlanSchema,
     UpdateEnvironmentDomainRequest,
@@ -119,6 +120,7 @@ from app.schemas.platform import (
     SubscriptionCancelResponse,
     EnvironmentDatabaseV2Response,
     ApplicationInstanceCreateRequest,
+    ApplicationInstanceUpdateRequest,
     ApplicationInstanceResponse,
     ApplicationCatalogEntry,
     EnvironmentDnsResponse,
@@ -156,6 +158,7 @@ from app.schemas.platform import (
     InvoiceViewResponse,
     SubscriptionResponse,
     SubmitMomoRequest,
+    ClaimPaymentRequest,
     VerifyPaymentRequest,
 )
 from app.schemas.support import (
@@ -649,6 +652,11 @@ async def customer_dashboard(
         HostingPlanSchema.model_validate(p).model_copy(update={"features": features_for(p)})
         for p in plan_rows.values()
     ]
+    from app.services.platform.billing_terms_store import enrich_plan_yearly
+
+    plan_schemas = [
+        enrich_plan_yearly(s, settings, monthly_price=s.price_monthly) for s in plan_schemas
+    ]
     env_payloads = []
     for e in envs:
         sub = sub_by_id.get(e.subscription_id)
@@ -783,6 +791,25 @@ async def submit_momo_transaction(
     customer = await CustomerService(settings, session).require_for_user(user.id)
     return await OrderService(settings, session).submit_momo_transaction(
         customer.id, order_id, body.transaction_id
+    )
+
+
+@router.post("/orders/{order_id}/claim-payment", response_model=OrderResponse)
+async def claim_payment_submitted(
+    order_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+    body: ClaimPaymentRequest | None = None,
+) -> OrderResponse:
+    """Customer says MoMo payment is done — moves invoice to billing confirmation queue."""
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    payload = body or ClaimPaymentRequest()
+    return await OrderService(settings, session).claim_payment_submitted(
+        customer.id,
+        order_id,
+        transaction_id=payload.transaction_id,
     )
 
 
@@ -1269,7 +1296,10 @@ async def download_env_file(
     session: DbSession,
     settings: SettingsDep,
     path: str = Query(...),
+    inline: bool = Query(default=False),
 ):
+    import mimetypes
+
     from fastapi.responses import FileResponse
 
     _require_customer_user(user)
@@ -1278,7 +1308,22 @@ async def download_env_file(
     await TenantService(session).require_capability(env, "file_manager", label="File manager")
     roots = await TenantService(session).roots_for_environment(customer.id, environment_id)
     file_path, filename = _tenant_files(settings, env, roots).resolve_download(path)
-    return FileResponse(path=file_path, filename=filename, media_type="application/octet-stream")
+    media_type, _ = mimetypes.guess_type(filename)
+    media_type = media_type or "application/octet-stream"
+    # Images / PDFs open in-browser when requested inline (File Manager preview).
+    lower = filename.lower()
+    viewable = lower.endswith(
+        (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico", ".avif", ".pdf")
+    )
+    headers = {}
+    if inline or viewable:
+        headers["Content-Disposition"] = f'inline; filename="{filename}"'
+    return FileResponse(
+        path=file_path,
+        filename=filename,
+        media_type=media_type,
+        headers=headers or None,
+    )
 
 
 @router.post(
@@ -1730,8 +1775,10 @@ async def list_env_applications(
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     from app.services.platform.application_runtime import ApplicationRuntimeService, app_to_response
 
-    apps = await ApplicationRuntimeService(settings, session).list_apps(env)
-    return [ApplicationInstanceResponse.model_validate(app_to_response(a)) for a in apps]
+    tenant = TenantService(session)
+    plan = await tenant.plan_for_environment(env)
+    apps = await ApplicationRuntimeService(settings, session).list_apps(env, plan=plan)
+    return [ApplicationInstanceResponse.model_validate(app_to_response(a, env=env)) for a in apps]
 
 
 @router.post(
@@ -1763,8 +1810,11 @@ async def create_env_application(
         build_command=body.build_command,
         start_command=body.start_command,
         env_vars=body.env_vars,
+        root_placement=body.root_placement,
+        serve_at_domain=body.serve_at_domain,
+        log_path=body.log_path,
     )
-    row = ApplicationInstanceResponse.model_validate(app_to_response(item))
+    row = ApplicationInstanceResponse.model_validate(app_to_response(item, env=env))
     row.message = "Application created. Deploy to start."
     return row
 
@@ -1787,7 +1837,7 @@ async def deploy_env_application(
 
     svc = ApplicationRuntimeService(settings, session)
     item = await svc.deploy(env, application_id)
-    row = ApplicationInstanceResponse.model_validate(app_to_response(item))
+    row = ApplicationInstanceResponse.model_validate(app_to_response(item, env=env))
     row.message = "Deployed."
     return row
 
@@ -1809,8 +1859,107 @@ async def restart_env_application(
     from app.services.platform.application_runtime import ApplicationRuntimeService, app_to_response
 
     item = await ApplicationRuntimeService(settings, session).restart(env, application_id)
-    row = ApplicationInstanceResponse.model_validate(app_to_response(item))
+    row = ApplicationInstanceResponse.model_validate(app_to_response(item, env=env))
     row.message = "Restarted."
+    return row
+
+
+@router.post(
+    "/environments/{environment_id}/applications/{application_id}/stop",
+    response_model=ApplicationInstanceResponse,
+)
+async def stop_env_application(
+    environment_id: UUID,
+    application_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> ApplicationInstanceResponse:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.services.platform.application_runtime import ApplicationRuntimeService, app_to_response
+
+    item = await ApplicationRuntimeService(settings, session).stop(env, application_id)
+    row = ApplicationInstanceResponse.model_validate(app_to_response(item, env=env))
+    row.message = "Stopped."
+    return row
+
+
+@router.post(
+    "/environments/{environment_id}/applications/{application_id}/start",
+    response_model=ApplicationInstanceResponse,
+)
+async def start_env_application(
+    environment_id: UUID,
+    application_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> ApplicationInstanceResponse:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.services.platform.application_runtime import ApplicationRuntimeService, app_to_response
+
+    item = await ApplicationRuntimeService(settings, session).start(env, application_id)
+    row = ApplicationInstanceResponse.model_validate(app_to_response(item, env=env))
+    row.message = "Started."
+    return row
+
+
+@router.post(
+    "/environments/{environment_id}/applications/{application_id}/refresh",
+    response_model=ApplicationInstanceResponse,
+)
+async def refresh_env_application(
+    environment_id: UUID,
+    application_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> ApplicationInstanceResponse:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.services.platform.application_runtime import ApplicationRuntimeService, app_to_response
+
+    item = await ApplicationRuntimeService(settings, session).refresh(env, application_id)
+    row = ApplicationInstanceResponse.model_validate(app_to_response(item, env=env))
+    row.message = "Status refreshed."
+    return row
+
+
+@router.patch(
+    "/environments/{environment_id}/applications/{application_id}",
+    response_model=ApplicationInstanceResponse,
+)
+async def update_env_application(
+    environment_id: UUID,
+    application_id: UUID,
+    body: ApplicationInstanceUpdateRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> ApplicationInstanceResponse:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.services.platform.application_runtime import ApplicationRuntimeService, app_to_response
+
+    item = await ApplicationRuntimeService(settings, session).update(
+        env,
+        application_id,
+        name=body.name,
+        runtime_version=body.runtime_version,
+        start_command=body.start_command,
+        log_path=body.log_path,
+        serve_at_domain=body.serve_at_domain,
+        env_vars=body.env_vars,
+        restart=body.restart,
+    )
+    row = ApplicationInstanceResponse.model_validate(app_to_response(item, env=env))
+    row.message = "Application updated."
     return row
 
 
@@ -2653,7 +2802,33 @@ async def env_usage(
                 "process_count": int(proc.get("process_count") or 0),
             }
 
+    # Prefer live systemd slice MemoryHigh (then MemoryMax) — the enforced ceiling —
+    # over legacy marketing env.ram_limit_gb so the UI matches reality.
     ram_limit_mb = float(env.ram_limit_gb or 0) * 1024
+    if slice_limits is not None:
+        high = getattr(slice_limits, "memory_high_bytes", None)
+        hard = getattr(slice_limits, "memory_max_bytes", None)
+        if high:
+            ram_limit_mb = float(high) / (1024 * 1024)
+        elif hard:
+            ram_limit_mb = float(hard) / (1024 * 1024)
+    elif applied.get("memory_high_bytes"):
+        ram_limit_mb = float(applied["memory_high_bytes"]) / (1024 * 1024)
+    elif applied.get("memory_max_bytes"):
+        ram_limit_mb = float(applied["memory_max_bytes"]) / (1024 * 1024)
+    else:
+        # Shared-hosting policy floor (2 GiB / 6 GiB) when slice not yet applied.
+        try:
+            from app.services.platform.resource_policy import resolve_normal_memory_target
+
+            normal_gb = resolve_normal_memory_target(plan) if plan else None
+            if normal_gb and normal_gb * 1024 > ram_limit_mb:
+                ram_limit_mb = float(normal_gb) * 1024
+            elif plan is not None and float(getattr(plan, "ram_gb", 0) or 0) * 1024 > ram_limit_mb:
+                ram_limit_mb = float(plan.ram_gb) * 1024
+        except Exception:  # noqa: BLE001
+            if plan is not None and float(getattr(plan, "ram_gb", 0) or 0) * 1024 > ram_limit_mb:
+                ram_limit_mb = float(plan.ram_gb) * 1024
     mem_mb = live.get("memory_mb")
     # Idle sites are a valid 0 reading once metrics are available.
     if mem_mb is None and live.get("available"):
@@ -2765,6 +2940,29 @@ async def env_health_check(
         queued=False,
         message="Health check completed.",
     )
+
+
+@router.post(
+    "/environments/{environment_id}/cache/clear",
+    response_model=OperationResult,
+)
+async def clear_env_cache(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> OperationResult:
+    """Clear application and filesystem caches under this environment's site folder."""
+    from pathlib import Path
+
+    from app.services.operations.cache import CacheOperationsService
+
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    if not env.document_root:
+        raise AppException("Environment has no site folder.", code="no_docroot")
+    return await CacheOperationsService(settings).clear_tenant_docroot(Path(env.document_root))
 
 
 @router.get(
@@ -3319,7 +3517,7 @@ async def env_git_status(
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     from app.services.platform.env_git import EnvironmentGitService
 
-    return await EnvironmentGitService(settings, session).status(env)
+    return await EnvironmentGitService(settings, session).list_repos(env)
 
 
 @router.post("/environments/{environment_id}/git/clone")
@@ -3335,14 +3533,26 @@ async def env_git_clone(
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     from app.services.platform.env_git import EnvironmentGitService
 
-    return await EnvironmentGitService(settings, session).clone(
-        env, repo_url=body.repo_url, branch=body.branch
-    )
+    svc = EnvironmentGitService(settings, session)
+    if body.repo_path or body.name:
+        return await svc.create(
+            env,
+            name=body.name or "repository",
+            repo_path=body.repo_path,
+            clone=body.clone,
+            repo_url=body.repo_url,
+            branch=body.branch,
+            serve_as_website=bool(body.serve_as_website),
+        )
+    if not body.repo_url:
+        raise ValidationError("Enter a clone URL.")
+    return await svc.clone(env, repo_url=body.repo_url, branch=body.branch, name=body.name)
 
 
-@router.post("/environments/{environment_id}/git/pull")
-async def env_git_pull(
+@router.post("/environments/{environment_id}/git/activate")
+async def env_git_activate(
     environment_id: UUID,
+    body: EnvironmentGitRepoRequest,
     user: CurrentUser,
     session: DbSession,
     settings: SettingsDep,
@@ -3352,7 +3562,64 @@ async def env_git_pull(
     env = await TenantService(session).get_owned_environment(customer.id, environment_id)
     from app.services.platform.env_git import EnvironmentGitService
 
-    return await EnvironmentGitService(settings, session).pull(env)
+    if not (body.repo_path or "").strip():
+        raise ValidationError("Repository path is required.")
+    return await EnvironmentGitService(settings, session).activate_as_website(env, repo_path=body.repo_path)
+
+
+@router.post("/environments/{environment_id}/git/pull")
+async def env_git_pull(
+    environment_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+    body: EnvironmentGitRepoRequest | None = None,
+) -> dict:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.services.platform.env_git import EnvironmentGitService
+
+    path = body.repo_path if body else None
+    return await EnvironmentGitService(settings, session).pull(env, repo_path=path)
+
+
+@router.post("/environments/{environment_id}/git/history")
+async def env_git_history(
+    environment_id: UUID,
+    body: EnvironmentGitRepoRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> dict:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.services.platform.env_git import EnvironmentGitService
+
+    if not (body.repo_path or "").strip():
+        raise ValidationError("Repository path is required.")
+    return await EnvironmentGitService(settings, session).history(env, repo_path=body.repo_path)
+
+
+@router.post("/environments/{environment_id}/git/remove")
+async def env_git_remove(
+    environment_id: UUID,
+    body: EnvironmentGitRepoRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+) -> dict:
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    env = await TenantService(session).get_owned_environment(customer.id, environment_id)
+    from app.services.platform.env_git import EnvironmentGitService
+
+    if not (body.repo_path or "").strip():
+        raise ValidationError("Repository path is required.")
+    return await EnvironmentGitService(settings, session).remove(
+        env, repo_path=body.repo_path, delete_files=body.delete_files
+    )
 
 
 @router.post(
@@ -3426,6 +3693,8 @@ async def env_list_domain_items(
     from app.models.hosting import Domain
     from app.models.platform import CustomerDomain, Subscription, HostingPlan
 
+    from app.services.platform.tenant import customer_folder_relative, resolve_site_home
+
     primary_name = (env.domain or "").strip().lower()
     unix_username = (env.unix_username or env.hosting_name or "").strip().lower()
     if not unix_username and env.domain:
@@ -3433,6 +3702,7 @@ async def env_list_domain_items(
     if not unix_username:
         unix_username = "user"
     home_dir = f"/home3/{unix_username}"
+    site_home = resolve_site_home(env.document_root)
 
     # Plan checks
     plan = None
@@ -3512,24 +3782,25 @@ async def env_list_domain_items(
             )
         ).scalar_one_or_none()
 
-        d_root = "/public_html"
+        d_root = f"/{cd_name}"
         d_redirect = None
         d_force = True
         if d_row:
             d_redirect = d_row.redirect_url
             d_force = d_row.force_https
-            if d_row.document_root:
-                raw_p = Path(d_row.document_root)
-                if raw_p.name in {"public", "public_html", "web"} and raw_p.parent.name == cd_name:
-                    d_root = f"/{cd_name}/{raw_p.name}"
-                elif raw_p.name == "public_html":
-                    d_root = "/public_html"
-                elif raw_p.is_absolute():
-                    d_root = f"/{raw_p.name}"
-                else:
-                    d_root = f"/{d_row.document_root.lstrip('/')}"
-        else:
-            d_root = f"/{cd_name}"
+            d_root = customer_folder_relative(
+                site_home,
+                d_row.document_root,
+                fallback=cd_name,
+            )
+            # Heal nested nginx leaves (…/public, …/frontend/dist) back to the folder name.
+            folder_abs = site_home / d_root.lstrip("/")
+            if d_row.document_root and Path(d_row.document_root).resolve() != folder_abs.resolve():
+                try:
+                    if folder_abs.exists() or Path(d_row.document_root).is_relative_to(folder_abs):
+                        d_row.document_root = str(folder_abs)
+                except (ValueError, OSError):
+                    pass
 
         is_sub = cd_name.endswith(f".{primary_name}")
         items.append(
@@ -3560,17 +3831,18 @@ async def env_list_domain_items(
             seen_names.add(c_name)
             custom_count += 1
 
-            c_root = f"/{c_name}"
-            if child.document_root:
-                raw_p = Path(child.document_root)
-                if raw_p.name in {"public", "public_html", "web"} and raw_p.parent.name == c_name:
-                    c_root = f"/{c_name}/{raw_p.name}"
-                elif raw_p.name == "public_html":
-                    c_root = "/public_html"
-                elif raw_p.is_absolute():
-                    c_root = f"/{raw_p.name}"
-                else:
-                    c_root = f"/{child.document_root.lstrip('/')}"
+            c_root = customer_folder_relative(
+                site_home,
+                child.document_root,
+                fallback=c_name,
+            )
+            folder_abs = site_home / c_root.lstrip("/")
+            if child.document_root and Path(child.document_root).resolve() != folder_abs.resolve():
+                try:
+                    if folder_abs.exists() or Path(child.document_root).is_relative_to(folder_abs):
+                        child.document_root = str(folder_abs)
+                except (ValueError, OSError):
+                    pass
 
             is_sub = c_name.endswith(f".{primary_name}")
             items.append(
@@ -3588,6 +3860,8 @@ async def env_list_domain_items(
                     created_at=child.created_at,
                 )
             )
+
+    await session.commit()
 
     return EnvironmentDomainListResponse(
         primary_domain=primary_name,
@@ -3622,7 +3896,11 @@ async def env_create_domain_item(
     from app.models.hosting import Domain
     from app.models.platform import CustomerDomain, Subscription, HostingPlan
     from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
-    from app.services.platform.tenant import ensure_cpanel_directory_layout
+    from app.services.platform.tenant import (
+        ensure_cpanel_directory_layout,
+        resolve_site_home,
+        sanitize_relative_doc_root,
+    )
 
     # Check plan limit
     if env.subscription_id:
@@ -3670,16 +3948,16 @@ async def env_create_domain_item(
 
     if not env.document_root:
         raise AppException("Environment has no root path.", code="no_docroot")
-    raw_env_root = Path(env.document_root).resolve()
-    site_home = raw_env_root.parent if raw_env_root.name in {"public", "public_html", "web"} else raw_env_root
+    site_home = resolve_site_home(env.document_root)
 
     if body.share_document_root:
         target_doc_root = site_home / "public_html"
         display_doc_root = "/public_html"
     else:
-        req_root = (body.document_root or clean_name).strip().lstrip("/")
-        if not req_root:
-            req_root = clean_name
+        req_root = sanitize_relative_doc_root(
+            body.document_root,
+            fallback=clean_name,
+        )
         target_doc_root = site_home / req_root
         display_doc_root = f"/{req_root}"
 
@@ -3689,9 +3967,19 @@ async def env_create_domain_item(
     except OSError:
         pass
 
-    # Ensure cpanel layout update
-    ensure_cpanel_directory_layout(site_home, web_dir=site_home / "public_html", hostname=primary_name, subdomains=[clean_name])
-
+    # Ensure cpanel layout update (document-root folder becomes a recognized site root)
+    doc_folder = None
+    if target_doc_root != site_home / "public_html":
+        try:
+            doc_folder = str(target_doc_root.relative_to(site_home)).split("/")[0]
+        except ValueError:
+            doc_folder = target_doc_root.name
+    ensure_cpanel_directory_layout(
+        site_home,
+        web_dir=site_home / "public_html",
+        hostname=primary_name,
+        subdomains=[doc_folder] if doc_folder else None,
+    )
     # Save to CustomerDomain
     cd_row = (
         await session.execute(
@@ -3738,19 +4026,47 @@ async def env_create_domain_item(
     await session.refresh(cd_row)
     await session.refresh(dom_row)
 
-    # Provision Nginx vhost safely
+    # Provision Nginx + per-host PHP-FPM so this document root is a first-class site
+    # (not only public_html). Failures must surface — silent skip left PHP unrecognized.
+    from app.core.logging import get_logger
+
+    _log = get_logger(__name__)
     try:
         prov = DomainNginxProvisioner(settings)
-        await prov.provision(
+        prov_result = await prov.provision(
             hostname=clean_name,
             document_root=str(target_doc_root),
             force_https=body.force_https,
             enabled=True,
             create_docroot=True,
             unix_user=env.unix_username or env.hosting_name,
+            ram_gb=float(env.ram_limit_gb or 0) or None,
         )
-    except Exception:
-        pass
+        if not prov_result.success:
+            raise AppException(
+                prov_result.message or "Could not provision domain site.",
+                code="nginx_provision_failed",
+            )
+        # Mark hosting row for PHP recognition / reloads
+        try:
+            from app.services.platform.php_fpm import PhpFpmPoolService
+
+            PhpFpmPoolService(settings).ensure_pool(
+                hostname=clean_name,
+                document_root=str(target_doc_root),
+                ram_gb=float(env.ram_limit_gb or 0) or None,
+                unix_user=env.unix_username or env.hosting_name,
+            )
+        except Exception as pool_exc:  # noqa: BLE001
+            _log.warning("domain_php_pool_ensure_failed", domain=clean_name, error=str(pool_exc))
+    except AppException:
+        raise
+    except Exception as exc:
+        _log.exception("domain_nginx_provision_failed", domain=clean_name)
+        raise AppException(
+            f"Domain saved but web/PHP provisioning failed: {exc}",
+            code="nginx_provision_failed",
+        ) from exc
 
     return EnvironmentDomainEntry(
         id=str(cd_row.id),
@@ -3788,13 +4104,17 @@ async def env_update_domain_item(
     from app.models.hosting import Domain
     from app.models.platform import CustomerDomain
     from app.services.hosting.nginx_provisioner import DomainNginxProvisioner
+    from app.services.platform.tenant import (
+        customer_folder_relative,
+        resolve_site_home,
+        sanitize_relative_doc_root,
+    )
 
     primary_name = (env.domain or "").strip().lower()
     unix_username = (env.unix_username or env.hosting_name or "user").strip().lower()
     home_dir = f"/home3/{unix_username}"
 
-    raw_env_root = Path(env.document_root or ".").resolve()
-    site_home = raw_env_root.parent if raw_env_root.name in {"public", "public_html", "web"} else raw_env_root
+    site_home = resolve_site_home(env.document_root)
 
     # Find the domain entry
     cd_row = None
@@ -3824,18 +4144,25 @@ async def env_update_domain_item(
 
     display_root = "/public_html"
     if body.document_root is not None:
-        req_root = body.document_root.strip().lstrip("/")
-        if not req_root:
-            req_root = "public_html"
+        req_root = sanitize_relative_doc_root(
+            body.document_root,
+            fallback=dom_name or "public_html",
+        )
         new_dir = site_home / req_root
         new_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            new_dir.chmod(0o755)
+        except OSError:
+            pass
         display_root = f"/{req_root}"
         if dom_row:
             dom_row.document_root = str(new_dir)
     elif dom_row and dom_row.document_root:
-        raw_p = Path(dom_row.document_root)
-        display_root = f"/{raw_p.name}" if raw_p.is_absolute() else f"/{dom_row.document_root.lstrip('/')}"
-
+        display_root = customer_folder_relative(
+            site_home,
+            dom_row.document_root,
+            fallback=dom_name or "public_html",
+        )
     if body.force_https is not None and dom_row:
         dom_row.force_https = body.force_https
 
@@ -4142,6 +4469,38 @@ async def list_backups(
         customer.id, environment_id
     )
     return [EnvironmentBackupResponse.model_validate(r) for r in rows]
+
+
+@router.get(
+    "/environments/{environment_id}/backups/{backup_id}/download",
+)
+async def download_backup(
+    environment_id: UUID,
+    backup_id: UUID,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+):
+    """Download a successful environment backup archive."""
+    from fastapi.responses import FileResponse
+
+    from app.services.platform.backups import EnvironmentBackupService
+
+    _require_customer_user(user)
+    customer = await CustomerService(settings, session).require_for_user(user.id)
+    svc = EnvironmentBackupService(settings, session)
+    backup = await svc.get_owned_backup(customer.id, environment_id, backup_id)
+    if str(backup.status or "").lower() != "success":
+        raise AppException("Backup is not ready to download yet.", code="backup_not_ready")
+    path = svc._archive_path(backup)  # noqa: SLF001
+    if path is None or not path.is_file():
+        raise AppException("Backup archive file is missing.", code="backup_file_missing")
+    filename = path.name or f"backup-{backup_id}.tar.gz"
+    return FileResponse(
+        path,
+        filename=filename,
+        media_type="application/gzip" if filename.endswith(".gz") else "application/octet-stream",
+    )
 
 
 @router.delete(
@@ -5341,7 +5700,7 @@ async def set_hosting_password(
     return HostingPasswordSetResponse(
         success=True,
         message="Hosting fPanel password updated successfully.",
-        username=env.unix_username or env.hosting_name or "fpanel_user",
+        username=env.hosting_name or env.unix_username or "fpanel_user",
     )
 
 

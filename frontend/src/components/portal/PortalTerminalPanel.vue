@@ -1,12 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import Card from '@/components/ui/Card.vue'
-import Badge from '@/components/ui/Badge.vue'
-import Skeleton from '@/components/ui/Skeleton.vue'
-import UiAlert from '@/components/ui/UiAlert.vue'
+import { nextTick, onMounted, ref } from 'vue'
 import { portalTerminalApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
-import type { TerminalAuditEntry, TerminalExecuteResponse } from '@/types/hosting'
 import type { TerminalScope } from '@/types/inventory'
 
 const props = defineProps<{
@@ -15,189 +10,224 @@ const props = defineProps<{
 }>()
 
 const canExecute = props.canExecute ?? true
-
-const command = ref('')
-const cwd = ref('')
-const running = ref(false)
-const result = ref<TerminalExecuteResponse | null>(null)
-const audit = ref<TerminalAuditEntry[]>([])
-const message = ref<{ ok: boolean; text: string } | null>(null)
-const loadingAudit = ref(true)
-const clearing = ref(false)
-
 const scope: TerminalScope = 'hosting'
 
+type Line = {
+  id: number
+  kind: 'cmd' | 'out' | 'err' | 'meta'
+  text: string
+}
+
+const cwd = ref('')
+const command = ref('')
+const running = ref(false)
+const lines = ref<Line[]>([])
+const scrollEl = ref<HTMLElement | null>(null)
+const inputEl = ref<HTMLTextAreaElement | null>(null)
+let lineId = 0
+
+function push(kind: Line['kind'], text: string) {
+  lines.value.push({ id: ++lineId, kind, text })
+}
+
+async function scrollBottom() {
+  await nextTick()
+  if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight
+}
+
 async function run() {
-  if (!canExecute) return
-  if (!command.value.trim()) return
+  if (!canExecute || running.value) return
+  const cmd = command.value.trim()
+  if (!cmd) return
   running.value = true
-  message.value = null
-  result.value = null
+  const promptCwd = cwd.value.trim() || '~'
+  push('cmd', `${promptCwd} $ ${cmd}`)
+  // Keep the command box ready for the next command; do not wipe session history.
+  command.value = ''
+  await scrollBottom()
   try {
     const { data } = await portalTerminalApi.execute(props.environmentId, {
-      command: command.value.trim(),
+      command: cmd,
       cwd: cwd.value || undefined,
       scope,
     })
-    result.value = data
-    command.value = ''
-    await loadAudit()
+    if (data.stdout?.trim()) push('out', data.stdout.replace(/\n$/, ''))
+    if (data.stderr?.trim()) push('err', data.stderr.replace(/\n$/, ''))
+    push('meta', data.success ? `exit ${data.exit_code ?? 0}` : `failed · exit ${data.exit_code ?? '—'}`)
   } catch (e) {
-    message.value = { ok: false, text: getApiErrorMessage(e, 'Command failed') }
+    push('err', getApiErrorMessage(e, 'Command failed'))
   } finally {
     running.value = false
+    await scrollBottom()
+    inputEl.value?.focus()
   }
 }
 
-async function loadAudit() {
-  loadingAudit.value = true
-  try {
-    const { data } = await portalTerminalApi.audit(props.environmentId, 40)
-    audit.value = data
-  } catch {
-    audit.value = []
-  } finally {
-    loadingAudit.value = false
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    void run()
   }
 }
 
-async function clearLogs() {
-  if (!confirm('Clear terminal audit logs for you? This cannot be undone.')) return
-  clearing.value = true
-  message.value = null
-  try {
-    const { data } = await portalTerminalApi.clearAudit(props.environmentId)
-    audit.value = []
-    result.value = null
-    message.value = { ok: data.success, text: data.message || 'Cleared.' }
-  } catch (e) {
-    message.value = { ok: false, text: getApiErrorMessage(e, 'Failed to clear logs') }
-  } finally {
-    clearing.value = false
-  }
+function clearScreen() {
+  lines.value = []
+  push('meta', 'Screen cleared. Previous commands remain in server audit logs.')
 }
 
 onMounted(() => {
-  void loadAudit()
+  push('meta', 'Terminal ready. Commands run inside your hosting home. Enter to run · Shift+Enter for newline.')
+  inputEl.value?.focus()
 })
 </script>
 
 <template>
-  <div class="hp-terminal">
-    <h2 class="hp-card-title">Terminal</h2>
+  <div class="term">
+    <div class="term-bar">
+      <h2>Terminal</h2>
+      <label class="cwd">
+        <span>cwd</span>
+        <input v-model="cwd" type="text" placeholder="leave empty for home" :disabled="!canExecute" />
+      </label>
+      <button type="button" class="ghost" :disabled="!lines.length" @click="clearScreen">Clear screen</button>
+    </div>
 
-    <div class="space-y-4">
-      <Card padding="md">
-        <label class="block text-sm">
-          <span class="text-surface-muted">Working directory (optional)</span>
-          <input
-            v-model="cwd"
-            class="mt-1 w-full rounded-lg border border-surface-border bg-transparent px-3 py-2 font-mono text-sm"
-            placeholder="/var/www or leave empty"
-          />
-        </label>
+    <p v-if="!canExecute" class="blocked">Terminal is not enabled on this hosting pack.</p>
 
-        <label class="mt-3 block text-sm">
-          <span class="text-surface-muted"
-            >Command <em class="text-xs">(safe, audited, stays inside your hosting roots)</em></span
-          >
-          <textarea
-            v-model="command"
-            rows="4"
-            class="mt-1 w-full rounded-lg border border-surface-border bg-slate-950 px-3 py-2 font-mono text-sm text-emerald-300"
-            placeholder="ls -la"
-          />
-        </label>
+    <div ref="scrollEl" class="term-screen" role="log" aria-live="polite">
+      <div v-for="line in lines" :key="line.id" class="line" :class="line.kind">
+        <pre>{{ line.text }}</pre>
+      </div>
+      <div v-if="running" class="line meta"><pre>…</pre></div>
+    </div>
 
-        <div class="mt-3 flex items-center gap-3">
-          <button
-            type="button"
-            class="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50"
-            :disabled="running || !command.trim() || !canExecute"
-            @click="run"
-          >
-            {{ running ? 'Running…' : 'Execute' }}
-          </button>
-          <button
-            type="button"
-            class="rounded-lg border border-surface-border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
-            :disabled="clearing || !audit.length || !canExecute"
-            @click="clearLogs"
-          >
-            {{ clearing ? 'Clearing…' : 'Clear logs' }}
-          </button>
-        </div>
-
-        <UiAlert v-if="message" :tone="message.ok ? 'ok' : 'err'" class="mt-3">
-          {{ message.text }}
-        </UiAlert>
-
-        <div v-if="!canExecute" class="mt-3 text-sm text-surface-muted">
-          Terminal execution is not enabled for this hosting pack.
-        </div>
-      </Card>
-
-      <Card v-if="running && !result" padding="md">
-        <div class="space-y-2">
-          <Skeleton height="0.85rem" width="30%" />
-          <Skeleton height="6rem" />
-        </div>
-      </Card>
-
-      <Card v-if="result" padding="md">
-        <div class="mb-2 flex items-center gap-2">
-          <Badge :variant="result.success ? 'success' : 'danger'" size="sm">exit {{ result.exit_code }}</Badge>
-          <span class="text-xs text-surface-muted">audit {{ result.audit_id }}</span>
-        </div>
-        <pre v-if="result.stdout" class="max-h-64 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">
-{{ result.stdout }}
-        </pre>
-        <pre
-          v-if="result.stderr"
-          class="mt-2 max-h-32 overflow-auto rounded-lg bg-red-950/30 p-3 text-xs text-red-200"
-        >
-{{ result.stderr }}
-        </pre>
-      </Card>
-
-      <Card padding="md">
-        <div class="mb-3 flex items-center justify-between">
-          <h3 class="text-sm font-semibold">Recent commands</h3>
-          <span class="text-xs text-surface-muted">{{ audit.length }}</span>
-        </div>
-
-        <div v-if="loadingAudit" class="space-y-2">
-          <Skeleton height="2.5rem" />
-          <Skeleton height="2.5rem" />
-          <Skeleton height="2.5rem" />
-        </div>
-
-        <div v-else-if="!audit.length" class="text-sm text-surface-muted">No audit entries yet.</div>
-
-        <div v-else class="max-h-[min(50vh,24rem)] overflow-auto rounded-lg border border-surface-border/60">
-          <div
-            v-for="entry in audit"
-            :key="entry.id"
-            class="border-b border-surface-border px-3 py-2 text-sm last:border-b-0"
-          >
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="font-mono text-xs">{{ entry.username }}</span>
-              <Badge :variant="entry.success ? 'success' : 'danger'" size="sm">{{ entry.exit_code ?? '—' }}</Badge>
-              <span class="text-xs text-surface-muted">{{ entry.executed_at }}</span>
-            </div>
-            <p class="mt-1 font-mono text-xs">{{ entry.command }}</p>
-            <p v-if="entry.output_preview" class="mt-1 truncate text-xs text-surface-muted">{{ entry.output_preview }}</p>
-          </div>
-        </div>
-      </Card>
+    <div class="term-input">
+      <textarea
+        ref="inputEl"
+        v-model="command"
+        rows="2"
+        spellcheck="false"
+        :disabled="running || !canExecute"
+        placeholder="Type next command…"
+        @keydown="onKeydown"
+      />
+      <button type="button" class="run" :disabled="running || !command.trim() || !canExecute" @click="run">
+        {{ running ? 'Running…' : 'Run' }}
+      </button>
     </div>
   </div>
 </template>
 
 <style scoped>
-.hp-terminal :deep(.hp-card-title) {
-  font-weight: 700;
-  margin-bottom: 8px;
+.term {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  font-family: Figtree, ui-sans-serif, system-ui, sans-serif;
+}
+.term-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+}
+.term-bar h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+.cwd {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: #5a6570;
+  flex: 1;
+  min-width: 12rem;
+}
+.cwd input {
+  flex: 1;
+  border: 1px solid #d5dce3;
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+}
+.ghost {
+  border: 1px solid #d5dce3;
+  background: #fff;
+  border-radius: 6px;
+  padding: 0.35rem 0.65rem;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.blocked {
+  color: #5a6570;
+  font-size: 0.9rem;
+}
+.term-screen {
+  background: #0b1220;
+  color: #d1fae5;
+  border-radius: 10px;
+  min-height: 18rem;
+  max-height: min(60vh, 28rem);
+  overflow: auto;
+  padding: 0.75rem 0.85rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+.line + .line {
+  margin-top: 0.45rem;
+}
+.line pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.line.cmd {
+  color: #6ee7b7;
+}
+.line.out {
+  color: #e2e8f0;
+}
+.line.err {
+  color: #fca5a5;
+}
+.line.meta {
+  color: #94a3b8;
+  font-size: 0.72rem;
+}
+.term-input {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+.term-input textarea {
+  flex: 1;
+  border: 1px solid #d5dce3;
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  background: #0b1220;
+  color: #6ee7b7;
+  resize: vertical;
+  min-height: 2.75rem;
+}
+.run {
+  border: 0;
+  border-radius: 8px;
+  background: #059669;
+  color: #fff;
+  padding: 0 1rem;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.run:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 </style>
-

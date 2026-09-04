@@ -72,6 +72,63 @@ class EnvironmentDnsService:
     def nameservers(self) -> list[str]:
         return self._auth.nameservers()
 
+    def check_public_delegation(self, domain: str) -> dict:
+        """Live public NS lookup. Never returns the VPS IP."""
+        name = (domain or "").strip().lower().rstrip(".")
+        expected = [n.strip().lower().rstrip(".") for n in self.nameservers() if n.strip()]
+        if not name or "." not in name:
+            return {
+                "domain": name,
+                "included_hostname": False,
+                "ns_live": False,
+                "dns_live": False,
+                "expected": expected,
+                "found": [],
+                "dns_mode": None,
+                "message": "Enter a full domain such as example.com or mensah.ifnotus.space.",
+            }
+        if self.is_included_hostname(name) or name.endswith(".ifnotus.space") or name.endswith(
+            ".serverlabsttu.space"
+        ):
+            return {
+                "domain": name,
+                "included_hostname": True,
+                "ns_live": True,
+                "dns_live": True,
+                "expected": expected,
+                "found": expected,
+                "dns_mode": "nameserver",
+                "message": f"{name} is an IFNOTUS hostname — it already lives on ns1 and ns2.ifnotus.space.",
+            }
+        live = self._lookup_dns_live(name, expected)
+        found = [str(x) for x in (live.get("ns_found") or [])]
+        if live.get("ns_live"):
+            message = f"{name} is pointing at IFNOTUS nameservers ({', '.join(expected)})."
+        elif live.get("dns_mode") == "a_record":
+            message = (
+                f"{name} is not on IFNOTUS nameservers yet, but A records already point here. "
+                f"Ask the registrar to set {expected[0]} and {expected[1]} when you can."
+            )
+        elif found:
+            message = (
+                f"{name} currently uses {', '.join(found)}. Change nameservers at the registrar to "
+                f"{expected[0]} and {expected[1]}."
+            )
+        else:
+            message = (
+                f"No nameservers found yet for {name}. At the registrar, set {expected[0]} and {expected[1]}."
+            )
+        return {
+            "domain": name,
+            "included_hostname": False,
+            "ns_live": bool(live.get("ns_live")),
+            "dns_live": bool(live.get("dns_live")),
+            "expected": expected,
+            "found": found,
+            "dns_mode": live.get("dns_mode"),
+            "message": message,
+        }
+
     def recommended_ip(self, env: CustomerEnvironment) -> str | None:
         return self._settings.server_public_ip or env.ip_address
 
@@ -235,6 +292,80 @@ class EnvironmentDnsService:
             out.append(token)
         return out
 
+    def _parse_dig_ns_lines(self, stdout: str) -> list[str]:
+        out: list[str] = []
+        for line in (stdout or "").splitlines():
+            raw = line.strip().lower()
+            if not raw or raw.startswith(";"):
+                continue
+            parts = raw.split()
+            # dig +short: "ns1.ifnotus.space."
+            if len(parts) == 1 and not parts[0].replace(".", "").isdigit():
+                out.append(parts[0].rstrip("."))
+                continue
+            # dig +answer/+authority: "ibuk.online. 900 in ns ns1.ifnotus.space."
+            if len(parts) >= 5 and parts[3] == "ns":
+                out.append(parts[4].rstrip("."))
+            elif len(parts) >= 4 and parts[2] == "ns":
+                out.append(parts[3].rstrip("."))
+        # Preserve order, drop dupes
+        seen: set[str] = set()
+        unique: list[str] = []
+        for ns in out:
+            if ns and ns not in seen:
+                seen.add(ns)
+                unique.append(ns)
+        return unique
+
+    def _dig_ns_via_parent(self, name: str) -> list[str]:
+        """Read NS from the parent referral when recursive dig SERVFAILs.
+
+        Common when the registrar already points at IFNOTUS but BIND has no
+        customer zone yet — recursive resolvers return SERVFAIL/empty, while
+        the TLD/parent still publishes the correct NS set in AUTHORITY.
+        """
+        import subprocess
+
+        labels = [p for p in name.strip(".").lower().split(".") if p]
+        if len(labels) < 2:
+            return []
+        for i in range(1, len(labels)):
+            parent = ".".join(labels[i:])
+            parent_ns = self._dig(parent, "NS")
+            for pns in parent_ns[:4]:
+                try:
+                    proc = subprocess.run(
+                        [
+                            "dig",
+                            f"@{pns}",
+                            "+norecurse",
+                            "+time=2",
+                            "+tries=1",
+                            "+noall",
+                            "+authority",
+                            "+answer",
+                            "NS",
+                            name,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=6,
+                        check=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    continue
+                found = self._parse_dig_ns_lines(proc.stdout or "")
+                if found:
+                    return found
+        return []
+
+    def _resolve_ns_records(self, name: str) -> list[str]:
+        """Public NS for a domain: recursive answer, else parent referral."""
+        found = self._dig(name, "NS")
+        if found:
+            return found
+        return self._dig_ns_via_parent(name)
+
     def _a_points_here(self, hostname: str) -> bool:
         want = self._server_ips()
         if not want:
@@ -262,7 +393,7 @@ class EnvironmentDnsService:
         from app.services.platform.panel_access import control_panel_hostname
 
         want_ns = {n.strip().lower().rstrip(".") for n in expected if n.strip()}
-        found_ns = self._dig(name, "NS")
+        found_ns = self._resolve_ns_records(name)
         ns_live = bool(want_ns) and want_ns.issubset(set(found_ns)) if found_ns else False
 
         apex_points = self._a_points_here(name)
@@ -536,6 +667,112 @@ class EnvironmentDnsService:
             existing = await self._session.get(Domain, env.hosting_domain_id)
             if existing is not None and existing.name == name:
                 return existing
+            # Stale link (env renamed / typo domain): prefer the Domain that already
+            # matches env.domain; otherwise rename an exclusive orphan Domain row.
+            if existing is not None and existing.name != name:
+                correct = (
+                    await self._session.execute(select(Domain).where(Domain.name == name))
+                ).scalar_one_or_none()
+                if correct is not None:
+                    # Move mailboxes/aliases from the stale Domain onto the correct one
+                    # when the correct Domain has none yet (keeps Roundcube addresses working).
+                    from app.models.hosting import MailAlias, Mailbox
+
+                    old_boxes = (
+                        await self._session.execute(
+                            select(Mailbox).where(Mailbox.domain_id == existing.id)
+                        )
+                    ).scalars().all()
+                    new_boxes = (
+                        await self._session.execute(
+                            select(Mailbox).where(Mailbox.domain_id == correct.id)
+                        )
+                    ).scalars().all()
+                    if old_boxes and not new_boxes:
+                        for box in old_boxes:
+                            box.domain_id = correct.id
+                        old_aliases = (
+                            await self._session.execute(
+                                select(MailAlias).where(MailAlias.domain_id == existing.id)
+                            )
+                        ).scalars().all()
+                        for alias in old_aliases:
+                            alias.domain_id = correct.id
+                        try:
+                            from pathlib import Path
+                            import shutil
+
+                            vroot = Path(getattr(self._settings, "mail_vmail_dir", "/var/vmail"))
+                            src = vroot / existing.name
+                            dst = vroot / name
+                            if src.exists():
+                                dst.mkdir(parents=True, exist_ok=True)
+                                for child in src.iterdir():
+                                    target = dst / child.name
+                                    if not target.exists():
+                                        shutil.move(str(child), str(target))
+                        except OSError as exc:
+                            logger.warning(
+                                "mail_vmail_merge_failed",
+                                old=existing.name,
+                                new=name,
+                                error=str(exc),
+                            )
+                    env.hosting_domain_id = correct.id
+                    await self._session.flush()
+                    logger.info(
+                        "mail_domain_relinked_to_env",
+                        env_id=str(env.id),
+                        old=existing.name,
+                        new=name,
+                    )
+                    return correct
+                others = (
+                    await self._session.execute(
+                        select(CustomerEnvironment.id).where(
+                            CustomerEnvironment.hosting_domain_id == existing.id,
+                            CustomerEnvironment.id != env.id,
+                        )
+                    )
+                ).scalars().all()
+                if not others:
+                    old_name = existing.name
+                    existing.name = name
+                    await self._session.flush()
+                    try:
+                        from pathlib import Path
+                        import shutil
+
+                        vroot = Path(getattr(self._settings, "mail_vmail_dir", "/var/vmail"))
+                        src = vroot / old_name
+                        dst = vroot / name
+                        if src.exists() and not dst.exists():
+                            src.rename(dst)
+                        elif src.exists() and dst.exists():
+                            for child in src.iterdir():
+                                target = dst / child.name
+                                if not target.exists():
+                                    shutil.move(str(child), str(target))
+                    except OSError as exc:
+                        logger.warning(
+                            "mail_vmail_rename_failed",
+                            old=old_name,
+                            new=name,
+                            error=str(exc),
+                        )
+                    try:
+                        from app.services.hosting.mail_auth import MailAuthService
+
+                        await MailAuthService(self._settings, self._session).ensure_domain(name)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("mail_auth_resync_failed", domain=name, error=str(exc))
+                    logger.info(
+                        "mail_domain_renamed_to_env",
+                        env_id=str(env.id),
+                        old=old_name,
+                        new=name,
+                    )
+                    return existing
             env.hosting_domain_id = None
         result = await self._session.execute(select(Domain).where(Domain.name == name))
         domain = result.scalar_one_or_none()
@@ -994,21 +1231,14 @@ class EnvironmentDnsService:
         await svc.provision_domain(hosting.id)
 
     async def _refresh_parking_ready_page(self, env: CustomerEnvironment, domain: str) -> None:
-        """Upgrade IFNOTUS parking pages to relative /cpanel links (idempotent)."""
+        """Remove legacy IFNOTUS parking index.html — do not seed a default page."""
         from pathlib import Path
 
         root = (env.document_root or "").strip()
         if not root:
             return
-        from app.services.platform.hosting_ready_page import is_parking_page, write_hosting_ready_page
+        from app.services.platform.hosting_ready_page import write_hosting_ready_page
 
-        index = Path(root) / "index.html"
-        if index.exists():
-            try:
-                if not is_parking_page(index.read_text(encoding="utf-8", errors="replace")):
-                    return
-            except OSError:
-                return
         write_hosting_ready_page(
             Path(root),
             hostname=domain,

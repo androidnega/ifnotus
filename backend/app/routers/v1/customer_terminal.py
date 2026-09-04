@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import CurrentUser, DbSession, SettingsDep, get_auth_service
-from app.core.exceptions import AuthorizationError
+from app.core.exceptions import AppException, AuthorizationError
 from app.core.permissions import Role
 from app.models.platform import CustomerEnvironment
 from app.repositories.terminal_audit import TerminalAuditRepository
@@ -60,14 +60,23 @@ async def tenant_terminal_execute(
         customer.id, environment_id, allow_suspended=False
     )
 
-    # Terminal is allowed when the customer's pack includes SSH (limited/jail/root).
-    await tenant.require_capability(env, "ssh", label="Terminal / SSH access")
+    # Terminal is allowed when the customer's pack includes SSH-capable terminal access.
+    await tenant.require_capability(env, "ssh", label="Terminal")
     roots = await tenant.roots_for_environment(customer.id, environment_id)
+
+    unix = (getattr(env, "unix_username", None) or "").strip()
+    if not unix:
+        raise AppException(
+            "Terminal is not ready for this site yet. Try again in a moment.",
+            code="terminal_unavailable",
+        )
 
     svc = TerminalService(settings, session, only_roots=roots)
     if body.confirm_password:
         await auth_service.confirm_password(user, body.confirm_password)
 
+    # Always run as the site account — never the API process. Timeout allows pip/npm installs.
+    hosting_timeout = float(getattr(settings, "terminal_hosting_timeout", None) or 180)
     return await svc.execute(
         user,
         body.command,
@@ -75,6 +84,8 @@ async def tenant_terminal_execute(
         scope=body.scope,
         app_id=body.app_id,
         root_id=body.root_id,
+        run_as_user=unix,
+        timeout=hosting_timeout,
     )
 
 
@@ -96,7 +107,7 @@ async def tenant_terminal_audit(
         customer.id, environment_id, allow_suspended=False
     )
 
-    await tenant.require_capability(env, "ssh", label="Terminal / SSH access")
+    await tenant.require_capability(env, "ssh", label="Terminal")
 
     logs = await TerminalAuditRepository(session).list_for_user(user.id, limit=limit)
     return [
@@ -130,7 +141,7 @@ async def tenant_terminal_clear_audit(
     env: CustomerEnvironment = await tenant.get_owned_environment(
         customer.id, environment_id, allow_suspended=False
     )
-    await tenant.require_capability(env, "ssh", label="Terminal / SSH access")
+    await tenant.require_capability(env, "ssh", label="Terminal")
 
     deleted = await TerminalAuditRepository(session).clear_for_user(user.id)
     return OperationResult(

@@ -11,6 +11,7 @@ import { useAuthStore } from '@/stores/auth'
 import { usePermissions } from '@/composables/usePermissions'
 import { Permission } from '@/lib/permissions'
 import { isPlatformOwner, isBillingAgent } from '@/lib/roles'
+import { localDateStr, monthStartLocal, daysAgoLocal } from '@/lib/dates'
 import type { StaffAccountingLedgerItem, StaffAccountingSummary } from '@/types/staffPlatform'
 
 const router = useRouter()
@@ -65,38 +66,31 @@ const broadcastBusy = ref(false)
 const broadcastFeedback = ref('')
 
 const today = new Date()
-const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
-const dateFrom = ref(monthStart.toISOString().slice(0, 10))
-const dateTo = ref(today.toISOString().slice(0, 10))
-const activePreset = ref<'this_month' | 'today' | '7d' | '30d' | 'ytd' | 'all'>('this_month')
+const dateFrom = ref(localDateStr(daysAgoLocal(29, today)))
+const dateTo = ref(localDateStr(today))
+const activePreset = ref<'this_month' | 'today' | '7d' | '30d' | 'ytd' | 'all'>('30d')
 
 function setPreset(preset: typeof activePreset.value) {
   activePreset.value = preset
   const now = new Date()
   if (preset === 'today') {
-    dateFrom.value = now.toISOString().slice(0, 10)
-    dateTo.value = now.toISOString().slice(0, 10)
+    dateFrom.value = localDateStr(now)
+    dateTo.value = localDateStr(now)
   } else if (preset === '7d') {
-    const d = new Date()
-    d.setDate(d.getDate() - 7)
-    dateFrom.value = d.toISOString().slice(0, 10)
-    dateTo.value = now.toISOString().slice(0, 10)
+    dateFrom.value = localDateStr(daysAgoLocal(7, now))
+    dateTo.value = localDateStr(now)
   } else if (preset === 'this_month') {
-    const start = new Date(now.getFullYear(), now.getMonth(), 1)
-    dateFrom.value = start.toISOString().slice(0, 10)
-    dateTo.value = now.toISOString().slice(0, 10)
+    dateFrom.value = localDateStr(monthStartLocal(now))
+    dateTo.value = localDateStr(now)
   } else if (preset === '30d') {
-    const d = new Date()
-    d.setDate(d.getDate() - 30)
-    dateFrom.value = d.toISOString().slice(0, 10)
-    dateTo.value = now.toISOString().slice(0, 10)
+    dateFrom.value = localDateStr(daysAgoLocal(29, now))
+    dateTo.value = localDateStr(now)
   } else if (preset === 'ytd') {
-    const start = new Date(now.getFullYear(), 0, 1)
-    dateFrom.value = start.toISOString().slice(0, 10)
-    dateTo.value = now.toISOString().slice(0, 10)
+    dateFrom.value = localDateStr(new Date(now.getFullYear(), 0, 1))
+    dateTo.value = localDateStr(now)
   } else if (preset === 'all') {
     dateFrom.value = '2025-01-01'
-    dateTo.value = now.toISOString().slice(0, 10)
+    dateTo.value = localDateStr(now)
   }
 }
 
@@ -141,6 +135,7 @@ function methodLabel(m?: string | null) {
 
 
 const t = computed(() => summary.value?.totals)
+const periodLabel = computed(() => summary.value?.period?.label || 'Selected period')
 const cashPeriod = computed(
   () => t.value?.cash_collected_period ?? t.value?.collected_period ?? 0,
 )
@@ -177,7 +172,7 @@ const filteredLedger = computed(() => {
   } else if (ledgerFilter.value === 'all_paid') {
     list = list.filter((r) => r.payment_status === 'paid')
   } else if (ledgerFilter.value === 'submitted') {
-    list = list.filter((r) => r.payment_status === 'submitted')
+    list = list.filter((r) => r.entry_type === 'awaiting_confirm' || r.payment_status === 'submitted')
   } else if (ledgerFilter.value === 'pending') {
     list = list.filter((r) => r.payment_status === 'pending')
   } else if (ledgerFilter.value === 'comp') {
@@ -318,7 +313,7 @@ async function load() {
     } else if (ledgerFilter.value === 'all_paid') {
       payment_status = 'paid'
     } else if (ledgerFilter.value === 'submitted') {
-      payment_status = 'submitted'
+      payment_status = 'awaiting_confirm'
     } else if (ledgerFilter.value === 'pending') {
       payment_status = 'pending'
     }
@@ -681,7 +676,7 @@ watch([dateFrom, dateTo, ledgerFilter], load)
             <article class="stat-card tone-cash">
               <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-wallet" /></span>
               <div class="stat-body">
-                <span class="stat-k">Real Cash In (Period)</span>
+                <span class="stat-k">Real Cash In ({{ periodLabel }})</span>
                 <span class="stat-v">{{ money(cashPeriod, summary.currency) }}</span>
                 <span class="stat-s">
                   <i class="fa-solid fa-check-double" />

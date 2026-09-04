@@ -11,6 +11,87 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import AppException, AuthorizationError, NotFoundError
 from app.models.platform import CustomerEnvironment, HostingPlan, Subscription
 
+# Nested web-server leaves must not appear as the Domains UI "document root".
+# Customers see / choose the site folder under home (e.g. votebridge.online), not /dist or /public.
+_WEB_ROOT_LEAVES = frozenset({"public", "public_html", "web", "httpdocs", "dist", "www"})
+
+
+def sanitize_relative_doc_root(raw: str | None, *, fallback: str) -> str:
+    """Return a safe home-relative folder path (no leading slash, no ``..``)."""
+    seed = (raw or fallback or "public_html").strip().replace("\\", "/").lstrip("/")
+    parts = [p for p in seed.split("/") if p and p not in {".", ".."}]
+    if not parts:
+        parts = [p for p in (fallback or "public_html").strip("/").split("/") if p] or ["public_html"]
+    return "/".join(parts)
+
+
+def customer_folder_relative(
+    site_home: Path,
+    document_root: str | Path | None,
+    *,
+    fallback: str,
+) -> str:
+    """Home-relative folder shown in Domains / File Manager (e.g. ``/votebridge.online``).
+
+    Strips trailing web leaves (``public``, ``dist``, ``frontend/dist``, …) so addon
+    domains match the real tenant folder name rather than an inner nginx root.
+    """
+    fallback_rel = sanitize_relative_doc_root(fallback, fallback="public_html")
+    if not document_root:
+        return f"/{fallback_rel}"
+
+    raw = Path(str(document_root))
+    home = site_home
+    try:
+        home = site_home.resolve()
+    except OSError:
+        pass
+
+    rel: Path | None = None
+    for candidate in (raw,):
+        try:
+            resolved = candidate.resolve() if candidate.is_absolute() else (home / candidate)
+            rel = resolved.relative_to(home)
+            break
+        except (ValueError, OSError):
+            try:
+                rel = candidate.relative_to(home)
+                break
+            except ValueError:
+                rel = None
+
+    if rel is None:
+        parts = [p for p in raw.parts if p not in ("/", ".")]
+        # Climb out of known nested web roots when path is absolute outside home math.
+        while parts and parts[-1] in _WEB_ROOT_LEAVES:
+            parts.pop()
+            if parts and parts[-1] == "frontend":
+                parts.pop()
+        if not parts:
+            return f"/{fallback_rel}"
+        return "/" + parts[-1]
+
+    parts = list(rel.parts)
+    while parts and parts[-1] in _WEB_ROOT_LEAVES:
+        parts.pop()
+        if parts and parts[-1] == "frontend":
+            parts.pop()
+    if not parts:
+        return "/public_html"
+    return "/" + "/".join(parts)
+
+
+def resolve_site_home(document_root: str | Path | None) -> Path:
+    """Site home from an environment document_root (parent of public_html when nested)."""
+    raw = Path(str(document_root or ".")).expanduser()
+    try:
+        raw = raw.resolve()
+    except OSError:
+        pass
+    if raw.name in {"public", "public_html", "web", "httpdocs"}:
+        return raw.parent
+    return raw
+
 
 def ensure_cpanel_directory_layout(
     home: Path,
@@ -22,20 +103,24 @@ def ensure_cpanel_directory_layout(
     """Ensure standard cPanel directory structure in tenant home:
     - public_html (with www symlink, serving primary domain web root)
     - public_ftp, mail, logs, ssl, tmp, etc.
-    - starter index.html if empty
     - subdomain / addon domain web roots under home
     """
     home = home.resolve()
     home.mkdir(parents=True, exist_ok=True)
 
-    # Ensure public_html is a real directory
+    # Ensure public_html is a real directory (never destroy symlinked web roots).
     public_html = home / "public_html"
     if public_html.is_symlink():
         try:
             target_path = public_html.resolve()
-            public_html.unlink()
-            if not public_html.exists():
-                public_html.mkdir(parents=True, exist_ok=True)
+            if target_path.is_dir():
+                pass  # keep customer symlink
+            else:
+                legacy = home / "public_html.broken-symlink"
+                if not legacy.exists():
+                    public_html.rename(legacy)
+                elif not public_html.exists():
+                    public_html.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
     elif not public_html.exists():
@@ -49,33 +134,12 @@ def ensure_cpanel_directory_layout(
         except OSError:
             pass
 
-    # Ensure standard fPanel directories with appropriate permissions
+    # Ensure standard fPanel directories with appropriate permissions (minimal set only)
     dir_perms: dict[str, int] = {
         "public_html": 0o755,
-        "public_ftp": 0o750,
-        "mail": 0o751,
         "logs": 0o700,
-        "ssl": 0o700,
         "tmp": 0o755,
-        "etc": 0o750,
         ".trash": 0o700,
-        ".fpanel": 0o755,
-        ".cache": 0o700,
-        ".config": 0o700,
-        ".caldav": 0o700,
-        ".cl.selector": 0o700,
-        ".fpaddons": 0o755,
-        ".htpasswds": 0o750,
-        ".local": 0o700,
-        ".pip": 0o700,
-        ".putty": 0o700,
-        ".razor": 0o700,
-        ".sitepad": 0o755,
-        ".softaculous": 0o755,
-        ".spamassassin": 0o700,
-        ".ssh": 0o700,
-        ".subaccounts": 0o700,
-        "virtualenv": 0o755,
     }
 
     # Clean legacy .cpanel and .cpaddons directories if present
@@ -96,50 +160,21 @@ def ensure_cpanel_directory_layout(
         except OSError:
             pass
 
-    # Ensure subdomains/addon domain document roots under home if provided
+    # Ensure subdomain / addon document roots under home when provided.
+    # Callers pass the folder name (e.g. "blog" or "ibuk.online"), not only FQDNs.
     if subdomains:
         for sub in subdomains:
-            sub_name = sub.strip().lower().rstrip(".")
-            if sub_name and not sub_name.startswith("www."):
-                sub_dir = home / sub_name
-                sub_dir.mkdir(parents=True, exist_ok=True)
-                try:
-                    sub_dir.chmod(0o755)
-                except OSError:
-                    pass
-
-    # Ensure standard dotfiles
-    dotfiles: dict[str, tuple[str, int]] = {
-        ".bash_history": ("", 0o600),
-        ".bash_logout": ("# ~/.bash_logout\nclear\n", 0o644),
-        ".bash_profile": (
-            "# .bash_profile\n\n# Get the aliases and functions\nif [ -f ~/.bashrc ]; then\n\t. ~/.bashrc\nfi\n\n# User specific environment and startup programs\nPATH=$PATH:$HOME/.local/bin:$HOME/bin\nexport PATH\n",
-            0o644,
-        ),
-        ".bashrc": (
-            "# .bashrc\n\n# Source global definitions\nif [ -f /etc/bashrc ]; then\n\t. /etc/bashrc\nfi\n\n# User specific environment\n",
-            0o644,
-        ),
-    }
-
-    for file_name, (content, mode) in dotfiles.items():
-        target_file = home / file_name
-        if not target_file.exists():
+            folder = sub.strip().lower().rstrip("/").lstrip("/")
+            if not folder or folder.startswith("www.") or "/" in folder or ".." in folder:
+                continue
+            sub_dir = home / folder
+            sub_dir.mkdir(parents=True, exist_ok=True)
             try:
-                target_file.write_text(content, encoding="utf-8")
-                target_file.chmod(mode)
+                sub_dir.chmod(0o755)
             except OSError:
                 pass
 
-    # Ensure starter page in public_html if completely empty
-    try:
-        has_content = any(p.name not in {".ifnotus", ".ifnotus-trash"} for p in public_html.iterdir())
-        if not has_content:
-            from app.services.platform.hosting_ready_page import write_hosting_ready_page
-
-            write_hosting_ready_page(public_html, hostname=hostname or home.name)
-    except OSError:
-        pass
+    # Do not seed unused shell/dotfile clutter or a default index.html.
 
     return home
 

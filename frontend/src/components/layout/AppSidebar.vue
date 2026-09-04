@@ -23,6 +23,7 @@ import { useAuthStore } from '@/stores/auth'
 import { usePermissions } from '@/composables/usePermissions'
 import { Permission, type PermissionKey } from '@/lib/permissions'
 import { getCanonicalRole, type CanonicalRole } from '@/lib/roles'
+import { logoutLandingUrl } from '@/lib/platformHosts'
 import { useNotificationStore } from '@/stores/notifications'
 
 defineProps<{
@@ -46,7 +47,7 @@ type NavItem = {
   label: string
   icon: typeof IconDashboard
   permission?: PermissionKey
-  badgeKey?: 'orders' | 'support'
+  badgeKey?: 'orders' | 'activation' | 'support'
   isEmergency?: boolean
 }
 
@@ -121,7 +122,7 @@ const navGroups = computed<NavGroup[]>(() => {
         label: 'Hosting Operations',
         items: [
           { to: '/panel', name: 'dashboard', label: 'Operations Dashboard', icon: IconDashboard },
-          { to: '/platform/orders?status=ready_for_activation', name: 'platform-orders', label: 'Activation Queue', icon: IconGlobe, permission: Permission.PLATFORM_OPS, badgeKey: 'orders' },
+          { to: '/platform/orders?status=ready_for_activation', name: 'platform-orders', label: 'Activation Queue', icon: IconGlobe, permission: Permission.PLATFORM_OPS, badgeKey: 'activation' },
           { to: '/files', name: 'files', label: 'File Manager', icon: IconFolder, permission: Permission.FILES_READ },
           { to: '/applications', name: 'applications', label: 'Modern Apps', icon: IconApp, permission: Permission.APPS_READ },
           { to: '/domains', name: 'domains', label: 'Domains & DNS', icon: IconGlobe, permission: Permission.DOMAINS_READ },
@@ -309,7 +310,7 @@ async function handleLogout() {
     /* ignore */
   }
   if (typeof window !== 'undefined') {
-    window.location.replace('/login')
+    window.location.replace(logoutLandingUrl())
   }
 }
 </script>
@@ -370,6 +371,13 @@ async function handleLogout() {
             {{ notifications.ordersBadge > 99 ? '99+' : notifications.ordersBadge }}
           </span>
           <span
+            v-else-if="!collapsed && item.badgeKey === 'activation' && notifications.activationQueueBadge > 0"
+            class="ml-auto inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-emerald-600 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white"
+            :title="`${notifications.activationQueueBadge} hosting order(s) ready to activate`"
+          >
+            {{ notifications.activationQueueBadge > 99 ? '99+' : notifications.activationQueueBadge }}
+          </span>
+          <span
             v-else-if="!collapsed && item.badgeKey === 'support' && notifications.supportBadge > 0"
             class="ml-auto inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white"
             :title="`${notifications.supportBadge} open support ticket(s)`"
@@ -379,6 +387,11 @@ async function handleLogout() {
           <span
             v-else-if="collapsed && item.badgeKey === 'orders' && notifications.ordersBadge > 0"
             class="absolute right-2 top-1.5 h-2 w-2 rounded-full bg-amber-500"
+            aria-hidden="true"
+          />
+          <span
+            v-else-if="collapsed && item.badgeKey === 'activation' && notifications.activationQueueBadge > 0"
+            class="absolute right-2 top-1.5 h-2 w-2 rounded-full bg-emerald-600"
             aria-hidden="true"
           />
           <span

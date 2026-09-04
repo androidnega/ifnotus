@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/auth'
 import { authApi } from '@/api'
 import { ensureDeviceFingerprint } from '@/api/client'
 import { isPortalPath, isPureCustomer, isStaffPath } from '@/lib/roles'
+import { staffPanelHref } from '@/lib/platformHosts'
 
 const router = useRouter()
 const route = useRoute()
@@ -53,8 +54,11 @@ async function finishRedirect(home: 'dashboard' | 'portal-dashboard') {
     const customer = isPureCustomer(auth.user)
     if (customer && isStaffPath(candidate)) {
       target = { name: 'portal-dashboard' }
-    } else if (!customer && isPortalPath(candidate) && !candidate.includes('/dashboard')) {
+    } else if (!customer && isPortalPath(candidate) && !candidate.startsWith('/go/hosting')) {
       target = { name: home }
+    } else if (!customer && isStaffPath(candidate)) {
+      window.location.assign(staffPanelHref(candidate))
+      return
     } else {
       target = candidate
     }

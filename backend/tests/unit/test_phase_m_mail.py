@@ -58,18 +58,27 @@ def test_plan_gating_denies_disabled_mail() -> None:
 
 
 def test_webmail_path_routing_in_nginx(tmp_path) -> None:
-    """Test that /mail redirects to shared webmail in site nginx configs."""
+    """Tenant /mail serves Roundcube on the same host (no bounce to mail.ifnotus.space)."""
     settings = SimpleNamespace(
         webmail_url="https://mail.ifnotus.space",
         customer_portal_url="https://ifnotus.space",
         php_fpm_socket="/run/php/php8.3-fpm.sock",
+        roundcube_public_html="/var/lib/roundcube/public_html",
         nginx_sites_available=str(tmp_path / "sites-available"),
         nginx_sites_enabled=str(tmp_path / "sites-enabled"),
     )
     prov = DomainNginxProvisioner(settings)  # type: ignore[arg-type]
     locs = "\n".join(prov._webmail_locations(hostname="studentlab.org"))
     assert "location = /mail" in locs
-    assert "return 302 https://mail.ifnotus.space/;" in locs
+    assert "alias /var/lib/roundcube/public_html/" in locs
+    assert "return 302 https://mail.ifnotus.space/;" not in locs
+    # Platform apex still redirects to the shared mail server UI.
+    apex = "\n".join(prov._webmail_locations(hostname="ifnotus.space"))
+    assert "return 302 https://mail.ifnotus.space/;" in apex
+    # Staff host is not a tenant — /mail goes to platform mail server.
+    staff = "\n".join(prov._webmail_locations(hostname="fpanel.ifnotus.space"))
+    assert "return 302 https://mail.ifnotus.space/;" in staff
+    assert "location ^~ /hosting/" not in staff
 
 
 def test_mail_dns_hints_include_all_required_records() -> None:

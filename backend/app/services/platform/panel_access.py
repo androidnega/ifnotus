@@ -1,12 +1,12 @@
 """Customer control-panel and service access URLs according to IFNOTUS routing standard.
 
 Routing Standard:
-1. Customer fPanel Canonical: https://fpanel.{domain}
-2. Convenience Shortcut: https://{domain}/fpanel & https://{domain}/cpanel -> 302 -> https://fpanel.{domain}
-3. Customer Webmail Canonical: https://webmail.{domain}
-4. Convenience Shortcuts: https://{domain}/webmail & https://{domain}/mail -> 302 -> https://webmail.{domain}
-5. Mail Server: mail.{domain}
-6. Staff Control Plane: https://fpanel.ifnotus.space/login
+1. Customer fPanel Canonical: https://fpanel.{domain} (custom apex) or https://{tenant}/hosting/ (platform subdomains)
+2. Convenience Shortcut: https://{domain}/fpanel & https://{domain}/cpanel
+3. Customer Webmail: https://{domain}/mail (same-host Roundcube) — never bounce platform tenants to mail.ifnotus.space
+4. Optional custom alias: https://webmail.{custom-apex}
+5. Mail Server (IMAP/SMTP): mail.{custom-apex} or shared mail.ifnotus.space for platform/student hosts
+6. Staff Control Plane (supreme, never a tenant): https://fpanel.ifnotus.space
 """
 
 from __future__ import annotations
@@ -23,6 +23,18 @@ from app.services.platform.student_hostname import (
 
 STAFF_PANEL_HOST = "fpanel.ifnotus.space"
 PLATFORM_APEX = "ifnotus.space"
+LEGACY_STAFF_PANEL_HOST = "cpanel.ifnotus.space"
+PLATFORM_MAIL_HOST = "mail.ifnotus.space"
+PLATFORM_SERVICE_HOSTS = frozenset(
+    {
+        STAFF_PANEL_HOST,
+        LEGACY_STAFF_PANEL_HOST,
+        PLATFORM_MAIL_HOST,
+        "webmail.ifnotus.space",
+        "api.ifnotus.space",
+        "www.ifnotus.space",
+    }
+)
 
 
 def is_service_hostname(hostname: str | None) -> bool:
@@ -32,7 +44,7 @@ def is_service_hostname(hostname: str | None) -> bool:
         clean = clean[4:]
     if not clean:
         return False
-    if clean in {STAFF_PANEL_HOST, "cpanel.ifnotus.space", "mail.ifnotus.space", "api.ifnotus.space"}:
+    if clean in PLATFORM_SERVICE_HOSTS:
         return True
     return (
         clean.startswith("fpanel.")
@@ -61,6 +73,53 @@ def is_platform_hostname(domain: str | None, *, settings: object | None = None) 
         if zone and zone != PLATFORM_APEX and (host == zone or host.endswith(f".{zone}")):
             return True
     return is_student_hostname(host, settings=settings)
+
+
+def panel_handoff_host(domain: str | None, *, settings: object | None = None) -> str | None:
+    """Hostname where SSO handoff lands.
+
+    Platform subdomains (user.ifnotus.space) use the site itself — panel lives at /hosting/*.
+    Custom apex domains use fpanel.<domain>.
+    """
+    host = (domain or "").lower().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    if not host or "." not in host:
+        return None
+    if host in {STAFF_PANEL_HOST, PLATFORM_APEX, "mail.ifnotus.space", "api.ifnotus.space"}:
+        return STAFF_PANEL_HOST
+    if _is_subdomain_host(host, settings=settings):
+        return host
+    fpanel = control_panel_hostname(host, settings=settings)
+    if fpanel and fpanel != STAFF_PANEL_HOST:
+        return fpanel
+    return f"fpanel.{host}"
+
+
+def panel_handoff_url(
+    domain: str | None,
+    token: str,
+    *,
+    tab: str | None = None,
+    settings: object | None = None,
+) -> str | None:
+    """Full SSO handoff URL for a tenant site."""
+    host = panel_handoff_host(domain, settings=settings)
+    if not host:
+        return None
+    from urllib.parse import urlencode
+
+    site = (domain or "").lower().rstrip(".")
+    if site.startswith("www."):
+        site = site[4:]
+    if _is_subdomain_host(site, settings=settings):
+        path = f"https://{host}/hosting/sso"
+    else:
+        path = f"https://{host}/sso"
+    q: dict[str, str] = {"token": token}
+    if tab and tab != "overview":
+        q["tab"] = tab.lstrip("/")
+    return f"{path}?{urlencode(q)}"
 
 
 def control_panel_hostname(domain: str | None, *, settings: object | None = None) -> str | None:
@@ -99,22 +158,42 @@ def control_panel_hostname(domain: str | None, *, settings: object | None = None
 
 
 def webmail_hostname(domain: str | None, *, settings: object | None = None) -> str | None:
-    """Canonical webmail hostname: webmail.<domain> (e.g. webmail.yalleydadzie.online).
-    Subdomains use webmail on the primary domain.
+    """Dedicated webmail.* hostname for custom apex DNS/vhosts.
+
+    Platform/student tenants do NOT get webmail.<subdomain> — they use same-host /mail.
+    Shared Roundcube server hostname remains mail.ifnotus.space (IMAP/SMTP + root UI).
     """
     host = (domain or "").lower().rstrip(".")
     if host.startswith("www."):
         host = host[4:]
     if not host or "." not in host:
         return None
-    if host in {PLATFORM_APEX, STAFF_PANEL_HOST, "mail.ifnotus.space"}:
-        return "mail.ifnotus.space"
+    if host in PLATFORM_SERVICE_HOSTS or host == PLATFORM_APEX:
+        return PLATFORM_MAIL_HOST
     if host.startswith("webmail."):
+        apex = host[len("webmail.") :]
+        # Platform / student trees never get a dedicated webmail.* vhost.
+        if (
+            apex == PLATFORM_APEX
+            or apex.endswith(f".{PLATFORM_APEX}")
+            or apex.endswith(".serverlabsttu.space")
+            or apex == "serverlabsttu.space"
+            or apex in PLATFORM_SERVICE_HOSTS
+        ):
+            return PLATFORM_MAIL_HOST
         return host
-    if host.startswith("fpanel."):
-        host = host[len("fpanel.") :]
+    if host.startswith("fpanel.") or host.startswith("cpanel."):
+        host = host.split(".", 1)[1]
     if host.endswith(".customers.ifnotus.space"):
         return f"webmail.{host}"
+    # Student / platform subdomains: no dedicated webmail.* — same-host /mail only.
+    if (
+        host == PLATFORM_APEX
+        or host.endswith(f".{PLATFORM_APEX}")
+        or host.endswith(".serverlabsttu.space")
+        or host == "serverlabsttu.space"
+    ):
+        return None
 
     parts = host.split(".")
     if len(parts) > 2:
@@ -131,18 +210,26 @@ def webmail_hostname(domain: str | None, *, settings: object | None = None) -> s
 
 
 def mail_server_hostname(domain: str | None, *, settings: object | None = None) -> str | None:
-    """Mail client incoming/outgoing server hostname: mail.<domain>."""
+    """Mail client incoming/outgoing server hostname: mail.<domain> or shared mail.ifnotus.space."""
     host = (domain or "").lower().rstrip(".")
     if host.startswith("www."):
         host = host[4:]
     if not host or "." not in host:
         return None
-    if host in {PLATFORM_APEX, STAFF_PANEL_HOST, LEGACY_STAFF_PANEL_HOST, "mail.ifnotus.space"}:
-        return "mail.ifnotus.space"
+    if host in {PLATFORM_APEX, STAFF_PANEL_HOST, LEGACY_STAFF_PANEL_HOST, PLATFORM_MAIL_HOST} or host in PLATFORM_SERVICE_HOSTS:
+        return PLATFORM_MAIL_HOST
     if host.startswith("mail."):
         return host
     if host.startswith("fpanel.") or host.startswith("cpanel.") or host.startswith("webmail."):
         host = host.split(".", 1)[1]
+    if (
+        host == PLATFORM_APEX
+        or host.endswith(f".{PLATFORM_APEX}")
+        or host.endswith(".serverlabsttu.space")
+        or host == "serverlabsttu.space"
+        or host.endswith(".customers.ifnotus.space")
+    ):
+        return PLATFORM_MAIL_HOST
     return f"mail.{host}"
 
 
@@ -150,6 +237,9 @@ def _is_subdomain_host(host: str, *, settings: object | None = None) -> bool:
     h = (host or "").lower().rstrip(".")
     if h.startswith("www."):
         h = h[4:]
+    # Staff WHM + platform service hosts are never tenant subdomains.
+    if not h or h == PLATFORM_APEX or h in PLATFORM_SERVICE_HOSTS:
+        return False
     return bool(
         h.endswith(".ifnotus.space")
         or h.endswith(".customers.ifnotus.space")
@@ -180,11 +270,7 @@ def customer_panel_redirect_url(
     if not host or "." not in host:
         return None
     if _is_subdomain_host(host, settings=settings):
-        base = (portal_base or "https://ifnotus.space").rstrip("/")
-        url = f"{base}/go/hosting?host={quote(host)}"
-        if tab and tab != "overview":
-            url = f"{url}&tab={quote(tab.lstrip('/'))}"
-        return url
+        return f"https://{host}/hosting/"
     fpanel_host = control_panel_hostname(host, settings=settings)
     if not fpanel_host or fpanel_host == STAFF_PANEL_HOST:
         return None
@@ -224,18 +310,32 @@ def site_cpanel_shortcut_url(domain: str | None) -> str | None:
 
 
 def site_webmail_url(domain: str | None) -> str | None:
-    """Canonical webmail entry: https://webmail.{domain}."""
+    """Customer webmail entry URL.
+
+    - Platform mail server UI: https://mail.ifnotus.space/
+    - Tenant / customer sites: https://{that-host}/mail (same-host Roundcube — never bounce away)
+    - Custom apex may also use https://webmail.{apex} as an optional dedicated alias
+    """
     host = (domain or "").lower().rstrip(".")
     if host.startswith("www."):
         host = host[4:]
     if not host or "." not in host:
         return None
-    wm_host = webmail_hostname(host)
-    return f"https://{wm_host}" if wm_host else "https://mail.ifnotus.space/"
+    if host in {PLATFORM_APEX, STAFF_PANEL_HOST, LEGACY_STAFF_PANEL_HOST, PLATFORM_MAIL_HOST, "webmail.ifnotus.space"}:
+        return f"https://{PLATFORM_MAIL_HOST}/"
+    if host.startswith("webmail."):
+        return f"https://{host}/"
+    if host.startswith("mail.") and host != PLATFORM_MAIL_HOST:
+        # mail.<custom> convenience host redirects to webmail; entry stays on webmail host when present
+        apex = host[len("mail.") :]
+        wm = webmail_hostname(apex)
+        return f"https://{wm}/" if wm else f"https://{apex}/mail"
+    # Same-host path for every customer site (platform tenant or custom apex).
+    return f"https://{host}/mail"
 
 
 def site_mail_url(domain: str | None) -> str | None:
-    """Webmail shortcut: https://{domain}/webmail or https://{domain}/mail."""
+    """Webmail shortcut URL: https://{domain}/mail (same host)."""
     return site_webmail_url(domain)
 
 

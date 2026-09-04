@@ -47,9 +47,14 @@ class Container(containers.DeclarativeContainer):
         autoflush=False,
     )
 
-    # Redis
+    # Redis — socket_timeout must exceed BLPOP wait or dequeue raises TimeoutError
     redis_client = providers.Singleton(
-        lambda settings: Redis.from_url(str(settings.redis_url), decode_responses=True),
+        lambda settings: Redis.from_url(
+            str(settings.redis_url),
+            decode_responses=True,
+            socket_connect_timeout=5,
+            socket_timeout=max(30, int(getattr(settings, "worker_poll_interval_seconds", 5) or 5) + 5),
+        ),
         config,
     )
 

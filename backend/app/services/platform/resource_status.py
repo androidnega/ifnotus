@@ -129,11 +129,20 @@ def build_resource_statuses(
         detail=runtime_detail,
     )
 
+    # Prefer Phase 2C MemoryHigh (then MemoryMax) over marketing ram_limit_gb.
+    ram_limit_gb = ram_gb
+    high_b = live.get("memory_high_bytes") or slice_applied.get("memory_high_bytes")
+    max_b = live.get("memory_max_bytes") or slice_applied.get("memory_max_bytes")
+    if high_b:
+        ram_limit_gb = float(high_b) / (1024 ** 3)
+    elif max_b:
+        ram_limit_gb = float(max_b) / (1024 ** 3)
+
     ram_status = _dim(
-        allocated=ram_gb > 0,
+        allocated=ram_limit_gb > 0,
         reported=cgroup_reported and live.get("memory_mb") is not None,
         enforced=slice_ok,
-        limit=round(ram_gb * 1024, 1) if ram_gb else None,
+        limit=round(ram_limit_gb * 1024, 1) if ram_limit_gb else None,
         unit="MB",
         detail=runtime_detail,
     )

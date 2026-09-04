@@ -57,10 +57,7 @@ class CustomerService:
     async def _email_for_phone(self, phone: str) -> str | None:
         """Return a real customer email for OTP mirroring, if one exists."""
         try:
-            result = await self._session.execute(
-                select(Customer).where(Customer.phone == phone).limit(1)
-            )
-            customer = result.scalar_one_or_none()
+            customer = await self._find_by_phone(phone)
         except Exception:  # noqa: BLE001
             return None
         if customer is None or not customer.email:
@@ -230,24 +227,12 @@ class CustomerService:
                 phone=phone,
                 message="SMS debug mode — enter the code shown on this page.",
                 sms_sent=False,
+                email_sent=False,
                 debug_code=challenge.code if show_debug else None,
             )
 
-        # New numbers (not in DB): show the code on-screen — do not claim SMS was sent.
-        if not known_account:
-            logger.info("otp_on_screen_for_new_phone", phone=phone)
-            return CustomerPhoneOtpRequestResponse(
-                challenge_id=challenge.challenge_id,
-                phone=phone,
-                message=(
-                    "This number is not linked to an account yet. "
-                    "Enter the code shown below to continue."
-                ),
-                sms_sent=False,
-                debug_code=challenge.code,
-            )
-
-        # Known account: deliver OTP by SMS (and email mirror when available).
+        # Always attempt SMS for signup and login when the gateway is configured.
+        # Never return the OTP in the API response in production unless show_debug.
         sms_sent = False
         if delivery.sms_enabled:
             try:
@@ -257,6 +242,7 @@ class CustomerService:
                     logger.info(
                         "otp_sms_ok",
                         phone=phone,
+                        known_account=known_account,
                         provider=result.get("provider"),
                         status_code=result.get("status_code"),
                         response=(result.get("response") or "")[:240],
@@ -266,39 +252,48 @@ class CustomerService:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("otp_sms_error", phone=phone, error=str(exc))
 
-        email_queued = bool(email_target and delivery.email_enabled)
-
-        def _deliver_email() -> None:
-            if not (email_queued and email_target):
-                return
+        # Email the same code whenever the account has a real email on file.
+        # Await delivery (do not fire-and-forget) so failures are visible and reliable.
+        email_sent = False
+        if known_account and email_target and delivery.email_enabled:
             try:
-                mail = delivery.send_email(
-                    to=email_target, subject=title, body=text, html=html
+                mail = await asyncio.to_thread(
+                    delivery.send_email,
+                    to=email_target,
+                    subject=title,
+                    body=text,
+                    html=html,
                 )
-                if not mail.get("ok"):
-                    logger.warning("otp_email_bg_failed", to=email_target, result=mail)
+                email_sent = bool(mail.get("ok"))
+                if email_sent:
+                    logger.info("otp_email_ok", to=email_target, phone=phone)
+                else:
+                    logger.warning("otp_email_failed", to=email_target, phone=phone, result=mail)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("otp_email_bg_error", to=email_target, error=str(exc))
+                logger.warning("otp_email_error", to=email_target, phone=phone, error=str(exc))
 
-        if email_queued:
-            try:
-                loop = asyncio.get_running_loop()
-                loop.run_in_executor(None, _deliver_email)
-            except RuntimeError:
-                _deliver_email()
-
-        if sms_sent and email_queued:
+        if sms_sent and email_sent:
             message = "We sent a code by SMS and email. Use the newest message only."
         elif sms_sent:
-            message = "We sent a code by SMS. Use the newest message only."
-        elif email_queued:
-            message = "We sent a code by email."
+            if known_account:
+                message = (
+                    "We sent a code by SMS"
+                    + (" (email could not be delivered — check SMS or use email & password)." if email_target and not email_sent else ".")
+                    + " Use the newest message only."
+                )
+            else:
+                message = (
+                    "This number is not linked to an account yet. "
+                    "We sent a one-time code by SMS — enter it below to continue."
+                )
+        elif email_sent:
+            message = "We sent a code by email (SMS was unavailable). Check your inbox and spam folder."
         elif show_debug:
             message = "SMS is not configured yet — use the code shown on this page."
         else:
             message = (
-                "We could not deliver the SMS right now. Wait a minute and try again, "
-                "or contact support if it keeps failing."
+                "We could not deliver the code by SMS or email right now. "
+                "Wait a minute and try again, or log in with email and password."
             )
 
         return CustomerPhoneOtpRequestResponse(
@@ -306,6 +301,7 @@ class CustomerService:
             phone=phone,
             message=message,
             sms_sent=sms_sent,
+            email_sent=email_sent,
             debug_code=challenge.code if show_debug else None,
         )
 
@@ -557,6 +553,78 @@ class CustomerService:
         # Dev/ops: return token so UI can verify without SMTP. SMTP send is best-effort.
         await self._try_send_verify_email(email, code)
         return self.to_response(customer), token
+
+    async def staff_create(
+        self,
+        *,
+        email: str,
+        full_name: str,
+        password: str,
+        phone: str | None = None,
+        company: str | None = None,
+        actor_id: UUID | None = None,
+    ) -> tuple[Customer, str]:
+        """Walk-in account created by a hosting operator (verified, ready for an order)."""
+        email = email.lower().strip()
+        existing = await self._session.execute(select(User).where(User.email == email))
+        if existing.scalar_one_or_none():
+            raise ConflictError("A customer with this email already exists.")
+        existing_c = await self._session.execute(
+            select(Customer).where(func.lower(Customer.email) == email)
+        )
+        if existing_c.scalar_one_or_none():
+            raise ConflictError("A customer with this email already exists.")
+
+        username = self._username_from_email(email)
+        user = User(
+            email=email,
+            username=username,
+            hashed_password=hash_password(password),
+            full_name=full_name.strip(),
+            is_active=True,
+            is_superuser=False,
+            roles=[Role.CUSTOMER.value],
+        )
+        self._session.add(user)
+        await self._session.flush()
+
+        phone_norm = self.normalize_phone(phone) if phone else None
+        full = full_name.strip()
+        parts = full.split(None, 1)
+        first = (parts[0][:120] if parts else "Customer") or "Customer"
+        last = parts[1][:120] if len(parts) > 1 else "Account"
+        customer = Customer(
+            user_id=user.id,
+            email=email,
+            full_name=full,
+            first_name=first,
+            last_name=last,
+            phone=phone_norm,
+            company=(company or "").strip() or None,
+            email_verified=True,
+            phone_verified=bool(phone_norm),
+            onboarding_stage=STAGE_DONE,
+            onboarding_completed_at=datetime.now(UTC),
+        )
+        self.sync_full_name(customer)
+        self.refresh_onboarding(customer)
+        self._session.add(customer)
+        await self._session.flush()
+
+        credits = AiCreditAccount(customer_id=customer.id, credits_remaining=0, total_allocated=0)
+        self._session.add(credits)
+        self._session.add(
+            PlatformAuditLog(
+                customer_id=customer.id,
+                actor_id=actor_id,
+                action="customer.staff_create",
+                target_type="customer",
+                target_id=str(customer.id),
+                result="success",
+            )
+        )
+        await self._session.flush()
+        return customer, password
 
     async def verify_email(self, body: CustomerVerifyEmailRequest) -> CustomerResponse:
         customer_id, code = self._parse_verify_token(body.token)

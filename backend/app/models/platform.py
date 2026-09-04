@@ -11,6 +11,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -389,7 +390,8 @@ class EnvironmentBackup(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("customer_environments.id", ondelete="CASCADE"), nullable=False, index=True
     )
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
-    file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # BigInteger: site archives routinely exceed 2 GiB (Postgres INTEGER max).
+    file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
     backup_type: Mapped[str] = mapped_column(String(16), nullable=False, default="full")
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")

@@ -8,6 +8,7 @@ import { platformAdminApi } from '@/api'
 import { usePermissions } from '@/composables/usePermissions'
 import { Permission } from '@/lib/permissions'
 import { useAuthStore } from '@/stores/auth'
+import { useNotificationStore } from '@/stores/notifications'
 import { getCanonicalRole } from '@/lib/roles'
 import { isPlatformOwner } from '@/lib/roles'
 import type { StaffOrderItem } from '@/types/staffPlatform'
@@ -15,6 +16,7 @@ import type { StaffOrderItem } from '@/types/staffPlatform'
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const notifications = useNotificationStore()
 const { can } = usePermissions()
 const canConfirm = computed(() => isPlatformOwner(auth.user) || can(Permission.BILLING_MANAGE))
 const canOps = computed(() => isPlatformOwner(auth.user) || can(Permission.PLATFORM_OPS))
@@ -64,10 +66,13 @@ const acctTotals = ref<{
   outstanding: number
   outstanding_count: number
   collected_period: number
+  cash_collected_period?: number
   paid_count_period: number
+  paid_count_all_time?: number
   failed_count: number
   invoiced_paid_period?: number
 } | null>(null)
+const acctPeriodLabel = ref('Last 30 days')
 
 const opsTotals = ref<{ ready_for_activation: number } | null>(null)
 
@@ -93,15 +98,23 @@ function tabBadgeCount(tabId: string): number {
   }
   if (!acctTotals.value) return 0
   if (tabId === 'submitted') return acctTotals.value.awaiting_confirm_count || 0
-  if (tabId === 'paid') return acctTotals.value.paid_count_period || 0
+  if (tabId === 'paid') return (acctTotals.value.paid_count_all_time ?? acctTotals.value.paid_count_period) || 0
   if (tabId === 'pending') return acctTotals.value.outstanding_count || 0
   if (tabId === 'failed') return acctTotals.value.failed_count || 0
   return 0
 }
 
 const awaitingCount = computed(
-  () => orders.value.filter((o) => o.payment_status === 'submitted').length,
+  () => orders.value.filter((o) => isAwaitingConfirm(o)).length,
 )
+
+function isAwaitingConfirm(o: StaffOrderItem) {
+  const s = (o.payment_status || '').toLowerCase()
+  if (s === 'paid' || s === 'failed' || s === 'cancelled') return false
+  if (s === 'submitted') return true
+  if (s === 'pending' && o.momo_transaction_id) return true
+  return false
+}
 
 // LIVE SEARCH FILTER
 const filteredOrders = computed(() => {
@@ -190,8 +203,11 @@ async function loadSummary() {
     try {
       const { data } = await platformAdminApi.accountingSummary()
       acctTotals.value = data.totals
+      acctPeriodLabel.value = data.period?.label
+        || (data.period?.kind === 'rolling_30d' ? 'Last 30 days' : 'This month')
     } catch {
       acctTotals.value = null
+      acctPeriodLabel.value = 'Last 30 days'
     }
   } else {
     acctTotals.value = null
@@ -216,6 +232,8 @@ async function load() {
       params.provisioning_status = 'ready_for_activation'
     } else if (paymentFilter.value === 'active') {
       params.payment_status = 'paid'
+    } else if (paymentFilter.value === 'submitted') {
+      params.payment_status = 'awaiting_confirm'
     } else if (paymentFilter.value) {
       params.payment_status = paymentFilter.value
     } else if (isHostingOpsView.value) {
@@ -290,19 +308,47 @@ function openReceipt(id: string) {
   router.push({ name: 'platform-order-receipt', params: { id } })
 }
 
+function patchOrderInView(orderId: string, patch: Partial<StaffOrderItem>) {
+  const idx = orders.value.findIndex((o) => o.id === orderId)
+  if (idx >= 0) {
+    orders.value[idx] = { ...orders.value[idx], ...patch }
+  }
+  if (selectedOrder.value?.id === orderId) {
+    selectedOrder.value = { ...selectedOrder.value, ...patch }
+  }
+}
+
+function patchOrderFromResponse(orderId: string, data: Partial<StaffOrderItem>, extras?: Partial<StaffOrderItem>) {
+  patchOrderInView(orderId, {
+    payment_status: data.payment_status,
+    provisioning_status: data.provisioning_status,
+    domain_name: data.domain_name,
+    payment_confirmed_at: data.payment_confirmed_at,
+    payment_confirmed_by: data.payment_confirmed_by,
+    payment_confirmed_by_name: data.payment_confirmed_by_name,
+    payment_notes: data.payment_notes,
+    payment_method: data.payment_method,
+    ...extras,
+  })
+}
+
+async function refreshOrderSurfaces() {
+  await Promise.all([load(), loadSummary(), notifications.syncFromApi()])
+}
+
 function provisionLabel(status: string) {
   const s = (status || '').toLowerCase()
-  if (s === 'active') return 'Live'
+  if (s === 'active') return 'Activated'
   if (s === 'ready_for_activation') return 'Waiting for activation'
-  if (s === 'queued' || s === 'pending' || s === 'running') return 'Setting up…'
+  if (s === 'queued' || s === 'pending' || s === 'running') return 'Activating…'
   if (s === 'failed') return 'Failed'
   if (s === 'n/a') return '—'
   return status || '—'
 }
 
-function paymentLabel(status: string) {
+function paymentLabel(status: string, o?: StaffOrderItem) {
   const s = (status || '').toLowerCase()
-  if (s === 'submitted') return 'Awaiting confirm'
+  if (s === 'submitted' || (o && isAwaitingConfirm(o))) return 'Awaiting confirm'
   if (s === 'paid') return 'Paid'
   if (s === 'pending') return 'Unpaid'
   if (s === 'failed') return 'Rejected'
@@ -378,6 +424,9 @@ onMounted(() => {
   } else if (canSeeBilling.value) {
     paymentFilter.value = 'submitted'
   }
+  if (typeof route.query.q === 'string' && route.query.q.trim()) {
+    searchQuery.value = route.query.q.trim()
+  }
   void loadSummary()
   void load()
 })
@@ -422,6 +471,7 @@ async function confirmPay(o: StaffOrderItem) {
   busyId.value = o.id
   error.value = ''
   success.value = ''
+  startProgressSimulation()
 
   try {
     const { data } = await platformAdminApi.confirmOrderPayment(o.id, {
@@ -430,7 +480,13 @@ async function confirmPay(o: StaffOrderItem) {
       domain_name: domain || undefined,
       payment_method: method,
     })
-    const status = (data?.provisioning_status || '').toLowerCase()
+    stopProgressSimulation(true)
+    progressStage.value = 'Payment confirmed — billing accepted'
+    patchOrderFromResponse(o.id, data as Partial<StaffOrderItem>, {
+      payment_status: 'paid',
+      domain_name: domain || (data as StaffOrderItem).domain_name || o.domain_name,
+    })
+    const status = ((data as StaffOrderItem)?.provisioning_status || '').toLowerCase()
     if (status === 'active') {
       success.value = `Payment verified (${methodLabel}) — hosting is active on ${domain || o.domain_name || 'domain'}.`
     } else {
@@ -438,13 +494,17 @@ async function confirmPay(o: StaffOrderItem) {
     }
     confirmNotes.value = ''
     editingDomainId.value = null
-    await load()
-    await loadSummary()
+    await refreshOrderSurfaces()
   } catch (e: unknown) {
+    stopProgressSimulation(false)
     const errObj = e as { response?: { data?: { error?: { message?: string } } } }
     error.value = errObj.response?.data?.error?.message ?? 'Could not confirm payment.'
   } finally {
-    busyId.value = ''
+    setTimeout(() => {
+      busyId.value = ''
+      progressPercent.value = 0
+      progressStage.value = ''
+    }, 900)
   }
 }
 
@@ -485,12 +545,28 @@ async function activateHosting(o: StaffOrderItem) {
       customDomain ? { domain: customDomain } : undefined,
     )
     stopProgressSimulation(true)
-    const status = (data?.provisioning_status || '').toLowerCase()
+    progressStage.value = 'Activated — hosting is live'
+    const nextStatus = ((data as StaffOrderItem)?.provisioning_status || 'active').toLowerCase()
+    patchOrderFromResponse(o.id, data as Partial<StaffOrderItem>, {
+      provisioning_status: nextStatus,
+      domain_name: (data as StaffOrderItem)?.domain_name || customDomain || o.domain_name,
+    })
+    if (selectedOrder.value?.id === o.id) {
+      selectedOrder.value = {
+        ...selectedOrder.value,
+        ...(data as StaffOrderItem),
+        provisioning_status: nextStatus,
+        domain_name: (data as StaffOrderItem)?.domain_name || customDomain || o.domain_name,
+      }
+    }
     success.value =
-      status === 'active'
-        ? `Hosting successfully activated and live on ${data?.domain_name || domainLabel}!`
-        : `Activation queued. Status: ${data?.provisioning_status}.`
-    await load()
+      nextStatus === 'active'
+        ? `Hosting successfully activated and live on ${(data as StaffOrderItem)?.domain_name || domainLabel}!`
+        : `Activation queued. Status: ${(data as StaffOrderItem)?.provisioning_status}.`
+    await refreshOrderSurfaces()
+    // Keep the modal on this order after reload so the badge shows Activated.
+    const refreshed = orders.value.find((row) => row.id === o.id)
+    if (refreshed) selectedOrder.value = refreshed
   } catch (e: unknown) {
     stopProgressSimulation(false)
     const errObj = e as { response?: { data?: { error?: { message?: string } } } }
@@ -499,6 +575,7 @@ async function activateHosting(o: StaffOrderItem) {
     setTimeout(() => {
       busyId.value = ''
       progressPercent.value = 0
+      progressStage.value = ''
     }, 1200)
   }
 }
@@ -616,15 +693,15 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
             <div class="stat-body">
               <span class="stat-k">Awaiting Confirm</span>
               <span class="stat-v">{{ money(acctTotals.awaiting_confirm) }}</span>
-              <span class="stat-s">{{ acctTotals.awaiting_confirm_count }} MoMo submission{{ acctTotals.awaiting_confirm_count === 1 ? '' : 's' }} to verify</span>
+              <span class="stat-s">{{ acctTotals.awaiting_confirm_count }} customer payment{{ acctTotals.awaiting_confirm_count === 1 ? '' : 's' }} awaiting billing confirmation</span>
             </div>
           </article>
           <article class="stat-card tone-cash">
             <span class="stat-icon" aria-hidden="true"><i class="fa-solid fa-wallet" /></span>
             <div class="stat-body">
-              <span class="stat-k">Collected this month</span>
-              <span class="stat-v">{{ money(acctTotals.invoiced_paid_period ?? acctTotals.collected_period) }}</span>
-              <span class="stat-s">{{ acctTotals.paid_count_period }} completed &amp; active hosting{{ acctTotals.paid_count_period === 1 ? '' : 's' }}</span>
+              <span class="stat-k">Collected ({{ acctPeriodLabel }})</span>
+              <span class="stat-v">{{ money(acctTotals.cash_collected_period ?? acctTotals.invoiced_paid_period ?? acctTotals.collected_period) }}</span>
+              <span class="stat-s">{{ acctTotals.paid_count_period }} paid in period · {{ acctTotals.paid_count_all_time ?? acctTotals.paid_count_period }} all-time</span>
             </div>
           </article>
           <article class="stat-card tone-pending">
@@ -692,7 +769,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
                 <span
                   v-if="tabBadgeCount(tab.id) > 0"
                   class="tab-badge"
-                  :class="{ 'badge-sub': tab.id === 'submitted', 'badge-unpaid': tab.id === 'pending' }"
+                  :class="{ 'badge-sub': tab.id === 'submitted', 'badge-unpaid': tab.id === 'pending', 'badge-activation': tab.id === 'ready_for_activation' }"
                 >
                   {{ tabBadgeCount(tab.id) }}
                 </span>
@@ -700,7 +777,10 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
             </div>
             <p v-if="paymentFilter === 'submitted' && !loading" class="flow-count">
               <i class="fa-solid fa-bolt" aria-hidden="true" />
-              <span><strong>{{ awaitingCount }}</strong> order{{ awaitingCount === 1 ? '' : 's' }} ready for clearance</span>
+              <span>
+                <strong>{{ awaitingCount }}</strong> order{{ awaitingCount === 1 ? '' : 's' }} ready for clearance
+                (cash, MoMo, or complimentary). After you confirm, hosting operators activate the server.
+              </span>
             </p>
           </div>
         </section>
@@ -754,7 +834,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
                   v-for="o in paginatedOrders"
                   :key="o.id"
                   class="order-row cursor-pointer"
-                  :class="{ 'row-awaiting': o.payment_status === 'submitted', 'row-paid': o.payment_status === 'paid' }"
+                  :class="{ 'row-awaiting': isAwaitingConfirm(o), 'row-paid': o.payment_status === 'paid' }"
                   @click="openOrderModal(o)"
                 >
                   <!-- ORDER & CUSTOMER -->
@@ -810,7 +890,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
                     <div class="row-top-info">
                       <span class="status-pill" :data-s="o.payment_status">
                         <i class="fa-solid" :class="paymentIcon(o.payment_status)" aria-hidden="true" />
-                        {{ paymentLabel(o.payment_status) }}
+                        {{ paymentLabel(o.payment_status, o) }}
                       </span>
                       <span v-if="canSeeBilling" class="amount-tag">
                         {{ isCompOrder(o) ? '0.00 GHS (Comp)' : `${o.currency} ${Number(o.total_price).toFixed(2)}` }}
@@ -952,7 +1032,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
             <div class="modal-status-pills mt-1.5">
               <span class="status-pill" :data-s="selectedOrder.payment_status">
                 <i class="fa-solid" :class="paymentIcon(selectedOrder.payment_status)" />
-                {{ paymentLabel(selectedOrder.payment_status) }}
+                {{ paymentLabel(selectedOrder.payment_status, selectedOrder) }}
               </span>
               <span class="status-pill" :data-p="selectedOrder.provisioning_status">
                 <i class="fa-solid" :class="provisionIcon(selectedOrder.provisioning_status)" />
@@ -1152,8 +1232,12 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
               <div v-if="busyId === selectedOrder.id" class="activation-progress-box">
                 <div class="progress-meta">
                   <span class="progress-title">
-                    <i class="fa-solid fa-arrows-rotate fa-spin" />
-                    {{ progressStage || 'Processing billing confirmation…' }}
+                    <i
+                      class="fa-solid"
+                      :class="progressPercent >= 100 ? 'fa-circle-check text-emerald-600' : 'fa-arrows-rotate fa-spin'"
+                      aria-hidden="true"
+                    />
+                    {{ progressStage || (progressPercent >= 100 ? 'Payment confirmed — marked as Paid' : 'Processing billing confirmation…') }}
                   </span>
                   <span class="progress-num">{{ progressPercent }}%</span>
                 </div>
@@ -1269,8 +1353,17 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
               <div v-if="busyId === selectedOrder.id" class="activation-progress-box">
                 <div class="progress-meta">
                   <span class="progress-title">
-                    <i class="fa-solid fa-arrows-rotate fa-spin" />
-                    Activating server infrastructure &amp; domain…
+                    <i
+                      class="fa-solid"
+                      :class="progressPercent >= 100 || selectedOrder.provisioning_status === 'active' ? 'fa-circle-check text-emerald-600' : 'fa-arrows-rotate fa-spin'"
+                      aria-hidden="true"
+                    />
+                    {{
+                      progressStage
+                        || (selectedOrder.provisioning_status === 'active' || progressPercent >= 100
+                          ? 'Activated — hosting is live'
+                          : 'Activating server infrastructure & domain…')
+                    }}
                   </span>
                   <span class="progress-num">{{ progressPercent }}%</span>
                 </div>
@@ -1285,6 +1378,17 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
                 </div>
                 <div class="flex items-center gap-2">
                   <button
+                    type="button"
+                    class="btn-action-activate"
+                    :class="{ 'is-done': selectedOrder.provisioning_status === 'active' }"
+                    disabled
+                    v-if="selectedOrder.provisioning_status === 'active'"
+                  >
+                    <i class="fa-solid fa-circle-check" />
+                    Activated
+                  </button>
+                  <button
+                    v-else
                     type="button"
                     class="btn-action-activate"
                     :disabled="busyId === selectedOrder.id"
@@ -1312,7 +1416,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
               <div class="flex items-center gap-2">
                 <i class="fa-solid fa-circle-check text-emerald-500 text-base" />
                 <span class="text-xs font-medium text-slate-800 dark:text-slate-200">
-                  Hosting environment live on <strong>{{ selectedOrder.domain_name || 'assigned domain' }}</strong>
+                  Activated — hosting is live on <strong>{{ selectedOrder.domain_name || 'assigned domain' }}</strong>
                 </span>
               </div>
               <div class="flex items-center gap-2">
@@ -1633,6 +1737,7 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
 
 .badge-sub { background: #d97706; color: #ffffff; }
 .badge-unpaid { background: #6366f1; color: #ffffff; }
+.badge-activation { background: #059669; color: #ffffff; }
 
 .flow-count {
   font-size: 0.72rem;
@@ -2598,6 +2703,14 @@ async function toggleComplimentaryStatus(o: StaffOrderItem) {
 
 .btn-action-activate:hover {
   background: #065f46;
+}
+
+.btn-action-activate.is-done,
+.btn-action-activate:disabled.is-done {
+  background: #059669;
+  border-color: #047857;
+  cursor: default;
+  opacity: 1;
 }
 
 .btn-action-reject {

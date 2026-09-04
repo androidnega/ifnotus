@@ -92,14 +92,17 @@ export interface StaffOrderItem {
 }
 
 export interface StaffAccountingSummary {
-  period: { from: string; to: string }
+  period: { from: string; to: string; label?: string; kind?: string }
   currency: string
   totals: {
     cash_collected_period?: number
     cash_collected_all_time?: number
+    cash_collected_month?: number
     complimentary_period?: number
     complimentary_all_time?: number
     invoiced_paid_period?: number
+    invoiced_paid_all_time?: number
+    invoiced_paid_month?: number
     collected_period: number
     collected_all_time: number
     awaiting_confirm: number
@@ -110,7 +113,10 @@ export interface StaffAccountingSummary {
     outstanding_count: number
     failed_count: number
     paid_count_period: number
+    paid_count_all_time?: number
+    paid_count_month?: number
     cash_count_period?: number
+    month_label?: string
   }
   by_kind: Record<string, number>
   by_channel?: Record<string, number>

@@ -20,11 +20,15 @@ def test_sanitize_accepts_valid_hosts() -> None:
     assert sanitize_panel_hostname("cpanel.studio.online") == "cpanel.studio.online"
 
 
-def test_panel_sso_fixed_portal_origin() -> None:
+def test_panel_sso_custom_domain_uses_fpanel() -> None:
     url = panel_sso_url("studio.online")
-    assert url.startswith("https://ifnotus.space/go/hosting?")
-    assert "host=studio.online" in url
-    assert "evil.com" not in url.split("?", 1)[0]
+    assert url == "https://fpanel.studio.online/"
+    assert "evil.com" not in url
+
+
+def test_panel_sso_subdomain_uses_same_host() -> None:
+    url = panel_sso_url("alice.ifnotus.space")
+    assert url == "https://alice.ifnotus.space/hosting/"
 
 
 def test_panel_sso_rejects_invalid_host() -> None:
@@ -32,7 +36,10 @@ def test_panel_sso_rejects_invalid_host() -> None:
     assert panel_sso_url("evil.com/x").endswith("/account")
 
 
-def test_site_cpanel_path_not_subdomain() -> None:
-    assert site_cpanel_url("example.com") == "https://example.com/cpanel"
-    assert site_cpanel_url("www.example.com") == "https://example.com/cpanel"
-    assert "cpanel.example.com" not in (site_cpanel_url("example.com") or "")
+def test_site_cpanel_custom_apex_uses_fpanel() -> None:
+    assert site_cpanel_url("example.com") == "https://fpanel.example.com/"
+    assert site_cpanel_url("www.example.com") == "https://fpanel.example.com/"
+
+
+def test_site_cpanel_platform_subdomain_uses_hosting_path() -> None:
+    assert site_cpanel_url("alice.ifnotus.space") == "https://alice.ifnotus.space/hosting/"

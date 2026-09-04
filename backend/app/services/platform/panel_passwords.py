@@ -115,7 +115,14 @@ class PanelPasswordService:
             lookup = lookup[4:]
         if lookup.startswith("fpanel.") and lookup != "fpanel.ifnotus.space":
             lookup = lookup[len("fpanel.") :]
-        if not lookup or lookup in {"ifnotus.space", "fpanel.ifnotus.space", "mail.ifnotus.space"}:
+        if lookup.startswith("cpanel.") and lookup != "cpanel.ifnotus.space":
+            lookup = lookup[len("cpanel.") :]
+        if not lookup or lookup in {
+            "ifnotus.space",
+            "fpanel.ifnotus.space",
+            "cpanel.ifnotus.space",
+            "mail.ifnotus.space",
+        }:
             return None
 
         # 1. Direct match on CustomerEnvironment.domain
@@ -168,15 +175,22 @@ class PanelPasswordService:
                 raise NotFoundError("No hosting site for that address.")
         else:
             raise ValidationError("Provide username or host.", code="panel_status_input")
-        name = (env.unix_username or env.hosting_name or "").strip().lower()
+        # Prefer hosting_name — same ID shown on Account → Hosting Services.
+        name = (env.hosting_name or env.unix_username or "").strip().lower()
         if not name and env.domain:
             name = env.domain.split(".")[0].lower()
         if not name:
             name = "user"
+        # Account password also works at panel/login; don't force "create password" when it does.
+        account_password_ready = False
+        customer = await self._session.get(Customer, env.customer_id)
+        if customer and customer.user_id:
+            user = await self._session.get(User, customer.user_id)
+            account_password_ready = bool(user and user.hashed_password)
         return {
             "username": name,
             "domain": (env.domain or "").strip().lower() or None,
-            "password_set": bool(env.panel_password_hash),
+            "password_set": bool(env.panel_password_hash) or account_password_ready,
             "environment_id": str(env.id),
         }
 

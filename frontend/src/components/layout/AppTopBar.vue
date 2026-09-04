@@ -5,7 +5,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useNotificationStore } from '@/stores/notifications'
 import { useThemeStore } from '@/stores/theme'
 import NotificationCenter from '@/components/layout/NotificationCenter.vue'
-import { IconBell, IconMenu, IconMoon, IconRefresh, IconSun } from '@/components/icons'
+import { logoutLandingUrl } from '@/lib/platformHosts'
 
 defineProps<{
   refreshing?: boolean
@@ -111,7 +111,7 @@ async function handleLogout() {
     /* ignore */
   }
   if (typeof window !== 'undefined') {
-    window.location.replace('/login')
+    window.location.replace(logoutLandingUrl())
   } else {
     await router.replace({ name: 'login' })
   }

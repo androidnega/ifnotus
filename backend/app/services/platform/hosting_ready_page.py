@@ -8,10 +8,14 @@ from urllib.parse import quote
 
 PARKING_MARKERS = (
     "your hosting is ready",
+    "nothing here yet",
+    "no website has been published",
+    "powered by ifnotus",
     "it works",
     "provisioned by ifnotus",
     "site cleared",
     "no application has been installed",
+    "this folder has no public files",
 )
 
 
@@ -111,21 +115,19 @@ def hosting_ready_html(
     portal_base: str = "https://ifnotus.space",
     display_hostname: str | None = None,
 ) -> str:
+    """Server-served empty-site page (not written into the customer's public folder)."""
+    del portal_base  # reserved for callers; page stays hostname-agnostic by default
     label = ready_page_label(hostname, display_hostname=display_hostname)
     safe_label = escape(label) if label else ""
-    if is_internal_addon_hostname(hostname):
-        manage = escape(panel_entry_url(hostname, portal_base))
-    else:
-        manage = escape(panel_path())
-    title_suffix = f"{safe_label} — " if label else ""
     domain_block = f'    <p class="domain">{safe_label}</p>\n' if label else ""
+    title = f"{safe_label} — Nothing here yet" if label else "Nothing here yet"
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="robots" content="noindex" />
-  <title>{title_suffix}Hosting ready</title>
+  <title>{title}</title>
   <style>
     * {{ box-sizing: border-box; }}
     body {{
@@ -167,41 +169,28 @@ def hosting_ready_html(
       font-size: 0.9rem;
       line-height: 1.5;
     }}
-    a.cta {{
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      margin-top: 1.25rem;
-      min-height: 2.5rem;
-      padding: 0.5rem 1.1rem;
-      border-radius: 0.5rem;
-      font-size: 0.88rem;
-      font-weight: 600;
-      text-decoration: none;
-      border: 1px solid #d5dbe3;
-      color: #1a1f24;
-      background: #fff;
-    }}
-    a.cta:hover {{
-      background: #f6f7f9;
-    }}
     .foot {{
-      margin: 1rem 0 0;
-      font-size: 0.72rem;
+      margin: 1.25rem 0 0;
+      font-size: 0.78rem;
+      font-weight: 600;
       color: #8a939c;
     }}
   </style>
 </head>
 <body>
   <main>
-    <h1>Your hosting is ready</h1>
-{domain_block}    <p class="lede">Nothing is published here yet. Sign in to upload files or install an application.</p>
-    <a class="cta" href="{manage}">Open hosting panel</a>
-    <p class="foot">IFNOTUS</p>
+    <h1>Nothing here yet.</h1>
+{domain_block}    <p class="lede">This domain is active, but no website has been published.</p>
+    <p class="foot">Powered by IFNOTUS</p>
   </main>
 </body>
 </html>
 """
+
+
+def empty_site_html() -> str:
+    """Hostname-agnostic empty-site page for nginx ``error_page`` alias."""
+    return hosting_ready_html(hostname="")
 
 
 def write_hosting_ready_page(
@@ -212,33 +201,25 @@ def write_hosting_ready_page(
     display_hostname: str | None = None,
     force: bool = False,
 ) -> Path:
-    """Ensure ``index.html`` is the IFNOTUS hosting-ready parking page.
+    """Ensure the document root exists — do not seed a default ``index.html``.
 
-    When ``force`` is False, existing non-parking customer content is left alone.
+    Historically wrote an IFNOTUS parking page. Customers upload or install their
+    own content; empty folders stay empty. Any leftover parking ``index.html``
+    is removed (customer pages are left alone).
     """
+    del hostname, portal_base, display_hostname, force  # unused — kept for call-site compatibility
     path = Path(root)
     path.mkdir(parents=True, exist_ok=True)
-    if not force:
-        # Never place parking index.html if user files (php, html, etc.) already exist
+    index = path / "index.html"
+    if not index.is_file():
+        return path
+    try:
+        existing = index.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return path
+    if is_parking_page(existing):
         try:
-            if any(p.is_file() and p.name != "index.html" for p in path.iterdir()):
-                return path
+            index.unlink(missing_ok=True)
         except OSError:
             pass
-    index = path / "index.html"
-    if index.exists() and not force:
-        try:
-            existing = index.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            existing = ""
-        if not is_parking_page(existing):
-            return path
-    index.write_text(
-        hosting_ready_html(
-            hostname=hostname,
-            portal_base=portal_base,
-            display_hostname=display_hostname,
-        ),
-        encoding="utf-8",
-    )
     return path

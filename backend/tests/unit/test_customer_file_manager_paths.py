@@ -148,6 +148,44 @@ async def test_ifnotus_metadata_hidden_for_customer(tmp_path: Path, settings: Se
 
 
 @pytest.mark.asyncio
+async def test_list_files_skips_broken_symlink(tmp_path: Path, settings: Settings) -> None:
+    docroot = tmp_path / "public_html"
+    docroot.mkdir()
+    (docroot / "ok.txt").write_text("hello")
+    try:
+        (docroot / "broken").symlink_to(tmp_path / "missing-target")
+    except OSError:
+        pytest.skip("Symlink creation not permitted in this test environment")
+
+    fm = FileManagerService(settings, only_roots=[docroot], storage_limit_gb=10)
+    res = await fm.list_files(".")
+    names = [e.name for e in res.entries]
+    assert "ok.txt" in names
+    assert "broken" not in names
+
+
+@pytest.mark.asyncio
+async def test_compress_symlink_destination(tmp_path: Path, settings: Settings) -> None:
+    docroot = tmp_path / "public_html"
+    docroot.mkdir()
+    real = docroot / "ExamFlowPro"
+    real.mkdir()
+    (real / "hello.txt").write_text("hi")
+    try:
+        (docroot / "examsflow").symlink_to("ExamFlowPro")
+    except OSError:
+        pytest.skip("Symlink creation not permitted in this test environment")
+
+    fm = FileManagerService(settings, only_roots=[tmp_path], storage_limit_gb=10)
+    result = await fm.compress(
+        ["public_html/ExamFlowPro/hello.txt"],
+        destination_dir="public_html/examsflow",
+    )
+    assert result.success
+    assert (docroot / "ExamFlowPro" / "hello.zip").exists()
+
+
+@pytest.mark.asyncio
 async def test_chmod_security_policy(tmp_path: Path, settings: Settings) -> None:
     docroot = tmp_path / "public_html"
     docroot.mkdir()

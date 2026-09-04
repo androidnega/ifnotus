@@ -87,7 +87,8 @@ onUnmounted(() => {
   width: 100%;
   max-width: 100%;
   overflow-x: hidden !important;
-  padding: 1rem 1rem 1.5rem;
+  /* Extra bottom space so table pagination is not under the AI button. */
+  padding: 1rem 1rem 4.25rem;
   box-sizing: border-box;
 }
 .control-main-inner {
@@ -99,7 +100,7 @@ onUnmounted(() => {
 }
 @media (min-width: 768px) {
   .control-main {
-    padding: 1.15rem 1.35rem 1.75rem;
+    padding: 1.15rem 1.35rem 4.5rem;
   }
 }
 @media (min-width: 1280px) {

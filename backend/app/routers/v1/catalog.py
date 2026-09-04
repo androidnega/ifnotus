@@ -33,7 +33,8 @@ def get_catalog_domain_prices(settings: SettingsDep) -> list[DomainTldPriceSchem
 
 
 
-def _enrich_public_plan(plan: HostingPlan) -> HostingPlanSchema:
+def _enrich_public_plan(plan: HostingPlan, settings: SettingsDep | None = None) -> HostingPlanSchema:
+    from app.services.platform.billing_terms_store import enrich_plan_yearly
     from app.services.platform.plan_matrix import (
         PUBLIC_DISPLAY_NAMES,
         capabilities_for,
@@ -45,7 +46,7 @@ def _enrich_public_plan(plan: HostingPlan) -> HostingPlanSchema:
     key = str(feats.get("matrix_key") or "")
     display = feats.get("display_name") or PUBLIC_DISPLAY_NAMES.get(key) or plan.name
     schema = HostingPlanSchema.model_validate(plan)
-    return schema.model_copy(
+    schema = schema.model_copy(
         update={
             "name": display,
             "features": feats,
@@ -53,9 +54,12 @@ def _enrich_public_plan(plan: HostingPlan) -> HostingPlanSchema:
             "catalog_card": catalog_card_for(plan),
         }
     )
+    if settings is not None:
+        schema = enrich_plan_yearly(schema, settings, monthly_price=plan.price_monthly)
+    return schema
 
 
-async def _public_catalog_items(session: AsyncSession) -> list[HostingPlanSchema]:
+async def _public_catalog_items(session: AsyncSession, settings: SettingsDep) -> list[HostingPlanSchema]:
     """Shared packs only, ordered for the public storefront."""
     from app.services.platform.plan_matrix import PUBLIC_CATALOG_KEYS, features_for, listed_in_public_catalog
 
@@ -78,7 +82,7 @@ async def _public_catalog_items(session: AsyncSession) -> list[HostingPlanSchema
         plan = keyed.get(key)
         if plan is None:
             continue
-        items.append(_enrich_public_plan(plan))
+        items.append(_enrich_public_plan(plan, settings))
     return items
 
 
@@ -93,19 +97,19 @@ def _plan_matches_slug(plan: HostingPlanSchema, slug: str) -> bool:
 
 
 @router.get("/plans", response_model=HostingPlanListResponse)
-async def list_plans(session: DbSession) -> HostingPlanListResponse:
+async def list_plans(session: DbSession, settings: SettingsDep) -> HostingPlanListResponse:
     """Public storefront — shared packs only, capabilities from backend matrix."""
     from app.services.platform.plan_matrix import coming_soon_products
 
-    items = await _public_catalog_items(session)
+    items = await _public_catalog_items(session, settings)
     soon = [ComingSoonProductSchema.model_validate(row) for row in coming_soon_products()]
     return HostingPlanListResponse(items=items, coming_soon=soon)
 
 
 @router.get("/plans/{slug}", response_model=HostingPlanSchema)
-async def get_plan(slug: str, session: DbSession) -> HostingPlanSchema:
+async def get_plan(slug: str, session: DbSession, settings: SettingsDep) -> HostingPlanSchema:
     """Single public plan by slug or matrix key."""
-    for plan in await _public_catalog_items(session):
+    for plan in await _public_catalog_items(session, settings):
         if _plan_matches_slug(plan, slug):
             return plan
     raise HTTPException(status_code=404, detail="Plan not found")

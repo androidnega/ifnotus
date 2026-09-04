@@ -83,3 +83,22 @@ def test_six_month_activation_math() -> None:
     ends = add_calendar_months(now, 6)
     assert ends.date().isoformat() == "2026-09-15"
     assert (ends - now).days > 150  # not a 30-day subscription
+
+
+def test_yearly_price_from_monthly_is_dynamic(store: BillingTermsStore) -> None:
+    from app.services.platform.billing_terms_store import yearly_price_from_monthly
+
+    assert yearly_price_from_monthly(store._settings, Decimal("150")) == Decimal("1800.00")
+    store.update_config(
+        {
+            "terms": {
+                "1": {"enabled": True},
+                "3": {"enabled": True},
+                "6": {"enabled": True},
+                "12": {"enabled": True, "discount_pct": 10},
+                "24": {"enabled": True},
+                "36": {"enabled": True},
+            }
+        }
+    )
+    assert yearly_price_from_monthly(store._settings, Decimal("150")) == Decimal("1620.00")

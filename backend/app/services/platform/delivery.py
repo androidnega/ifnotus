@@ -351,9 +351,12 @@ class MessageDelivery:
         if digits.startswith("00"):
             digits = "+" + digits[2:]
         if digits.startswith("0") and len(digits) == 10:
-            # Ghana local → E.164-ish
+            # Ghana local → E.164
             digits = "+233" + digits[1:]
-        if len(digits) < 10:
+        # Bare country-code forms (e.g. 23324…) → +23324…
+        if not digits.startswith("+") and digits.startswith("233") and len(digits) == 12:
+            digits = "+" + digits
+        if len(digits.lstrip("+")) < 9:
             return None
         return digits
 

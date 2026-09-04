@@ -5,7 +5,7 @@ import FileTransferQueue from '@/components/files/FileTransferQueue.vue'
 import { customersApi } from '@/api'
 import { getApiErrorMessage } from '@/lib/apiError'
 import { useFileTransferStore } from '@/stores/fileTransfers'
-import { hostnameNow, isCustomerCpanelHost } from '@/lib/platformHosts'
+import { hostnameNow, isTenantPanelHost, isStaffPanelHost } from '@/lib/platformHosts'
 import '@/assets/portal.css'
 
 type Entry = {
@@ -92,11 +92,19 @@ const folderTree = ref<string[]>(['.'])
 const treeCollapsed = ref(false)
 
 const STANDARD_FPANEL_ROOT_DIRS = [
+  'public_html',
+  'www',
+  'tmp',
+]
+
+/** Names hidden from the customer File Manager (sidebar + listing). */
+const HIDDEN_FILE_MANAGER_NAMES = new Set([
   '.caldav',
   '.cl.selector',
   '.config',
   '.fpaddons',
   '.fpanel',
+  '.cpanel',
   '.htpasswds',
   '.local',
   '.pip',
@@ -108,18 +116,22 @@ const STANDARD_FPANEL_ROOT_DIRS = [
   '.ssh',
   '.subaccounts',
   '.trash',
-  'app',
+  '.cache',
+  '.bash_history',
+  '.bash_logout',
+  '.bash_profile',
+  '.bashrc',
+  '.ifnotus',
+  '.ifnotus-trash',
   'etc',
   'logs',
   'mail',
-  'public',
   'public_ftp',
-  'public_html',
   'ssl',
-  'tmp',
   'virtualenv',
-  'www',
-]
+  'cgi-bin',
+])
+
 
 interface FolderTreeNode {
   name: string
@@ -221,9 +233,9 @@ function toggleCollapseAll() {
 const allCollapsed = computed(() => !rootExpanded.value && expandedFolderPaths.value.size === 0)
 
 function openInNewWindow() {
-  if (isCustomerCpanelHost()) {
+  if (isTenantPanelHost()) {
     window.open('/files', '_blank')
-  } else if (envId.value) {
+  } else if (envId.value && !isStaffPanelHost()) {
     window.open(`/hosting/${encodeURIComponent(envId.value)}/files`, '_blank')
   } else {
     window.open('/files', '_blank')
@@ -251,6 +263,8 @@ const moveBrowseEntries = ref<Entry[]>([])
 const moveBrowseLoading = ref(false)
 const moveBrowseParent = ref<string | null>(null)
 const moveBusy = ref(false)
+/** Snapshot of items to move — ctxTargets clears when the context menu closes. */
+const moveTargets = ref<Entry[]>([])
 
 const renameModal = ref<{
   open: boolean
@@ -385,7 +399,7 @@ const filtered = computed(() => {
     }
     return list
   }
-  let list = [...entries.value]
+  let list = entries.value.filter((e) => !HIDDEN_FILE_MANAGER_NAMES.has(e.name))
   if (q) list = list.filter((e) => e.name.toLowerCase().includes(q))
   list.sort((a, b) => {
     if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
@@ -665,7 +679,11 @@ async function load(recordHistory = true) {
     // Add subfolders to directory tree
     if (currentPath.value === '.') {
       for (const e of entries.value) {
-        if (e.is_dir && !dynamicRootDirs.value.includes(e.name)) {
+        if (
+          e.is_dir &&
+          !HIDDEN_FILE_MANAGER_NAMES.has(e.name) &&
+          !dynamicRootDirs.value.includes(e.name)
+        ) {
           dynamicRootDirs.value.push(e.name)
         }
       }
@@ -709,7 +727,7 @@ async function hydrateEnv() {
 
 async function ensureEnvironment(): Promise<boolean> {
   if (envId.value) return true
-  if (isCustomerCpanelHost()) {
+  if (isTenantPanelHost()) {
     try {
       const { data } = await customersApi.resolvePanelAlias(hostnameNow())
       if (data?.environment_id) {
@@ -847,15 +865,62 @@ function unselectAll() {
   selectedPaths.value.clear()
 }
 
+function isImageName(name: string) {
+  return /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(name)
+}
+
+function isPdfName(name: string) {
+  return /\.pdf$/i.test(name)
+}
+
+function isMediaName(name: string) {
+  return /\.(mp4|webm|ogg|mp3|wav|m4a)$/i.test(name)
+}
+
+async function openBinaryInNewTab(entry: Entry) {
+  try {
+    const token = localStorage.getItem('access_token')
+    const res = await fetch(
+      `/api/v1/customers/environments/${encodeURIComponent(envId.value)}/files/download?path=${encodeURIComponent(entry.path)}&inline=1`,
+      {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        credentials: 'include',
+      },
+    )
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const w = window.open(url, '_blank', 'noopener,noreferrer')
+    if (!w) {
+      // Popup blocked — fall back to download-style navigation
+      const a = document.createElement('a')
+      a.href = url
+      a.target = '_blank'
+      a.rel = 'noopener'
+      a.click()
+    }
+    // Revoke later so the tab can load
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  } catch (e: unknown) {
+    err.value = getApiErrorMessage(e, 'Could not open file.')
+  }
+}
+
 function openEntry(entry: Entry) {
   closeContext()
   if (entry.is_dir) {
     openDir(entry.path)
     return
   }
+  // Images / PDFs / media: open the real file in a new tab (not the code editor).
+  if (isImageName(entry.name) || isPdfName(entry.name) || isMediaName(entry.name)) {
+    void openBinaryInNewTab(entry)
+    return
+  }
   const href = `https://ifnotus.space/account/files/edit?env=${encodeURIComponent(envId.value)}&path=${encodeURIComponent(entry.path)}`
   window.open(href, `ifnotus-editor-${entry.path}`)
 }
+
 
 function onContextMenu(entry: Entry, ev: MouseEvent) {
   ev.preventDefault()
@@ -1070,6 +1135,7 @@ async function loadMoveBrowse(path: string) {
 function beginMove() {
   const targets = ctxTargets.value
   if (!targets.length) return
+  moveTargets.value = [...targets]
   closeContext()
   moveDestination.value = currentPath.value || '.'
   moveBrowsePath.value = currentPath.value || '.'
@@ -1080,11 +1146,15 @@ function beginMove() {
 function closeMovePrompt() {
   movePromptOpen.value = false
   moveBusy.value = false
+  moveTargets.value = []
 }
 
 async function confirmMove() {
-  const targets = ctxTargets.value
-  if (!targets.length || !envId.value) return
+  const targets = moveTargets.value.length ? moveTargets.value : ctxTargets.value
+  if (!targets.length || !envId.value) {
+    err.value = 'Nothing selected to move.'
+    return
+  }
   const dest = moveDestination.value.trim() || '.'
   moveBusy.value = true
   err.value = ''
@@ -1352,6 +1422,17 @@ async function saveHtmlEditor() {
 async function removeTargets(targets: Entry[]) {
   const paths = targets.map((e) => e.path)
   if (!paths.length) return
+  const label =
+    targets.length === 1
+      ? `"${targets[0].name}"`
+      : `${targets.length} selected items`
+  if (
+    !window.confirm(
+      `Move ${label} to Trash?\n\nYou can restore items from Trash later.`,
+    )
+  ) {
+    return
+  }
   closeContext()
   try {
     await customersApi.moveToTrash(envId.value, paths)
@@ -1496,10 +1577,14 @@ function downloadEntry(entry?: Entry | null) {
 }
 
 function pickUpload() {
-  showUploadModal.value = true
+  const path = currentPath.value || '.'
+  const href =
+    `https://ifnotus.space/account/files/upload?env=${encodeURIComponent(envId.value)}` +
+    `&path=${encodeURIComponent(path)}`
+  window.open(href, 'ifnotus-upload-queue', 'noopener,noreferrer')
 }
 
-function handleFilesToUpload(files: FileList | File[]) {
+async function handleFilesToUpload(files: FileList | File[]) {
   if (!envId.value) return
   const fileArray = Array.from(files)
   if (!fileArray.length) return
@@ -1512,11 +1597,40 @@ function handleFilesToUpload(files: FileList | File[]) {
     }
   }
   if (!valid.length) return
-  transfers.enqueueUploadMany(valid, currentPath.value || '.', {
-    environmentId: envId.value,
-  })
-  msg.value = `Queued ${valid.length} file(s) for upload.`
-  showUploadModal.value = true
+
+  // Duplicate check — ask before overriding existing files
+  const dest = currentPath.value || '.'
+  const existingNames = new Set(
+    entries.value.filter((e) => !e.is_dir).map((e) => e.name.toLowerCase()),
+  )
+  const duplicates = valid.filter((f) => existingNames.has(f.name.toLowerCase()))
+  let toUpload = valid
+  if (duplicates.length) {
+    const names = duplicates.map((f) => f.name).slice(0, 5).join(', ')
+    const more = duplicates.length > 5 ? ` (+${duplicates.length - 5} more)` : ''
+    const ok = window.confirm(
+      `${duplicates.length} file(s) already exist in this folder (${names}${more}).\n\nOK = replace existing files\nCancel = skip duplicates`,
+    )
+    if (!ok) {
+      const dupSet = new Set(duplicates.map((f) => f.name.toLowerCase()))
+      toUpload = valid.filter((f) => !dupSet.has(f.name.toLowerCase()))
+      if (!toUpload.length) {
+        msg.value = 'Upload cancelled — duplicates skipped.'
+        return
+      }
+    }
+  }
+
+  // Prefer dedicated upload queue page (blue → green statuses)
+  const href =
+    `https://ifnotus.space/account/files/upload?env=${encodeURIComponent(envId.value)}` +
+    `&path=${encodeURIComponent(dest)}`
+  // Enqueue in shared store so the upload tab / this tab can show progress
+  transfers.enqueueUploadMany(toUpload, dest, { environmentId: envId.value })
+  window.open(href, 'ifnotus-upload-queue', 'noopener,noreferrer')
+  msg.value = `Queued ${toUpload.length} file(s) for upload.`
+  showUploadModal.value = false
+  void dest
 }
 
 function onFileInputChange(event: Event) {
@@ -2377,7 +2491,7 @@ onUnmounted(() => {
     <div v-if="movePromptOpen" class="cp-modal-backdrop" @click.self="closeMovePrompt">
       <div class="cp-modal-card move-card">
         <div class="modal-head">
-          <h3>Move {{ selectionCount || ctxTargets.length }} item(s)</h3>
+          <h3>Move {{ moveTargets.length || selectionCount || ctxTargets.length }} item(s)</h3>
           <button type="button" class="btn-close" @click="closeMovePrompt">✕</button>
         </div>
         <p class="modal-desc">

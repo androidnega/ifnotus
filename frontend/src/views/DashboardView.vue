@@ -1,16 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
+import VueApexCharts from 'vue3-apexcharts'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import ErrorState from '@/components/ui/ErrorState.vue'
 import UiPageHeader from '@/components/ui/UiPageHeader.vue'
-import DashboardAiFab from '@/components/ai/DashboardAiFab.vue'
 import ControlGauge from '@/components/dashboard/ControlGauge.vue'
 import Sparkline from '@/components/dashboard/Sparkline.vue'
 import ResourceChart from '@/components/dashboard/ResourceChart.vue'
 import ServiceBrandMark from '@/components/dashboard/ServiceBrandMark.vue'
 import { useDashboard } from '@/composables/useDashboard'
 import { useAuthStore } from '@/stores/auth'
+import { useThemeStore } from '@/stores/theme'
 import { getCanonicalRole, isPlatformOwner } from '@/lib/roles'
 import { domainsApi, platformAdminApi, supportApi } from '@/api'
 import type { Domain } from '@/types/hosting'
@@ -32,6 +33,7 @@ import {
 
 const router = useRouter()
 const auth = useAuthStore()
+const theme = useThemeStore()
 const isOwner = computed(() => isPlatformOwner(auth.user))
 const canonicalRole = computed(() => getCanonicalRole(auth.user) || 'platform_owner')
 const isSupport = computed(() => canonicalRole.value === 'support_agent')
@@ -48,6 +50,248 @@ const recentOrders = ref<StaffOrderItem[]>([])
 const accountingSummary = ref<StaffAccountingSummary | null>(null)
 const opsInbox = ref<{ awaiting_payment_confirm: number; recently_paid: number; open_support_tickets?: number } | null>(null)
 const customerSearchInput = ref('')
+const billingLoading = ref(false)
+
+async function loadBillingData() {
+  billingLoading.value = true
+  try {
+    const [{ data: oList }, { data: acc }, { data: ops }] = await Promise.all([
+      platformAdminApi.listOrders({ limit: 8 }).catch(() => ({ data: [] })),
+      platformAdminApi.accountingSummary().catch(() => ({ data: null })),
+      platformAdminApi.opsInbox().catch(() => ({ data: null })),
+    ])
+    recentOrders.value = oList || []
+    accountingSummary.value = acc
+    opsInbox.value = ops
+  } catch {
+    /* ignore */
+  } finally {
+    billingLoading.value = false
+  }
+}
+
+async function refreshBilling() {
+  await Promise.all([refresh(), loadBillingData()])
+}
+
+const billingTotals = computed(() => accountingSummary.value?.totals)
+const billingCurrency = computed(() => accountingSummary.value?.currency || 'GHS')
+
+function billingMoney(n: number | undefined | null) {
+  return `${billingCurrency.value} ${Number(n || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`
+}
+
+const allTimeCash = computed(
+  () => billingTotals.value?.cash_collected_all_time ?? billingTotals.value?.collected_all_time ?? 0,
+)
+const allTimeInvoiced = computed(
+  () => billingTotals.value?.invoiced_paid_all_time ?? billingTotals.value?.collected_all_time ?? 0,
+)
+const paidOrdersAllTime = computed(() => billingTotals.value?.paid_count_all_time ?? 0)
+const avgOrderValue = computed(() => {
+  const n = paidOrdersAllTime.value
+  if (!n) return 0
+  return allTimeCash.value / n
+})
+const awaitingConfirmCount = computed(
+  () => billingTotals.value?.awaiting_confirm_count ?? opsInbox.value?.awaiting_payment_confirm ?? 0,
+)
+const awaitingConfirmAmount = computed(() => billingTotals.value?.awaiting_confirm ?? 0)
+const unpaidInvoiceAmount = computed(() => billingTotals.value?.outstanding ?? 0)
+const unpaidInvoiceCount = computed(() => billingTotals.value?.outstanding_count ?? 0)
+const periodCash = computed(
+  () => billingTotals.value?.cash_collected_period ?? billingTotals.value?.collected_period ?? 0,
+)
+const periodLabel = computed(
+  () => accountingSummary.value?.period?.label || 'Last 30 days',
+)
+
+const billingSparkSeries = computed(() => {
+  const days = accountingSummary.value?.by_day || []
+  return days.map((d) => d.collected + (d.complimentary || 0))
+})
+
+const billingRevenueChart = computed(() => {
+  const days = accountingSummary.value?.by_day || []
+  return {
+    categories: days.map((d) =>
+      new Date(d.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+    ),
+    series: [
+      { name: 'Cash collected', data: days.map((d) => d.collected) },
+      { name: 'Complimentary', data: days.map((d) => d.complimentary || 0) },
+    ],
+  }
+})
+
+const billingPipelineChart = computed(() => ({
+  categories: ['Awaiting confirm', 'Unpaid invoices', `${periodLabel.value} cash`, 'All-time cash'],
+  values: [
+    awaitingConfirmAmount.value,
+    unpaidInvoiceAmount.value,
+    periodCash.value,
+    allTimeCash.value,
+  ],
+}))
+
+const billingAreaOptions = computed(() => ({
+  chart: {
+    type: 'area' as const,
+    toolbar: { show: false },
+    zoom: { enabled: false },
+    fontFamily: 'Inter, sans-serif',
+    background: 'transparent',
+  },
+  theme: { mode: theme.isDark ? ('dark' as const) : ('light' as const) },
+  dataLabels: { enabled: false },
+  stroke: { curve: 'smooth' as const, width: 2.5 },
+  fill: {
+    type: 'gradient',
+    gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.06, stops: [0, 100] },
+  },
+  colors: ['#059669', '#6366f1'],
+  grid: {
+    borderColor: theme.isDark ? '#334155' : '#e2e8f0',
+    strokeDashArray: 4,
+  },
+  xaxis: {
+    categories: billingRevenueChart.value.categories,
+    labels: { style: { colors: theme.isDark ? '#94a3b8' : '#64748b', fontSize: '11px' } },
+    axisBorder: { show: false },
+    axisTicks: { show: false },
+  },
+  yaxis: {
+    labels: {
+      style: { colors: theme.isDark ? '#94a3b8' : '#64748b', fontSize: '11px' },
+      formatter: (v: number) => `${Math.round(v)}`,
+    },
+  },
+  legend: { position: 'top' as const, fontSize: '12px' },
+  tooltip: {
+    theme: (theme.isDark ? 'dark' : 'light') as 'dark' | 'light',
+    y: { formatter: (v: number) => billingMoney(v) },
+  },
+}))
+
+const billingBarOptions = computed(() => ({
+  chart: {
+    type: 'bar' as const,
+    toolbar: { show: false },
+    fontFamily: 'Inter, sans-serif',
+    background: 'transparent',
+  },
+  theme: { mode: theme.isDark ? ('dark' as const) : ('light' as const) },
+  plotOptions: {
+    bar: {
+      borderRadius: 6,
+      columnWidth: '52%',
+      distributed: true,
+    },
+  },
+  colors: ['#f59e0b', '#ef4444', '#3b82f6', '#059669'],
+  dataLabels: { enabled: false },
+  grid: {
+    borderColor: theme.isDark ? '#334155' : '#e2e8f0',
+    strokeDashArray: 4,
+  },
+  xaxis: {
+    categories: billingPipelineChart.value.categories,
+    labels: {
+      style: { colors: theme.isDark ? '#94a3b8' : '#64748b', fontSize: '10px' },
+      rotate: -18,
+      trim: true,
+    },
+    axisBorder: { show: false },
+  },
+  yaxis: {
+    labels: {
+      style: { colors: theme.isDark ? '#94a3b8' : '#64748b', fontSize: '11px' },
+      formatter: (v: number) => `${Math.round(v)}`,
+    },
+  },
+  legend: { show: false },
+  tooltip: {
+    theme: (theme.isDark ? 'dark' : 'light') as 'dark' | 'light',
+    y: { formatter: (v: number) => billingMoney(v) },
+  },
+}))
+
+const billingKindChart = computed(() => {
+  const kinds = accountingSummary.value?.by_kind || {}
+  return {
+    labels: Object.keys(kinds).map((k) => k.charAt(0).toUpperCase() + k.slice(1)),
+    values: Object.values(kinds),
+  }
+})
+
+const billingDonutOptions = computed(() => ({
+  chart: { type: 'donut' as const, background: 'transparent' },
+  theme: { mode: theme.isDark ? ('dark' as const) : ('light' as const) },
+  labels: billingKindChart.value.labels,
+  colors: ['#2563eb', '#059669', '#d97706', '#7c3aed', '#ec4899'],
+  legend: { position: 'bottom' as const, fontSize: '11px' },
+  dataLabels: { enabled: true, formatter: (v: number) => `${Math.round(v)}%`, style: { fontSize: '10px' } },
+  tooltip: { y: { formatter: (v: number) => billingMoney(v) } },
+}))
+
+const billingMetricCards = computed(() => [
+  {
+    id: 'all-time',
+    label: 'All-time revenue',
+    value: billingMoney(allTimeCash.value),
+    sub: `${paidOrdersAllTime.value} paid order${paidOrdersAllTime.value === 1 ? '' : 's'} · cash banked`,
+    icon: 'fa-vault',
+    tone: 'emerald',
+    spark: billingSparkSeries.value,
+    sparkColor: '#059669',
+  },
+  {
+    id: 'awaiting',
+    label: 'Awaiting confirm',
+    value: String(awaitingConfirmCount.value),
+    sub: `${billingMoney(awaitingConfirmAmount.value)} to verify in MoMo`,
+    icon: 'fa-clock',
+    tone: 'amber',
+    warn: awaitingConfirmCount.value > 0,
+  },
+  {
+    id: 'aov',
+    label: 'Average order value',
+    value: billingMoney(avgOrderValue.value),
+    sub: `Mean cash per paid order (all-time)`,
+    icon: 'fa-chart-line',
+    tone: 'indigo',
+  },
+  {
+    id: 'unpaid',
+    label: 'Unpaid invoices',
+    value: billingMoney(unpaidInvoiceAmount.value),
+    sub: `${unpaidInvoiceCount.value} proforma awaiting payment`,
+    icon: 'fa-file-invoice-dollar',
+    tone: 'rose',
+  },
+  {
+    id: 'period',
+    label: 'Cash collected',
+    value: billingMoney(periodCash.value),
+    sub: periodLabel.value,
+    icon: 'fa-wallet',
+    tone: 'sky',
+    spark: billingSparkSeries.value.slice(-14),
+    sparkColor: '#0ea5e9',
+  },
+  {
+    id: 'invoiced',
+    label: 'All-time invoiced',
+    value: billingMoney(allTimeInvoiced.value),
+    sub: 'Paid invoices incl. complimentary face value',
+    icon: 'fa-coins',
+    tone: 'violet',
+  },
+])
 
 onMounted(async () => {
   try {
@@ -69,18 +313,7 @@ onMounted(async () => {
   }
 
   if (isBilling.value || isFullAdmin.value || isAuditorRole.value) {
-    try {
-      const [{ data: oList }, { data: acc }, { data: ops }] = await Promise.all([
-        platformAdminApi.listOrders({ limit: 6 }).catch(() => ({ data: [] })),
-        platformAdminApi.accountingSummary().catch(() => ({ data: null })),
-        platformAdminApi.opsInbox().catch(() => ({ data: null })),
-      ])
-      recentOrders.value = oList || []
-      accountingSummary.value = acc
-      opsInbox.value = ops
-    } catch {
-      /* ignore */
-    }
+    await loadBillingData()
   }
 })
 
@@ -345,34 +578,102 @@ export default { name: 'DashboardView' }
           lede="Order reconciliation, invoice confirmations, and billing accounts"
         >
           <template #actions>
-            <button type="button" class="ds-btn-ghost" :disabled="refreshing" @click="refresh">
-              {{ refreshing ? 'Refreshing…' : 'Refresh' }}
+            <button type="button" class="ds-btn-ghost" :disabled="refreshing || billingLoading" @click="refreshBilling">
+              {{ refreshing || billingLoading ? 'Refreshing…' : 'Refresh' }}
             </button>
           </template>
         </UiPageHeader>
 
-        <section class="metrics">
-          <article class="metric">
-            <p class="k">Awaiting confirmation</p>
-            <p class="v" :class="(opsInbox?.awaiting_payment_confirm || 0) > 0 ? 'bad' : 'ok'">
-              {{ opsInbox?.awaiting_payment_confirm || 0 }}
-            </p>
-            <p class="s">MoMo payments</p>
+        <section class="billing-metrics">
+          <article
+            v-for="card in billingMetricCards"
+            :key="card.id"
+            class="billing-metric"
+            :class="[`tone-${card.tone}`, { 'has-alert': card.warn }]"
+          >
+            <div class="billing-metric-top">
+              <span class="billing-metric-icon" aria-hidden="true">
+                <i class="fa-solid" :class="card.icon" />
+              </span>
+              <Sparkline
+                v-if="card.spark?.length"
+                :values="card.spark"
+                :color="card.sparkColor || '#059669'"
+                :width="72"
+                :height="26"
+              />
+            </div>
+            <p class="k">{{ card.label }}</p>
+            <p class="v" :class="{ sm: card.id === 'awaiting' }">{{ card.value }}</p>
+            <p class="s">{{ card.sub }}</p>
           </article>
-          <article class="metric">
-            <p class="k">Confirmed orders</p>
-            <p class="v ok">{{ opsInbox?.recently_paid || recentOrders.length }}</p>
-            <p class="s">Active activations</p>
+        </section>
+
+        <section class="billing-charts">
+          <article class="card billing-chart-card">
+            <header>
+              <div class="billing-chart-head">
+                <span class="billing-chart-icon tone-emerald"><i class="fa-solid fa-chart-area" aria-hidden="true" /></span>
+                <div>
+                  <h2>Cash flow trend</h2>
+                  <p class="muted">Daily collections · {{ periodLabel }}</p>
+                </div>
+              </div>
+            </header>
+            <div class="billing-chart-wrap">
+              <VueApexCharts
+                v-if="billingRevenueChart.series[0].data.some((v) => v > 0) || billingRevenueChart.series[1].data.some((v) => v > 0)"
+                type="area"
+                height="260"
+                :options="billingAreaOptions"
+                :series="billingRevenueChart.series"
+              />
+              <p v-else class="chart-empty">No collection data for this period yet.</p>
+            </div>
           </article>
-          <article class="metric">
-            <p class="k">Period revenue</p>
-            <p class="v sm">{{ accountingSummary?.currency || 'GHS' }} {{ Number(accountingSummary?.totals.collected_period || 0).toLocaleString() }}</p>
-            <p class="s">Total collected</p>
+
+          <article class="card billing-chart-card">
+            <header>
+              <div class="billing-chart-head">
+                <span class="billing-chart-icon tone-indigo"><i class="fa-solid fa-chart-column" aria-hidden="true" /></span>
+                <div>
+                  <h2>Revenue pipeline</h2>
+                  <p class="muted">Awaiting · unpaid · period · all-time</p>
+                </div>
+              </div>
+            </header>
+            <div class="billing-chart-wrap">
+              <VueApexCharts
+                v-if="billingPipelineChart.values.some((v) => v > 0)"
+                type="bar"
+                height="260"
+                :options="billingBarOptions"
+                :series="[{ name: billingCurrency, data: billingPipelineChart.values }]"
+              />
+              <p v-else class="chart-empty">Pipeline amounts will appear as orders flow in.</p>
+            </div>
           </article>
-          <article class="metric">
-            <p class="k">Assigned role</p>
-            <p class="v sm">Billing Agent</p>
-            <p class="s">Verified privilege</p>
+
+          <article class="card billing-chart-card billing-chart-narrow">
+            <header>
+              <div class="billing-chart-head">
+                <span class="billing-chart-icon tone-violet"><i class="fa-solid fa-chart-pie" aria-hidden="true" /></span>
+                <div>
+                  <h2>By product</h2>
+                  <p class="muted">{{ periodLabel }} cash mix</p>
+                </div>
+              </div>
+            </header>
+            <div class="billing-chart-wrap">
+              <VueApexCharts
+                v-if="billingKindChart.values.some((v) => v > 0)"
+                type="donut"
+                height="260"
+                :options="billingDonutOptions"
+                :series="billingKindChart.values"
+              />
+              <p v-else class="chart-empty">No product breakdown yet.</p>
+            </div>
           </article>
         </section>
 
@@ -420,10 +721,12 @@ export default { name: 'DashboardView' }
             </header>
             <p class="muted">Review MoMo transactions, bank settlements, and cash reconciliations.</p>
             <dl class="facts">
-              <div><dt>Currency</dt><dd>{{ accountingSummary?.currency || 'GHS' }}</dd></div>
-              <div><dt>Outstanding</dt><dd>{{ accountingSummary?.currency || 'GHS' }} {{ accountingSummary?.totals.outstanding || 0 }}</dd></div>
-              <div><dt>Total all-time</dt><dd>{{ accountingSummary?.currency || 'GHS' }} {{ Number(accountingSummary?.totals.collected_all_time || 0).toLocaleString() }}</dd></div>
-              <div><dt>Failed attempts</dt><dd>{{ accountingSummary?.totals.failed_count || 0 }}</dd></div>
+              <div><dt>Currency</dt><dd>{{ billingCurrency }}</dd></div>
+              <div><dt>Outstanding</dt><dd>{{ billingMoney(unpaidInvoiceAmount) }}</dd></div>
+              <div><dt>All-time cash</dt><dd>{{ billingMoney(allTimeCash) }}</dd></div>
+              <div><dt>Avg order value</dt><dd>{{ billingMoney(avgOrderValue) }}</dd></div>
+              <div><dt>Failed attempts</dt><dd>{{ billingTotals?.failed_count || 0 }}</dd></div>
+              <div><dt>Awaiting confirm</dt><dd>{{ awaitingConfirmCount }}</dd></div>
             </dl>
             <button type="button" class="cta" @click="go('/platform/accounting')">Open Accounting Ledger</button>
           </article>
@@ -519,8 +822,8 @@ export default { name: 'DashboardView' }
           </article>
           <article class="metric">
             <p class="k">Period revenue</p>
-            <p class="v sm">{{ accountingSummary?.currency || 'GHS' }} {{ Number(accountingSummary?.totals.collected_period || 0).toLocaleString() }}</p>
-            <p class="s">Realized cash in</p>
+            <p class="v sm">{{ accountingSummary?.currency || 'GHS' }} {{ Number((accountingSummary?.totals.cash_collected_period ?? accountingSummary?.totals.collected_period) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</p>
+            <p class="s">{{ accountingSummary?.period?.label || 'Last 30 days' }} · cash collected</p>
           </article>
           <article class="metric">
             <p class="k">Open tickets</p>
@@ -838,8 +1141,6 @@ export default { name: 'DashboardView' }
         </article>
       </section>
     </div>
-
-    <DashboardAiFab />
   </DashboardLayout>
 </template>
 
@@ -853,6 +1154,113 @@ export default { name: 'DashboardView' }
   display: grid;
   gap: 0.65rem;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.billing-metrics {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (min-width: 720px) {
+  .billing-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (min-width: 1280px) {
+  .billing-metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+.billing-metric {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: 0.95rem;
+  box-shadow: var(--shadow-card);
+  padding: 1rem 1.05rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.billing-metric:hover {
+  border-color: color-mix(in srgb, var(--color-border) 60%, #6366f1);
+}
+.billing-metric.has-alert {
+  border-color: #fcd34d;
+  box-shadow: 0 0 0 1px color-mix(in srgb, #f59e0b 25%, transparent);
+}
+.billing-metric-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+.billing-metric-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 0.65rem;
+  font-size: 1rem;
+}
+.billing-metric.tone-emerald .billing-metric-icon { background: #ecfdf5; color: #059669; }
+.billing-metric.tone-amber .billing-metric-icon { background: #fffbeb; color: #d97706; }
+.billing-metric.tone-indigo .billing-metric-icon { background: #eef2ff; color: #4f46e5; }
+.billing-metric.tone-rose .billing-metric-icon { background: #fff1f2; color: #e11d48; }
+.billing-metric.tone-sky .billing-metric-icon { background: #f0f9ff; color: #0284c7; }
+.billing-metric.tone-violet .billing-metric-icon { background: #f5f3ff; color: #7c3aed; }
+:global(.dark) .billing-metric.tone-emerald .billing-metric-icon { background: #064e3b; color: #6ee7b7; }
+:global(.dark) .billing-metric.tone-amber .billing-metric-icon { background: #78350f; color: #fcd34d; }
+:global(.dark) .billing-metric.tone-indigo .billing-metric-icon { background: #312e81; color: #a5b4fc; }
+:global(.dark) .billing-metric.tone-rose .billing-metric-icon { background: #881337; color: #fda4af; }
+:global(.dark) .billing-metric.tone-sky .billing-metric-icon { background: #0c4a6e; color: #7dd3fc; }
+:global(.dark) .billing-metric.tone-violet .billing-metric-icon { background: #4c1d95; color: #c4b5fd; }
+.billing-charts {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: 1fr;
+  margin-top: 0.15rem;
+}
+@media (min-width: 960px) {
+  .billing-charts {
+    grid-template-columns: 1.4fr 1fr;
+  }
+  .billing-chart-narrow {
+    grid-column: 1 / -1;
+    max-width: 420px;
+  }
+}
+@media (min-width: 1200px) {
+  .billing-charts {
+    grid-template-columns: 1.5fr 1fr 0.85fr;
+  }
+  .billing-chart-narrow {
+    grid-column: auto;
+    max-width: none;
+  }
+}
+.billing-chart-card header { margin-bottom: 0.5rem; }
+.billing-chart-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+}
+.billing-chart-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: 0.55rem;
+  font-size: 0.95rem;
+  flex-shrink: 0;
+}
+.billing-chart-icon.tone-emerald { background: #ecfdf5; color: #059669; }
+.billing-chart-icon.tone-indigo { background: #eef2ff; color: #4f46e5; }
+.billing-chart-icon.tone-violet { background: #f5f3ff; color: #7c3aed; }
+.billing-chart-wrap { min-height: 260px; }
+.chart-empty {
+  margin: 2.5rem 0;
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--color-text-muted);
 }
 @media (min-width: 720px) {
   .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }

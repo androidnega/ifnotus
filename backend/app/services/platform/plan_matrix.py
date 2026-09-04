@@ -460,6 +460,13 @@ MATRIX: dict[str, dict[str, Any]] = {
         catalog_listed=True,
         display_name="Business Hosting",
         marketing_blurb="Business sites on shared hosting — more domains/mail; Docker/monitoring where entitled.",
+        python_apps=10,
+        node_apps=5,
+        php_apps=20,
+        app_memory_mb=1024,
+        max_workers=4,
+        max_processes=32,
+        max_open_ports=24,
     ),
     "macho-power": _row(
         kind="managed",

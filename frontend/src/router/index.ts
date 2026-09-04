@@ -32,6 +32,15 @@ function isTenantPanelToolPath(path: string): boolean {
   return TENANT_PANEL_TOOL_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`))
 }
 
+/** Staff WHM surfaces that must never render on customer fpanel / tenant hosts. */
+function isStaffOnlySurface(to: { path: string; name?: string | symbol | null; meta: { panel?: string } }): boolean {
+  if (to.meta.panel === 'staff') return true
+  if (to.name === 'dashboard' || to.path === '/panel') return true
+  if (to.path.startsWith('/platform/')) return true
+  if (to.path === '/applications' || to.path.startsWith('/applications/')) return true
+  return false
+}
+
 declare module 'vue-router' {
   interface RouteMeta {
     requiresAuth?: boolean
@@ -283,6 +292,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true, panel: 'portal', hostingTab: 'email' },
   },
   {
+    path: '/apps/guide',
+    name: 'cpanel-apps-guide',
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'apps-guide' },
+  },
+  {
     path: '/apps',
     name: 'cpanel-apps',
     component: () => {
@@ -303,6 +318,12 @@ const routes: RouteRecordRaw[] = [
     name: 'cpanel-cron',
     component: () => import('@/views/hosting/HostingPanelView.vue'),
     meta: { requiresAuth: true, panel: 'portal', hostingTab: 'cron' },
+  },
+  {
+    path: '/git',
+    name: 'cpanel-git',
+    component: () => import('@/views/hosting/HostingPanelView.vue'),
+    meta: { requiresAuth: true, panel: 'portal', hostingTab: 'git' },
   },
   {
     path: '/backups',
@@ -754,6 +775,10 @@ router.beforeEach(async (to) => {
     ) {
       return true
     }
+    // Never serve staff WHM on a student/tenant hostname.
+    if (isStaffOnlySurface(to)) {
+      return { path: '/' }
+    }
     if (
       to.name === 'login' ||
       to.path === '/login' ||
@@ -818,6 +843,10 @@ router.beforeEach(async (to) => {
   if (isCustomerCpanelHost()) {
     if (to.name === 'sso-landing' || to.path === '/sso') {
       return true
+    }
+    // Critical: never load staff DashboardView / WHM routes on customer fpanel hosts.
+    if (isStaffOnlySurface(to)) {
+      return { path: '/' }
     }
     // Account, billing, settings, support, and invoices NEVER exist on customer domains.
     if (

@@ -195,7 +195,7 @@ export function planMatrix(plan: HostingPlan | null | undefined): PlanMatrix {
   const hasBackendStacks = Boolean(caps?.stacks) || Boolean(feats.stacks && typeof feats.stacks === 'object')
   if (hasBackendStacks) {
     for (const stackKey of STACK_KEYS) {
-      if (stackKey in stacksRaw) stacks[stackKey] = asLevel(stacksRaw[stackKey])
+      stacks[stackKey] = stackKey in stacksRaw ? asLevel(stacksRaw[stackKey]) : 'no'
     }
   }
   const levels = (caps?.levels || {}) as Record<string, unknown>
@@ -236,7 +236,7 @@ export function visibleStacks(plan: HostingPlan | null | undefined) {
   })).filter((s) => s.level === 'yes')
 }
 
-/** Included + limited (limited shown faded in UI). Excludes `no`. */
+/** Included + limited (limited shown faded). Excludes `no`. */
 export function packStacksForDisplay(plan: HostingPlan | null | undefined) {
   const matrix = planMatrix(plan)
   return STACK_KEYS.map((id) => ({
@@ -257,17 +257,25 @@ export function sshHeadline(plan: HostingPlan | null | undefined) {
     return 'SSH/SFTP included'
   }
   const mode = String(plan?.capabilities?.ssh_mode || card?.ssh_mode || planMatrix(plan).ssh)
-  if (mode === 'root') return 'Full root SSH'
+  if (mode === 'root') return 'SSH included'
   if (mode === 'jail') return 'SSH included'
-  if (mode === 'limited') return 'SSH with limits'
+  if (mode === 'limited') return 'SSH included'
   return 'SSH not on this pack'
 }
 
 export function envCan(
-  env: { capabilities?: { on?: Record<string, boolean> } } | null | undefined,
+  env: { capabilities?: { on?: Record<string, boolean>; levels?: Record<string, string>; repos?: number | null } } | null | undefined,
   key: string,
 ) {
   const on = env?.capabilities?.on
+  if (on && key in on) return Boolean(on[key])
+  if (key === 'git') {
+    const level = String(env?.capabilities?.levels?.git || '')
+    if (level === 'yes' || level === 'limited') return true
+    const repos = env?.capabilities?.repos
+    if (repos == null) return on ? false : true
+    return Number(repos) !== 0
+  }
   if (!on) return true
   return Boolean(on[key])
 }

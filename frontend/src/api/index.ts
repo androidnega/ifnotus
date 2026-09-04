@@ -1014,6 +1014,7 @@ export const customersApi = {
       phone: string
       message: string
       sms_sent: boolean
+      email_sent?: boolean
       debug_code?: string | null
     }>('/customers/phone/request-otp', body),
 
@@ -1789,6 +1790,9 @@ export const customersApi = {
       build_command?: string | null
       start_command?: string | null
       env_vars?: Record<string, string>
+      root_placement?: 'apps' | 'home' | 'public_html'
+      serve_at_domain?: boolean
+      log_path?: string | null
     },
   ) =>
     apiClient.post<{
@@ -1800,6 +1804,8 @@ export const customersApi = {
       status: string
       port?: number | null
       message?: string | null
+      app_root_display?: string | null
+      serve_url?: string | null
     }>(`/customers/environments/${environmentId}/applications`, body),
 
   deployEnvApplication: (environmentId: string, applicationId: string) =>
@@ -1809,6 +1815,60 @@ export const customersApi = {
       status: string
       message?: string | null
     }>(`/customers/environments/${environmentId}/applications/${applicationId}/deploy`),
+
+  restartEnvApplication: (environmentId: string, applicationId: string) =>
+    apiClient.post<{
+      id: string
+      name: string
+      status: string
+      message?: string | null
+    }>(`/customers/environments/${environmentId}/applications/${applicationId}/restart`),
+
+  stopEnvApplication: (environmentId: string, applicationId: string) =>
+    apiClient.post<{
+      id: string
+      name: string
+      status: string
+      message?: string | null
+    }>(`/customers/environments/${environmentId}/applications/${applicationId}/stop`),
+
+  startEnvApplication: (environmentId: string, applicationId: string) =>
+    apiClient.post<{
+      id: string
+      name: string
+      status: string
+      message?: string | null
+    }>(`/customers/environments/${environmentId}/applications/${applicationId}/start`),
+
+  refreshEnvApplication: (environmentId: string, applicationId: string) =>
+    apiClient.post<{
+      id: string
+      name: string
+      status: string
+      message?: string | null
+    }>(`/customers/environments/${environmentId}/applications/${applicationId}/refresh`),
+
+  updateEnvApplication: (
+    environmentId: string,
+    applicationId: string,
+    body: {
+      name?: string
+      runtime_version?: string | null
+      start_command?: string | null
+      log_path?: string | null
+      serve_at_domain?: boolean
+      env_vars?: Record<string, string>
+      restart?: boolean
+    },
+  ) =>
+    apiClient.patch<{
+      id: string
+      name: string
+      status: string
+      message?: string | null
+      log_path?: string | null
+      env_var_keys?: string[]
+    }>(`/customers/environments/${environmentId}/applications/${applicationId}`, body),
 
   deleteEnvApplication: (environmentId: string, applicationId: string) =>
     apiClient.delete(`/customers/environments/${environmentId}/applications/${applicationId}`),
@@ -2051,18 +2111,63 @@ export const customersApi = {
     apiClient.get<{
       configured: boolean
       path?: string
+      home_display?: string
+      repos_limit?: number | null
       branch?: string | null
       commit?: string | null
       remote?: string | null
       dirty?: boolean
       message?: string
+      repositories?: Array<{
+        id: string
+        name: string
+        path: string
+        path_display: string
+        configured: boolean
+        branch?: string | null
+        commit?: string | null
+        commit_full?: string | null
+        author?: string | null
+        author_email?: string | null
+        committed_at?: string | null
+        message?: string | null
+        remote?: string | null
+        dirty?: boolean
+        clone_url?: string | null
+      }>
     }>(`/customers/environments/${environmentId}/git`),
 
-  cloneEnvGit: (environmentId: string, body: { repo_url: string; branch?: string }) =>
-    apiClient.post(`/customers/environments/${environmentId}/git/clone`, body),
+  cloneEnvGit: (
+    environmentId: string,
+    body: {
+      repo_url?: string | null
+      branch?: string
+      name?: string
+      repo_path?: string
+      clone?: boolean
+      serve_as_website?: boolean
+    },
+  ) => apiClient.post(`/customers/environments/${environmentId}/git/clone`, body),
 
-  pullEnvGit: (environmentId: string) =>
-    apiClient.post(`/customers/environments/${environmentId}/git/pull`, {}),
+  pullEnvGit: (environmentId: string, body: { repo_path?: string } = {}) =>
+    apiClient.post(`/customers/environments/${environmentId}/git/pull`, body),
+
+  activateEnvGit: (environmentId: string, body: { repo_path: string }) =>
+    apiClient.post<{
+      message?: string
+      web_root?: string
+      web_root_display?: string
+      path_display?: string
+    }>(`/customers/environments/${environmentId}/git/activate`, body),
+
+  gitEnvHistory: (environmentId: string, body: { repo_path: string }) =>
+    apiClient.post<{
+      path_display?: string
+      commits: Array<{ commit: string; committed_at: string; author: string; message: string }>
+    }>(`/customers/environments/${environmentId}/git/history`, body),
+
+  removeEnvGit: (environmentId: string, body: { repo_path: string; delete_files?: boolean }) =>
+    apiClient.post(`/customers/environments/${environmentId}/git/remove`, body),
 
   getEnvSsh: (environmentId: string, reveal = false) =>
     apiClient.get<{
@@ -2407,6 +2512,12 @@ export const customersApi = {
       message: string
     }>(`/customers/environments/${environmentId}/backups/${backupId}/restore`),
 
+  downloadEnvBackupUrl: (environmentId: string, backupId: string) =>
+    `/api/v1/customers/environments/${environmentId}/backups/${backupId}/download`,
+
+  deleteEnvBackup: (environmentId: string, backupId: string) =>
+    apiClient.delete(`/customers/environments/${environmentId}/backups/${backupId}`),
+
   listEnvLogs: (environmentId: string, lines = 200) =>
     apiClient.get<{
       environment_id: string
@@ -2657,7 +2768,30 @@ export const platformAdminApi = {
     company?: string
     plan_id?: string
     domain?: string
-  }) => apiClient.post<import('@/types/platform').CustomerProfile>('/platform/customers', body),
+    activate_now?: boolean
+  }) =>
+    apiClient.post<{
+      id: string
+      email: string
+      full_name: string
+      temporary_password?: string | null
+      order_id?: string | null
+      invoice_number?: string | null
+      next_step: string
+      next_step_detail: string
+    }>('/platform/customers', body),
+
+  checkDomainNameservers: (domain: string) =>
+    apiClient.get<{
+      domain: string
+      included_hostname: boolean
+      ns_live: boolean
+      dns_live: boolean
+      expected: string[]
+      found: string[]
+      dns_mode?: string | null
+      message: string
+    }>('/platform/dns/check', { params: { domain } }),
 
   provisionCustomerHosting: (
     customerId: string,

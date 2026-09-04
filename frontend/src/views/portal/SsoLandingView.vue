@@ -3,7 +3,19 @@ import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { customersApi } from '@/api'
 import { useAuthStore } from '@/stores/auth'
+import { isCustomerCpanelHost, isStaffPanelHost, isTenantSubdomainHost } from '@/lib/platformHosts'
 import PortalShell from '@/components/portal/PortalShell.vue'
+
+function peekSsoDomain(token: string): string {
+  try {
+    const part = token.split('.')[1]
+    if (!part) return ''
+    const json = JSON.parse(atob(part.replace(/-/g, '+').replace(/_/g, '/')))
+    return String(json.domain || '').toLowerCase().trim()
+  } catch {
+    return ''
+  }
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -17,6 +29,17 @@ onMounted(async () => {
     error.value = 'Missing or invalid SSO token.'
     loading.value = false
     return
+  }
+
+  // Legacy handoffs sometimes land on fpanel.ifnotus.space for *.ifnotus.space tenants — bounce to same-host panel.
+  if (isStaffPanelHost()) {
+    const domain = peekSsoDomain(token)
+    if (domain && isTenantSubdomainHost(domain)) {
+      const q = new URLSearchParams({ token })
+      if (tab && tab !== 'overview') q.set('tab', tab)
+      window.location.replace(`https://${domain}/hosting/sso?${q.toString()}`)
+      return
+    }
   }
 
   try {
@@ -35,8 +58,22 @@ onMounted(async () => {
     auth.accessToken = data.access_token
     await auth.fetchUser().catch(() => {})
 
-    const target = tab && tab !== 'overview' ? `/${tab.replace(/^\//, '')}` : '/'
-    await router.replace(target)
+    const envId = String(data.environment_id || '')
+    if (isTenantSubdomainHost() && envId) {
+      const q = tab && tab !== 'overview' ? { tab } : undefined
+      await router.replace({ name: 'hosting-panel', params: { environmentId: envId }, query: q })
+      return
+    }
+    if (isCustomerCpanelHost()) {
+      const target = tab && tab !== 'overview' ? `/${tab.replace(/^\//, '')}` : '/'
+      await router.replace(target)
+      return
+    }
+    if (envId) {
+      await router.replace({ name: 'hosting-panel', params: { environmentId: envId }, query: tab ? { tab } : undefined })
+      return
+    }
+    await router.replace('/')
   } catch (e: unknown) {
     const err = e as { response?: { data?: { error?: { message?: string } } }; message?: string }
     error.value = err.response?.data?.error?.message || err.message || 'Invalid or expired SSO token.'

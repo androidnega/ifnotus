@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import UiBrandMark from '@/components/ui/UiBrandMark.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSiteTheme } from '@/composables/useSiteTheme'
+import { logoutLandingUrl } from '@/lib/platformHosts'
 import '@/assets/portal.css'
 
 const props = withDefaults(
@@ -100,7 +101,7 @@ async function doLogout() {
   await auth.logout()
   localStorage.removeItem('ifnotus_portal')
   if (typeof window !== 'undefined') {
-    window.location.href = '/login'
+    window.location.href = logoutLandingUrl()
   } else {
     router.push({ name: 'login' })
   }

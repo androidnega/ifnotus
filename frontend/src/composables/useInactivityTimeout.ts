@@ -1,6 +1,6 @@
 import { onMounted, onUnmounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
-import { useRouter } from 'vue-router'
+import { logoutLandingUrl } from '@/lib/platformHosts'
 
 const INACTIVITY_LIMIT_MS = 20 * 60 * 1000 // 20 minutes
 const CHECK_INTERVAL_MS = 15 * 1000 // Check every 15 seconds
@@ -8,7 +8,6 @@ const ACTIVITY_STORAGE_KEY = 'ifnotus_last_active'
 
 export function useInactivityTimeout() {
   const auth = useAuthStore()
-  const router = useRouter()
 
   let lastLocalRecord = Date.now()
   let timer: ReturnType<typeof setInterval> | null = null
@@ -54,12 +53,9 @@ export function useInactivityTimeout() {
       } catch {
         // ignore
       }
-      const host = (window.location.hostname || '').toLowerCase()
-      if (host.startsWith('fpanel.') || host.startsWith('cpanel.')) {
-        window.location.href = `/login?inactivity=1`
-      } else {
-        void router.replace({ path: '/login', query: { inactivity: '1' } })
-      }
+      const url = new URL(logoutLandingUrl())
+      url.searchParams.set('inactivity', '1')
+      window.location.replace(url.toString())
     }
   }
 

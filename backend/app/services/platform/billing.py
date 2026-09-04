@@ -162,14 +162,22 @@ class SubscriptionBillingService:
         await self._session.flush()
         return sub
 
-    async def change_plan(self, customer_id: UUID, subscription_id: UUID, plan_id: UUID) -> Subscription:
+    async def change_plan(
+        self,
+        customer_id: UUID,
+        subscription_id: UUID,
+        plan_id: UUID,
+        *,
+        allow_same: bool = False,
+    ) -> Subscription:
         sub = await self.get_owned(customer_id, subscription_id)
         if sub.status not in {"active", "grace"}:
             raise AppException("Only active subscriptions can be upgraded or downgraded.")
         plan = await self._session.get(HostingPlan, plan_id)
         if plan is None or not plan.is_active:
             raise NotFoundError("Hosting plan not found.")
-        if plan.id == sub.plan_id:
+        same_plan = plan.id == sub.plan_id
+        if same_plan and not allow_same:
             raise AppException("Already on this plan.")
 
         from app.services.platform.plan_matrix import sellable_on_shared_node
@@ -182,7 +190,11 @@ class SubscriptionBillingService:
             )
 
         # Capacity only matters when increasing resources
-        if plan.cpu_cores > sub.cpu_allocated or plan.ram_gb > sub.ram_allocated or plan.storage_gb > sub.storage_allocated:
+        if (not same_plan) and (
+            plan.cpu_cores > sub.cpu_allocated
+            or plan.ram_gb > sub.ram_allocated
+            or plan.storage_gb > sub.storage_allocated
+        ):
             extra_storage = max(0, int(plan.storage_gb) - int(sub.storage_allocated or 0))
             if extra_storage > 0:
                 from app.services.platform.environment_storage import (
@@ -262,21 +274,22 @@ class SubscriptionBillingService:
                 except Exception:  # noqa: BLE001
                     pass
 
-        await self._notify.notify(
-            customer_id,
-            title="Plan changed",
-            body=f"Your plan is now {plan.name} ({plan.cpu_cores} vCPU / {plan.ram_gb} GB RAM).",
-            kind="billing",
-            deliver=False,
-        )
+        if not same_plan:
+            await self._notify.notify(
+                customer_id,
+                title="Plan changed",
+                body=f"Your plan is now {plan.name} ({plan.cpu_cores} vCPU / {plan.ram_gb} GB RAM).",
+                kind="billing",
+                deliver=False,
+            )
         self._session.add(
             PlatformAuditLog(
                 customer_id=customer_id,
-                action="subscription.plan_changed",
+                action="subscription.plan_changed" if not same_plan else "subscription.plan_reapplied",
                 target_type="subscription",
                 target_id=str(sub.id),
                 result="success",
-                metadata_json={"plan": plan.slug},
+                metadata_json={"plan": plan.slug, "already_on_plan": same_plan},
             )
         )
         await self._session.flush()

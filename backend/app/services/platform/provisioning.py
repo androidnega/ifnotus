@@ -377,7 +377,6 @@ class ProvisioningEngine:
         # --- CONFIGURING_TRANSFER ---
         await self._set_step(job, env, "CONFIGURING_TRANSFER")
         try:
-            from app.services.platform.ftp import EnvironmentFtpService
             from app.services.platform.unix_identity import UnixIdentityService
 
             # PHASE 20 — always create real OS user/group before transfer/web ownership.
@@ -401,7 +400,11 @@ class ProvisioningEngine:
                     logger.warning("post_provision_php_fpm_pool_failed", domain=env.domain, error=str(p_exc))
 
             if feature_included(plan, "sftp"):
-                await EnvironmentFtpService(self._settings, self._session).ensure_account(env)
+                # Plain FTP is optional/legacy (FTP_ENABLED). SFTP is the default transfer path.
+                if getattr(self._settings, "ftp_enabled", False):
+                    from app.services.platform.ftp import EnvironmentFtpService
+
+                    await EnvironmentFtpService(self._settings, self._session).ensure_account(env)
                 from app.services.platform.sftp_access import EnvironmentSftpService
 
                 await EnvironmentSftpService(self._settings, self._session).ensure_account(env)
@@ -457,12 +460,46 @@ class ProvisioningEngine:
             if Path(f"/etc/letsencrypt/live/{hostname}/fullchain.pem").exists():
                 env.ssl_expiry = datetime.now(UTC) + timedelta(days=90)
         else:
-            # Custom domains: do NOT issue SSL until nameservers are live.
-            # Issuing early creates orphan LE certs for domains that were only on an invoice.
-            logger.info(
-                "ssl_deferred_until_ns_live",
-                domain=env.domain or hostname,
-            )
+            # Custom domains: issue SSL when public DNS already points here (NS or A records).
+            from app.services.platform.dns import EnvironmentDnsService, EnvironmentSslJobService
+
+            dns_svc = EnvironmentDnsService(self._settings, self._session)
+            dns_live = bool(dns_svc._dns_ready(hostname))
+            if dns_live:
+                try:
+                    from app.schemas.hosting import SslActionRequest
+
+                    ssl_result = await SslService(self._settings, self._session).issue(
+                        SslActionRequest(domain=hostname, webroot="/var/www/letsencrypt", dry_run=False)
+                    )
+                    job.result = {**(job.result or {}), "ssl": {"success": ssl_result.success, "message": ssl_result.message}}
+                    if ssl_result.success and Path(f"/etc/letsencrypt/live/{hostname}/fullchain.pem").exists():
+                        env.ssl_expiry = datetime.now(UTC) + timedelta(days=90)
+                        try:
+                            await EnvironmentDnsService(self._settings, self._session).ensure_custom_domain_panel(
+                                env, hostname
+                            )
+                        except Exception as pexc:  # noqa: BLE001
+                            logger.warning("panel_https_refresh_failed", domain=hostname, error=str(pexc))
+                    elif not ssl_result.success:
+                        logger.warning("ssl_issue_failed_deferred", domain=hostname, error=ssl_result.message)
+                        task_id = await EnvironmentSslJobService(self._settings, self._session).queue_issue_ssl(env)
+                        job.result = {**(job.result or {}), "ssl_queued": bool(task_id)}
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("ssl_optional_failed", domain=hostname, error=str(exc))
+                    try:
+                        await EnvironmentSslJobService(self._settings, self._session).queue_issue_ssl(env)
+                    except Exception:  # noqa: BLE001
+                        pass
+            else:
+                logger.info(
+                    "ssl_deferred_until_ns_live",
+                    domain=env.domain or hostname,
+                )
+                try:
+                    await EnvironmentSslJobService(self._settings, self._session).queue_issue_ssl(env)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("ssl_queue_deferred_failed", domain=hostname, error=str(exc))
 
         # --- HEALTH_CHECK ---
         await self._set_step(job, env, "HEALTH_CHECK")

@@ -23,6 +23,7 @@ PLATFORM_HOSTS = frozenset(
         "api.ifnotus.space",
         "fpanel.ifnotus.space",
         "mail.ifnotus.space",
+        "webmail.ifnotus.space",
         "ftp.ifnotus.space",
         "ssh.ifnotus.space",
         "ns1.ifnotus.space",

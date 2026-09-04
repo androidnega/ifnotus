@@ -64,8 +64,9 @@ def main() -> int:
     prov = DomainNginxProvisioner(mock_settings)  # type: ignore[arg-type]
     locs = "\n".join(prov._webmail_locations(hostname="sampledomain.com"))
     assert "location = /mail" in locs, "Must contain location = /mail"
-    assert "return 302 https://mail.ifnotus.space/;" in locs, "Must redirect to webmail"
-    print("  ✓ Nginx renders /mail -> https://mail.ifnotus.space/ redirect")
+    assert "alias /var/lib/roundcube/public_html/" in locs, "Must embed Roundcube under /mail"
+    assert "return 302 https://mail.ifnotus.space/;" not in locs, "Must not bounce tenant /mail to platform mail host"
+    print("  ✓ Nginx renders same-host /mail Roundcube (no redirect to mail.ifnotus.space)")
 
     # 3. Mail DNS records & outbound auth tunnel
     print("\n[3] Checking Mail DNS Records (MX, SPF, DKIM, DMARC, A, autoconfig/autodiscover)...")

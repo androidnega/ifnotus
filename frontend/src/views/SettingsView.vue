@@ -15,6 +15,7 @@ import Skeleton from '@/components/ui/Skeleton.vue'
 import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import UiTabBar from '@/components/ui/UiTabBar.vue'
 import { getApiErrorMessage } from '@/lib/apiError'
+import { logoutLandingUrl } from '@/lib/platformHosts'
 import { useSiteTheme } from '@/composables/useSiteTheme'
 import { useThemeStore } from '@/stores/theme'
 import type { ReadinessResponse } from '@/types/dashboard'
@@ -607,7 +608,7 @@ async function setStaffRole(id: string, role: string) {
 async function handleLogout() {
   await auth.logout()
   if (typeof window !== 'undefined') {
-    window.location.href = '/login'
+    window.location.replace(logoutLandingUrl())
   } else {
     await router.replace({ name: 'login' })
   }

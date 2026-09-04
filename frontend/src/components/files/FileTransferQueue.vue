@@ -103,8 +103,14 @@ function canRetry(item: TransferItem) {
         </div>
         <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
           <div
-            class="h-full rounded-full bg-brand-600 transition-all duration-300"
-            :class="item.status === 'failed' || item.status === 'error' ? 'bg-red-500' : ''"
+            class="h-full rounded-full transition-all duration-300"
+            :class="
+              item.status === 'failed' || item.status === 'error'
+                ? 'bg-red-500'
+                : item.status === 'complete' || item.status === 'done'
+                  ? 'bg-emerald-500'
+                  : 'bg-sky-500'
+            "
             :style="{ width: `${item.progress}%` }"
           />
         </div>

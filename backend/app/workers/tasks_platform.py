@@ -189,7 +189,7 @@ class IssueSslTask(BaseTask):
                 from app.schemas.hosting import SslActionRequest
 
                 ssl_result = await SslService(self._settings, session).issue(
-                    SslActionRequest(domain=domain, webroot=webroot, dry_run=False)
+                    SslActionRequest(domain=domain, webroot="/var/www/letsencrypt", dry_run=False)
                 )
                 data = {
                     "success": bool(ssl_result.success),

@@ -62,8 +62,9 @@ function toggleSort(col: 'domain' | 'docroot' | 'redirects' | 'https') {
 // Create Domain Form
 const createDomainType = ref<'registered' | 'temporary'>('registered')
 const newDomainName = ref('')
-const shareDocRoot = ref(true)
+const shareDocRoot = ref(false)
 const customDocRoot = ref('')
+const previousDomainFolder = ref('')
 const newForceHttps = ref(true)
 
 // Manage Domain Form
@@ -99,20 +100,24 @@ const zoneValue = ref('')
 const gitUrl = ref('')
 const gitBranch = ref('main')
 
-// Auto-fill custom document root when domain name changes in create form
+// Keep document-root folder name aligned with the domain unless the user customized it.
 watch(newDomainName, (val) => {
-  if (!shareDocRoot.value && !customDocRoot.value) {
-    const clean = val.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '')
-    if (clean) {
-      customDocRoot.value = clean
-    }
+  if (shareDocRoot.value) return
+  const clean = val.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '')
+  if (!clean) return
+  if (!customDocRoot.value || customDocRoot.value === previousDomainFolder.value) {
+    customDocRoot.value = clean
   }
+  previousDomainFolder.value = clean
 })
 
 watch(shareDocRoot, (isShared) => {
-  if (!isShared && !customDocRoot.value && newDomainName.value) {
+  if (!isShared && newDomainName.value) {
     const clean = newDomainName.value.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '')
-    customDocRoot.value = clean
+    if (!customDocRoot.value || customDocRoot.value === previousDomainFolder.value) {
+      customDocRoot.value = clean
+      previousDomainFolder.value = clean
+    }
   }
 })
 
@@ -228,8 +233,9 @@ async function load() {
 
 function openCreateDomain() {
   newDomainName.value = ''
-  shareDocRoot.value = true
+  shareDocRoot.value = false
   customDocRoot.value = ''
+  previousDomainFolder.value = ''
   createDomainType.value = 'registered'
   newForceHttps.value = true
   msg.value = null
@@ -733,7 +739,7 @@ onMounted(load)
                     <i class="fas fa-wrench" /> Manage
                   </button>
                   <a
-                    :href="isCustomerCpanelHost() ? '/mail' : `/hosting/${encodeURIComponent(environmentId)}/mail`"
+                    :href="isCustomerCpanelHost() ? '/email' : `/hosting/${encodeURIComponent(environmentId)}?tab=email`"
                     class="cp-btn cp-btn-action"
                   >
                     <i class="fas fa-envelope" /> Create Email
@@ -1001,7 +1007,7 @@ onMounted(load)
               <h4 class="cp-sidebar-subtitle">Additional Resources</h4>
               <ul class="cp-resource-links">
                 <li>
-                  <a :href="isCustomerCpanelHost() ? '/mail' : `/hosting/${encodeURIComponent(environmentId)}/mail`" class="resource-link">
+                  <a :href="isCustomerCpanelHost() ? '/email' : `/hosting/${encodeURIComponent(environmentId)}?tab=email`" class="resource-link">
                     <span>Create An Email Address</span>
                     <i class="fas fa-external-link-alt" />
                   </a>

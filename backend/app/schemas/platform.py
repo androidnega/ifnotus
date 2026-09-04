@@ -123,6 +123,7 @@ class CustomerPhoneOtpRequestResponse(SchemaBase):
     phone: str
     message: str
     sms_sent: bool = False
+    email_sent: bool = False
     debug_code: str | None = None
 
 
@@ -567,6 +568,7 @@ class StackInfoSchema(SchemaBase):
     icon: str = "php"
     level: str = "yes"
     allowed: bool = True
+    one_click: bool = True
 
 
 class StackInstallRequest(SchemaBase):
@@ -742,8 +744,19 @@ class EnvironmentDnsRecordCreateRequest(SchemaBase):
 
 
 class EnvironmentGitCloneRequest(SchemaBase):
-    repo_url: str = Field(min_length=8, max_length=512)
+    repo_url: str | None = Field(default=None, max_length=512)
     branch: str | None = Field(default=None, max_length=128)
+    name: str | None = Field(default=None, max_length=120)
+    repo_path: str | None = Field(default=None, max_length=512)
+    clone: bool = True
+    create_another: bool = False
+    serve_as_website: bool = False
+
+
+class EnvironmentGitRepoRequest(SchemaBase):
+    repo_path: str | None = Field(default=None, max_length=512)
+    delete_files: bool = False
+    serve_as_website: bool = False
 
 
 class EnvironmentSslResponse(SchemaBase):
@@ -1141,6 +1154,23 @@ class ApplicationInstanceCreateRequest(SchemaBase):
     build_command: str | None = Field(default=None, max_length=512)
     start_command: str | None = Field(default=None, max_length=512)
     env_vars: dict[str, str] = Field(default_factory=dict)
+    # apps = (/home3/user)/apps/<slug>  |  home = (/home3/user)/<slug>  |  public_html = site root
+    root_placement: str = Field(default="apps", max_length=32)
+    # When true (or placement=public_html), nginx location / proxies this app.
+    serve_at_domain: bool = False
+    # Passenger-style app log path, e.g. /home3/attahhost/logs/passenger.log
+    log_path: str | None = Field(default=None, max_length=512)
+
+
+class ApplicationInstanceUpdateRequest(SchemaBase):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    runtime_version: str | None = Field(default=None, max_length=32)
+    start_command: str | None = Field(default=None, max_length=512)
+    log_path: str | None = Field(default=None, max_length=512)
+    serve_at_domain: bool | None = None
+    # Replace app environment variables when provided (empty dict clears).
+    env_vars: dict[str, str] | None = None
+    restart: bool = True
 
 
 class ApplicationCatalogEntry(SchemaBase):
@@ -1168,8 +1198,15 @@ class ApplicationInstanceResponse(SchemaBase):
     port: int | None = None
     git_url: str | None = None
     slug: str | None = None
+    app_root: str | None = None
+    app_root_display: str | None = None
+    uses_site_root: bool = False
+    serve_url: str | None = None
     build_command: str | None = None
     start_command: str | None = None
+    log_path: str | None = None
+    # Keys only — values are never returned from list/get for security.
+    env_var_keys: list[str] = Field(default_factory=list)
     memory_limit_mb: int | None = None
     worker_limit: int | None = None
     resource_limits: dict | None = None

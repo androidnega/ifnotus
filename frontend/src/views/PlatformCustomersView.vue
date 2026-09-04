@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import UiPageHeader from '@/components/ui/UiPageHeader.vue'
 import UiTabBar from '@/components/ui/UiTabBar.vue'
@@ -24,6 +24,7 @@ import type {
 } from '@/types/staffPlatform'
 
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
 const { can } = usePermissions()
 
@@ -113,6 +114,53 @@ const newCustPlanId = ref('')
 const newCustDomain = ref('')
 const addCustBusy = ref(false)
 const addCustError = ref('')
+const createdWalkIn = ref<{
+  email: string
+  password?: string | null
+  invoice?: string | null
+  orderId?: string | null
+  nextStep: string
+  detail: string
+} | null>(null)
+const nsCheck = ref<{
+  loading: boolean
+  ns_live?: boolean
+  dns_live?: boolean
+  included_hostname?: boolean
+  found?: string[]
+  expected?: string[]
+  message?: string
+} | null>(null)
+let nsTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(newCustDomain, (raw) => {
+  if (nsTimer) clearTimeout(nsTimer)
+  const value = raw.trim()
+  if (!value) {
+    nsCheck.value = null
+    return
+  }
+  nsTimer = setTimeout(() => {
+    void runNsCheck(value)
+  }, 550)
+})
+
+async function runNsCheck(raw: string) {
+  let domain = raw.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0]
+  if (!domain) return
+  if (!domain.includes('.')) domain = `${domain}.ifnotus.space`
+  nsCheck.value = { loading: true }
+  try {
+    const { data } = await platformAdminApi.checkDomainNameservers(domain)
+    nsCheck.value = { loading: false, ...data }
+  } catch {
+    nsCheck.value = {
+      loading: false,
+      ns_live: false,
+      message: 'Could not look up nameservers right now. Try again in a moment.',
+    }
+  }
+}
 
 async function submitCreateCustomer() {
   if (!newCustEmail.value || !newCustFullName.value) {
@@ -131,6 +179,14 @@ async function submitCreateCustomer() {
       plan_id: newCustPlanId.value || undefined,
       domain: newCustDomain.value.trim() || undefined,
     })
+    createdWalkIn.value = {
+      email: data.email,
+      password: data.temporary_password,
+      invoice: data.invoice_number,
+      orderId: data.order_id,
+      nextStep: data.next_step,
+      detail: data.next_step_detail,
+    }
     showAddCustomerModal.value = false
     newCustFullName.value = ''
     newCustEmail.value = ''
@@ -139,7 +195,8 @@ async function submitCreateCustomer() {
     newCustCompany.value = ''
     newCustPlanId.value = ''
     newCustDomain.value = ''
-    msg.value = `Customer ${data.email} created successfully!`
+    nsCheck.value = null
+    msg.value = data.next_step_detail || `Customer ${data.email} created.`
     await loadList()
     if (data.id) await openCustomer(data.id)
   } catch (e: unknown) {
@@ -189,9 +246,7 @@ const isHostingOperator = computed(() => getCanonicalRole(auth.user) === 'hostin
 
 const filteredCustomers = computed(() => {
   let list = customers.value
-  if (isHostingOperator.value && statusFilter.value === 'all') {
-    list = list.filter((c) => (c.hosting_status || 'none') !== 'awaiting_payment')
-  } else if (statusFilter.value !== 'all') {
+  if (statusFilter.value !== 'all') {
     list = list.filter((c) => (c.hosting_status || 'none') === statusFilter.value)
   }
   if (q.value.trim()) {
@@ -249,7 +304,7 @@ function hostingStatusLabel(status?: string | null) {
     case 'live':
       return 'Live'
     case 'awaiting_payment':
-      return 'Payment to confirm'
+      return 'With billing'
     case 'setting_up':
       return 'Setting up'
     case 'suspended':
@@ -282,6 +337,18 @@ function currentStackName() {
 function shortDomain(domain?: string | null, id?: string) {
   if (domain) return domain
   return id ? id.slice(0, 8) : '—'
+}
+
+function goWalkInNext() {
+  const inv = createdWalkIn.value?.invoice
+  createdWalkIn.value = null
+  if (isHostingOperator.value && !canGrantCredits.value) {
+    return
+  }
+  void router.push({
+    path: '/platform/orders',
+    query: inv ? { status: 'submitted', q: inv } : { status: 'submitted' },
+  })
 }
 
 function envHeadline(env: { hosting_name?: string | null; domain?: string | null; id: string }) {
@@ -698,9 +765,9 @@ watch(
               </button>
               <button type="button" class="action-btn" @click="showAddCustomerModal = true">
                 <i class="fa-solid fa-user-plus text-indigo-600 dark:text-indigo-400" aria-hidden="true" />
-                + Add Customer
-              </button>
-            </div>
+            + Add Customer
+          </button>
+        </div>
           </template>
         </UiPageHeader>
       </header>
@@ -993,15 +1060,22 @@ watch(
 
       <!-- ADD CUSTOMER MODAL -->
       <div v-if="showAddCustomerModal" class="modal-backdrop" @click.self="showAddCustomerModal = false">
-        <div class="modal-card">
+        <div class="modal-card walkin-modal">
           <div class="modal-head">
             <div class="modal-title-group">
               <i class="fa-solid fa-user-plus text-indigo-600" />
-              <h3>Add New Customer Account</h3>
+              <h3>Walk-in customer</h3>
             </div>
             <button type="button" class="btn-close" @click="showAddCustomerModal = false">✕</button>
           </div>
-          <p class="modal-sub">Create a customer account directly and optionally provision an initial hosting package.</p>
+          <p class="modal-sub">
+            You create the login. Billing collects cash, MoMo, or a complimentary grant. Then you activate hosting.
+          </p>
+          <ol class="walkin-steps">
+            <li><strong>1. You</strong> — create the account and pick a plan.</li>
+            <li><strong>2. Billing</strong> — confirm payment on Orders (cash, MoMo, or complimentary).</li>
+            <li><strong>3. You again</strong> — Orders → Waiting for activation → turn hosting on.</li>
+          </ol>
 
           <UiAlert v-if="addCustError" tone="err">{{ addCustError }}</UiAlert>
 
@@ -1048,20 +1122,33 @@ watch(
               </div>
             </div>
 
-            <div class="form-section-title">Initial Hosting Plan &amp; Subdomain (Optional)</div>
+            <div class="form-section-title">Hosting plan (billing will collect, then you activate)</div>
             <div class="form-row">
               <div class="form-group">
                 <label>Hosting Plan</label>
                 <select v-model="newCustPlanId">
-                  <option value="">-- No hosting now --</option>
+                  <option value="">-- Account only, plan later --</option>
                   <option v-for="p in allPlans" :key="p.id" :value="p.id">
                     {{ p.name }} (₵{{ p.price_monthly }}/mo)
                   </option>
                 </select>
               </div>
               <div v-if="newCustPlanId" class="form-group">
-                <label>Assigned Subdomain / Domain</label>
-                <input v-model="newCustDomain" placeholder="e.g. mensah.ifnotus.space" />
+                <label>Domain or student hostname</label>
+                <input v-model="newCustDomain" placeholder="e.g. mensah or shop.example.com" />
+                <p class="field-hint">A single name becomes name.ifnotus.space. Custom domains must use <strong>ns1.ifnotus.space</strong> and <strong>ns2.ifnotus.space</strong> (not .online).</p>
+                <p
+                  v-if="nsCheck"
+                  class="ns-live"
+                  :class="{
+                    ok: nsCheck.ns_live && !nsCheck.loading,
+                    wait: nsCheck.loading,
+                    bad: !nsCheck.loading && nsCheck.ns_live === false,
+                  }"
+                >
+                  <i class="fa-solid" :class="nsCheck.loading ? 'fa-spinner fa-spin' : (nsCheck.ns_live ? 'fa-circle-check' : 'fa-circle-exclamation')" />
+                  {{ nsCheck.loading ? 'Checking nameservers…' : nsCheck.message }}
+                </p>
               </div>
             </div>
 
@@ -1072,6 +1159,35 @@ watch(
               </button>
             </div>
           </form>
+        </div>
+      </div>
+
+      <div v-if="createdWalkIn" class="modal-backdrop" @click.self="createdWalkIn = null">
+        <div class="modal-card walkin-modal">
+          <div class="modal-head">
+            <div class="modal-title-group">
+              <i class="fa-solid fa-route text-indigo-600" />
+              <h3>Account created — next desk</h3>
+            </div>
+            <button type="button" class="btn-close" @click="createdWalkIn = null">✕</button>
+          </div>
+          <ol class="walkin-steps">
+            <li><strong>Done.</strong> {{ createdWalkIn.email }} can log in{{ createdWalkIn.password ? ` with temporary password ${createdWalkIn.password}` : '' }}.</li>
+            <li v-if="createdWalkIn.invoice"><strong>Billing.</strong> Invoice {{ createdWalkIn.invoice }} is waiting. They confirm cash, MoMo, or complimentary.</li>
+            <li v-else><strong>Optional.</strong> Open this customer later and attach a plan before sending them to billing.</li>
+            <li><strong>Back to you.</strong> After payment is confirmed, open Orders → Waiting for activation and turn hosting on.</li>
+          </ol>
+          <p class="modal-sub">{{ createdWalkIn.detail }}</p>
+          <div class="modal-actions">
+            <button type="button" class="btn-ghost" @click="createdWalkIn = null">Stay on Customers</button>
+            <button
+              type="button"
+              class="btn-submit-primary"
+              @click="goWalkInNext"
+            >
+              {{ isHostingOperator && !canGrantCredits ? 'Got it — take this to billing' : 'Open billing queue' }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1095,12 +1211,12 @@ watch(
             <div class="form-group">
               <label>Subdomain / Domain Name *</label>
               <div class="input-addon-wrap">
-                <input
-                  v-model="newSubdomainDomain"
-                  required
+              <input
+                v-model="newSubdomainDomain"
+                required
                   placeholder="e.g. mensah, blay, or customdomain.online"
-                  autofocus
-                />
+                autofocus
+              />
               </div>
               <p class="field-hint">
                 Tip: Typing a single name like <strong>blay</strong> will automatically assign <strong>blay.ifnotus.space</strong>.
@@ -1141,14 +1257,14 @@ watch(
           <template v-else-if="selected">
             <!-- MODAL TAB NAVIGATION -->
             <div class="modal-nav-tabs">
-              <button
-                type="button"
+            <button
+              type="button"
                 class="modal-tab-btn"
                 :class="{ active: detailTab === 'profile' }"
                 @click="detailTab = 'profile'"
               >
                 <i class="fa-solid fa-id-card" /> Profile
-              </button>
+            </button>
               <button
                 type="button"
                 class="modal-tab-btn"
@@ -1192,7 +1308,7 @@ watch(
               >
                 <i class="fa-solid fa-trash" /> Danger Zone
               </button>
-            </div>
+          </div>
 
             <!-- MODAL TAB BODIES -->
             <div class="modal-tab-content">
@@ -1203,22 +1319,22 @@ watch(
                     <div class="form-group">
                       <label>Email Address</label>
                       <input v-model="editEmail" :disabled="!canEditProfile" type="email" required />
-                    </div>
+                </div>
                     <div class="form-group">
                       <label>Phone Number</label>
                       <input v-model="editPhone" :disabled="!canEditProfile" placeholder="+233..." />
-                    </div>
-                  </div>
+                </div>
+              </div>
                   <div class="form-row">
                     <div class="form-group">
                       <label>First Name</label>
                       <input v-model="editFirst" :disabled="!canEditProfile" />
-                    </div>
+                </div>
                     <div class="form-group">
                       <label>Last Name</label>
                       <input v-model="editLast" :disabled="!canEditProfile" />
-                    </div>
-                  </div>
+                </div>
+              </div>
                   <div class="form-group">
                     <label>Company / Institution</label>
                     <input v-model="editCompany" :disabled="!canEditProfile" />
@@ -1227,8 +1343,8 @@ watch(
                   <div v-if="canEditProfile" class="modal-actions mt-3">
                     <button type="submit" class="btn-submit-primary" :disabled="profileBusy">
                       {{ profileBusy ? 'Saving…' : 'Save Contact Details' }}
-                    </button>
-                  </div>
+                  </button>
+                </div>
                 </form>
 
                 <!-- SUBSCRIPTIONS SUMMARY -->
@@ -1245,15 +1361,15 @@ watch(
                         <span class="text-slate-500 ml-2 font-mono">ID: {{ s.id.slice(0, 8) }}</span>
                         <div class="text-[11px] text-slate-500 mt-0.5">
                           CPU: {{ s.cpu_allocated }} cores · RAM: {{ s.ram_allocated }} GB · Storage: {{ s.storage_allocated }} GB
-                        </div>
-                      </div>
+                </div>
+                </div>
                       <div class="text-right">
                         <span class="status-pill" :data-s="s.status">{{ s.status }}</span>
                         <span v-if="s.expires_at" class="block text-[10px] text-slate-400 mt-1">
                           Expires: {{ new Date(s.expires_at).toLocaleDateString() }}
                         </span>
-                      </div>
-                    </div>
+              </div>
+                </div>
                   </div>
                   <p v-else class="text-xs text-slate-400">No active subscriptions found for this account.</p>
                 </div>
@@ -1273,33 +1389,33 @@ watch(
                           <i class="fa-solid fa-server text-indigo-600" />
                           <strong class="text-sm font-bold text-slate-900 dark:text-slate-100">{{ envHeadline(env) }}</strong>
                           <span class="status-pill status-pill-xs" :data-s="env.status">{{ env.status }}</span>
-                        </div>
+                </div>
                         <p class="text-xs text-slate-500 font-mono mt-0.5">
                           Domain: {{ env.domain || 'No domain assigned' }} · Webroot: {{ env.document_root || 'public_html' }}
                         </p>
-                      </div>
+            </div>
 
                       <!-- ASSIGN SUBDOMAIN BUTTON -->
                       <div class="flex items-center gap-2">
-                        <button
+                    <button
                           v-if="canEditSubdomain"
-                          type="button"
+                      type="button"
                           class="btn-action-primary"
                           title="Assign or change student subdomain"
                           @click="openEditSubdomainModal(env)"
                         >
                           <i class="fa-solid fa-bolt text-amber-300" />
                           <span>Assign / Edit Subdomain</span>
-                        </button>
+                    </button>
                       </div>
-                    </div>
+              </div>
 
                     <!-- ENVIRONMENT DETAILS GRID -->
                     <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 my-3 text-xs">
                       <div class="metric-mini-box">
                         <span class="metric-mini-label">Health</span>
                         <span class="font-semibold text-slate-800 dark:text-slate-200">{{ env.health_status || 'healthy' }}</span>
-                      </div>
+                    </div>
                       <div class="metric-mini-box">
                         <span class="metric-mini-label">Limits</span>
                         <span class="font-semibold text-slate-800 dark:text-slate-200">{{ env.cpu_limit }}c · {{ env.ram_limit_gb }}GB</span>
@@ -1311,8 +1427,8 @@ watch(
                       <div class="metric-mini-box">
                         <span class="metric-mini-label">Stack</span>
                         <span class="font-semibold text-slate-800 dark:text-slate-200">{{ stackLabel(env) }}</span>
-                      </div>
-                    </div>
+                  </div>
+                </div>
 
                     <!-- OPS CONTROLS -->
                     <div v-if="canOps" class="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
@@ -1322,36 +1438,36 @@ watch(
                       <button type="button" class="btn-micro" :disabled="busy" @click="repairFs(env.id)">
                         <i class="fa-solid fa-wrench text-blue-500" /> Fix Permissions
                       </button>
-                      <button
+                  <button
                         v-if="env.status === 'active'"
-                        type="button"
+                    type="button"
                         class="btn-micro"
-                        :disabled="busy"
+                    :disabled="busy"
                         @click="suspendEnv(env.id)"
-                      >
+                  >
                         <i class="fa-solid fa-pause text-amber-500" /> Suspend
-                      </button>
-                      <button
+                  </button>
+                  <button
                         v-else-if="env.status === 'suspended'"
-                        type="button"
+                    type="button"
                         class="btn-micro"
-                        :disabled="busy"
+                    :disabled="busy"
                         @click="restoreEnv(env.id)"
-                      >
+                  >
                         <i class="fa-solid fa-play text-emerald-500" /> Restore
                       </button>
                       <button type="button" class="btn-micro" :disabled="busy" @click="clearEnvStack(env.id, env.domain)">
                         <i class="fa-solid fa-eraser text-orange-500" /> Clear Stack
-                      </button>
-                      <button
+                  </button>
+                  <button
                         v-if="canTerminate"
-                        type="button"
+                    type="button"
                         class="btn-micro text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30"
-                        :disabled="busy"
+                    :disabled="busy"
                         @click="terminateEnv(env.id, env.domain)"
-                      >
+                  >
                         <i class="fa-solid fa-ban" /> Terminate
-                      </button>
+                  </button>
                     </div>
                   </div>
                 </div>
@@ -1369,7 +1485,7 @@ watch(
                     + Provision Initial Hosting
                   </button>
                 </div>
-              </div>
+                </div>
 
               <!-- TAB 3: PROVISION HOSTING -->
               <div v-else-if="detailTab === 'provision'" class="tab-pane">
@@ -1399,7 +1515,7 @@ watch(
                     </button>
                   </div>
                 </form>
-              </div>
+                </div>
 
               <!-- TAB 4: AI CREDITS -->
               <div v-else-if="detailTab === 'credits'" class="tab-pane">
@@ -1420,8 +1536,8 @@ watch(
                     <div class="form-group">
                       <label>Internal Note / Reason</label>
                       <input v-model="grantNote" placeholder="e.g. Student grant / complimentary bonus" />
-                    </div>
                   </div>
+                </div>
 
                   <div class="modal-actions">
                     <button type="submit" class="btn-submit-primary" :disabled="grantBusy">
@@ -1429,7 +1545,7 @@ watch(
                     </button>
                   </div>
                 </form>
-              </div>
+                </div>
 
               <!-- TAB 5: AUDIT TRAIL -->
               <div v-else-if="detailTab === 'audit'" class="tab-pane">
@@ -1442,15 +1558,15 @@ watch(
                     <div class="flex items-center justify-between">
                       <strong class="text-slate-800 dark:text-slate-200 font-mono">{{ a.action }}</strong>
                       <span class="text-slate-400 text-[10px]">{{ new Date(a.occurred_at).toLocaleString() }}</span>
-                    </div>
+                </div>
                     <div class="text-slate-600 dark:text-slate-400 mt-1 flex flex-wrap items-center gap-2 text-[11px]">
                       <span>Target: <code>{{ a.target_type }}#{{ a.target_id?.slice(0, 8) }}</code></span>
                       <span>Result: <span class="text-emerald-600 font-bold">{{ a.result }}</span></span>
-                    </div>
+              </div>
                   </div>
                 </div>
                 <p v-else class="text-xs text-slate-400">No activity recorded yet for this customer account.</p>
-              </div>
+            </div>
 
               <!-- TAB 6: DANGER ZONE -->
               <div v-else-if="detailTab === 'danger'" class="tab-pane">
@@ -2141,7 +2257,18 @@ watch(
   z-index: 999;
   display: grid;
   place-items: center;
-  padding: 1rem;
+  padding: max(0.75rem, env(safe-area-inset-top)) max(0.75rem, env(safe-area-inset-right))
+    max(0.75rem, env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  align-items: start;
+}
+
+@media (min-width: 640px) {
+  .modal-backdrop {
+    place-items: center;
+    align-items: center;
+  }
 }
 
 .modal-card {
@@ -2150,14 +2277,23 @@ watch(
   box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
   width: 100%;
   max-width: 540px;
-  padding: 1.5rem;
+  max-height: calc(100dvh - 1.5rem);
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 1.25rem;
   position: relative;
   border: 1px solid #e2e8f0;
   box-sizing: border-box;
+  margin: 0.5rem auto;
 }
 
 .modal-card.wide {
   max-width: 820px;
+}
+
+.modal-card.walkin-modal {
+  max-width: min(560px, 100%);
 }
 
 .modal-head {
@@ -2211,6 +2347,44 @@ watch(
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.75rem;
+}
+
+@media (max-width: 560px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-card {
+    padding: 1rem;
+    border-radius: 0.85rem;
+    max-height: calc(100dvh - 1rem);
+  }
+
+  .modal-title-group h3 {
+    font-size: 0.98rem;
+    line-height: 1.25;
+  }
+
+  .walkin-steps {
+    font-size: 0.78rem;
+    padding: 0.65rem 0.75rem 0.65rem 1.05rem;
+  }
+
+  .modal-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .modal-actions .btn-ghost,
+  .modal-actions .btn-submit-primary {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .ns-live {
+    word-break: break-word;
+  }
 }
 
 .form-group {
@@ -2458,4 +2632,26 @@ watch(
   color: #64748b;
   max-width: 360px;
 }
+
+.walkin-steps {
+  margin: 0 0 1rem;
+  padding: 0.75rem 0.9rem 0.75rem 1.2rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.65rem;
+  font-size: 0.82rem;
+  color: #334155;
+  line-height: 1.45;
+}
+.ns-live {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0.45rem 0 0;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+.ns-live.ok { color: #047857; }
+.ns-live.bad { color: #b45309; }
+.ns-live.wait { color: #4338ca; }
 </style>

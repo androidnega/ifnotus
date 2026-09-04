@@ -1,5 +1,10 @@
 import axios, { type AxiosInstance, type InternalAxiosRequestConfig } from 'axios'
 import { getDeviceFingerprint } from '@/lib/deviceFingerprint'
+import {
+  isStaffPanelHost,
+  isTenantSubdomainHost,
+  portalLoginRedirectForTenantHost,
+} from '@/lib/platformHosts'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
 
@@ -58,11 +63,15 @@ function authRedirectPath(): string {
   const search = window.location.search || ''
   const next = `${path}${search}`
   const host = (window.location.hostname || '').toLowerCase()
-  if (host === 'fpanel.ifnotus.space' || host === 'cpanel.ifnotus.space') {
+  // Staff WHM must stay on fpanel — never bounce to ifnotus.space/login.
+  if (isStaffPanelHost(host) || host === 'cpanel.ifnotus.space') {
     if (next && next !== '/login' && !next.startsWith('/login?')) {
       return `/login?redirect=${encodeURIComponent(next)}`
     }
     return '/login'
+  }
+  if (isTenantSubdomainHost(host)) {
+    return portalLoginRedirectForTenantHost(host)
   }
   // Custom-domain hosting panel — customer login stays on fpanel.<domain> / cpanel.<domain>.
   if ((host.startsWith('fpanel.') || host.startsWith('cpanel.')) && host !== 'fpanel.ifnotus.space' && host !== 'cpanel.ifnotus.space') {

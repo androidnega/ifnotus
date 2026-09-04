@@ -175,7 +175,9 @@ class ResourceEnforcementService:
         env_lines: str,
     ) -> str:
         wrapped = ResourceEnforcementService.wrap_command(start_cmd, limits)
-        numprocs = max(1, limits.max_workers)
+        # Apps bind a single PORT; supervisor numprocs>1 causes "Address already in use".
+        # Concurrency belongs to gunicorn/uvicorn/node workers, not duplicate listeners.
+        numprocs = 1
         return f"""[program:{program}]
 {user_line}directory={directory}
 command={wrapped}

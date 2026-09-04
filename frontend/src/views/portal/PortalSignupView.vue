@@ -7,7 +7,8 @@ import PortalShell from '@/components/portal/PortalShell.vue'
 import UiBrandMark from '@/components/ui/UiBrandMark.vue'
 import { IconEye, IconEyeOff } from '@/components/icons'
 import { ensureDeviceFingerprint } from '@/api/client'
-import { hostnameNow, isCustomerCpanelHost } from '@/lib/platformHosts'
+import { isStaffUser, isPureCustomer, isStaffPath } from '@/lib/roles'
+import { hostnameNow, isCustomerCpanelHost, isReservedPanelHost, isStaffPanelHost, isTenantSubdomainHost, normalizeGoHostingHost, redirectToStaffPanel, staffPanelHref } from '@/lib/platformHosts'
 
 type Step = 'phone' | 'otp' | 'password' | 'first_name' | 'last_name' | 'email'
 type AuthMode = 'phone' | 'password'
@@ -19,8 +20,12 @@ const auth = useAuthStore()
 const isSignup = computed(() => route.name === 'portal-signup')
 const panelMode = computed(() => {
   if (isSignup.value) return false
+  if (isTenantSubdomainHost()) return false
   if (String(route.query.mode || '') === 'panel') return true
   if (isCustomerCpanelHost()) return true
+  // Tenant /fpanel → /hosting → portal login without mode=panel historically used account email login.
+  const redirect = String(route.query.redirect || '')
+  if (redirect.startsWith('/go/hosting') || redirect.startsWith('/hosting')) return true
   return false
 })
 const panelLogin = panelMode
@@ -31,7 +36,8 @@ const otp = ref('')
 const challengeId = ref('')
 const debugCode = ref<string | null>(null)
 const otpMessage = ref('')
-
+const otpEmailSent = ref(false)
+const otpSmsSent = ref(false)
 const emailLogin = ref('')
 const passwordLogin = ref('')
 const showPasswordLogin = ref(false)
@@ -50,8 +56,8 @@ const email = ref('')
 
 const loading = ref(false)
 const error = ref('')
-const step = ref<Step>(isSignup.value ? 'phone' : 'password')
-const authMode = ref<AuthMode>(isSignup.value ? 'phone' : 'password')
+const step = ref<Step>('phone')
+const authMode = ref<AuthMode>('phone')
 
 const planSlug = computed(() => {
   const raw = route.query.plan
@@ -60,8 +66,8 @@ const planSlug = computed(() => {
 
 const titles = computed<Record<Step, string>>(() => ({
   phone: isSignup.value ? 'Create your account' : 'Log in with phone',
-  otp: 'Check your phone',
-  password: 'Log in',
+  otp: otpEmailSent.value && !otpSmsSent.value ? 'Check your email' : 'Check your messages',
+  password: 'Log in with email',
   first_name: 'What should we call you?',
   last_name: 'And your family name?',
   email: 'Where should we send updates?',
@@ -70,9 +76,9 @@ const titles = computed<Record<Step, string>>(() => ({
 const subs = computed<Record<Step, string>>(() => ({
   phone: isSignup.value
     ? 'Enter your mobile number. We’ll text a one-time code to get you started.'
-    : 'Enter your mobile number. We’ll text a one-time code to open your account.',
+    : 'We’ll text a login code. Prefer email? Use email & password below.',
   otp: 'Enter the code to continue.',
-  password: 'Enter your email and password to access your account.',
+  password: 'Use the email and password for your IFNOTUS account.',
   first_name: 'Your first name — shown on invoices and your account.',
   last_name: 'Needed for invoices and student project addresses.',
   email: 'Required before you place a paid order.',
@@ -82,14 +88,13 @@ async function loadPanelStatus() {
   if (!panelLogin.value) return
   const hostRaw = route.query.host
   const host = typeof hostRaw === 'string' ? hostRaw : isCustomerCpanelHost() ? hostnameNow() : ''
-  const userHint = typeof route.query.username === 'string' ? route.query.username : ''
+  // Never prefill username — user must type it (no stored/autofilled identity in the field).
+  panelUsername.value = ''
+  panelNeedsCreate.value = false
   try {
     const { data } = await customersApi.panelStatus({
-      ...(userHint ? { username: userHint } : {}),
       ...(host ? { host: host.replace(/^(fpanel|cpanel)\./, '') } : {}),
     })
-    panelUsername.value = data.username
-    panelNeedsCreate.value = !data.password_set
     panelDomainHint.value = data.domain || host.replace(/^(fpanel|cpanel)\./, '') || ''
   } catch {
     /* user can still type username */
@@ -107,9 +112,14 @@ onMounted(() => {
     step.value = 'password'
     authMode.value = 'password'
     void loadPanelStatus()
-  } else if (!isSignup.value) {
-    step.value = 'password'
-    authMode.value = 'password'
+  } else if (isSignup.value) {
+    // Signup always starts with phone OTP.
+    step.value = 'phone'
+    authMode.value = 'phone'
+  } else {
+    // Account login: phone-first (email/password remains an alternate).
+    step.value = 'phone'
+    authMode.value = 'phone'
   }
 })
 
@@ -139,6 +149,22 @@ async function finishAuth(profile: {
 }) {
   const redirect = safeRedirectTarget()
   if (redirect) {
+    if (redirect.startsWith('/go/hosting')) {
+      const hostMatch = /[?&]host=([^&]+)/.exec(redirect)
+      const host = hostMatch ? normalizeGoHostingHost(decodeURIComponent(hostMatch[1])) : ''
+      if (!host || isReservedPanelHost(host)) {
+        if (isStaffUser(auth.user) && !isPureCustomer(auth.user)) {
+          redirectToStaffPanel('/panel')
+          return
+        }
+        await router.replace({ name: 'portal-dashboard' })
+        return
+      }
+    }
+    if (isStaffUser(auth.user) && !isPureCustomer(auth.user) && isStaffPath(redirect) && !isStaffPanelHost()) {
+      redirectToStaffPanel(redirect)
+      return
+    }
     try {
       await router.replace(redirect)
       return
@@ -149,11 +175,16 @@ async function finishAuth(profile: {
   if (panelLogin.value) {
     const hostRaw = route.query.host
     const host = typeof hostRaw === 'string' ? hostRaw : isCustomerCpanelHost() ? hostnameNow() : panelDomainHint.value
-    if (host) {
+    const normalized = host ? normalizeGoHostingHost(host) : ''
+    if (normalized && !isReservedPanelHost(normalized)) {
       await router.replace({
         name: 'go-hosting',
-        query: { host: host.replace(/^(fpanel|cpanel)\./, '') },
+        query: { host: normalized },
       })
+      return
+    }
+    if (isStaffUser(auth.user) && !isPureCustomer(auth.user)) {
+      redirectToStaffPanel('/panel')
       return
     }
     await router.replace({ name: 'portal-dashboard' })
@@ -183,6 +214,10 @@ async function finishAuth(profile: {
     })
     return
   }
+  if (isStaffUser(auth.user) && !isPureCustomer(auth.user)) {
+    redirectToStaffPanel('/panel')
+    return
+  }
   await router.replace({ name: 'portal-dashboard' })
 }
 
@@ -194,6 +229,8 @@ async function sendOtp() {
     challengeId.value = data.challenge_id
     debugCode.value = data.debug_code ?? null
     otpMessage.value = data.message
+    otpSmsSent.value = Boolean(data.sms_sent)
+    otpEmailSent.value = Boolean(data.email_sent)
     step.value = 'otp'
   } catch (e: unknown) {
     const err = e as { response?: { data?: { error?: { message?: string } } } }
@@ -201,6 +238,18 @@ async function sendOtp() {
   } finally {
     loading.value = false
   }
+}
+
+function changePhoneNumber() {
+  otp.value = ''
+  challengeId.value = ''
+  debugCode.value = null
+  otpMessage.value = ''
+  otpSmsSent.value = false
+  otpEmailSent.value = false
+  error.value = ''
+  step.value = 'phone'
+  authMode.value = 'phone'
 }
 
 async function verifyOtp() {
@@ -233,7 +282,25 @@ async function loginWithPassword() {
     if (panelLogin.value) {
       const username = panelUsername.value.trim()
       const password = panelPassword.value
+      // Prefer login first (panel hash or account password). Only create when status said
+      // no password and login fails — avoids trapping users who already set a hosting password.
       if (panelNeedsCreate.value) {
+        try {
+          const { data } = await customersApi.panelLogin({
+            username,
+            password,
+            device_fingerprint: await ensureDeviceFingerprint().catch(() => undefined),
+          })
+          if (data.access_token && data.refresh_token) {
+            panelNeedsCreate.value = false
+            await auth.applyTokens(data)
+            const me = await customersApi.me()
+            await finishAuth(me.data)
+            return
+          }
+        } catch {
+          /* fall through to create-password */
+        }
         if (password !== panelPasswordConfirm.value) {
           error.value = 'Passwords do not match.'
           return
@@ -385,7 +452,7 @@ async function onPanelUsernameBlur() {
         <UiBrandMark variant="staff" />
       </div>
 
-      <form class="panel-card" @submit.prevent="onSubmit">
+      <form class="panel-card" autocomplete="off" @submit.prevent="onSubmit">
         <div class="panel-input-wrap">
           <span class="panel-input-icon">
             <i class="fas fa-user" aria-hidden="true" />
@@ -394,8 +461,10 @@ async function onPanelUsernameBlur() {
             id="panel-user"
             v-model="panelUsername"
             type="text"
-            autocomplete="username"
+            name="panel-user"
+            autocomplete="off"
             autocapitalize="none"
+            autocorrect="off"
             spellcheck="false"
             placeholder="Username or ID"
             required
@@ -411,7 +480,8 @@ async function onPanelUsernameBlur() {
             id="panel-pass"
             v-model="panelPassword"
             :type="showPanelPass ? 'text' : 'password'"
-            :autocomplete="panelNeedsCreate ? 'new-password' : 'current-password'"
+            name="panel-pass"
+            autocomplete="new-password"
             :placeholder="panelNeedsCreate ? 'Create password' : 'Password'"
             required
             minlength="8"
@@ -508,7 +578,15 @@ async function onPanelUsernameBlur() {
           />
         </div>
         <div v-else-if="step === 'otp'" class="fields">
-          <p v-if="!debugCode" class="otp-hint">Only the newest SMS code works — ignore older messages.</p>
+          <p v-if="!debugCode" class="otp-hint">
+            {{
+              otpEmailSent && otpSmsSent
+                ? 'Only the newest code works — check SMS and email.'
+                : otpEmailSent
+                  ? 'Only the newest email code works — check inbox and spam.'
+                  : 'Only the newest SMS code works — ignore older messages.'
+            }}
+          </p>
           <p v-if="debugCode" class="debug">
             Your code: <strong>{{ debugCode }}</strong>
           </p>
@@ -522,17 +600,32 @@ async function onPanelUsernameBlur() {
             placeholder="6-digit code"
             required
           />
+          <p v-if="phone" class="otp-phone-line">
+            Sent for <strong>{{ phone }}</strong>
+            <template v-if="otpEmailSent"> · also emailed to your account address</template>
+          </p>
           <div class="otp-actions">
             <button type="button" class="text-btn" :disabled="loading" @click="sendOtp">
               Resend code
             </button>
             <button
-              v-if="!isSignup"
               type="button"
               class="text-btn muted"
-              @click="step = 'phone'; otp = ''; error = ''"
+              :disabled="loading"
+              @click="changePhoneNumber"
             >
-              Change number
+              Change phone number
+            </button>
+          </div>
+          <p class="hint otp-change-hint">Wrong number? Change it and we’ll send a new code.</p>
+          <div v-if="!isSignup" class="alt-auth-section">
+            <div class="alt-divider"><span>or</span></div>
+            <button
+              type="button"
+              class="btn-alt-auth"
+              @click="step = 'password'; authMode = 'password'; error = ''"
+            >
+              Log in with email &amp; password
             </button>
           </div>
         </div>
@@ -589,17 +682,6 @@ async function onPanelUsernameBlur() {
           {{ submitLabel }}
         </button>
 
-        <div v-if="!isSignup && step === 'password'" class="alt-auth-section">
-          <div class="alt-divider"><span>or</span></div>
-          <button
-            type="button"
-            class="btn-alt-auth"
-            @click="step = 'phone'; authMode = 'phone'; error = ''"
-          >
-            Log in with phone number
-          </button>
-        </div>
-
         <div v-if="!isSignup && step === 'phone'" class="alt-auth-section">
           <div class="alt-divider"><span>or</span></div>
           <button
@@ -608,6 +690,17 @@ async function onPanelUsernameBlur() {
             @click="step = 'password'; authMode = 'password'; error = ''"
           >
             Log in with email &amp; password
+          </button>
+        </div>
+
+        <div v-if="!isSignup && step === 'password'" class="alt-auth-section">
+          <div class="alt-divider"><span>or</span></div>
+          <button
+            type="button"
+            class="btn-alt-auth"
+            @click="step = 'phone'; authMode = 'phone'; error = ''"
+          >
+            Log in with phone number
           </button>
         </div>
       </form>
@@ -858,11 +951,20 @@ h1 {
 .text-btn.muted {
   color: var(--if-muted, #7a8490);
 }
+.otp-phone-line {
+  margin: 0 0 0.65rem;
+  font-size: 0.8rem;
+  color: var(--if-muted, #7a8490);
+}
 .otp-actions {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-top: 0.25rem;
+  gap: 0.75rem;
+  margin-top: 0.35rem;
+}
+.otp-change-hint {
+  margin: 0.45rem 0 0;
 }
 .alt-auth-section {
   margin-top: 0.85rem;

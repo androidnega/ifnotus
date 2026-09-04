@@ -120,7 +120,10 @@ class WebmailSettingsStore:
 
         logo_block = (
             "$config['skin_logo'] = [\n"
-            "  'elastic:*' => 'images/ifnotus-webmail-logo.png',\n"
+            "  'elastic:login' => 'images/ifnotus-webmail-logo-dark.svg',\n"
+            "  'elastic:login[dark]' => 'images/ifnotus-webmail-logo-dark.svg',\n"
+            "  'elastic:*' => 'images/ifnotus-webmail-logo.svg',\n"
+            "  'elastic:*[dark]' => 'images/ifnotus-webmail-logo-dark.svg',\n"
             "  '[favicon]' => 'images/ifnotus-webmail-favicon.ico',\n"
             "  'elastic:[favicon]' => 'images/ifnotus-webmail-favicon.ico',\n"
             "];"
@@ -137,6 +140,7 @@ class WebmailSettingsStore:
             text = self._set_php_string(text, "product_name", product)
             if "trusted_host_patterns" not in text:
                 text = text.rstrip() + "\n$config['trusted_host_patterns'] = ['.+'];\n"
+            text = self._ensure_brand_plugin(text)
             text = self._apply_host_isolation(text)
             if re.search(r"\$config\['skin_logo'\]\s*=", text):
                 text = re.sub(
@@ -154,6 +158,35 @@ class WebmailSettingsStore:
                 logger.info("roundcube_config_updated", path=str(path), support_url=support)
             except OSError as exc:
                 logger.warning("roundcube_config_write_failed", path=str(path), error=str(exc))
+
+    @staticmethod
+    def _ensure_brand_plugin(text: str) -> str:
+        """Enable ifnotus_brand plugin for login CSS without dropping existing plugins."""
+        match = re.search(r"\$config\['plugins'\]\s*=\s*(\[[^\]]*\]|array\s*\([^)]*\))\s*;", text, re.DOTALL)
+        if not match:
+            return text.rstrip() + "\n$config['plugins'] = ['jqueryui', 'ifnotus_brand'];\n"
+        block = match.group(1)
+        if "ifnotus_brand" in block:
+            if "jqueryui" not in block:
+                # Keep jqueryui when we previously only injected brand.
+                return re.sub(
+                    r"\$config\['plugins'\]\s*=\s*\[[^\]]*\];",
+                    "$config['plugins'] = ['jqueryui', 'ifnotus_brand'];",
+                    text,
+                    count=1,
+                )
+            return text
+        if block.strip().startswith("array"):
+            inner = block[block.find("(") + 1 : block.rfind(")")].strip().rstrip(",")
+            rebuilt = f"array({inner + ', ' if inner else ''}'ifnotus_brand')"
+        else:
+            inner = block.strip()[1:-1].strip().rstrip(",")
+            parts = [p.strip() for p in inner.split(",") if p.strip()]
+            if "'jqueryui'" not in parts and '"jqueryui"' not in parts:
+                parts.insert(0, "'jqueryui'")
+            parts.append("'ifnotus_brand'")
+            rebuilt = "[" + ", ".join(parts) + "]"
+        return text[: match.start(1)] + rebuilt + text[match.end(1) :]
 
     @staticmethod
     def _apply_host_isolation(text: str) -> str:
@@ -194,7 +227,7 @@ class WebmailSettingsStore:
         return text.rstrip() + f"\n$config['{key}'] = '{escaped}';\n"
 
     def apply_branding_assets(self) -> None:
-        """Copy transparent logo/favicon into Roundcube public images + elastic skin."""
+        """Copy clean logo/favicon + login CSS plugin into Roundcube."""
         if not self._rc_public.is_dir():
             return
         images = self._rc_public / "images"
@@ -202,6 +235,15 @@ class WebmailSettingsStore:
         images.mkdir(parents=True, exist_ok=True)
 
         mapping = {
+            "logo.svg": [
+                images / "ifnotus-webmail-logo.svg",
+                elastic / "logo.svg",
+            ],
+            "logo-dark.svg": [
+                images / "ifnotus-webmail-logo-dark.svg",
+                elastic / "logo-dark.svg",
+            ],
+            # Keep PNG fallbacks for older clients / favicons only.
             "logo.png": [
                 images / "ifnotus-webmail-logo.png",
                 elastic / "logo.png",
@@ -241,18 +283,45 @@ class WebmailSettingsStore:
                 except OSError as exc:
                     logger.warning("webmail_brand_copy_failed", dest=str(dest), error=str(exc))
 
-        # Also replace default SVG logo used by elastic login template when png configured.
-        svg_logo = elastic / "logo.svg"
-        png_logo = elastic / "logo.png"
-        if png_logo.is_file() and svg_logo.is_file():
-            # Keep a backup once; elastic may still reference svg via template default.
-            bak = elastic / "logo.svg.bak-ifnotus"
-            try:
-                if not bak.exists():
-                    shutil.copy2(svg_logo, bak)
-            except OSError:
-                pass
+        self._install_brand_plugin(sources)
 
+    def _install_brand_plugin(self, sources: list[Path]) -> None:
+        """Install / refresh the ifnotus_brand Roundcube plugin (login CSS)."""
+        plugin_src: Path | None = None
+        for folder in sources:
+            candidate = folder / "plugin"
+            if (candidate / "ifnotus_brand.php").is_file():
+                plugin_src = candidate
+                break
+        if plugin_src is None:
+            return
+
+        plugin_roots = [
+            Path("/var/lib/roundcube/plugins/ifnotus_brand"),
+            Path("/usr/share/roundcube/plugins/ifnotus_brand"),
+        ]
+        files = [
+            ("ifnotus_brand.php", "ifnotus_brand.php"),
+            ("composer.json", "composer.json"),
+            ("skins/elastic/ifnotus.css", "skins/elastic/ifnotus.css"),
+        ]
+        for root in plugin_roots:
+            try:
+                root.mkdir(parents=True, exist_ok=True)
+                (root / "skins" / "elastic").mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                logger.warning("webmail_plugin_mkdir_failed", path=str(root), error=str(exc))
+                continue
+            for rel_src, rel_dest in files:
+                src = plugin_src / rel_src
+                if not src.is_file():
+                    continue
+                dest = root / rel_dest
+                try:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dest)
+                except OSError as exc:
+                    logger.warning("webmail_plugin_copy_failed", dest=str(dest), error=str(exc))
     async def ensure_webmail_for_domains(self, *, force: bool = False) -> OperationResult:
         """Inject /mail on nginx sites for newly discovered domains (throttled)."""
         global _last_ensure_mono

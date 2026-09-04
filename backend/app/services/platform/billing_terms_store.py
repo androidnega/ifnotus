@@ -285,3 +285,32 @@ def quote_term_price(monthly_price: Decimal, months: int, term: dict[str, Any]) 
         "discount_amount": discount_amount,
         "plan_total": plan_total,
     }
+
+
+def yearly_price_from_monthly(
+    settings: Settings,
+    monthly_price: Decimal | float | int | str | None,
+) -> Decimal:
+    """12-month total from live billing terms (never a hardcoded catalog yearly)."""
+    return BillingTermsStore(settings).resolve_term(
+        12,
+        monthly_price=monthly_price or 0,
+        require_enabled=False,
+    )["plan_total"]
+
+
+def enrich_plan_yearly(
+    schema: Any,
+    settings: Settings,
+    *,
+    monthly_price: Decimal | float | int | str | None = None,
+) -> Any:
+    """Overwrite HostingPlanSchema.price_yearly with the term-derived amount."""
+    monthly = monthly_price
+    if monthly is None:
+        monthly = getattr(schema, "price_monthly", None)
+    yearly = yearly_price_from_monthly(settings, monthly)
+    if hasattr(schema, "model_copy"):
+        return schema.model_copy(update={"price_yearly": yearly})
+    return schema
+

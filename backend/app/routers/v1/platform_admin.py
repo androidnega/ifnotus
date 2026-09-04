@@ -37,6 +37,7 @@ from app.schemas.platform_admin import (
     StaffCustomerListItem,
     StaffCustomerUpdateRequest,
     StaffCustomerCreateRequest,
+    StaffCustomerCreateResponse,
     StaffDeleteCustomerRequest,
     StaffEnvironmentItem,
     StaffGrantCreditsRequest,
@@ -74,7 +75,7 @@ async def list_customers(
 
 @router.post(
     "/customers",
-    response_model=CustomerResponse,
+    response_model=StaffCustomerCreateResponse,
     dependencies=[Depends(RequirePermission(Permission.PLATFORM_OPS))],
 )
 async def create_customer(
@@ -82,54 +83,95 @@ async def create_customer(
     session: DbSession,
     settings: SettingsDep,
     user: CurrentUser,
-) -> CustomerResponse:
-    """Create customer account directly by staff and optionally provision hosting."""
-    from sqlalchemy import func, select
-    from app.core.exceptions import ConflictError
+) -> StaffCustomerCreateResponse:
+    """Hosting operator walk-in: create the account, then billing clears payment, then operator activates."""
+    import secrets
+
+    from app.core.exceptions import ValidationError
     from app.services.platform.customers import CustomerService
     from app.services.platform.orders import OrderService
-    from app.schemas.platform_admin import StaffProvisionHostingRequest
-
-    email = body.email.strip().lower()
-    existing = (
-        await session.execute(
-            select(Customer).where(func.lower(Customer.email) == email)
-        )
-    ).scalar_one_or_none()
-    if existing is not None:
-        raise ConflictError("A customer with this email already exists.")
 
     svc = CustomerService(settings, session)
-    customer = await svc.register_email(
-        email=email,
-        password=body.password or "WelcomePass2026!",
+    password = (body.password or "").strip() or secrets.token_urlsafe(10)
+    customer, _ = await svc.staff_create(
+        email=body.email,
         full_name=body.full_name,
-        company=body.company,
+        password=password,
         phone=body.phone,
+        company=body.company,
+        actor_id=user.id,
     )
-    if body.phone:
-        customer.phone = body.phone
-        customer.phone_verified = True
-    customer.email_verified = True
-    await session.commit()
-    await session.refresh(customer)
+
+    order_id = None
+    invoice_number = None
+    next_step = "account_only"
+    next_step_detail = (
+        "Account is ready. Choose a plan on this customer, then send them to Billing to collect "
+        "cash, MoMo, or a complimentary grant. After Billing confirms, come back here or to Orders "
+        "and activate hosting."
+    )
 
     if body.plan_id:
         try:
-            plan_uuid = UUID(body.plan_id) if isinstance(body.plan_id, str) else body.plan_id
-            await OrderService(settings, session).provision_for_customer(
-                customer.id,
-                StaffProvisionHostingRequest(
-                    plan_id=plan_uuid,
-                    domain=body.domain or None,
-                ),
+            plan_uuid = UUID(str(body.plan_id))
+        except ValueError as exc:
+            raise ValidationError("Choose a valid hosting plan.") from exc
+        orders = OrderService(settings, session)
+        activate_now = bool(body.activate_now) and bool(
+            user.is_superuser or "platform_owner" in (user.roles or [])
+        )
+        if activate_now:
+            await orders.provision_for_customer(
+                customer=customer,
+                plan_id=plan_uuid,
+                domain_name=body.domain or None,
+            )
+            next_step = "hosting_activated"
+            next_step_detail = "Payment skipped (owner). Hosting is being provisioned now."
+        else:
+            order = await orders.create_walk_in_order(
+                customer,
+                plan_id=plan_uuid,
+                domain=body.domain,
                 actor_id=user.id,
             )
-            await session.commit()
-        except Exception:  # noqa: BLE001
-            pass
+            order_id = order.id
+            invoice_number = order.invoice_number
+            next_step = "send_to_billing"
+            next_step_detail = (
+                f"Take invoice {invoice_number or ''} to a billing agent. They confirm cash, MoMo, "
+                "or complimentary. Then return to Orders → Waiting for activation and turn hosting on."
+            )
 
-    return CustomerService.to_response(customer)
+    await session.commit()
+    await session.refresh(customer)
+    profile = CustomerService.to_response(customer)
+    return StaffCustomerCreateResponse(
+        id=customer.id,
+        email=customer.email,
+        full_name=customer.full_name,
+        temporary_password=password if not (body.password or "").strip() else None,
+        order_id=order_id,
+        invoice_number=invoice_number,
+        next_step=next_step,
+        next_step_detail=next_step_detail,
+        customer=profile,
+    )
+
+
+@router.get(
+    "/dns/check",
+    dependencies=[Depends(RequirePermission(Permission.PLATFORM_READ))],
+)
+async def check_domain_nameservers(
+    session: DbSession,
+    settings: SettingsDep,
+    domain: str = Query(..., min_length=3, max_length=255),
+) -> dict:
+    """Live check: does this domain's public NS set include IFNOTUS nameservers?"""
+    from app.services.platform.dns import EnvironmentDnsService
+
+    return EnvironmentDnsService(settings, session).check_public_delegation(domain)
 
 
 @router.get(
@@ -639,10 +681,15 @@ async def list_plans(
     settings: SettingsDep,
     include_inactive: bool = Query(default=True),
 ) -> list[HostingPlanSchema]:
+    from app.services.platform.billing_terms_store import enrich_plan_yearly
+
     rows = await StaffPlatformService(settings, session).list_plans(
         include_inactive=include_inactive
     )
-    return [HostingPlanSchema.model_validate(p) for p in rows]
+    return [
+        enrich_plan_yearly(HostingPlanSchema.model_validate(p), settings, monthly_price=p.price_monthly)
+        for p in rows
+    ]
 
 
 @router.post(
@@ -655,8 +702,12 @@ async def create_plan(
     session: DbSession,
     settings: SettingsDep,
 ) -> HostingPlanSchema:
+    from app.services.platform.billing_terms_store import enrich_plan_yearly
+
     plan = await StaffPlatformService(settings, session).create_plan(body.model_dump())
-    return HostingPlanSchema.model_validate(plan)
+    return enrich_plan_yearly(
+        HostingPlanSchema.model_validate(plan), settings, monthly_price=plan.price_monthly
+    )
 
 
 @router.patch(
@@ -670,10 +721,14 @@ async def update_plan(
     session: DbSession,
     settings: SettingsDep,
 ) -> HostingPlanSchema:
+    from app.services.platform.billing_terms_store import enrich_plan_yearly
+
     plan = await StaffPlatformService(settings, session).update_plan(
         plan_id, body.model_dump(exclude_unset=True)
     )
-    return HostingPlanSchema.model_validate(plan)
+    return enrich_plan_yearly(
+        HostingPlanSchema.model_validate(plan), settings, monthly_price=plan.price_monthly
+    )
 
 
 @router.post(
@@ -686,8 +741,15 @@ async def rebalance_plans_from_price(
     settings: SettingsDep,
 ) -> list[HostingPlanSchema]:
     """Recalculate every plan's CPU/RAM/storage/bandwidth/AI from its monthly price."""
-    rows = await StaffPlatformService(settings, session).rebalance_plans_from_price()
-    return [HostingPlanSchema.model_validate(p) for p in rows]
+    from app.services.platform.billing_terms_store import enrich_plan_yearly
+
+    svc = StaffPlatformService(settings, session)
+    rows = await svc.rebalance_plans_from_price()
+    await svc.sync_all_plan_yearly_prices()
+    return [
+        enrich_plan_yearly(HostingPlanSchema.model_validate(p), settings, monthly_price=p.price_monthly)
+        for p in rows
+    ]
 
 
 @router.post(

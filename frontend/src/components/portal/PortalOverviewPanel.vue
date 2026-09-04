@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import type { CustomerDashboard, CustomerEnvironment, HostingPlan } from '@/types/platform'
-import { formatCpu, formatRamGb } from '@/lib/planResources'
+import { formatCpu, formatRamFromMb, formatRamGb } from '@/lib/planResources'
 import {
   barClassForTier,
   formatUpdatedAt,
@@ -112,7 +112,12 @@ const spec = computed(() => {
   const e = env.value
   const p = plan.value
   const cpu = formatCpu(e?.cpu_limit ?? p?.cpu_cores ?? 0)
-  const ram = formatRamGb(e?.ram_limit_gb ?? p?.ram_gb ?? 0)
+  // Prefer enforced MemoryHigh from usage — never show marketing ram_limit_gb when live limit exists.
+  const liveMb = usage.value?.memory_limit_mb
+  const ram =
+    liveMb && liveMb > 0
+      ? formatRamFromMb(liveMb)
+      : formatRamGb(e?.ram_limit_gb ?? p?.ram_gb ?? 0)
   const disk = e?.storage_limit_gb ?? p?.storage_gb ?? 0
   return { cpu, ram, disk }
 })
@@ -352,8 +357,11 @@ async function submitStudentSubdomain() {
                 </div>
                 <div class="gauge-card-body">
                   <div class="gauge-value-row">
-                    <span class="gauge-detail" :title="`${Math.round(usage?.memory_usage_mb || 0)} / ${Math.round(usage?.memory_limit_mb || Number(env.ram_limit_gb || 0) * 1024)} MB`">
-                      {{ Math.round(usage?.memory_usage_mb || 0) }} / {{ Math.round(usage?.memory_limit_mb || Number(env.ram_limit_gb || 0) * 1024) }} MB
+                    <span
+                      class="gauge-detail"
+                      :title="`${formatRamFromMb(usage?.memory_usage_mb || 0)} / ${spec.ram}`"
+                    >
+                      {{ formatRamFromMb(usage?.memory_usage_mb || 0) }} / {{ spec.ram }}
                     </span>
                     <strong class="gauge-pct">{{ Math.round(memPct) }}%</strong>
                   </div>

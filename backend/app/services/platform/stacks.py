@@ -240,7 +240,7 @@ class EnvironmentStackService:
                 level = "yes"
             if level == "no":
                 continue
-            out.append({**row, "level": level, "allowed": True})
+            out.append({**row, "level": level, "allowed": level == "yes"})
             seen.add(row["id"])
             # Also mark the matrix key as covered (e.g. static covers php).
             matrix_key = INSTALL_STACK_KEY.get(row["id"], row["id"])
@@ -253,7 +253,7 @@ class EnvironmentStackService:
         db_engine_keys = {"mysql", "postgres", "postgresql", "mongodb", "redis"}
         for key in STACK_KEYS:
             level = str(matrix_stacks.get(key) or "no")
-            if level != "yes" or key in seen or key in db_engine_keys:
+            if level not in {"yes", "limited"} or key in seen or key in db_engine_keys:
                 continue
             # Skip keys already represented by a one-click option.
             if key == "php" and any(r["id"] == "static" for r in out):
@@ -269,8 +269,8 @@ class EnvironmentStackService:
                         "Deploy via Files or Git."
                     ),
                     "icon": key,
-                    "level": "yes",
-                    "allowed": True,
+                    "level": level,
+                    "allowed": level == "yes",
                     "one_click": False,
                 }
             )
@@ -1246,16 +1246,12 @@ main{{max-width:32rem;padding:2rem}} .a{{color:#ff6c2c;font-weight:700}}</style>
             env.db_password_encrypted = None
 
         domain = env.domain or "your site"
-        from app.services.platform.hosting_ready_page import (
-            is_internal_addon_hostname,
-            write_hosting_ready_page,
-        )
+        from app.services.platform.hosting_ready_page import write_hosting_ready_page
 
-        display = None if is_internal_addon_hostname(domain) else domain
+        # Leave document root empty — no default index.html after clear.
         write_hosting_ready_page(
             root,
             hostname=domain,
-            display_hostname=display,
             portal_base=getattr(self._settings, "customer_portal_url", None) or "https://ifnotus.space",
             force=True,
         )

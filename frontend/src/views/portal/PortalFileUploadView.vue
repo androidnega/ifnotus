@@ -60,9 +60,37 @@ function removePending(index: number) {
   pendingFiles.value.splice(index, 1)
 }
 
-function startQueue() {
+async function startQueue() {
   if (!pendingFiles.value.length || !envId.value) return
-  transfers.enqueueUploadMany([...pendingFiles.value], targetPath.value || '.', {
+  err.value = ''
+  // Check destination for duplicates before uploading
+  let existing = new Set<string>()
+  try {
+    const { data } = await customersApi.listEnvFiles(envId.value, targetPath.value || '.')
+    existing = new Set(
+      (data.entries || []).filter((e) => !e.is_dir).map((e) => e.name.toLowerCase()),
+    )
+  } catch {
+    /* non-fatal — proceed without check */
+  }
+  const duplicates = pendingFiles.value.filter((f) => existing.has(f.name.toLowerCase()))
+  let files = [...pendingFiles.value]
+  if (duplicates.length) {
+    const names = duplicates.map((f) => f.name).slice(0, 5).join(', ')
+    const more = duplicates.length > 5 ? ` (+${duplicates.length - 5} more)` : ''
+    const ok = window.confirm(
+      `${duplicates.length} file(s) already exist (${names}${more}).\n\nOK = replace\nCancel = skip duplicates`,
+    )
+    if (!ok) {
+      const dupSet = new Set(duplicates.map((f) => f.name.toLowerCase()))
+      files = files.filter((f) => !dupSet.has(f.name.toLowerCase()))
+      if (!files.length) {
+        err.value = 'Upload cancelled — duplicates skipped.'
+        return
+      }
+    }
+  }
+  transfers.enqueueUploadMany(files, targetPath.value || '.', {
     environmentId: envId.value,
   })
   pendingFiles.value = []

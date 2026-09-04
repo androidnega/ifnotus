@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shlex
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,6 +25,28 @@ _BLOCKED_PATTERNS = [
     r"mkfs\.",
     r"dd\s+if=/dev/",
     r">\s*/dev/sd",
+    # Privilege escalation / host takeover — block without naming privilege levels to the user.
+    r"(^|[;&|`]\s*)sudo\b",
+    r"(^|[;&|`]\s*)doas\b",
+    r"(^|[;&|`]\s*)pkexec\b",
+    r"(^|[;&|`]\s*)su\b",
+    r"\bchmod\s+[0-7]*[2367][0-7]{3}\b",  # setuid/setgid in numeric mode
+    r"\bchmod\s+.*[ug]\+s\b",
+    r"\bchown\s+.*\broot\b",
+    r"\bmount\b",
+    r"\bumount\b",
+    r"\bnsenter\b",
+    r"\bunshare\b",
+    r"\bdocker\b",
+    r"\bpodman\b",
+    r"\bkubectl\b",
+    r"\bsystemctl\b",
+    r"\bservice\s+",
+    r"\bsupervisorctl\b",
+    r"\bnginx\b",
+    r"/etc/passwd",
+    r"/etc/shadow",
+    r"\bcrontab\b",
 ]
 
 
@@ -48,6 +71,8 @@ class TerminalService:
         scope: TerminalScope = TerminalScope.OPS,
         app_id: str | None = None,
         root_id: str | None = None,
+        run_as_user: str | None = None,
+        timeout: float | None = None,
     ) -> TerminalExecuteResponse:
         command = command.strip()
         if not command:
@@ -57,17 +82,43 @@ class TerminalService:
                 raise AppException("Command blocked by safety policy.", code="blocked_command")
 
         workdir = self._resolve_workdir(cwd, scope=scope, app_id=app_id, root_id=root_id)
-
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=workdir,
+        wait_timeout = float(
+            timeout
+            if timeout is not None
+            else getattr(self._settings, "terminal_command_timeout", 30) or 30
         )
+
+        unix = (run_as_user or "").strip()
+        if unix:
+            if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", unix):
+                raise AppException("Terminal is not available for this site.", code="terminal_unavailable")
+            if unix in {"root", "0"} or unix.startswith("root"):
+                # Never execute portal terminal as root.
+                raise AppException("Terminal is not available for this site.", code="terminal_unavailable")
+            # Drop into the site account — never the API/root process identity.
+            wrapped = f"cd {shlex.quote(workdir)} && {command}"
+            proc = await asyncio.create_subprocess_exec(
+                "su",
+                "-s",
+                "/bin/bash",
+                unix,
+                "-c",
+                wrapped,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._tenant_env(workdir),
+            )
+        else:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=workdir,
+            )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(
                 proc.communicate(),
-                timeout=self._settings.terminal_command_timeout,
+                timeout=wait_timeout,
             )
         except TimeoutError:
             proc.kill()
@@ -98,6 +149,15 @@ class TerminalService:
             success=exit_code == 0,
             audit_id=log.id,
         )
+
+    @staticmethod
+    def _tenant_env(workdir: str) -> dict[str, str]:
+        env = {k: v for k, v in os.environ.items() if k in {"PATH", "LANG", "LC_ALL", "TERM"}}
+        env["HOME"] = workdir
+        env["PWD"] = workdir
+        env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
+        env.setdefault("TERM", "xterm-256color")
+        return env
 
     def _resolve_workdir(
         self,
@@ -143,8 +203,15 @@ class TerminalService:
         if not cwd:
             return str(base)
 
-        target = (base / cwd.lstrip("/")).resolve()
-        if not str(target).startswith(str(base)):
+        # Absolute cwd must stay inside allowed roots / base.
+        raw = cwd.strip()
+        if raw.startswith("/"):
+            target = Path(raw).resolve()
+        else:
+            target = (base / raw.lstrip("/")).resolve()
+        if not str(target).startswith(str(base)) and not any(
+            str(target).startswith(str(root.resolve())) for root in allowed_roots
+        ):
             raise AppException("Path escape denied for scoped execution.", code="forbidden")
         if not target.is_dir():
             raise AppException("Working directory does not exist.", code="invalid_cwd")

@@ -408,3 +408,90 @@ class CacheOperationsService:
             "cleared": cleared,
             "errors": errors,
         }
+
+    async def clear_tenant_docroot(self, root: Path) -> OperationResult:
+        """Clear cache/temp folders under a customer site document root.
+
+        Also clears under ``public_html`` when ``root`` is the account home, and
+        under the parent home when ``root`` is already ``public_html``.
+        """
+        site_root = root.resolve()
+        if not site_root.exists():
+            return OperationResult(success=False, message="Site folder not found.")
+
+        candidates: list[Path] = [site_root]
+        if site_root.name in {"public_html", "public", "web"}:
+            candidates.append(site_root.parent)
+        else:
+            ph = site_root / "public_html"
+            if ph.is_dir():
+                candidates.append(ph)
+
+        before_paths, before_bytes = measure_clearable_paths(site_root)
+        from app.services.platform.stacks import detect_stack_from_filesystem
+
+        steps: list[dict[str, Any]] = []
+        stacks_seen: list[str] = []
+
+        for candidate in candidates:
+            detected = detect_stack_from_filesystem(candidate) or {}
+            stack = str(detected.get("stack") or "").lower()
+            if stack:
+                stacks_seen.append(stack)
+
+            if stack == "laravel":
+                steps.extend(await self._clear_laravel(candidate))
+            elif stack == "django":
+                steps.extend(await self._clear_django(candidate))
+            elif stack == "wordpress":
+                steps.append(
+                    await self._clear_named_dirs(
+                        candidate,
+                        ["wp-content/cache", "wp-content/uploads/cache", "wp-content/upgrade"],
+                    )
+                )
+            elif stack == "nodejs":
+                steps.extend(await self._clear_nodejs(candidate))
+            else:
+                steps.append(
+                    await self._clear_named_dirs(candidate, ["cache", ".cache", "tmp", "temp"])
+                )
+
+            steps.append(
+                await self._clear_named_dirs(
+                    candidate,
+                    [
+                        "bootstrap/cache",
+                        "storage/framework/cache/data",
+                        "storage/framework/views",
+                        ".next/cache",
+                        "node_modules/.cache",
+                        "var/cache",
+                        "wp-content/cache",
+                    ],
+                )
+            )
+
+        steps.append(await self._clear_php_opcache())
+
+        after_paths, after_bytes = measure_clearable_paths(site_root)
+        freed = max(0, before_bytes - after_bytes)
+        failed = [s for s in steps if not s.get("success")]
+        stack_label = stacks_seen[0] if stacks_seen else None
+        return OperationResult(
+            success=len(failed) == 0,
+            message=(
+                f"Site cache cleared (≈{freed / (1024 * 1024):.1f} MB freed)."
+                if not failed
+                else f"Cache clear finished with {len(failed)} issue(s)."
+            ),
+            details={
+                "stack": stack_label,
+                "roots": [str(c) for c in candidates],
+                "steps": steps,
+                "clearable_before_bytes": before_bytes,
+                "clearable_after_bytes": after_bytes,
+                "bytes_freed": freed,
+                "paths_before": [p.model_dump() for p in before_paths],
+            },
+        )

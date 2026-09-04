@@ -54,6 +54,20 @@ class StaffCustomerCreateRequest(SchemaBase):
     company: str | None = Field(default=None, max_length=255)
     plan_id: str | None = Field(default=None)
     domain: str | None = Field(default=None)
+    activate_now: bool = False
+    """Owner-only: skip billing and provision immediately (default is walk-in → billing)."""
+
+
+class StaffCustomerCreateResponse(SchemaBase):
+    id: UUID
+    email: str
+    full_name: str
+    temporary_password: str | None = None
+    order_id: UUID | None = None
+    invoice_number: str | None = None
+    next_step: str
+    next_step_detail: str
+    customer: CustomerResponse
 
 
 class StaffSubscriptionItem(SchemaBase):

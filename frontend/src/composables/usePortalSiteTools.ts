@@ -1,4 +1,4 @@
-import { computed, onUnmounted, ref, toValue, type MaybeRefOrGetter, type Ref } from 'vue'
+import { computed, onUnmounted, ref, toValue, watch, type MaybeRefOrGetter, type Ref } from 'vue'
 import { customersApi } from '@/api'
 import type { CustomerDashboard } from '@/types/platform'
 import type { DbQueryResult, DbSchema } from '@/types/databases'
@@ -143,16 +143,53 @@ export function usePortalSiteTools(
     environment_id?: string
     configured?: boolean
     path?: string
+    home_display?: string
+    repos_limit?: number | null
     branch?: string | null
     commit?: string | null
     remote?: string | null
     dirty?: boolean
     message?: string
+    repositories?: Array<{
+      id: string
+      name: string
+      path: string
+      path_display: string
+      configured: boolean
+      branch?: string | null
+      commit?: string | null
+      commit_full?: string | null
+      author?: string | null
+      author_email?: string | null
+      committed_at?: string | null
+      message?: string | null
+      remote?: string | null
+      dirty?: boolean
+      clone_url?: string | null
+    }>
   } | null>(null)
   const gitBusy = ref(false)
   const gitMsg = ref('')
   const gitCloneUrl = ref('')
   const gitCloneBranch = ref('')
+  const gitView = ref<'list' | 'create' | 'history'>('list')
+  const gitCloneRemote = ref(true)
+  const gitRepoName = ref('')
+  const gitRepoPath = ref('')
+  const gitCreateAnother = ref(false)
+  const gitServeAsWebsite = ref(true)
+  const gitExpandedId = ref<string | null>(null)
+  const gitSearch = ref('')
+  const gitHistory = ref<Array<{ commit: string; committed_at: string; author: string; message: string }>>([])
+  const gitHistoryPath = ref('')
+  watch(gitView, (view) => {
+    if (view === 'create' && gitStatus.value?.home_display) {
+      const home = gitStatus.value.home_display.replace(/\/$/, '')
+      if (!gitRepoPath.value || gitRepoPath.value === `${home}/`) {
+        gitRepoPath.value = `${home}/`
+      }
+    }
+  })
   const dnsInfo = ref('')
   const dnsData = ref<{
     domain?: string | null
@@ -211,6 +248,7 @@ export function usePortalSiteTools(
       icon?: string
       level?: string
       one_click?: boolean
+      allowed?: boolean
     }>
   >([])
   const currentStack = ref<Record<string, unknown> | null>(null)
@@ -258,6 +296,14 @@ export function usePortalSiteTools(
       status: string
       port?: number | null
       slug?: string | null
+      app_root?: string | null
+      app_root_display?: string | null
+      uses_site_root?: boolean
+      serve_url?: string | null
+      log_path?: string | null
+      start_command?: string | null
+      runtime_version?: string | null
+      env_var_keys?: string[]
     }>
   >([])
   const appMsg = ref('')
@@ -267,8 +313,55 @@ export function usePortalSiteTools(
   const newAppGitUrl = ref('')
   const newAppRuntimeVersion = ref<string | null>(null)
   // Python/FastAPI entry wiring (maps to `module:object` used by gunicorn+uvicorn).
-  const newAppPythonModule = ref('app.main')
-  const newAppPythonObject = ref('app')
+  const newAppPythonModule = ref('')
+  const newAppPythonObject = ref('')
+  const newAppRootPlacement = ref<'apps' | 'home' | 'public_html'>('apps')
+  const newAppServeAtDomain = ref(false)
+  const newAppLogPath = ref('')
+  const showAppCreateForm = ref(false)
+  const editingAppId = ref<string | null>(null)
+  const editAppName = ref('')
+  const editAppLogPath = ref('')
+  const editAppPythonModule = ref('app.main')
+  const editAppPythonObject = ref('app')
+  const editAppServeAtDomain = ref(false)
+  const editAppRuntimeVersion = ref<string | null>(null)
+  const editAppEnvVars = ref<Array<{ key: string; value: string }>>([])
+  const newAppEnvVars = ref<Array<{ key: string; value: string }>>([])
+  const editEnvVarsDirty = ref(false)
+
+  function addEnvVarRow(target: 'new' | 'edit') {
+    const rows = target === 'new' ? newAppEnvVars : editAppEnvVars
+    rows.value = [...rows.value, { key: '', value: '' }]
+    if (target === 'edit') editEnvVarsDirty.value = true
+  }
+
+  function removeEnvVarRow(target: 'new' | 'edit', index: number) {
+    const rows = target === 'new' ? newAppEnvVars : editAppEnvVars
+    rows.value = rows.value.filter((_, i) => i !== index)
+    if (target === 'edit') editEnvVarsDirty.value = true
+  }
+
+  function updateEnvVarRow(
+    target: 'new' | 'edit',
+    index: number,
+    field: 'key' | 'value',
+    value: string,
+  ) {
+    const rows = target === 'new' ? newAppEnvVars : editAppEnvVars
+    rows.value = rows.value.map((row, i) => (i === index ? { ...row, [field]: value } : row))
+    if (target === 'edit') editEnvVarsDirty.value = true
+  }
+
+  function envVarsToRecord(rows: Array<{ key: string; value: string }>): Record<string, string> {
+    const out: Record<string, string> = {}
+    for (const row of rows) {
+      const key = String(row.key || '').trim()
+      if (!key) continue
+      out[key] = String(row.value ?? '')
+    }
+    return out
+  }
 
   const lockedEnvId = computed(() => {
     if (!options?.lockEnvId) return ''
@@ -1097,11 +1190,33 @@ export function usePortalSiteTools(
     try {
       const { data } = await customersApi.listEnvBackups(activeEnv.value.id)
       backups.value = data
-      backupMsg.value = data.length ? '' : 'No backups yet.'
+      const pending = data.some((b) => ['pending', 'queued', 'running'].includes(String(b.status)))
+      backupMsg.value = data.length
+        ? pending
+          ? 'Backup in progress — this list refreshes automatically.'
+          : ''
+        : 'No backups yet.'
+      if (pending) scheduleBackupPoll()
+      else stopBackupPoll()
     } catch (e: unknown) {
       const err = e as { response?: { data?: { error?: { message?: string } } } }
       backupMsg.value = err.response?.data?.error?.message ?? 'Could not load backups.'
+      stopBackupPoll()
     }
+  }
+
+  let backupPollTimer: ReturnType<typeof setTimeout> | null = null
+  function stopBackupPoll() {
+    if (backupPollTimer) {
+      clearTimeout(backupPollTimer)
+      backupPollTimer = null
+    }
+  }
+  function scheduleBackupPoll() {
+    stopBackupPoll()
+    backupPollTimer = setTimeout(() => {
+      void loadBackups()
+    }, 4000)
   }
 
   async function createBackup() {
@@ -1109,8 +1224,9 @@ export function usePortalSiteTools(
     backupMsg.value = 'Queueing backup…'
     try {
       const { data } = await customersApi.createEnvBackup(activeEnv.value.id)
-      backupMsg.value = `Backup ${data.status}. Refresh in a moment.`
+      backupMsg.value = `Backup ${data.status}. Working on your restore point…`
       await loadBackups()
+      scheduleBackupPoll()
     } catch (e: unknown) {
       const err = e as { response?: { data?: { error?: { message?: string } } } }
       backupMsg.value = err.response?.data?.error?.message ?? 'Backup failed.'
@@ -1124,9 +1240,58 @@ export function usePortalSiteTools(
     try {
       const { data } = await customersApi.restoreEnvBackup(activeEnv.value.id, id)
       backupMsg.value = data.message
+      scheduleBackupPoll()
     } catch (e: unknown) {
       const err = e as { response?: { data?: { error?: { message?: string } } } }
       backupMsg.value = err.response?.data?.error?.message ?? 'Restore failed.'
+    }
+  }
+
+  async function downloadBackup(id: string, filename?: string | null) {
+    if (!activeEnv.value) return
+    backupMsg.value = 'Preparing download…'
+    try {
+      const token = localStorage.getItem('access_token')
+      const res = await fetch(customersApi.downloadEnvBackupUrl(activeEnv.value.id, id), {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (!res.ok) {
+        let msg = 'Download failed.'
+        try {
+          const body = await res.json()
+          msg = body?.error?.message || body?.message || msg
+        } catch {
+          /* ignore */
+        }
+        backupMsg.value = msg
+        return
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename || `backup-${id}.tar.gz`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      backupMsg.value = 'Download started.'
+    } catch {
+      backupMsg.value = 'Download failed.'
+    }
+  }
+
+  async function deleteBackup(id: string) {
+    if (!activeEnv.value) return
+    if (!confirm('Delete this backup permanently?')) return
+    backupMsg.value = 'Deleting backup…'
+    try {
+      await customersApi.deleteEnvBackup(activeEnv.value.id, id)
+      backupMsg.value = 'Backup deleted.'
+      await loadBackups()
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      backupMsg.value = err.response?.data?.error?.message ?? 'Could not delete backup.'
     }
   }
 
@@ -1195,17 +1360,29 @@ export function usePortalSiteTools(
     try {
       const { data } = await customersApi.listEnvApplicationCatalog(activeEnv.value.id)
       appCatalog.value = data
-      const pythonIds = new Set(['python', 'fastapi', 'flask', 'django'])
-      if (!pythonIds.has(String(newAppFramework.value || '').toLowerCase())) {
-        const firstPython = data.find((f) => pythonIds.has(String(f.id || '').toLowerCase()) && f.allowed)
+      const current = String(newAppFramework.value || '').toLowerCase()
+      const known = new Set(data.map((f) => String(f.id || '').toLowerCase()))
+      if (!known.has(current)) {
+        const firstPython = data.find((f) =>
+          ['python', 'fastapi', 'flask', 'django'].includes(String(f.id || '').toLowerCase()) && f.allowed,
+        )
         newAppFramework.value = firstPython?.id || 'fastapi'
       }
 
       const fw = newAppFramework.value
       if (fw && !newAppRuntimeVersion.value) {
         const hit = data.find((f) => f.id === fw)
-        const versions = hit?.runtime_versions?.length ? hit.runtime_versions : ['3.9', '3.10', '3.11', '3.12', '3.13']
-        newAppRuntimeVersion.value = versions.includes('3.12') ? '3.12' : versions[0] ?? '3.12'
+        const isPhp = ['php', 'laravel', 'wordpress'].includes(String(fw).toLowerCase())
+        const isNode = ['nodejs', 'express', 'react', 'vue'].includes(String(fw).toLowerCase())
+        const versions = hit?.runtime_versions?.length
+          ? hit.runtime_versions
+          : isPhp
+            ? ['8.1', '8.2', '8.3']
+            : isNode
+              ? ['18', '20', '22']
+              : ['3.9', '3.10', '3.11', '3.12', '3.13']
+        const preferred = isPhp ? '8.3' : isNode ? '20' : '3.12'
+        newAppRuntimeVersion.value = versions.includes(preferred) ? preferred : versions[0] ?? preferred
       }
     } catch {
       appCatalog.value = []
@@ -1228,7 +1405,7 @@ export function usePortalSiteTools(
       appMsg.value = 'No hosting site selected.'
       return
     }
-    if (!newAppName.value.trim()) {
+    if (newAppRootPlacement.value !== 'public_html' && !newAppName.value.trim()) {
       appMsg.value = 'Enter an application name first.'
       return
     }
@@ -1238,23 +1415,72 @@ export function usePortalSiteTools(
     if (newAppFramework.value === 'python' || newAppFramework.value === 'fastapi') {
       const mod = newAppPythonModule.value.trim()
       const obj = newAppPythonObject.value.trim()
-      const modOk = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(mod)
-      const objOk = /^[A-Za-z_][A-Za-z0-9_]*$/.test(obj)
-      if (!modOk || !objOk) {
-        appMsg.value = 'Invalid ASGI entry. Use module like `app.main` and object like `app`.'
-        appBusy.value = false
-        return
+      if (mod || obj) {
+        const modOk = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(mod)
+        const objOk = /^[A-Za-z_][A-Za-z0-9_]*$/.test(obj)
+        if (!modOk || !objOk) {
+          appMsg.value = 'Invalid ASGI entry. Use module like `app.main` and object like `app`, or leave blank to auto-detect.'
+          appBusy.value = false
+          return
+        }
+        startCommand = `gunicorn -k uvicorn.workers.UvicornWorker -b 127.0.0.1:{port} ${mod}:${obj}`
       }
-      startCommand = `gunicorn -k uvicorn.workers.UvicornWorker -b 127.0.0.1:{port} ${mod}:${obj}`
+      // Blank entry → backend auto-detects from uploaded project (or scaffolds a stub).
+    } else if (newAppFramework.value === 'django') {
+      const mod = (newAppPythonModule.value.trim() || '').replace(/\.py$/, '')
+      const obj = newAppPythonObject.value.trim()
+      if (mod || obj) {
+        const m = mod || 'config.wsgi'
+        const o = obj || 'application'
+        const modOk = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(m)
+        const objOk = /^[A-Za-z_][A-Za-z0-9_]*$/.test(o)
+        if (!modOk || !objOk) {
+          appMsg.value = 'Invalid WSGI entry. Use module like `config.wsgi` and object like `application`, or leave blank to auto-detect.'
+          appBusy.value = false
+          return
+        }
+        startCommand = `gunicorn -b 127.0.0.1:{port} ${m}:${o}`
+      }
+    } else if (newAppFramework.value === 'flask') {
+      const mod = newAppPythonModule.value.trim()
+      const obj = newAppPythonObject.value.trim()
+      if (mod || obj) {
+        startCommand = `gunicorn -b 127.0.0.1:{port} ${mod || 'app'}:${obj || 'app'}`
+      }
     }
+    const placement = newAppRootPlacement.value
+    const serveAtDomain = placement === 'public_html' || newAppServeAtDomain.value
+    const appName =
+      placement === 'public_html'
+        ? newAppName.value.trim() || activeEnv.value.domain || 'website'
+        : newAppName.value.trim()
+    if (!appName) {
+      appMsg.value = 'Enter an application name first.'
+      appBusy.value = false
+      return
+    }
+    const homeLabel = activeEnv.value.hosting_name || 'user'
+    const fw = String(newAppFramework.value || '').toLowerCase()
+    const isPythonApp = ['python', 'fastapi', 'django', 'flask'].includes(fw)
+    const isPhpApp = ['php', 'laravel'].includes(fw)
+    const logPath =
+      newAppLogPath.value.trim() ||
+      (isPythonApp ? `/home3/${homeLabel}/logs/passenger.log` : undefined)
     try {
       const { data } = await customersApi.createEnvApplication(activeEnv.value.id, {
-        name: newAppName.value.trim(),
+        name: appName,
         framework: newAppFramework.value,
         runtime_version: newAppRuntimeVersion.value || undefined,
-        start_command: startCommand,
+        start_command: isPhpApp ? undefined : startCommand,
+        root_placement: placement,
+        serve_at_domain: serveAtDomain,
+        log_path: isPhpApp ? undefined : logPath || undefined,
+        env_vars: envVarsToRecord(newAppEnvVars.value),
       })
       newAppName.value = ''
+      newAppLogPath.value = ''
+      newAppEnvVars.value = []
+      showAppCreateForm.value = false
       await loadApplications()
       if (data.id) {
         try {
@@ -1290,6 +1516,156 @@ export function usePortalSiteTools(
     } catch (e: unknown) {
       const err = e as { response?: { data?: { message?: string } } }
       appMsg.value = err.response?.data?.message ?? 'Deploy failed.'
+    } finally {
+      appBusy.value = false
+    }
+  }
+
+  async function restartApplication(id: string) {
+    if (!activeEnv.value) return
+    appBusy.value = true
+    appMsg.value = ''
+    try {
+      const { data } = await customersApi.restartEnvApplication(activeEnv.value.id, id)
+      appMsg.value = data.message || 'Restarted.'
+      await loadApplications()
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string }; message?: string } } }
+      appMsg.value = err.response?.data?.error?.message || err.response?.data?.message || 'Restart failed.'
+    } finally {
+      appBusy.value = false
+    }
+  }
+
+  async function stopApplication(id: string) {
+    if (!activeEnv.value) return
+    appBusy.value = true
+    appMsg.value = ''
+    try {
+      const { data } = await customersApi.stopEnvApplication(activeEnv.value.id, id)
+      appMsg.value = data.message || 'Stopped.'
+      await loadApplications()
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string }; message?: string } } }
+      appMsg.value = err.response?.data?.error?.message || err.response?.data?.message || 'Stop failed.'
+    } finally {
+      appBusy.value = false
+    }
+  }
+
+  async function startApplication(id: string) {
+    if (!activeEnv.value) return
+    appBusy.value = true
+    appMsg.value = ''
+    try {
+      const { data } = await customersApi.startEnvApplication(activeEnv.value.id, id)
+      appMsg.value = data.message || 'Started.'
+      await loadApplications()
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string }; message?: string } } }
+      appMsg.value = err.response?.data?.error?.message || err.response?.data?.message || 'Start failed.'
+    } finally {
+      appBusy.value = false
+    }
+  }
+
+  async function refreshApplication(id: string) {
+    if (!activeEnv.value) return
+    appBusy.value = true
+    appMsg.value = ''
+    try {
+      const { data } = await customersApi.refreshEnvApplication(activeEnv.value.id, id)
+      appMsg.value = data.message || 'Status refreshed.'
+      await loadApplications()
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string }; message?: string } } }
+      appMsg.value = err.response?.data?.error?.message || err.response?.data?.message || 'Refresh failed.'
+      await loadApplications()
+    } finally {
+      appBusy.value = false
+    }
+  }
+
+  function parseStartCommand(cmd: string | null | undefined): { module: string; object: string } {
+    const raw = String(cmd || '').trim()
+    const m = raw.match(/([A-Za-z_][A-Za-z0-9_.]*):([A-Za-z_][A-Za-z0-9_]*)\s*$/)
+    if (m) return { module: m[1], object: m[2] }
+    return { module: 'app.main', object: 'app' }
+  }
+
+  function beginEditApplication(id: string) {
+    const app = applications.value.find((a) => a.id === id)
+    if (!app) return
+    editingAppId.value = id
+    editAppName.value = app.name || ''
+    editAppLogPath.value = app.log_path || ''
+    editAppServeAtDomain.value = Boolean(app.uses_site_root)
+    editAppRuntimeVersion.value = app.runtime_version || null
+    // Keys only from API — leave values blank so secrets are not echoed; user re-enters to change.
+    editAppEnvVars.value = (app.env_var_keys || []).map((key) => ({ key, value: '' }))
+    editEnvVarsDirty.value = false
+    const parsed = parseStartCommand((app as { start_command?: string }).start_command)
+    if (String(app.framework || '').toLowerCase() === 'django') {
+      editAppPythonModule.value = parsed.module === 'app.main' ? 'config.wsgi' : parsed.module
+      editAppPythonObject.value = parsed.object === 'app' ? 'application' : parsed.object
+    } else {
+      editAppPythonModule.value = parsed.module
+      editAppPythonObject.value = parsed.object
+    }
+    showAppCreateForm.value = false
+  }
+
+  function cancelEditApplication() {
+    editingAppId.value = null
+    editAppEnvVars.value = []
+    editEnvVarsDirty.value = false
+  }
+
+  async function saveEditApplication() {
+    if (!activeEnv.value || !editingAppId.value) return
+    const app = applications.value.find((a) => a.id === editingAppId.value)
+    if (!app) return
+    appBusy.value = true
+    appMsg.value = ''
+    const fw = String(app.framework || '').toLowerCase()
+    const isPhp = ['php', 'laravel'].includes(fw) || String(app.runtime || '').toLowerCase() === 'php'
+    let startCommand: string | undefined
+    if (['python', 'fastapi', 'django', 'flask'].includes(fw)) {
+      const mod = editAppPythonModule.value.trim()
+      const obj = editAppPythonObject.value.trim()
+      const modOk = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(mod)
+      const objOk = /^[A-Za-z_][A-Za-z0-9_]*$/.test(obj)
+      if (!modOk || !objOk) {
+        appMsg.value = 'Invalid startup entry for this application.'
+        appBusy.value = false
+        return
+      }
+      startCommand =
+        fw === 'fastapi' || fw === 'python'
+          ? `gunicorn -k uvicorn.workers.UvicornWorker -b 127.0.0.1:{port} ${mod}:${obj}`
+          : `gunicorn -b 127.0.0.1:{port} ${mod}:${obj}`
+    } else if (isPhp) {
+      startCommand = ''
+    }
+    try {
+      const { data } = await customersApi.updateEnvApplication(activeEnv.value.id, editingAppId.value, {
+        name: editAppName.value.trim() || undefined,
+        runtime_version: editAppRuntimeVersion.value || undefined,
+        start_command: startCommand,
+        log_path: isPhp ? undefined : editAppLogPath.value.trim() || undefined,
+        serve_at_domain: editAppServeAtDomain.value,
+        // Only replace env when the user edited the variables section (avoids wiping secrets).
+        env_vars: editEnvVarsDirty.value ? envVarsToRecord(editAppEnvVars.value) : undefined,
+        restart: !isPhp,
+      })
+      appMsg.value = data.message || 'Application updated.'
+      editingAppId.value = null
+      editAppEnvVars.value = []
+      editEnvVarsDirty.value = false
+      await loadApplications()
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string }; message?: string } } }
+      appMsg.value = err.response?.data?.error?.message || err.response?.data?.message || 'Update failed.'
     } finally {
       appBusy.value = false
     }
@@ -1493,6 +1869,9 @@ export function usePortalSiteTools(
     try {
       const { data } = await customersApi.getEnvGit(activeEnv.value.id)
       gitStatus.value = data
+      if (!gitRepoPath.value) {
+        gitRepoPath.value = `${data.home_display || '/home3/user'}/`
+      }
       if (data.message && !gitMsg.value) {
         gitMsg.value = data.message
       }
@@ -1505,19 +1884,29 @@ export function usePortalSiteTools(
   }
 
   async function cloneGitRepo() {
-    if (!activeEnv.value || !gitCloneUrl.value.trim()) return
+    if (!activeEnv.value) return
+    if (gitCloneRemote.value && !gitCloneUrl.value.trim()) {
+      gitMsg.value = 'Enter a clone URL.'
+      return
+    }
     gitBusy.value = true
-    gitMsg.value = 'Cloning repository into document root…'
+    gitMsg.value = gitCloneRemote.value ? 'Cloning repository…' : 'Creating repository…'
     try {
       const { data } = await customersApi.cloneEnvGit(activeEnv.value.id, {
-        repo_url: gitCloneUrl.value.trim(),
+        repo_url: gitCloneRemote.value ? gitCloneUrl.value.trim() : undefined,
         branch: gitCloneBranch.value.trim() || undefined,
+        name: gitRepoName.value.trim() || undefined,
+        repo_path: gitRepoPath.value.trim() || undefined,
+        clone: gitCloneRemote.value,
+        serve_as_website: gitServeAsWebsite.value,
       })
-      gitMsg.value = data.message || 'Repository cloned successfully.'
+      gitMsg.value = data.message || (gitCloneRemote.value ? 'Repository cloned.' : 'Repository created.')
       gitCloneUrl.value = ''
       gitCloneBranch.value = ''
+      gitRepoName.value = ''
       await loadGitStatus()
       await loadFiles()
+      if (!gitCreateAnother.value) gitView.value = 'list'
     } catch (e: unknown) {
       const err = e as { response?: { data?: { error?: { message?: string } } } }
       gitMsg.value = err.response?.data?.error?.message ?? 'Git clone failed.'
@@ -1526,18 +1915,73 @@ export function usePortalSiteTools(
     }
   }
 
-  async function pullGitRepo() {
+  async function activateGitWebsite(repoPath: string) {
+    if (!activeEnv.value || !repoPath) return
+    gitBusy.value = true
+    gitMsg.value = 'Pointing the website at this folder…'
+    try {
+      const { data } = await customersApi.activateEnvGit(activeEnv.value.id, { repo_path: repoPath })
+      gitMsg.value = data.message || 'Website document root updated.'
+      await loadGitStatus()
+      await loadFiles()
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      gitMsg.value = err.response?.data?.error?.message ?? 'Could not activate website for this path.'
+    } finally {
+      gitBusy.value = false
+    }
+  }
+
+  async function pullGitRepo(repoPath?: string) {
     if (!activeEnv.value) return
     gitBusy.value = true
     gitMsg.value = 'Pulling latest commits from remote…'
     try {
-      const { data } = await customersApi.pullEnvGit(activeEnv.value.id)
+      const { data } = await customersApi.pullEnvGit(activeEnv.value.id, {
+        repo_path: repoPath || undefined,
+      })
       gitMsg.value = data.message || 'Pulled latest commits successfully.'
       await loadGitStatus()
       await loadFiles()
     } catch (e: unknown) {
       const err = e as { response?: { data?: { error?: { message?: string } } } }
       gitMsg.value = err.response?.data?.error?.message ?? 'Git pull failed.'
+    } finally {
+      gitBusy.value = false
+    }
+  }
+
+  async function loadGitHistory(repoPath: string) {
+    if (!activeEnv.value) return
+    gitBusy.value = true
+    try {
+      const { data } = await customersApi.gitEnvHistory(activeEnv.value.id, { repo_path: repoPath })
+      gitHistory.value = data.commits || []
+      gitHistoryPath.value = data.path_display || repoPath
+      gitView.value = 'history'
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      gitMsg.value = err.response?.data?.error?.message ?? 'Could not load history.'
+    } finally {
+      gitBusy.value = false
+    }
+  }
+
+  async function removeGitRepo(repoPath: string) {
+    if (!activeEnv.value) return
+    if (!confirm('Remove this repository from Git Version Control? Site files are kept unless this is a dedicated clone folder.')) return
+    gitBusy.value = true
+    try {
+      const { data } = await customersApi.removeEnvGit(activeEnv.value.id, {
+        repo_path: repoPath,
+        delete_files: false,
+      })
+      gitMsg.value = data.message || 'Repository removed.'
+      gitExpandedId.value = null
+      await loadGitStatus()
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: { message?: string } } } }
+      gitMsg.value = err.response?.data?.error?.message ?? 'Could not remove repository.'
     } finally {
       gitBusy.value = false
     }
@@ -1558,6 +2002,10 @@ export function usePortalSiteTools(
     gitMsg.value = ''
     gitCloneUrl.value = ''
     gitCloneBranch.value = ''
+    gitView.value = 'list'
+    gitRepoName.value = ''
+    gitExpandedId.value = null
+    gitHistory.value = []
     ftpInfo.value = ''
     ftpCreds.value = null
     sftpInfo.value = ''
@@ -1573,6 +2021,7 @@ export function usePortalSiteTools(
     backupMsg.value = ''
     stackMsg.value = ''
     backups.value = []
+    stopBackupPoll()
     logEntries.value = []
     logMsg.value = ''
   }
@@ -1632,9 +2081,22 @@ export function usePortalSiteTools(
     gitMsg,
     gitCloneUrl,
     gitCloneBranch,
+    gitView,
+    gitCloneRemote,
+    gitRepoName,
+    gitRepoPath,
+    gitCreateAnother,
+    gitServeAsWebsite,
+    gitExpandedId,
+    gitSearch,
+    gitHistory,
+    gitHistoryPath,
     loadGitStatus,
     cloneGitRepo,
+    activateGitWebsite,
     pullGitRepo,
+    loadGitHistory,
+    removeGitRepo,
     ftpInfo,
     ftpCreds,
     sftpCreds,
@@ -1681,6 +2143,25 @@ export function usePortalSiteTools(
     newAppGitUrl,
     newAppPythonModule,
     newAppPythonObject,
+    newAppRootPlacement,
+    newAppServeAtDomain,
+    newAppLogPath,
+    showAppCreateForm,
+    editingAppId,
+    editAppName,
+    editAppLogPath,
+    editAppPythonModule,
+    editAppPythonObject,
+    editAppServeAtDomain,
+    editAppRuntimeVersion,
+    editAppEnvVars,
+    newAppEnvVars,
+    addEnvVarRow,
+    removeEnvVarRow,
+    updateEnvVarRow,
+    beginEditApplication,
+    cancelEditApplication,
+    saveEditApplication,
     setActiveEnvId,
     selectEnv,
     hydrateActiveEnv,
@@ -1721,11 +2202,17 @@ export function usePortalSiteTools(
     loadBackups,
     createBackup,
     restoreBackup,
+    downloadBackup,
+    deleteBackup,
     loadStacks,
     loadAppCatalog,
     loadApplications,
     createApplication,
     deployApplication,
+    restartApplication,
+    stopApplication,
+    startApplication,
+    refreshApplication,
     deleteApplication,
     installStack,
     clearStack,

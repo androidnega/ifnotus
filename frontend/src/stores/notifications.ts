@@ -57,16 +57,19 @@ export const useNotificationStore = defineStore('notifications', () => {
   const panelOpen = ref(false)
   const loading = ref(false)
   const awaitingPaymentConfirm = ref(0)
+  const readyForActivation = ref(0)
   const recentlyPaid = ref(0)
   const openSupportTickets = ref(0)
   const readIds = ref<Set<string>>(loadReadIds())
   const soundMuted = ref(isSoundMuted())
   const initialSyncComplete = ref(false)
   const lastAwaitingCount = ref(0)
+  const lastActivationCount = ref(0)
   let timer: ReturnType<typeof setInterval> | null = null
 
   const unreadCount = computed(() => items.value.filter((n) => !n.read).length)
   const ordersBadge = computed(() => awaitingPaymentConfirm.value)
+  const activationQueueBadge = computed(() => readyForActivation.value)
   const supportBadge = computed(() => openSupportTickets.value)
 
   function toggleSound() {
@@ -100,14 +103,20 @@ export const useNotificationStore = defineStore('notifications', () => {
       if (inboxRes.status === 'fulfilled') {
         const inbox = inboxRes.value.data
         const newAwaitingCount = inbox.awaiting_payment_confirm || 0
+        const newActivationCount = inbox.ready_for_activation || 0
         
         // Bell chime: trigger sound when a new order needing confirmation arrives
         if (initialSyncComplete.value && newAwaitingCount > lastAwaitingCount.value) {
           playOrderBell()
         }
+        if (initialSyncComplete.value && newActivationCount > lastActivationCount.value) {
+          playOrderBell()
+        }
 
         awaitingPaymentConfirm.value = newAwaitingCount
         lastAwaitingCount.value = newAwaitingCount
+        readyForActivation.value = newActivationCount
+        lastActivationCount.value = newActivationCount
         recentlyPaid.value = inbox.recently_paid || 0
         openSupportTickets.value = inbox.open_support_tickets || 0
 
@@ -128,6 +137,7 @@ export const useNotificationStore = defineStore('notifications', () => {
         }
       } else {
         awaitingPaymentConfirm.value = 0
+        readyForActivation.value = 0
         recentlyPaid.value = 0
         openSupportTickets.value = 0
       }
@@ -191,8 +201,10 @@ export const useNotificationStore = defineStore('notifications', () => {
     loading,
     unreadCount,
     ordersBadge,
+    activationQueueBadge,
     supportBadge,
     awaitingPaymentConfirm,
+    readyForActivation,
     recentlyPaid,
     openSupportTickets,
     soundMuted,

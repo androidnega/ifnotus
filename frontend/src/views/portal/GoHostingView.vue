@@ -4,22 +4,30 @@ import { useRoute, useRouter } from 'vue-router'
 import { customersApi } from '@/api'
 import PortalShell from '@/components/portal/PortalShell.vue'
 import { hostingLocation } from '@/lib/hostingDeepLink'
-import { hostnameNow, isCustomerCpanelHost } from '@/lib/platformHosts'
+import {
+  hostnameNow,
+  isCustomerCpanelHost,
+  isReservedPanelHost,
+  isStaffPanelHost,
+  isTenantSubdomainHost,
+  normalizeGoHostingHost,
+  openTenantFpanel,
+  portalLoginUrl,
+  redirectToPortalAccount,
+  redirectToStaffPanel,
+  staffPanelHref,
+} from '@/lib/platformHosts'
+import { isStaffUser, isPureCustomer } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 const error = ref('')
 const loading = ref(true)
 
 function normalizeHost(raw: string): string {
-  let host = String(raw || '').trim().toLowerCase().replace(/\.$/, '')
-  if (host.startsWith('www.')) host = host.slice(4)
-  if (host.startsWith('fpanel.') && host !== 'fpanel.ifnotus.space') {
-    host = host.slice('fpanel.'.length)
-  } else if (host.startsWith('cpanel.') && host !== 'cpanel.ifnotus.space') {
-    host = host.slice('cpanel.'.length)
-  }
-  return host
+  return normalizeGoHostingHost(String(raw || '').trim())
 }
 
 onMounted(async () => {
@@ -36,8 +44,28 @@ onMounted(async () => {
     loading.value = false
     return
   }
+  if (isReservedPanelHost(host)) {
+    if (isStaffPanelHost()) {
+      redirectToStaffPanel('/panel')
+      return
+    }
+    if (isStaffUser(auth.user) && !isPureCustomer(auth.user)) {
+      redirectToStaffPanel('/panel')
+      return
+    }
+    redirectToPortalAccount('/account')
+    return
+  }
   try {
     const { data } = await customersApi.resolvePanelAlias(String(host))
+    const domain = data.domain || host
+    if (isTenantSubdomainHost(domain)) {
+      const opened = await openTenantFpanel(domain, tab || null, data.environment_id, false)
+      if (!opened) {
+        await router.replace({ name: 'portal-dashboard' })
+      }
+      return
+    }
     await router.replace(hostingLocation(data.environment_id, String(tab || 'overview')))
   } catch (e: unknown) {
     const err = e as { response?: { status?: number; data?: { error?: { message?: string } } } }
@@ -45,10 +73,7 @@ onMounted(async () => {
       const redirect = tab
         ? `/go/hosting?host=${encodeURIComponent(String(host))}&tab=${encodeURIComponent(String(tab))}`
         : `/go/hosting?host=${encodeURIComponent(String(host))}`
-      await router.replace({
-        name: 'login',
-        query: { mode: 'panel', host, redirect },
-      })
+      window.location.href = portalLoginUrl(redirect)
       return
     }
     error.value = err.response?.data?.error?.message ?? 'That control-panel address is not available for this account.'
@@ -63,7 +88,9 @@ onMounted(async () => {
     <div v-else class="box">
       <h1>Not authorized</h1>
       <p>{{ error }}</p>
-      <router-link to="/account">Back to account</router-link>
+      <router-link :to="isStaffPanelHost() ? staffPanelHref('/login') : '/account'">
+        {{ isStaffPanelHost() ? 'Back to staff panel login' : 'Back to account' }}
+      </router-link>
     </div>
   </PortalShell>
 </template>

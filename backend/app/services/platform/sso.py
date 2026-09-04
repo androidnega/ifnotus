@@ -19,7 +19,13 @@ from app.core.security import TokenType, create_token_pair
 from app.models.user import User
 from app.models.platform import Customer, CustomerDomain, CustomerEnvironment
 from app.services.platform.host_routing import classify_host, normalize_host, sanitize_panel_hostname
-from app.services.platform.panel_access import control_panel_hostname, site_cpanel_url
+from app.services.platform.panel_access import (
+    STAFF_PANEL_HOST,
+    _is_subdomain_host,
+    panel_handoff_host,
+    panel_handoff_url,
+    site_cpanel_url,
+)
 
 logger = get_logger(__name__)
 
@@ -162,7 +168,12 @@ class HostingSsoService:
         if not domain_name:
             raise AppException("Hosting environment has no associated domain.", code="env_no_domain")
 
-        fpanel_host = control_panel_hostname(domain_name) or domain_name
+        fpanel_host = panel_handoff_host(domain_name, settings=self._settings) or domain_name
+        if _is_subdomain_host(domain_name, settings=self._settings) and fpanel_host in {
+            STAFF_PANEL_HOST,
+            "cpanel.ifnotus.space",
+        }:
+            fpanel_host = domain_name
         jti = str(uuid.uuid4())
         now = datetime.now(UTC)
         expire = now + timedelta(seconds=SSO_TOKEN_EXPIRY_SECONDS)
@@ -183,9 +194,12 @@ class HostingSsoService:
 
         sso_token = jwt.encode(payload, self._settings.secret_key, algorithm=self._settings.jwt_algorithm)
 
-        handoff_url = f"https://{fpanel_host}/sso?token={sso_token}"
-        if tab:
-            handoff_url += f"&tab={tab}"
+        handoff_url = panel_handoff_url(
+            domain_name,
+            sso_token,
+            tab=tab,
+            settings=self._settings,
+        ) or f"https://{fpanel_host}/sso?token={sso_token}"
 
         return {
             "handoff_url": handoff_url,

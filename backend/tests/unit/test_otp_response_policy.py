@@ -96,8 +96,8 @@ async def test_request_otp_hides_debug_code_when_known_account_and_sms_ok(
 
 
 @pytest.mark.asyncio
-async def test_new_phone_shows_code_without_claiming_sms(production_like_settings) -> None:
-    """Unregistered numbers must show the OTP on-screen — never pretend SMS was sent."""
+async def test_new_phone_sends_sms_and_hides_code(production_like_settings) -> None:
+    """Unregistered numbers must receive a real SMS; never leak the OTP in the API."""
     svc = CustomerService(production_like_settings, MagicMock())
     challenge = SimpleNamespace(challenge_id="ch_new", code="777888", phone="+233248069639")
     send_sms = MagicMock(return_value={"ok": True})
@@ -117,11 +117,11 @@ async def test_new_phone_shows_code_without_claiming_sms(production_like_setting
     ):
         resp = await svc.request_phone_otp(CustomerPhoneOtpRequest(phone="0248069639"))
 
-    send_sms.assert_not_called()
-    assert resp.sms_sent is False
-    assert resp.debug_code == "777888"
+    send_sms.assert_called_once()
+    assert resp.sms_sent is True
+    assert resp.debug_code is None
+    assert "sms" in resp.message.lower()
     assert "not linked" in resp.message.lower()
-    assert "sms" not in resp.message.lower() or "shown" in resp.message.lower()
 
 
 @pytest.mark.asyncio

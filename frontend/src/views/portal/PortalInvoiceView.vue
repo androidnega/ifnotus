@@ -159,10 +159,31 @@ async function submit() {
   try {
     const { data } = await customersApi.submitMomo(order.value.id, id)
     order.value = { ...order.value, ...data }
-    msg.value = 'Thanks. We’ll confirm this payment and activate your hosting.'
+    msg.value = 'Thanks. Billing will confirm this payment and activate your hosting.'
   } catch (e: unknown) {
     const err = e as { response?: { data?: { error?: { message?: string } } } }
     msg.value = err.response?.data?.error?.message ?? 'Could not submit the transaction ID.'
+  } finally {
+    busy.value = false
+  }
+}
+
+async function claimPaid() {
+  if (!order.value) return
+  busy.value = true
+  msg.value = ''
+  try {
+    const id = txn.value.trim()
+    const { data } = id.length >= 6
+      ? await customersApi.submitMomo(order.value.id, id)
+      : await customersApi.claimPayment(order.value.id)
+    order.value = { ...order.value, ...data }
+    msg.value = id.length >= 6
+      ? 'Thanks. Billing will confirm this payment and activate your hosting.'
+      : 'Thanks. We’ve notified billing that you paid — they’ll verify and confirm shortly.'
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { error?: { message?: string } } } }
+    msg.value = err.response?.data?.error?.message ?? 'Could not notify billing about your payment.'
   } finally {
     busy.value = false
   }
@@ -445,6 +466,10 @@ onMounted(load)
 
               <button type="button" class="btn-primary" :disabled="busy" @click="submit">
                 {{ busy ? 'Sending…' : 'I’ve paid — Submit MoMo ID' }}
+              </button>
+
+              <button type="button" class="btn-ghost claim-btn" :disabled="busy" @click="claimPaid">
+                {{ busy ? 'Sending…' : 'I’ve paid — notify billing (no TX ID yet)' }}
               </button>
 
               <p v-if="msg" class="pay-msg" :class="{ ok: msg.includes('Thanks') || msg.includes('copied') || msg.includes('Reference') }">

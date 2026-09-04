@@ -30,6 +30,29 @@ from app.services.platform.notifications import NotificationService
 
 logger = get_logger(__name__)
 
+# Skip build/cache trees that bloat archives without being needed for restore.
+_BACKUP_SKIP_DIR_NAMES = frozenset(
+    {
+        "node_modules",
+        ".git",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".next",
+        ".nuxt",
+        ".cache",
+        ".turbo",
+        ".parcel-cache",
+        "coverage",
+        "htmlcov",
+        ".sass-cache",
+        ".gunicorn",  # runtime sockets / ctl files
+    }
+)
+
 
 class EnvironmentBackupService:
     def __init__(self, settings: Settings, session: AsyncSession) -> None:
@@ -37,11 +60,51 @@ class EnvironmentBackupService:
         self._session = session
         self._db = DatabaseManagerService(settings)
 
+    def _backup_root(self) -> Path:
+        """Stable absolute backup root (never depends on process cwd)."""
+        raw = Path(str(self._settings.operations_backup_dir or ".ifnotus/backups")).expanduser()
+        if raw.is_absolute():
+            return raw
+        backend_root = Path(__file__).resolve().parents[3]  # .../backend
+        platform_root = backend_root.parent  # .../ifnotus
+        preferred = (platform_root / raw).resolve()
+        legacy_backend = (backend_root / raw).resolve()
+        if preferred.exists() or not legacy_backend.exists():
+            return preferred
+        return legacy_backend
+
     def _backup_dir(self, customer_id: UUID) -> Path:
-        path = Path(self._settings.operations_backup_dir) / "customers" / str(customer_id)
+        path = self._backup_root() / "customers" / str(customer_id)
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def _archive_path(self, backup: EnvironmentBackup) -> Path | None:
+        """Resolve on-disk archive for a backup row (absolute or legacy relative)."""
+        name = (backup.filename or "").strip()
+        if not name or name.startswith("offsite:"):
+            return None
+        path = Path(name)
+        if path.exists():
+            return path.resolve()
+        candidates: list[Path] = []
+        if not path.is_absolute():
+            backend_root = Path(__file__).resolve().parents[3]
+            platform_root = backend_root.parent
+            candidates.extend(
+                [
+                    (platform_root / path).resolve(),
+                    (backend_root / path).resolve(),
+                    (Path("/srv/apps/ifnotus") / path).resolve(),
+                    (self._backup_root() / path.name).resolve(),
+                    (self._backup_dir(backup.customer_id) / path.name).resolve(),
+                ]
+            )
+        else:
+            candidates.append(self._backup_dir(backup.customer_id) / path.name)
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return None
     async def get_owned_backup(
         self, customer_id: UUID, environment_id: UUID, backup_id: UUID
     ) -> EnvironmentBackup:
@@ -128,7 +191,12 @@ class EnvironmentBackupService:
             row.status = "queued"
         else:
             # Inline fallback when Redis is down
-            await self.run_backup(row.id)
+            try:
+                await self.run_backup(row.id)
+            except Exception as exc:  # noqa: BLE001
+                row.status = "failed"
+                await self._fail(row, env=env, error=str(exc))
+                raise
         await self._session.flush()
         return row
 
@@ -147,11 +215,8 @@ class EnvironmentBackupService:
         backup = await self.get_owned_backup(customer_id, environment_id, backup_id)
         if backup.status != "success":
             raise ValidationError("Only successful backups can be restored.")
-        if not backup.filename or not Path(backup.filename).exists():
-            # Try off-site fetch before failing
-            recovered = await self._ensure_local_archive(backup)
-            if not recovered:
-                raise AppException("Backup archive file is missing on disk and off-site.")
+        if not await self._ensure_local_archive(backup):
+            raise AppException("Backup archive file is missing on disk and off-site.")
 
         job = PlatformJob(
             job_type="restore_environment_backup",
@@ -246,11 +311,9 @@ class EnvironmentBackupService:
             await self._session.flush()
             return backup
         except Exception as exc:  # noqa: BLE001
-            logger.exception("backup_failed", backup_id=str(backup_id))
+            logger.exception("backup_failed", backup_id=str(backup_id), error=str(exc)[:500])
             backup.status = "failed"
-            # Worker commits failure notify after rollback of this session when queued;
-            # for inline fallback, flush notify here.
-            await self._fail(backup, env=env, error=str(exc))
+            # Worker commits failure notify in a fresh session; avoid double-write here.
             raise
 
     async def run_restore(self, backup_id: UUID, environment_id: UUID) -> dict:
@@ -262,7 +325,10 @@ class EnvironmentBackupService:
             raise AppException("Backup does not belong to this environment.")
         if not await self._ensure_local_archive(backup):
             raise AppException("Backup archive missing on disk and off-site.")
-        archive = Path(backup.filename)
+        archive = self._archive_path(backup)
+        if archive is None:
+            raise AppException("Backup archive missing on disk and off-site.")
+        backup.filename = str(archive)
         ok, err = self.verify_archive_checksum(archive, backup.checksum)
         if not ok:
             raise AppException(
@@ -455,13 +521,24 @@ class EnvironmentBackupService:
             stage = Path(tmp)
             files_dir = stage / "files"
             files_dir.mkdir(parents=True)
-            # Copy tree (follow_symlinks=False to avoid escaping jail)
+
             for child in doc.iterdir():
+                if child.name in _BACKUP_SKIP_DIR_NAMES or child.name.startswith("deploy_backup_"):
+                    continue
                 dest = files_dir / child.name
-                if child.is_dir() and not child.is_symlink():
-                    shutil.copytree(child, dest, symlinks=False, ignore_dangling_symlinks=True)
-                elif child.is_file() and not child.is_symlink():
-                    shutil.copy2(child, dest)
+                try:
+                    if child.is_symlink():
+                        continue
+                    if child.is_dir():
+                        self._copy_tree_safe(child, dest)
+                    elif child.is_file():
+                        shutil.copy2(child, dest)
+                except OSError as exc:
+                    logger.warning(
+                        "backup_skip_entry",
+                        path=str(child),
+                        error=str(exc)[:200],
+                    )
 
             db_meta: dict | None = None
             if env.db_engine and env.db_name:
@@ -504,13 +581,39 @@ class EnvironmentBackupService:
         checksum = self._sha256(archive)
         size = archive.stat().st_size
         meta = {
-            "filename": str(archive),
+            "filename": str(archive.resolve()),
             "checksum": checksum,
             "file_size": size,
             "includes_database": bool(db_meta),
             "domain": env.domain,
         }
-        return archive, checksum, size, meta
+        return archive.resolve(), checksum, size, meta
+
+    def _copy_tree_safe(self, src: Path, dst: Path) -> None:
+        """Copy a directory tree, skipping sockets/FIFOs/devices and skip-list dirs."""
+        import os
+
+        dst.mkdir(parents=True, exist_ok=True)
+        for root, dirs, files in os.walk(src, followlinks=False):
+            rel = Path(root).relative_to(src)
+            # Prune in-place
+            keep_dirs: list[str] = []
+            for name in dirs:
+                if name in _BACKUP_SKIP_DIR_NAMES or name.startswith("deploy_backup_"):
+                    continue
+                keep_dirs.append(name)
+            dirs[:] = keep_dirs
+            target_dir = dst / rel
+            target_dir.mkdir(parents=True, exist_ok=True)
+            for name in files:
+                sp = Path(root) / name
+                dp = target_dir / name
+                try:
+                    if sp.is_symlink() or not sp.is_file():
+                        continue
+                    shutil.copy2(sp, dp)
+                except OSError as exc:
+                    logger.warning("backup_skip_file", path=str(sp), error=str(exc)[:200])
 
     def _dump_database(self, env: CustomerEnvironment, stage: Path) -> dict:
         engine = (env.db_engine or "").lower()
@@ -769,12 +872,24 @@ class EnvironmentBackupService:
         verify: dict = {"attempted": False, "ok": False}
         if result.ok:
             backup.offsite_status = "synced"
-            verify = self._verify_offsite_object(provider, result.key, backup.checksum or "")
-            if verify.get("ok"):
-                backup.offsite_status = "verified"
-            elif verify.get("attempted") and not verify.get("skipped"):
-                # Put succeeded but fetch/verify failed — keep synced, surface error.
-                backup.offsite_status = "synced_unverified"
+            # Full offsite refetch+hash of multi-GB archives can fill /tmp and fail the job
+            # after a successful put. Trust put for large archives; verify smaller ones.
+            large = archive_path.stat().st_size > 512 * 1024 * 1024
+            if large:
+                verify = {
+                    "attempted": False,
+                    "ok": True,
+                    "skipped": True,
+                    "error": "large_archive_skip_refetch",
+                    "bytes": archive_path.stat().st_size,
+                }
+            else:
+                verify = self._verify_offsite_object(provider, result.key, backup.checksum or "")
+                if verify.get("ok"):
+                    backup.offsite_status = "verified"
+                elif verify.get("attempted") and not verify.get("skipped"):
+                    # Put succeeded but fetch/verify failed — keep synced, surface error.
+                    backup.offsite_status = "synced_unverified"
             if not getattr(self._settings, "backup_keep_local_after_offsite", True):
                 try:
                     archive_path.unlink(missing_ok=True)
@@ -838,8 +953,9 @@ class EnvironmentBackupService:
         return True, None
 
     async def _ensure_local_archive(self, backup: EnvironmentBackup) -> bool:
-        path = Path(backup.filename) if backup.filename and not backup.filename.startswith("offsite:") else None
+        path = self._archive_path(backup)
         if path and path.exists():
+            backup.filename = str(path)
             return True
         if not backup.storage_key:
             return False
@@ -851,7 +967,7 @@ class EnvironmentBackupService:
         if not result.ok:
             logger.warning("backup_offsite_fetch_failed", error=result.error, key=backup.storage_key)
             return False
-        backup.filename = str(dest)
+        backup.filename = str(dest.resolve())
         await self._session.flush()
         return dest.exists()
 

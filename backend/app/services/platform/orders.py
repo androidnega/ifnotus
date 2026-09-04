@@ -296,6 +296,50 @@ class OrderService:
         order.momo_transaction_id = txn[:80]
         order.payment_status = "submitted"
         order.payment_method = "momo"
+        await self._mark_payment_submitted(order, txn[:80], source="momo_id")
+        await self._session.flush()
+        return OrderResponse.model_validate(order)
+
+    async def claim_payment_submitted(
+        self,
+        customer_id: UUID,
+        order_id: UUID,
+        *,
+        transaction_id: str | None = None,
+    ) -> OrderResponse:
+        """Customer completed MoMo payment — queue for billing confirmation."""
+        order = await self.get_order(customer_id, order_id)
+        if order.payment_status == "paid":
+            return OrderResponse.model_validate(order)
+        txn = (transaction_id or "").strip()
+        if len(txn) >= 6:
+            return await self.submit_momo_transaction(customer_id, order_id, txn)
+
+        if order.payment_status == "submitted":
+            meta = dict(order.meta_json or {})
+            meta["payment_claimed_at"] = meta.get("payment_claimed_at") or datetime.now(UTC).isoformat()
+            order.meta_json = meta
+            await self._session.flush()
+            return OrderResponse.model_validate(order)
+
+        order.payment_status = "submitted"
+        order.payment_method = order.payment_method or "momo"
+        await self._mark_payment_submitted(order, None, source="customer_claim")
+        await self._session.flush()
+        return OrderResponse.model_validate(order)
+
+    async def _mark_payment_submitted(
+        self,
+        order: Order,
+        txn: str | None,
+        *,
+        source: str,
+    ) -> None:
+        meta = dict(order.meta_json or {})
+        meta["payment_claimed_at"] = datetime.now(UTC).isoformat()
+        if txn:
+            meta["momo_transaction_id"] = txn
+        order.meta_json = meta
         self._session.add(
             PlatformAuditLog(
                 customer_id=order.customer_id,
@@ -304,17 +348,18 @@ class OrderService:
                 target_id=str(order.id),
                 result="success",
                 metadata_json={
-                    "momo_transaction_id": txn[:80],
+                    "momo_transaction_id": txn,
                     "invoice": order.invoice_number,
                     "amount": str(order.total_price),
                     "currency": order.currency,
+                    "source": source,
                 },
             )
         )
         customer = await self._session.get(Customer, order.customer_id)
         if customer:
             title, text, html = email_templates.payment_received(
-                name=customer.full_name, invoice=order.invoice_number or txn
+                name=customer.full_name, invoice=order.invoice_number or (txn or "invoice")
             )
             await NotificationService(self._session, self._settings).notify(
                 customer.id,
@@ -324,12 +369,10 @@ class OrderService:
                 html_body=html,
                 email_subject=f"IFNOTUS — {title}",
                 sms_body=(
-                    f"We received MoMo ID for invoice {order.invoice_number or txn}. "
+                    f"We received your payment notice for invoice {order.invoice_number or order.id}. "
                     f"We'll confirm payment, then activate hosting."
                 ),
             )
-        await self._session.flush()
-        return OrderResponse.model_validate(order)
 
     async def confirm_payment(
         self,
@@ -470,9 +513,37 @@ class OrderService:
         kind = (order.order_kind or "hosting").lower()
         if kind == "domain":
             await self._activate_domain_order(order, actor_id=actor_id)
+        elif kind == "upgrade":
+            # Upgrade orders apply the plan on payment confirm; operator activate is a safe no-op / re-apply.
+            await self._activate_upgrade(order)
+            meta = dict(order.meta_json or {})
+            actions = list(meta.get("audit_history") or [])
+            actions.append({
+                "action": "upgrade_activated",
+                "actor_id": str(actor_id) if actor_id else None,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "domain": order.domain_name,
+            })
+            meta["audit_history"] = actions
+            if actor_id:
+                meta["last_action_by_id"] = str(actor_id)
+                meta["hosting_activated_by_id"] = str(actor_id)
+            order.meta_json = meta
+        elif kind in {"renewal", "credits", "panel_theme"}:
+            raise ValidationError(
+                f"{kind.replace('_', ' ').title()} orders are completed when payment is confirmed — no hosting activate step.",
+                code="activate_not_applicable",
+            )
         else:
             order.provisioning_status = "queued"
-            await self._activate_hosting(order, prefer_inline=True)
+            await self._session.flush()
+            try:
+                await self._activate_hosting(order, prefer_inline=True)
+            except Exception:
+                # Keep the order actionable for the operator after a failed attempt.
+                order.provisioning_status = "ready_for_activation"
+                await self._session.flush()
+                raise
             order.provisioning_status = "active"
 
             meta = dict(order.meta_json or {})
@@ -759,6 +830,47 @@ class OrderService:
         await self._session.refresh(order)
         return OrderResponse.model_validate(order)
 
+    async def create_walk_in_order(
+        self,
+        customer: Customer,
+        *,
+        plan_id: UUID,
+        domain: str | None = None,
+        actor_id: UUID | None = None,
+    ) -> OrderResponse:
+        """Operator-created account: invoice for billing, do not provision yet."""
+        raw = (domain or "").strip().lower().rstrip(".")
+        if raw and "." not in raw:
+            raw = f"{raw}.ifnotus.space"
+        if raw.endswith(".ifnotus.space") or raw.endswith(".serverlabsttu.space"):
+            kind = "student"
+            surname = raw.split(".", 1)[0]
+        elif raw:
+            kind = "own"
+            surname = None
+        else:
+            kind = "register"
+            surname = None
+        body = CreateOrderRequest(
+            plan_id=plan_id,
+            domain_name=raw or None,
+            include_domain=False,
+            domain_kind=kind,
+            student_surname=surname,
+        )
+        created = await self.create_order(customer, body, notify=False)
+        order = await self.get_order(customer.id, created["order"].id)
+        order.payment_status = "submitted"
+        meta = dict(order.meta_json or {})
+        meta["walk_in"] = True
+        meta["created_by_operator"] = True
+        if actor_id:
+            meta["walk_in_actor_id"] = str(actor_id)
+        order.meta_json = meta
+        await self._session.flush()
+        await self._session.refresh(order)
+        return OrderResponse.model_validate(order)
+
     async def provision_for_customer(
         self,
         *,
@@ -944,8 +1056,16 @@ class OrderService:
         await self._session.flush()
         return await self._init_payment(customer, order, amount, purpose="renewal")
 
-    async def create_upgrade_payment(self, customer: Customer, subscription_id: UUID, plan_id: UUID) -> dict:
+    async def create_upgrade_payment(
+        self,
+        customer: Customer,
+        subscription_id: UUID,
+        plan_id: UUID,
+        *,
+        billing_term_months: int | None = None,
+    ) -> dict:
         from app.services.platform.billing import SubscriptionBillingService
+        from app.services.platform.billing_terms_store import BillingTermsStore
 
         billing = SubscriptionBillingService(self._settings, self._session)
         sub = await billing.get_owned(customer.id, subscription_id)
@@ -953,8 +1073,6 @@ class OrderService:
         new_plan = await self._get_plan(plan_id)
         if new_plan.id == old_plan.id:
             raise AppException("Already on this plan.")
-        # Charge full new monthly for upgrades; free path for downgrades handled by caller
-        amount = new_plan.price_monthly
         if new_plan.price_monthly <= old_plan.price_monthly:
             # Downgrade — apply immediately without payment
             await billing.change_plan(customer.id, subscription_id, plan_id)
@@ -967,6 +1085,12 @@ class OrderService:
                 "applied": True,
                 "amount": Decimal("0"),
             }
+        months = int(billing_term_months or getattr(sub, "billing_term_months", None) or 1)
+        term_quote = BillingTermsStore(self._settings).resolve_term(
+            months,
+            monthly_price=new_plan.price_monthly,
+        )
+        amount = term_quote["plan_total"]
         await self._resources.pick_node_for_plan(new_plan)
         order = Order(
             customer_id=customer.id,
@@ -978,7 +1102,18 @@ class OrderService:
             payment_status="pending",
             provisioning_status="n/a",
             order_kind="upgrade",
-            meta_json={"subscription_id": str(sub.id), "from_plan_id": str(old_plan.id)},
+            billing_term_months=int(term_quote["months"]),
+            meta_json={
+                "subscription_id": str(sub.id),
+                "from_plan_id": str(old_plan.id),
+                "to_plan_id": str(new_plan.id),
+                "billing_term_months": int(term_quote["months"]),
+                "term_label": term_quote.get("label"),
+                "monthly_price": float(term_quote["monthly_price"]),
+                "term_subtotal": float(term_quote["subtotal"]),
+                "term_discount_pct": float(term_quote["discount_pct"]),
+                "term_discount_amount": float(term_quote["discount_amount"]),
+            },
             expires_at=datetime.now(UTC) + timedelta(days=7),
         )
         self._session.add(order)
@@ -1320,14 +1455,39 @@ class OrderService:
 
     async def _activate_upgrade(self, order: Order) -> None:
         from app.services.platform.billing import SubscriptionBillingService
+        from app.services.platform.billing_terms_store import add_calendar_months
         from uuid import UUID as _UUID
 
         meta = order.meta_json or {}
-        sub_id = _UUID(str(meta["subscription_id"]))
-        await SubscriptionBillingService(self._settings, self._session).change_plan(
-            order.customer_id, sub_id, order.plan_id
+        sub_id_raw = meta.get("subscription_id")
+        if not sub_id_raw:
+            raise AppException("Upgrade order is missing subscription_id.", code="upgrade_meta_missing")
+        sub_id = _UUID(str(sub_id_raw))
+        billing = SubscriptionBillingService(self._settings, self._session)
+        # Idempotent: live upgrades may already have moved the sub to the target plan
+        # before billing clears payment — do not fail with "Already on this plan."
+        sub = await billing.change_plan(
+            order.customer_id,
+            sub_id,
+            order.plan_id,
+            allow_same=True,
         )
+        months = int(
+            getattr(order, "billing_term_months", None)
+            or meta.get("billing_term_months")
+            or getattr(sub, "billing_term_months", None)
+            or 1
+        )
+        now = datetime.now(UTC)
+        sub.billing_term_months = months
+        sub.status = "active"
+        if sub.started_at is None:
+            sub.started_at = now
+        term_end = add_calendar_months(now, months)
+        if not sub.expires_at or sub.expires_at < term_end:
+            sub.expires_at = term_end
         order.provisioning_status = "active"
+        await self._session.flush()
 
     async def _activate_credits(self, order: Order) -> None:
         meta = order.meta_json or {}

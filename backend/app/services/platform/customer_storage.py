@@ -1,6 +1,6 @@
 """Human-readable customer folder names under customer_environments_root.
 
-Layout: ``/srv/apps/ifnotus-customers/<storage_slug>/<hostname>/public``
+Layout: ``/srv/apps/ifnotus-customers/<storage_slug>/<hostname>/public_html``
 
 ``storage_slug`` is 10–15 lowercase alphanumeric characters derived from the
 account identity (email local part, name, hosting_name). UUID remains the DB id.
@@ -174,7 +174,7 @@ def environment_public_root(
         customer_id=customer.id,
         storage_slug=getattr(customer, "storage_slug", None),
     )
-    return str(prefix / hostname / "public")
+    return str(prefix / hostname / "public_html")
 
 
 def purge_customer_storage(

@@ -22,6 +22,9 @@ def test_framework_catalog_includes_entitlements() -> None:
     assert "laravel" in FRAMEWORKS
     assert FRAMEWORKS["fastapi"].runtime == "python"
     assert FRAMEWORKS["laravel"].stack_key == "laravel"
+    assert FRAMEWORKS["laravel"].runtime == "php"
+    assert FRAMEWORKS["laravel"].needs_proxy is False
+    assert not FRAMEWORKS["laravel"].default_start
 
 
 def test_supervisor_program_name_is_stable() -> None:

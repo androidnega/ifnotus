@@ -32,21 +32,42 @@ class TestDomainRoutingAndSso(unittest.TestCase):
         self.assertEqual(site_cpanel_url(domain), "https://fpanel.yalleydadzie.online/")
         self.assertEqual(site_cpanel_url(domain, tab="files"), "https://fpanel.yalleydadzie.online/files")
         self.assertEqual(site_cpanel_shortcut_url(domain), "https://yalleydadzie.online/fpanel")
-        self.assertEqual(site_webmail_url(domain), "https://webmail.yalleydadzie.online")
-        self.assertEqual(site_mail_url(domain), "https://webmail.yalleydadzie.online")
+        self.assertEqual(site_webmail_url(domain), "https://yalleydadzie.online/mail")
+        self.assertEqual(site_mail_url(domain), "https://yalleydadzie.online/mail")
 
         # 2. Additional custom domains (e.g. adastrachambers.com)
         domain2 = "adastrachambers.com"
         self.assertEqual(control_panel_hostname(domain2), "fpanel.adastrachambers.com")
         self.assertEqual(webmail_hostname(domain2), "webmail.adastrachambers.com")
         self.assertEqual(site_cpanel_url(domain2), "https://fpanel.adastrachambers.com/")
-        self.assertEqual(site_webmail_url(domain2), "https://webmail.adastrachambers.com")
-        self.assertEqual(site_mail_url(domain2), "https://webmail.adastrachambers.com")
+        self.assertEqual(site_webmail_url(domain2), "https://adastrachambers.com/mail")
+        self.assertEqual(site_mail_url(domain2), "https://adastrachambers.com/mail")
 
         # 3. Subdomains do not generate fpanel.<subdomain>
         subdomain = "blog.yalleydadzie.online"
         self.assertEqual(control_panel_hostname(subdomain), "fpanel.yalleydadzie.online")
         self.assertEqual(webmail_hostname(subdomain), "webmail.yalleydadzie.online")
+
+        # 4. Platform subdomains use same-host /hosting/
+        platform_sub = "media1.ifnotus.space"
+        from app.services.platform.panel_access import panel_handoff_host, panel_handoff_url
+
+        self.assertEqual(panel_handoff_host(platform_sub), "media1.ifnotus.space")
+        handoff = panel_handoff_url(platform_sub, "abc")
+        self.assertIn("media1.ifnotus.space/hosting/sso?token=", handoff or "")
+        # Platform / student hosts use same-host /mail — never bounce to mail.ifnotus.space
+        self.assertIsNone(webmail_hostname(platform_sub))
+        self.assertIsNone(webmail_hostname("examflow.ifnotus.space"))
+        self.assertEqual(webmail_hostname("webmail.ifnotus.space"), "mail.ifnotus.space")
+        self.assertEqual(webmail_hostname("ifnotus.space"), "mail.ifnotus.space")
+        self.assertEqual(site_webmail_url(platform_sub), "https://media1.ifnotus.space/mail")
+        self.assertEqual(site_webmail_url("examflow.ifnotus.space"), "https://examflow.ifnotus.space/mail")
+        self.assertEqual(site_mail_url("examflow.ifnotus.space"), "https://examflow.ifnotus.space/mail")
+        self.assertEqual(site_webmail_url("ifnotus.space"), "https://mail.ifnotus.space/")
+        self.assertEqual(site_webmail_url("fpanel.ifnotus.space"), "https://mail.ifnotus.space/")
+        # Custom apex still has optional webmail.* hostname for DNS, but /mail is the site entry.
+        self.assertEqual(site_webmail_url("yalleydadzie.online"), "https://yalleydadzie.online/mail")
+        self.assertEqual(site_mail_url(domain), "https://yalleydadzie.online/mail")
 
     def test_ssl_issue_domain_names(self):
         domain_mock = MagicMock()

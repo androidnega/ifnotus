@@ -312,9 +312,12 @@ class SslService:
             else:
                 args.append("--register-unsafely-without-email")
             webroot = body.webroot or await self._resolve_webroot(entity, nginx_root=nginx.root, ensure=True)
+            # Nginx ACME challenges for customer sites are always served from the shared
+            # letsencrypt webroot (see DomainNginxProvisioner). Using the site document_root
+            # causes LE http-01 404s and rate limits.
+            webroot = ACME_WEBROOT
+            Path(webroot).mkdir(parents=True, exist_ok=True)
             if self.is_ifnotus_hostname(domain):
-                webroot = ACME_WEBROOT
-                Path(webroot).mkdir(parents=True, exist_ok=True)
                 await asyncio.sleep(1)
             if not webroot or not Path(webroot).is_dir():
                 return OperationResult(

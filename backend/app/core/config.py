@@ -162,6 +162,7 @@ class Settings(BaseSettings):
     mail_vmail_dir: str = "/var/vmail"
     mail_vmail_root: str = "/var/vmail"
     terminal_command_timeout: int = 30
+    terminal_hosting_timeout: int = 180
     terminal_max_output_bytes: int = 65536
     file_upload_chunk_size: int = 2_097_152
     file_upload_temp_dir: str = ".ifnotus/upload-sessions"

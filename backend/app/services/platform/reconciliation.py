@@ -30,6 +30,17 @@ class EnvironmentReconciliationService:
 
     async def reconcile_all_active_environments(self) -> list[dict[str, Any]]:
         """Reconcile DNS zones, fPanel Nginx vhosts, and document roots for all active environments."""
+        try:
+            self._nginx.ensure_diagnostic_error_pages()
+            patched = self._nginx.patch_managed_sites_diagnostics()
+            if patched:
+                reports.append({"diagnostic_error_pages_patched": patched})
+                reload = await self._nginx._sites.reload()  # noqa: SLF001
+                if not reload.success:
+                    reports.append({"diagnostic_error_pages_reload": reload.message})
+        except OSError as exc:
+            logger.warning("diagnostic_error_pages_failed", error=str(exc)[:200])
+
         stmt = select(CustomerEnvironment).where(
             CustomerEnvironment.status.in_(["active", "provisioning", "degraded", "pending", "ready"])
         )

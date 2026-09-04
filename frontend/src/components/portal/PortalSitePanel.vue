@@ -8,7 +8,7 @@ import ServiceBrandMark from '@/components/dashboard/ServiceBrandMark.vue'
 import PortalMailPanel from '@/components/portal/PortalMailPanel.vue'
 import PortalDomainTools from '@/components/portal/PortalDomainTools.vue'
 import UiTabBar from '@/components/ui/UiTabBar.vue'
-import { envCan, visibleStacks } from '@/lib/planMatrix'
+import { envCan, packStacksForDisplay, planMatrix, type FeatureLevel } from '@/lib/planMatrix'
 import { SITE_WORKSPACE_TABS } from '@/lib/uiRegistry'
 import { isCustomerCpanelHost, tenantCpanelUrl } from '@/lib/platformHosts'
 import { getApiErrorMessage } from '@/lib/apiError'
@@ -16,6 +16,16 @@ import { getApiErrorMessage } from '@/lib/apiError'
 const props = defineProps<{
   environments: CustomerEnvironment[]
   activeEnv: CustomerEnvironment
+  /** Domains on this hosting only (primary + addons + subdomains). */
+  hostingDomains?: Array<{
+    domain_name: string
+    domain_type?: string
+    is_primary?: boolean
+  }>
+  /** Enforced resource labels for the Site header (prefer live/policy over stale env rows). */
+  displayCpu?: string | null
+  displayRam?: string | null
+  displayStorageGb?: number | string | null
   activePlan?: HostingPlan | null
   initialTab?: 'files' | 'stack' | 'applications' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail' | 'git' | ''
   hideSubnav?: boolean
@@ -31,6 +41,7 @@ const props = defineProps<{
     icon?: string
     level?: string
     one_click?: boolean
+    allowed?: boolean
   }>
   selectedStack: string
   currentStack: Record<string, unknown> | null
@@ -57,6 +68,12 @@ const props = defineProps<{
     status: string
     port?: number | null
     slug?: string | null
+    app_root?: string | null
+    app_root_display?: string | null
+    uses_site_root?: boolean
+    serve_url?: string | null
+    log_path?: string | null
+    message?: string | null
   }>
   appCatalog?: Array<{
     id: string
@@ -74,6 +91,19 @@ const props = defineProps<{
   newAppGitUrl?: string
   newAppPythonModule?: string
   newAppPythonObject?: string
+  newAppRootPlacement?: 'apps' | 'home' | 'public_html'
+  newAppServeAtDomain?: boolean
+  newAppLogPath?: string
+  showAppCreateForm?: boolean
+  editingAppId?: string | null
+  editAppName?: string
+  editAppLogPath?: string
+  editAppPythonModule?: string
+  editAppPythonObject?: string
+  editAppServeAtDomain?: boolean
+  editAppRuntimeVersion?: string | null
+  editAppEnvVars?: Array<{ key: string; value: string }>
+  newAppEnvVars?: Array<{ key: string; value: string }>
   cronJobs: Array<{
     id: string
     schedule: string
@@ -239,16 +269,45 @@ const props = defineProps<{
     environment_id?: string
     configured?: boolean
     path?: string
+    home_display?: string
+    repos_limit?: number | null
     branch?: string | null
     commit?: string | null
     remote?: string | null
     dirty?: boolean
     message?: string
+    repositories?: Array<{
+      id: string
+      name: string
+      path: string
+      path_display: string
+      configured: boolean
+      branch?: string | null
+      commit?: string | null
+      commit_full?: string | null
+      author?: string | null
+      author_email?: string | null
+      committed_at?: string | null
+      message?: string | null
+      remote?: string | null
+      dirty?: boolean
+      clone_url?: string | null
+    }>
   } | null
   gitBusy?: boolean
   gitMsg?: string
   gitCloneUrl?: string
   gitCloneBranch?: string
+  gitView?: 'list' | 'create' | 'history'
+  gitCloneRemote?: boolean
+  gitRepoName?: string
+  gitRepoPath?: string
+  gitCreateAnother?: boolean
+  gitServeAsWebsite?: boolean
+  gitExpandedId?: string | null
+  gitSearch?: string
+  gitHistory?: Array<{ commit: string; committed_at: string; author: string; message: string }>
+  gitHistoryPath?: string
 }>()
 
 const emit = defineEmits<{
@@ -293,9 +352,21 @@ const emit = defineEmits<{
   updateDbSql: [string]
   loadGitStatus: []
   cloneGitRepo: []
-  pullGitRepo: []
+  activateGitWebsite: [string]
+  pullGitRepo: [string?]
+  loadGitHistory: [string]
+  removeGitRepo: [string]
+  openHostingTab: [string]
   'update:gitCloneUrl': [string]
   'update:gitCloneBranch': [string]
+  'update:gitView': ['list' | 'create' | 'history']
+  'update:gitCloneRemote': [boolean]
+  'update:gitRepoName': [string]
+  'update:gitRepoPath': [string]
+  'update:gitCreateAnother': [boolean]
+  'update:gitServeAsWebsite': [boolean]
+  'update:gitExpandedId': [string | null]
+  'update:gitSearch': [string]
   loadFtp: [boolean?]
   ensureFtp: [boolean?]
   loadSftp: [boolean?]
@@ -320,6 +391,13 @@ const emit = defineEmits<{
   loadApplications: []
   createApplication: []
   deployApplication: [string]
+  restartApplication: [string]
+  stopApplication: [string]
+  startApplication: [string]
+  refreshApplication: [string]
+  editApplication: [string]
+  saveEditApplication: []
+  cancelEditApplication: []
   deleteApplication: [string]
   'update:newAppName': [string]
   'update:newAppFramework': [string]
@@ -327,14 +405,100 @@ const emit = defineEmits<{
   'update:newAppGitUrl': [string]
   'update:newAppPythonModule': [string]
   'update:newAppPythonObject': [string]
+  'update:newAppRootPlacement': ['apps' | 'home' | 'public_html']
+  'update:newAppServeAtDomain': [boolean]
+  'update:newAppLogPath': [string]
+  'update:showAppCreateForm': [boolean]
+  'update:editAppName': [string]
+  'update:editAppLogPath': [string]
+  'update:editAppPythonModule': [string]
+  'update:editAppPythonObject': [string]
+  'update:editAppServeAtDomain': [boolean]
+  'update:editAppRuntimeVersion': [string]
+  addEnvVarRow: ['new' | 'edit']
+  removeEnvVarRow: ['new' | 'edit', number]
+  updateEnvVarRow: ['new' | 'edit', number, 'key' | 'value', string]
 }>()
 
 const siteTab = ref<'files' | 'stack' | 'applications' | 'cron' | 'database' | 'protect' | 'ftp' | 'logs' | 'mail' | 'git'>('stack')
-const appFamily = ref<'python' | 'nodejs' | ''>('')
+const appFamily = ref<'python' | 'nodejs' | 'php' | ''>('')
+const appHelpPage = ref<'hub' | null>('hub')
 const copiedKey = ref('')
 const customDomainInput = ref('')
 const assignPick = ref('')
 const dnsConnectMode = ref<'nameserver' | 'a_record'>('nameserver')
+
+/** Domains attached to this hosting (primary + addon + subdomain) — never other account hostings. */
+const siteDomainOptions = computed(() => {
+  const fromHosting = (props.hostingDomains || [])
+    .map((d) => ({
+      name: String(d.domain_name || '').trim().toLowerCase(),
+      type: String(d.domain_type || (d.is_primary ? 'primary' : 'addon')).toLowerCase(),
+      isPrimary: Boolean(d.is_primary) || String(d.domain_type || '').toLowerCase() === 'primary',
+    }))
+    .filter((d) => d.name)
+  if (fromHosting.length) {
+    const seen = new Set<string>()
+    return fromHosting.filter((d) => {
+      if (seen.has(d.name)) return false
+      seen.add(d.name)
+      return true
+    })
+  }
+  // Fallback before domain-items load: only the active hosting's primary domain.
+  const primary = String(props.activeEnv?.domain || '').trim().toLowerCase()
+  return primary ? [{ name: primary, type: 'primary', isPrimary: true }] : []
+})
+
+const selectedSiteDomain = ref('')
+
+watch(
+  siteDomainOptions,
+  (opts) => {
+    if (!opts.length) {
+      selectedSiteDomain.value = ''
+      return
+    }
+    const primary = opts.find((d) => d.isPrimary)?.name || opts[0]?.name || ''
+    // Prefer primary whenever selection is empty or no longer on this hosting.
+    if (!selectedSiteDomain.value || !opts.some((d) => d.name === selectedSiteDomain.value)) {
+      selectedSiteDomain.value = primary
+    }
+  },
+  { immediate: true },
+)
+
+watch(
+  () => props.activeEnv?.id,
+  () => {
+    const primary =
+      siteDomainOptions.value.find((d) => d.isPrimary)?.name ||
+      String(props.activeEnv?.domain || '').trim().toLowerCase()
+    if (primary) selectedSiteDomain.value = primary
+  },
+)
+
+const displaySiteDomain = computed(
+  () => selectedSiteDomain.value || String(props.activeEnv?.domain || '').trim().toLowerCase(),
+)
+
+const displayCpuLabel = computed(
+  () => props.displayCpu || formatCpu(props.activeEnv?.cpu_limit ?? props.activePlan?.cpu_cores ?? 0),
+)
+const displayRamLabel = computed(
+  () =>
+    props.displayRam ||
+    formatRamGb(Number(props.activePlan?.ram_gb ?? props.activeEnv?.ram_limit_gb ?? 0)),
+)
+const displayStorageLabel = computed(
+  () => props.displayStorageGb ?? props.activeEnv?.storage_limit_gb ?? props.activePlan?.storage_gb ?? '—',
+)
+
+function onSiteDomainChange(domain: string) {
+  const name = domain.trim().toLowerCase()
+  if (!name) return
+  selectedSiteDomain.value = name
+}
 
 function confirmClear(dropDatabase = false) {
   const msg = dropDatabase
@@ -342,6 +506,15 @@ function confirmClear(dropDatabase = false) {
     : 'Clear this site’s installation files? You can install a fresh stack afterward. This only affects this environment.'
   if (!confirm(msg)) return
   emit('clearStack', dropDatabase)
+}
+
+function gitFileManagerPath(pathDisplay: string) {
+  const home = String(props.gitStatus?.home_display || '').replace(/\/$/, '')
+  if (home && pathDisplay.startsWith(home)) {
+    const rel = pathDisplay.slice(home.length).replace(/^\//, '')
+    return rel || '.'
+  }
+  return '.'
 }
 
 function openFileManager(path = '.') {
@@ -382,7 +555,8 @@ watch(
       tab === 'protect' ||
       tab === 'ftp' ||
       tab === 'logs' ||
-      tab === 'mail'
+      tab === 'mail' ||
+      tab === 'git'
     ) {
       siteTab.value = tab
     } else {
@@ -409,13 +583,53 @@ watch(siteTab, (tab) => {
   if (tab === 'git') emit('loadGitStatus')
 })
 
-const packStacks = computed(() => {
-  const all = visibleStacks(props.activePlan)
-  // Cleanly display only active/included runtimes for this pack, removing unneeded cluttered limited placeholders
-  return all.filter((s) => s.level !== 'limited')
+const RUNTIME_CHIP_HIDE = new Set(['mysql', 'postgres', 'mongodb', 'redis', 'docker'])
+const packStacks = computed(() =>
+  packStacksForDisplay(props.activePlan).filter((s) => !RUNTIME_CHIP_HIDE.has(s.id)),
+)
+const ONE_CLICK_STACK_IDS = new Set(['static', 'wordpress', 'laravel', 'nodejs'])
+
+function matrixKeyForInstall(id: string) {
+  if (id === 'static') return 'php'
+  if (id === 'express') return 'nodejs'
+  return id
+}
+
+const installStacks = computed(() => {
+  const matrix = planMatrix(props.activePlan)
+  const envStacks = (props.activeEnv?.capabilities?.stacks || {}) as Record<string, string>
+  const on = props.activeEnv?.capabilities?.on || {}
+  return (props.stacks || [])
+    .map((s) => {
+      const key = matrixKeyForInstall(s.id)
+      const fromEnv = envStacks[key] || envStacks[s.id]
+      const fromMatrix = matrix.stacks[key as keyof typeof matrix.stacks]
+      let level = String(fromEnv || s.level || fromMatrix || 'no') as FeatureLevel
+      if (on[key] === false || on[s.id] === false) level = 'no'
+      if (s.id === 'static' && (matrix.stacks.php === 'yes' || matrix.stacks.php === 'limited' || on.php !== false)) {
+        if (level === 'no') level = (matrix.stacks.php as FeatureLevel) || 'yes'
+      }
+      const allowed = s.allowed !== false && level === 'yes'
+      const oneClick = s.one_click === true || (s.one_click !== false && ONE_CLICK_STACK_IDS.has(s.id))
+      return { ...s, level, allowed, oneClick }
+    })
+    .filter((s) => s.level !== 'no')
 })
+
+const selectedInstall = computed(() => installStacks.value.find((s) => s.id === props.selectedStack) || installStacks.value[0] || null)
 const canFiles = computed(() => envCan(props.activeEnv, 'file_manager'))
 const canGit = computed(() => envCan(props.activeEnv, 'git'))
+const gitRepos = computed(() => {
+  const q = String(props.gitSearch || '').trim().toLowerCase()
+  const rows = props.gitStatus?.repositories || []
+  if (!q) return rows
+  return rows.filter(
+    (r) =>
+      r.name.toLowerCase().includes(q) ||
+      (r.path_display || '').toLowerCase().includes(q) ||
+      (r.branch || '').toLowerCase().includes(q),
+  )
+})
 const canCron = computed(() => envCan(props.activeEnv, 'cron'))
 const canDb = computed(() => envCan(props.activeEnv, 'db_manage'))
 const canMail = computed(() => envCan(props.activeEnv, 'mail'))
@@ -432,9 +646,18 @@ const NODE_FRAMEWORKS = [
   { id: 'nodejs', label: 'Node.js' },
 ] as const
 const NODE_RUNTIME_VERSIONS = ['18', '20', '22']
+const PHP_FRAMEWORKS = [
+  { id: 'laravel', label: 'Laravel' },
+  { id: 'php', label: 'PHP' },
+] as const
+const PHP_RUNTIME_VERSIONS = ['8.1', '8.2', '8.3']
 
-const activeFrameworkList = computed(() => (appFamily.value === 'nodejs' ? NODE_FRAMEWORKS : PYTHON_FRAMEWORKS))
-const pythonFrameworkOptions = computed(() =>
+const activeFrameworkList = computed(() => {
+  if (appFamily.value === 'nodejs') return NODE_FRAMEWORKS
+  if (appFamily.value === 'php') return PHP_FRAMEWORKS
+  return PYTHON_FRAMEWORKS
+})
+const familyFrameworkOptions = computed(() =>
   activeFrameworkList.value.map((fw) => {
     const catalog = (props.appCatalog || []).find((item) => String(item.id).toLowerCase() === fw.id)
     return {
@@ -446,19 +669,26 @@ const pythonFrameworkOptions = computed(() =>
           ? catalog.runtime_versions
           : appFamily.value === 'nodejs'
             ? NODE_RUNTIME_VERSIONS
-            : PYTHON_RUNTIME_VERSIONS,
+            : appFamily.value === 'php'
+              ? PHP_RUNTIME_VERSIONS
+              : PYTHON_RUNTIME_VERSIONS,
     }
   }),
 )
-const selectedPythonFramework = computed(
-  () => pythonFrameworkOptions.value.find((item) => item.id === props.newAppFramework) || pythonFrameworkOptions.value[0] || null,
+const selectedFamilyFramework = computed(
+  () => familyFrameworkOptions.value.find((item) => item.id === props.newAppFramework) || familyFrameworkOptions.value[0] || null,
 )
 
-const pythonRuntimeOptions = computed(() => {
-  const fw = selectedPythonFramework.value
-  const fallback = appFamily.value === 'nodejs' ? NODE_RUNTIME_VERSIONS : PYTHON_RUNTIME_VERSIONS
+const familyRuntimeOptions = computed(() => {
+  const fw = selectedFamilyFramework.value
+  const fallback =
+    appFamily.value === 'nodejs'
+      ? NODE_RUNTIME_VERSIONS
+      : appFamily.value === 'php'
+        ? PHP_RUNTIME_VERSIONS
+        : PYTHON_RUNTIME_VERSIONS
   const versions = fw?.runtime_versions?.length ? fw.runtime_versions : fallback
-  const recommended = appFamily.value === 'nodejs' ? '20' : '3.12'
+  const recommended = appFamily.value === 'nodejs' ? '20' : appFamily.value === 'php' ? '8.3' : '3.12'
   return versions.map((version) => ({
     runtime_version: String(version),
     allowed: fw?.allowed ?? true,
@@ -467,13 +697,13 @@ const pythonRuntimeOptions = computed(() => {
 })
 
 watch(
-  () => [props.newAppFramework, props.newAppRuntimeVersion, pythonRuntimeOptions.value],
+  () => [props.newAppFramework, props.newAppRuntimeVersion, familyRuntimeOptions.value],
   () => {
-    if (!pythonRuntimeOptions.value.length) return
+    if (!familyRuntimeOptions.value.length) return
     const current = String(props.newAppRuntimeVersion || '').trim()
-    const hasCurrent = current && pythonRuntimeOptions.value.some((o) => String(o.runtime_version) === current)
+    const hasCurrent = current && familyRuntimeOptions.value.some((o) => String(o.runtime_version) === current)
     if (hasCurrent) return
-    const first = pythonRuntimeOptions.value.find((o) => o.allowed)?.runtime_version || pythonRuntimeOptions.value[0]?.runtime_version
+    const first = familyRuntimeOptions.value.find((o) => o.allowed)?.runtime_version || familyRuntimeOptions.value[0]?.runtime_version
     if (first && first !== current) emit('update:newAppRuntimeVersion', String(first))
   },
   { immediate: true },
@@ -493,32 +723,124 @@ const nodeApplications = computed(() =>
     return runtime === 'nodejs' || ['nodejs', 'express', 'react', 'vue'].includes(framework)
   }),
 )
+const phpApplications = computed(() =>
+  (props.applications || []).filter((app) => {
+    const runtime = String(app.runtime || '').toLowerCase()
+    const framework = String(app.framework || '').toLowerCase()
+    if (['wordpress', 'static'].includes(framework)) return false
+    return runtime === 'php' || ['php', 'laravel'].includes(framework)
+  }),
+)
 const familyApplications = computed(() => {
   if (appFamily.value === 'nodejs') return nodeApplications.value
+  if (appFamily.value === 'php') return phpApplications.value
   if (appFamily.value === 'python') return pythonApplications.value
-  return [...pythonApplications.value, ...nodeApplications.value]
+  return []
 })
+
+function isPhpManagedApp(app: { runtime?: string | null; framework?: string | null }) {
+  const runtime = String(app.runtime || '').toLowerCase()
+  const framework = String(app.framework || '').toLowerCase()
+  return runtime === 'php' || ['php', 'laravel'].includes(framework)
+}
+
+function isPythonManagedApp(app: { runtime?: string | null; framework?: string | null }) {
+  const runtime = String(app.runtime || '').toLowerCase()
+  const framework = String(app.framework || '').toLowerCase()
+  return runtime === 'python' || ['python', 'fastapi', 'flask', 'django'].includes(framework)
+}
+
+function openFamilyForApp(app: { runtime?: string | null; framework?: string | null }) {
+  const runtime = String(app.runtime || '').toLowerCase()
+  const framework = String(app.framework || '').toLowerCase()
+  if (runtime === 'nodejs' || ['nodejs', 'express', 'react', 'vue'].includes(framework)) {
+    appFamily.value = 'nodejs'
+  } else if (runtime === 'php' || ['php', 'laravel'].includes(framework)) {
+    appFamily.value = 'php'
+  } else if (runtime === 'python' || ['python', 'fastapi', 'flask', 'django'].includes(framework)) {
+    appFamily.value = 'python'
+  }
+  appHelpPage.value = null
+}
 
 watch(
   () => props.newAppFramework,
   (fw) => {
-    const allowed = [...PYTHON_FRAMEWORKS, ...NODE_FRAMEWORKS].some((item) => item.id === fw)
+    // Blank module/object = auto-detect on create/deploy; do not force framework defaults.
+    const allowed = [...PYTHON_FRAMEWORKS, ...NODE_FRAMEWORKS, ...PHP_FRAMEWORKS].some((item) => item.id === fw)
     if (!allowed) {
-      emit('update:newAppFramework', appFamily.value === 'nodejs' ? 'express' : 'fastapi')
+      emit(
+        'update:newAppFramework',
+        appFamily.value === 'nodejs' ? 'express' : appFamily.value === 'php' ? 'laravel' : 'fastapi',
+      )
     }
   },
   { immediate: true },
 )
 
-function openAppFamily(family: 'python' | 'nodejs') {
+function openAppFamily(family: 'python' | 'nodejs' | 'php') {
+  startAppFamily(family)
+}
+
+function startAppFamily(family: 'python' | 'nodejs' | 'php') {
+  appHelpPage.value = null
   appFamily.value = family
-  emit('update:newAppFramework', family === 'nodejs' ? 'express' : 'fastapi')
-  emit('update:newAppRuntimeVersion', family === 'nodejs' ? '20' : '3.12')
+  emit(
+    'update:newAppFramework',
+    family === 'nodejs' ? 'express' : family === 'php' ? 'laravel' : 'fastapi',
+  )
+  emit('update:newAppRuntimeVersion', family === 'nodejs' ? '20' : family === 'php' ? '8.3' : '3.12')
+  emit('update:showAppCreateForm', false)
 }
 
 function closeAppFamily() {
   appFamily.value = ''
+  appHelpPage.value = 'hub'
+  emit('update:showAppCreateForm', false)
 }
+
+const familyTitle = computed(() => {
+  if (appFamily.value === 'nodejs') return 'Node.js Applications'
+  if (appFamily.value === 'php') return 'PHP & Laravel Applications'
+  return 'Python Applications'
+})
+
+const familyBlurb = computed(() => {
+  if (appFamily.value === 'nodejs') {
+    return 'Active Node apps on this hosting. Create another when you need a new project folder.'
+  }
+  if (appFamily.value === 'php') {
+    return 'Laravel and PHP apps are served by Nginx + PHP-FPM (document root), not the Python/Node process tunnel.'
+  }
+  return 'Active Python apps on this hosting. Create another when you need a new project folder.'
+})
+
+const familyRuntimeLabel = computed(() => {
+  if (appFamily.value === 'nodejs') return 'Node version'
+  if (appFamily.value === 'php') return 'PHP version'
+  return 'Python version'
+})
+
+/** Kept for edit panels that still reference python* names for Python apps only. */
+const pythonRuntimeOptions = familyRuntimeOptions
+const pythonFrameworkOptions = familyFrameworkOptions
+
+const appRootTreePreview = computed(() => {
+  const home = props.activeEnv?.hosting_name || 'user'
+  const slug = (props.newAppName || '').trim() || 'student-api'
+  const placement = props.newAppRootPlacement || 'apps'
+  if (placement === 'public_html') {
+    return `(/home3/${home})\n  ├── public_html/   ← this app (domain root)\n  ├── apps/\n  └── …`
+  }
+  if (placement === 'home') {
+    return `(/home3/${home})\n  ├── public_html/\n  ├── ${slug}/   ← this app\n  └── …`
+  }
+  return `(/home3/${home})\n  ├── public_html/\n  ├── apps/\n  │     └── ${slug}/   ← this app\n  └── …`
+})
+
+const passengerLogPlaceholder = computed(
+  () => `/home3/${props.activeEnv?.hosting_name || 'user'}/logs/passenger.log`,
+)
 
 const siteTabItems = computed(() =>
   SITE_WORKSPACE_TABS.filter((t) => {
@@ -907,26 +1229,26 @@ function formatBytes(n?: number | null) {
     <header class="site-head">
       <div>
         <p class="eyebrow">Site</p>
-        <h2>{{ activeEnv.domain || 'Your site' }}</h2>
+        <h2>{{ displaySiteDomain || 'Your site' }}</h2>
         <p class="muted">
-          {{ formatCpu(activeEnv.cpu_limit) }} vCPU · {{ formatRamGb(activeEnv.ram_limit_gb) }} ·
-          {{ activeEnv.storage_limit_gb }} GB · {{ activePlan?.name || 'Plan' }}
+          {{ displayCpuLabel }} vCPU · {{ displayRamLabel }} ·
+          {{ displayStorageLabel }} GB · {{ activePlan?.name || 'Plan' }}
         </p>
       </div>
       <div class="head-actions">
         <select
           class="select"
-          :value="activeEnv.id"
-          @change="emit('selectEnv', ($event.target as HTMLSelectElement).value)"
+          :value="displaySiteDomain"
+          @change="onSiteDomainChange(($event.target as HTMLSelectElement).value)"
         >
-          <option v-for="env in environments" :key="env.id" :value="env.id">
-            {{ env.domain || env.id }}
+          <option v-for="d in siteDomainOptions" :key="d.name" :value="d.name">
+            {{ d.name }}{{ d.isPrimary ? '' : d.type === 'subdomain' ? ' (subdomain)' : ' (addon)' }}
           </option>
         </select>
         <a
-          v-if="activeEnv.domain"
+          v-if="displaySiteDomain"
           class="btn-ghost"
-          :href="publicSiteUrl(activeEnv.domain)"
+          :href="publicSiteUrl(displaySiteDomain)"
           target="_blank"
           rel="noopener"
         >Open site</a>
@@ -962,189 +1284,246 @@ function formatBytes(n?: number | null) {
     <div v-else-if="siteTab === 'git' && !canGit" class="block">
       <p>{{ packLocked('Git Version Control') }}</p>
     </div>
-    <div v-else-if="siteTab === 'git'" class="block git-panel-section">
-      <div class="git-head">
+    <div v-else-if="siteTab === 'git'" class="block git-vc">
+      <div class="git-vc-head">
         <div>
-          <div class="git-title-row">
-            <span class="git-badge"><i class="fa-brands fa-git-alt" /> Version Control</span>
-            <h3>Git Deployment Pipeline</h3>
-          </div>
+          <h3>Git™ Version Control</h3>
           <p class="muted">
-            Connect your GitHub, GitLab, or Git repository directly to this website. Pull latest code on-demand without manual FTP uploads.
+            Create and manage Git repositories, clone remotes, and pull updates into this hosting account.
+            <template v-if="gitStatus?.repos_limit === 1"> This package includes 1 repository.</template>
+            <template v-else-if="gitStatus?.repos_limit"> This package includes up to {{ gitStatus.repos_limit }} repositories.</template>
           </p>
         </div>
-        <div class="git-head-actions">
-          <button
-            type="button"
-            class="btn-ghost"
-            @click="openStackGuide('git')"
-          >
-            <i class="fas fa-circle-info text-primary" /> (i) Git Guide
-          </button>
-          <button
-            type="button"
-            class="btn-ghost"
-            :disabled="gitBusy"
-            @click="emit('loadGitStatus')"
-          >
-            <i class="fas fa-rotate" :class="{ 'fa-spin': gitBusy }" /> Refresh Status
-          </button>
-        </div>
+        <button
+          v-if="gitView !== 'create'"
+          type="button"
+          class="btn-primary"
+          @click="emit('update:gitView', 'create')"
+        >
+          Create
+        </button>
       </div>
 
-      <!-- Action Message / Feedback -->
+      <p class="git-crumbs">
+        <button type="button" class="text-btn" @click="emit('update:gitView', 'list')">List Repositories</button>
+        <span v-if="gitView === 'create'"> / Create Repository</span>
+        <span v-else-if="gitView === 'history'"> / History</span>
+      </p>
+
       <div v-if="gitMsg" class="git-alert-bar mt" :class="{ 'is-err': gitMsg.toLowerCase().includes('failed') || gitMsg.toLowerCase().includes('error') }">
-        <i class="fas" :class="gitMsg.toLowerCase().includes('failed') || gitMsg.toLowerCase().includes('error') ? 'fa-triangle-exclamation' : 'fa-circle-check'" />
         <span>{{ gitMsg }}</span>
       </div>
 
-      <!-- If Git is configured on this site -->
-      <div v-if="gitStatus?.configured" class="git-status-card mt">
-        <div class="git-card-top">
-          <div class="git-repo-ident">
-            <i class="fa-solid fa-code-branch text-primary git-main-ico" />
-            <div>
-              <h4>Connected Repository</h4>
-              <p class="git-remote-url mono">{{ gitStatus.remote || 'origin' }}</p>
-            </div>
-          </div>
-          <div class="git-badge-pill" :class="gitStatus.dirty ? 'dirty' : 'clean'">
-            <span class="dot" />
-            <span>{{ gitStatus.dirty ? 'Uncommitted changes in folder' : 'Working tree clean' }}</span>
-          </div>
-        </div>
+      <div v-if="gitView === 'create'" class="git-create-card mt">
+        <div class="git-create-layout">
+        <div class="git-create-main">
+        <h4>Create Repository</h4>
+        <label class="git-toggle">
+          <input
+            type="checkbox"
+            :checked="gitCloneRemote !== false"
+            @change="emit('update:gitCloneRemote', ($event.target as HTMLInputElement).checked)"
+          />
+          <span>Clone a Repository</span>
+        </label>
+        <p class="hint">Enable this toggle if you want to clone a remote repository, or disable this toggle to create a new repository.</p>
 
-        <div class="git-meta-grid">
-          <div class="git-meta-box">
-            <span class="lbl">Active Branch</span>
-            <strong class="val mono"><i class="fa-solid fa-code-branch" /> {{ gitStatus.branch || 'main' }}</strong>
+        <form class="git-create-form" @submit.prevent="emit('cloneGitRepo')">
+          <label v-if="gitCloneRemote !== false" class="field">
+            <span>Clone URL</span>
+            <p class="hint">Enter the clone URL. URLs must begin with http://, https://, ssh://, git://, or git@.</p>
+            <input
+              :value="gitCloneUrl"
+              type="text"
+              placeholder="https://github.com/username/project.git"
+              spellcheck="false"
+              :disabled="gitBusy"
+              @input="emit('update:gitCloneUrl', ($event.target as HTMLInputElement).value)"
+            />
+          </label>
+          <label class="field">
+            <span>Repository Path</span>
+            <p class="hint">
+              Any folder under your hosting home (for example {{ gitStatus?.home_display || '/home3/user' }}/try).
+              Not limited to public_html — Git and apps can live in a custom folder.
+            </p>
+            <input
+              :value="gitRepoPath"
+              type="text"
+              spellcheck="false"
+              :disabled="gitBusy"
+              @input="emit('update:gitRepoPath', ($event.target as HTMLInputElement).value)"
+            />
+          </label>
+          <label class="field">
+            <span>Repository Name</span>
+            <p class="hint">Display name only. Do not include &lt; or &gt;.</p>
+            <input
+              :value="gitRepoName"
+              type="text"
+              :disabled="gitBusy"
+              @input="emit('update:gitRepoName', ($event.target as HTMLInputElement).value)"
+            />
+          </label>
+          <label v-if="gitCloneRemote !== false" class="field">
+            <span>Branch (optional)</span>
+            <input
+              :value="gitCloneBranch"
+              type="text"
+              placeholder="main"
+              :disabled="gitBusy"
+              @input="emit('update:gitCloneBranch', ($event.target as HTMLInputElement).value)"
+            />
+          </label>
+          <label class="git-another">
+            <input
+              type="checkbox"
+              :checked="gitServeAsWebsite !== false"
+              @change="emit('update:gitServeAsWebsite', ($event.target as HTMLInputElement).checked)"
+            />
+            Serve this folder as the website (PHP / static)
+          </label>
+          <label class="git-another">
+            <input
+              type="checkbox"
+              :checked="Boolean(gitCreateAnother)"
+              @change="emit('update:gitCreateAnother', ($event.target as HTMLInputElement).checked)"
+            />
+            Create Another
+          </label>
+          <div class="git-create-actions">
+            <button type="submit" class="btn-primary" :disabled="gitBusy">
+              {{ gitBusy ? 'Working…' : 'Create' }}
+            </button>
+            <button type="button" class="text-btn" @click="emit('update:gitView', 'list')">Return to Repository List</button>
           </div>
-          <div class="git-meta-box">
-            <span class="lbl">Latest Deployed Commit</span>
-            <div class="val-copy-row">
-              <strong class="val mono">{{ gitStatus.commit || 'HEAD' }}</strong>
-              <button
-                v-if="gitStatus.commit"
-                type="button"
-                class="btn-copy-mini"
-                @click="copyValue('commit', gitStatus.commit)"
-              >
-                {{ copiedKey === 'commit' ? 'Copied' : 'Copy' }}
-              </button>
-            </div>
-          </div>
-          <div class="git-meta-box">
-            <span class="lbl">Document Root Target</span>
-            <span class="val-sub mono">{{ gitStatus.path }}</span>
-          </div>
+        </form>
         </div>
-
-        <div class="git-deploy-actions mt">
-          <button
-            type="button"
-            class="btn-primary btn-pull"
-            :disabled="gitBusy"
-            @click="emit('pullGitRepo')"
-          >
-            <i class="fa-solid" :class="gitBusy ? 'fa-spinner fa-spin' : 'fa-cloud-arrow-down'" />
-            <span>{{ gitBusy ? 'Pulling Latest Changes…' : 'Pull Latest Commits (Deploy)' }}</span>
-          </button>
-          <button
-            type="button"
-            class="btn-ghost"
-            @click="openFileManager('.')"
-          >
-            <i class="fa-solid fa-folder-open" /> View in File Manager
-          </button>
-          <button
-            type="button"
-            class="btn-ghost"
-            @click="openStackGuide('git')"
-          >
-            <i class="fas fa-circle-info" /> Pipeline Setup Info
-          </button>
+        <aside class="git-related">
+          <h5>Related Links</h5>
+          <button type="button" class="text-btn" @click="emit('openHostingTab', 'transfer')">SSH Access</button>
+        </aside>
         </div>
       </div>
 
-      <!-- If no Git repository yet -->
-      <div v-else class="git-clone-card mt">
-        <div class="card-head-simple">
-          <div class="card-icon-title">
-            <i class="fa-brands fa-git-alt text-primary" />
-            <h4>Clone Remote Repository</h4>
-          </div>
-          <span class="card-badge-muted">Pulls directly into document root</span>
+      <div v-else-if="gitView === 'history'" class="git-history-card mt">
+        <h4>History — {{ gitHistoryPath }}</h4>
+        <ul v-if="gitHistory?.length" class="git-history-list">
+          <li v-for="item in gitHistory" :key="item.commit">
+            <code>{{ item.commit }}</code>
+            <span>{{ item.message }}</span>
+            <em>{{ item.author }} · {{ item.committed_at }}</em>
+          </li>
+        </ul>
+        <p v-else class="muted">No commits yet.</p>
+        <button type="button" class="text-btn mt" @click="emit('update:gitView', 'list')">Return to Repository List</button>
+      </div>
+
+      <div v-else class="git-list-card mt">
+        <div class="git-list-toolbar">
+          <input
+            :value="gitSearch"
+            type="search"
+            placeholder="Search"
+            @input="emit('update:gitSearch', ($event.target as HTMLInputElement).value)"
+          />
+          <span class="muted">Displaying {{ gitRepos.length }} item{{ gitRepos.length === 1 ? '' : 's' }}</span>
         </div>
-
-        <p class="hint">
-          Enter your public or authenticated Git clone URL. The document root folder should be empty or contain only default placeholder files.
-        </p>
-
-        <form class="git-clone-form mt" @submit.prevent="emit('cloneGitRepo')">
-          <div class="git-form-grid">
-            <label class="field grow">
-              <span class="field-label-wrap">
-                <strong>Repository URL (HTTPS / SSH)</strong>
-                <span class="sub-hint">e.g. https://github.com/username/project.git</span>
-              </span>
-              <div class="input-with-icon">
-                <i class="fa-solid fa-link field-ico" />
-                <input
-                  :value="gitCloneUrl"
-                  type="text"
-                  placeholder="https://github.com/user/repository.git"
-                  spellcheck="false"
-                  :disabled="gitBusy"
-                  @input="emit('update:gitCloneUrl', ($event.target as HTMLInputElement).value)"
-                />
-              </div>
-            </label>
-
-            <label class="field field-branch">
-              <span class="field-label-wrap">
-                <strong>Branch</strong>
-                <span class="sub-hint">defaults to main</span>
-              </span>
-              <div class="input-with-icon">
-                <i class="fa-solid fa-code-branch field-ico" />
-                <input
-                  :value="gitCloneBranch"
-                  type="text"
-                  placeholder="main"
-                  spellcheck="false"
-                  :disabled="gitBusy"
-                  @input="emit('update:gitCloneBranch', ($event.target as HTMLInputElement).value)"
-                />
+        <div v-if="!gitRepos.length" class="git-empty">No repositories yet. Click Create to clone or initialize one.</div>
+        <div v-for="repo in gitRepos" :key="repo.id" class="git-row">
+          <button type="button" class="git-row-main" @click="emit('update:gitExpandedId', gitExpandedId === repo.id ? null : repo.id)">
+            <strong>{{ repo.name }}</strong>
+            <code>{{ repo.path_display }}</code>
+          </button>
+          <div class="git-row-actions">
+            <button type="button" class="btn-ghost btn-sm" title="Manage" @click="emit('update:gitExpandedId', repo.id)">Manage</button>
+            <button type="button" class="btn-ghost btn-sm" title="History" :disabled="gitBusy" @click="emit('loadGitHistory', repo.path_display)">History</button>
+            <button type="button" class="btn-ghost btn-sm" title="Remove" :disabled="gitBusy" @click="emit('removeGitRepo', repo.path_display)">Remove</button>
+          </div>
+          <div v-if="gitExpandedId === repo.id" class="git-row-detail">
+            <dl>
+              <div><dt>Repository Name</dt><dd>{{ repo.name }}</dd></div>
+              <div><dt>Repository Path</dt><dd><code>{{ repo.path_display }}</code></dd></div>
+              <div><dt>Checked-out Branch</dt><dd>{{ repo.branch || '—' }}</dd></div>
+              <div><dt>Commit</dt><dd><code>{{ repo.commit_full || repo.commit || '—' }}</code></dd></div>
+              <div><dt>Author</dt><dd>{{ repo.author }}<template v-if="repo.author_email"> &lt;{{ repo.author_email }}&gt;</template></dd></div>
+              <div><dt>Date</dt><dd>{{ repo.committed_at || '—' }}</dd></div>
+              <div><dt>Commit Message</dt><dd>{{ repo.message || '—' }}</dd></div>
+            </dl>
+            <div class="git-detail-actions">
+              <button type="button" class="btn-ghost" @click="openFileManager(gitFileManagerPath(repo.path_display))">File Manager</button>
+              <button
+                type="button"
+                class="btn-ghost"
+                :disabled="gitBusy"
+                title="Point this domain at this folder for PHP/static files"
+                @click="emit('activateGitWebsite', repo.path_display)"
+              >
+                Make website
+              </button>
+              <button type="button" class="btn-primary" :disabled="gitBusy || !repo.remote" @click="emit('pullGitRepo', repo.path_display)">
+                {{ gitBusy ? 'Pulling…' : 'Pull' }}
+              </button>
+            </div>
+            <label class="field mt">
+              <span>Clone URL</span>
+              <div class="git-clone-url">
+                <input :value="repo.clone_url || repo.remote || ''" readonly />
+                <button type="button" class="btn-ghost" @click="copyValue('clone', repo.clone_url || repo.remote || '')">
+                  {{ copiedKey === 'clone' ? 'Copied' : 'Copy' }}
+                </button>
               </div>
             </label>
           </div>
-
-          <div class="git-clone-btn-row mt">
-            <button
-              type="submit"
-              class="btn-primary"
-              :disabled="gitBusy || !(gitCloneUrl || '').trim()"
-            >
-              <i class="fa-solid" :class="gitBusy ? 'fa-spinner fa-spin' : 'fa-download'" />
-              <span>{{ gitBusy ? 'Cloning…' : 'Clone Repository & Deploy' }}</span>
-            </button>
-            <button
-              type="button"
-              class="btn-ghost"
-              @click="openStackGuide('git')"
-            >
-              <i class="fas fa-circle-info" /> View Deployment Guide
-            </button>
-          </div>
-        </form>
+        </div>
       </div>
     </div>
 
     <div v-else-if="siteTab === 'applications'" class="block">
-      <div v-if="!appFamily" class="apps-container mt">
+      <div v-if="appHelpPage === 'hub' && !appFamily" class="apps-help-page mt">
+        <div class="apps-help-hero">
+          <p class="apps-help-kicker">Applications</p>
+          <h3>Choose a runtime</h3>
+          <p class="muted">
+            Python and Node run as managed processes on a private port. PHP and Laravel use Nginx + PHP-FPM
+            from the project document root — a separate pipeline, not the same tunnel.
+          </p>
+          <div class="apps-help-actions">
+            <router-link class="btn-ghost" :to="{ name: 'cpanel-apps-guide' }">Open install guide</router-link>
+            <button type="button" class="btn-ghost" @click="emit('openHostingTab', 'ai')">Ask AI Engineer</button>
+          </div>
+        </div>
+
+        <div class="app-family-grid">
+          <button type="button" class="app-family-card" @click="openAppFamily('python')">
+            <i class="fab fa-python" />
+            <strong>Python</strong>
+            <span>FastAPI, Flask, Django</span>
+            <em>{{ pythonApplications.length ? `${pythonApplications.length} active →` : 'Create app →' }}</em>
+          </button>
+          <button type="button" class="app-family-card" @click="openAppFamily('nodejs')">
+            <i class="fab fa-node-js" />
+            <strong>Node.js</strong>
+            <span>Express, Node apps</span>
+            <em>{{ nodeApplications.length ? `${nodeApplications.length} active →` : 'Create app →' }}</em>
+          </button>
+          <button type="button" class="app-family-card" @click="openAppFamily('php')">
+            <i class="fab fa-php" />
+            <strong>PHP &amp; Laravel</strong>
+            <span>PHP-FPM document root</span>
+            <em>{{ phpApplications.length ? `${phpApplications.length} active →` : 'Create app →' }}</em>
+          </button>
+        </div>
+        <p class="muted mt" style="font-size: 0.85rem">
+          WordPress and plain site stacks still install from the
+          <button type="button" class="linkish" @click="siteTab = 'stack'">Stack</button> tab.
+        </p>
+      </div>
+
+      <div v-else-if="!appFamily" class="apps-container mt">
         <div class="apps-head-box">
           <h3>Applications</h3>
-          <p class="muted">Choose a runtime. WordPress, PHP, and static sites stay in Stack — they are not Python or Node apps.</p>
+          <p class="muted">Choose a runtime to manage active apps or create a new one.</p>
         </div>
         <div class="app-family-grid">
           <button type="button" class="app-family-card" @click="openAppFamily('python')">
@@ -1159,20 +1538,20 @@ function formatBytes(n?: number | null) {
             <span>Express, Node.js</span>
             <em>{{ nodeApplications.length }} deployed</em>
           </button>
+          <button type="button" class="app-family-card" @click="openAppFamily('php')">
+            <i class="fab fa-php" />
+            <strong>PHP &amp; Laravel</strong>
+            <span>PHP-FPM</span>
+            <em>{{ phpApplications.length }} deployed</em>
+          </button>
         </div>
       </div>
 
       <div v-else class="apps-container mt">
         <div class="apps-head-box">
           <button type="button" class="btn-ghost btn-sm" @click="closeAppFamily">← All runtimes</button>
-          <h3>{{ appFamily === 'nodejs' ? 'Create Node.js Application' : 'Create Python Application' }}</h3>
-          <p class="muted">
-            {{
-              appFamily === 'nodejs'
-                ? 'Frameworks are Express or Node.js only. Pick a Node version, then create the app.'
-                : 'Frameworks are FastAPI, Flask, Django, or generic ASGI only. Pick a Python version, then create the app.'
-            }}
-          </p>
+          <h3>{{ familyTitle }}</h3>
+          <p class="muted">{{ familyBlurb }}</p>
         </div>
 
         <div v-if="familyApplications.length" class="apps-list-card">
@@ -1192,26 +1571,239 @@ function formatBytes(n?: number | null) {
                   <span><i class="fas fa-layer-group" /> {{ app.framework_label || app.framework }}</span>
                   <span><i class="fas fa-code-branch" /> {{ app.runtime_version || app.runtime }}</span>
                 </div>
+                <div v-if="app.app_root_display || app.serve_url || (app.log_path && isPythonManagedApp(app))" class="app-meta-row app-path-row">
+                  <span v-if="app.app_root_display"><i class="fas fa-folder" /> {{ app.app_root_display }}</span>
+                  <a v-if="app.serve_url" :href="app.serve_url" target="_blank" rel="noopener" class="app-serve-link">
+                    {{ app.serve_url.replace(/^https?:\/\//, '') }}
+                  </a>
+                  <span v-if="app.log_path && isPythonManagedApp(app)"><i class="fas fa-file-alt" /> {{ app.log_path }}</span>
+                </div>
+                <pre v-if="app.message && (app.status === 'failed' || app.status === 'pending')" class="app-error-msg">{{ app.message }}</pre>
               </div>
               <div class="app-card-actions">
                 <button
-                  v-if="app.status === 'pending' || app.status === 'failed'"
                   type="button"
-                  class="btn-primary btn-sm"
+                  class="app-act app-act-edit"
+                  title="Edit"
+                  :disabled="appBusy"
+                  @click="emit('editApplication', app.id)"
+                >
+                  <i class="fas fa-pen" /> Edit
+                </button>
+                <button
+                  type="button"
+                  class="app-act app-act-refresh"
+                  title="Refresh status"
+                  :disabled="appBusy"
+                  @click="emit('refreshApplication', app.id)"
+                >
+                  <i class="fas fa-sync-alt" /> Refresh
+                </button>
+                <button
+                  v-if="!isPhpManagedApp(app) && (app.status === 'running' || app.status === 'restarting')"
+                  type="button"
+                  class="app-act app-act-restart"
+                  title="Restart"
+                  :disabled="appBusy"
+                  @click="emit('restartApplication', app.id)"
+                >
+                  <i class="fas fa-redo-alt" /> Restart
+                </button>
+                <button
+                  v-if="!isPhpManagedApp(app) && (app.status === 'running' || app.status === 'restarting')"
+                  type="button"
+                  class="app-act app-act-stop"
+                  title="Stop"
+                  :disabled="appBusy"
+                  @click="emit('stopApplication', app.id)"
+                >
+                  <i class="fas fa-stop" /> Stop
+                </button>
+                <button
+                  v-if="!isPhpManagedApp(app) && app.status === 'stopped'"
+                  type="button"
+                  class="app-act app-act-start"
+                  title="Start"
+                  :disabled="appBusy"
+                  @click="emit('startApplication', app.id)"
+                >
+                  <i class="fas fa-play" /> Start
+                </button>
+                <button
+                  v-if="app.status === 'pending' || app.status === 'failed' || isPhpManagedApp(app)"
+                  type="button"
+                  class="app-act app-act-deploy"
+                  title="Deploy"
                   :disabled="appBusy"
                   @click="emit('deployApplication', app.id)"
                 >
-                  Deploy
+                  <i class="fas fa-rocket" /> {{ isPhpManagedApp(app) ? 'Deploy / Composer' : 'Deploy' }}
                 </button>
-                <button type="button" class="btn-ghost btn-sm danger" :disabled="appBusy" @click="emit('deleteApplication', app.id)">
-                  Delete
+                <a
+                  v-if="app.serve_url"
+                  class="app-act app-act-restart"
+                  :href="app.serve_url"
+                  target="_blank"
+                  rel="noopener"
+                >
+                  <i class="fas fa-external-link-alt" /> Open
+                </a>
+                <button
+                  type="button"
+                  class="app-act app-act-delete"
+                  title="Delete"
+                  :disabled="appBusy"
+                  @click="emit('deleteApplication', app.id)"
+                >
+                  <i class="fas fa-trash-alt" /> Delete
                 </button>
+              </div>
+
+              <div v-if="editingAppId === app.id" class="app-edit-panel">
+                <div class="app-section-label mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                  Edit application
+                </div>
+                <div class="app-edit-grid">
+                  <label class="field">
+                    <span>Name</span>
+                    <input :value="editAppName" type="text" @input="emit('update:editAppName', ($event.target as HTMLInputElement).value)" />
+                  </label>
+                  <label v-if="isPythonManagedApp(app)" class="field">
+                    <span>Python version</span>
+                    <select
+                      :value="editAppRuntimeVersion || ''"
+                      @change="emit('update:editAppRuntimeVersion', ($event.target as HTMLSelectElement).value)"
+                    >
+                      <option v-for="opt in pythonRuntimeOptions" :key="String(opt.runtime_version)" :value="opt.runtime_version" :disabled="!opt.allowed">
+                        {{ opt.runtime_version }}{{ opt.allowed ? '' : ' (upgrade)' }}
+                      </option>
+                    </select>
+                  </label>
+                  <label v-if="isPhpManagedApp(app)" class="field">
+                    <span>PHP version</span>
+                    <select
+                      :value="editAppRuntimeVersion || ''"
+                      @change="emit('update:editAppRuntimeVersion', ($event.target as HTMLSelectElement).value)"
+                    >
+                      <option v-for="ver in PHP_RUNTIME_VERSIONS" :key="ver" :value="ver">{{ ver }}</option>
+                    </select>
+                  </label>
+                  <label v-if="isPythonManagedApp(app)" class="field">
+                    <span>Passenger log file</span>
+                    <input
+                      :value="editAppLogPath"
+                      type="text"
+                      :placeholder="passengerLogPlaceholder"
+                      spellcheck="false"
+                      @input="emit('update:editAppLogPath', ($event.target as HTMLInputElement).value)"
+                    />
+                  </label>
+                  <label v-if="isPythonManagedApp(app)" class="field">
+                    <span>Startup module</span>
+                    <input
+                      :value="editAppPythonModule"
+                      type="text"
+                      spellcheck="false"
+                      @input="emit('update:editAppPythonModule', ($event.target as HTMLInputElement).value)"
+                    />
+                  </label>
+                  <label v-if="isPythonManagedApp(app)" class="field">
+                    <span>Entry point</span>
+                    <input
+                      :value="editAppPythonObject"
+                      type="text"
+                      spellcheck="false"
+                      @input="emit('update:editAppPythonObject', ($event.target as HTMLInputElement).value)"
+                    />
+                  </label>
+                  <label class="app-serve-check">
+                    <input
+                      type="checkbox"
+                      :checked="Boolean(editAppServeAtDomain)"
+                      @change="emit('update:editAppServeAtDomain', ($event.target as HTMLInputElement).checked)"
+                    />
+                    {{
+                      isPhpManagedApp(app)
+                        ? 'Point this domain at this app (Laravel public/ or PHP root)'
+                        : 'Point this domain at this app (apex /)'
+                    }}
+                  </label>
+                </div>
+
+                <div class="app-env-block">
+                  <div class="app-env-head">
+                    <div>
+                      <div class="app-section-label text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                        Environment variables
+                      </div>
+                      <p class="app-env-help">
+                        Existing keys are listed without values. Re-enter a value to change it, or add a new variable.
+                      </p>
+                    </div>
+                    <button type="button" class="app-act app-act-add" @click="emit('addEnvVarRow', 'edit')">
+                      <i class="fas fa-plus" /> Add variable
+                    </button>
+                  </div>
+                  <div v-if="!(editAppEnvVars || []).length" class="app-env-empty">No variables yet.</div>
+                  <div
+                    v-for="(row, idx) in editAppEnvVars || []"
+                    :key="`edit-env-${idx}`"
+                    class="app-env-row"
+                  >
+                    <input
+                      :value="row.key"
+                      type="text"
+                      placeholder="KEY"
+                      spellcheck="false"
+                      @input="emit('updateEnvVarRow', 'edit', idx, 'key', ($event.target as HTMLInputElement).value)"
+                    />
+                    <input
+                      :value="row.value"
+                      type="text"
+                      placeholder="value"
+                      spellcheck="false"
+                      @input="emit('updateEnvVarRow', 'edit', idx, 'value', ($event.target as HTMLInputElement).value)"
+                    />
+                    <button type="button" class="app-act app-act-remove" title="Remove" @click="emit('removeEnvVarRow', 'edit', idx)">
+                      <i class="fas fa-times" />
+                    </button>
+                  </div>
+                </div>
+
+                <div class="app-edit-actions">
+                  <button type="button" class="app-act app-act-save" :disabled="appBusy" @click="emit('saveEditApplication')">
+                    <i class="fas fa-save" /> {{ appBusy ? 'Saving…' : 'Save changes' }}
+                  </button>
+                  <button type="button" class="app-act app-act-cancel" :disabled="appBusy" @click="emit('cancelEditApplication')">
+                    Cancel
+                  </button>
+                </div>
               </div>
             </div>
           </div>
         </div>
 
-        <div class="app-create-card rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950">
+        <div v-if="!showAppCreateForm && familyApplications.length" class="mt-3">
+          <button type="button" class="btn-primary rounded-xl px-4 py-3 text-sm font-semibold" @click="emit('update:showAppCreateForm', true)">
+            Create new application
+          </button>
+        </div>
+
+        <div
+          v-if="showAppCreateForm || !familyApplications.length"
+          class="app-create-card mt-3 rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950"
+        >
+          <div class="apps-card-header" style="padding: 0 0 12px">
+            <h4>{{ familyApplications.length ? 'Create new application' : 'Application setup' }}</h4>
+            <button
+              v-if="familyApplications.length"
+              type="button"
+              class="btn-ghost btn-sm"
+              @click="emit('update:showAppCreateForm', false)"
+            >
+              Cancel
+            </button>
+          </div>
           <div class="app-create-form">
             <div class="app-form-section rounded-xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-900/60">
               <div class="app-section-label mb-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Application setup</div>
@@ -1224,7 +1816,7 @@ function formatBytes(n?: number | null) {
                   <label class="field app-control-input">
                     <span class="sr-only">Framework</span>
                     <select :value="newAppFramework" @change="emit('update:newAppFramework', ($event.target as HTMLSelectElement).value)">
-                      <option v-for="f in pythonFrameworkOptions" :key="f.id" :value="f.id" :disabled="!f.allowed">
+                      <option v-for="f in familyFrameworkOptions" :key="f.id" :value="f.id" :disabled="!f.allowed">
                         {{ f.label }}{{ f.allowed ? '' : ' (Requires Plan Upgrade)' }}
                       </option>
                     </select>
@@ -1233,13 +1825,13 @@ function formatBytes(n?: number | null) {
 
                 <div class="app-control-row rounded-xl border border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-950/80">
                   <div class="app-control-meta">
-                    <span class="app-control-title">{{ appFamily === 'nodejs' ? 'Node version' : 'Python version' }}</span>
-                    <p class="app-control-help">Runtime version used to start this application.</p>
+                    <span class="app-control-title">{{ familyRuntimeLabel }}</span>
+                    <p class="app-control-help">Runtime version used for this application.</p>
                   </div>
                   <label class="field app-control-input">
                     <span class="sr-only">Runtime version</span>
                     <select :value="newAppRuntimeVersion || ''" @change="emit('update:newAppRuntimeVersion', ($event.target as HTMLSelectElement).value)">
-                      <option v-for="opt in pythonRuntimeOptions" :key="String(opt.runtime_version)" :value="opt.runtime_version" :disabled="!opt.allowed">
+                      <option v-for="opt in familyRuntimeOptions" :key="String(opt.runtime_version)" :value="opt.runtime_version" :disabled="!opt.allowed">
                         {{ opt.runtime_version }}{{ opt.recommended ? ' (recommended)' : '' }}
                       </option>
                     </select>
@@ -1249,51 +1841,129 @@ function formatBytes(n?: number | null) {
                 <div class="app-control-row rounded-xl border border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-950/80">
                   <div class="app-control-meta">
                     <span class="app-control-title">Application root</span>
-                    <p class="app-control-help">Folder name stored under /apps for this application.</p>
+                    <p class="app-control-help">
+                      Folder under your home
+                      <code>(/home3/{{ activeEnv.hosting_name || 'user' }})</code>.
+                      <template v-if="appFamily === 'php'"> Laravel is served from <code>public/</code> inside this folder.</template>
+                    </p>
+                    <pre class="app-root-tree">{{ appRootTreePreview }}</pre>
                   </div>
-                  <label class="field app-control-input">
-                    <span class="sr-only">Application root</span>
-                    <input
-                      :value="newAppName"
-                      type="text"
-                      placeholder="e.g. student-api"
-                      @input="emit('update:newAppName', ($event.target as HTMLInputElement).value)"
-                    />
-                  </label>
+                  <div class="app-control-input app-root-fields">
+                    <label class="field">
+                      <span class="sr-only">Placement</span>
+                      <select
+                        :value="newAppRootPlacement || 'apps'"
+                        @change="emit('update:newAppRootPlacement', ($event.target as HTMLSelectElement).value as 'apps' | 'home' | 'public_html')"
+                      >
+                        <option value="apps">apps / &lt;folder&gt; (recommended)</option>
+                        <option value="home">Home folder (outside public_html)</option>
+                        <option value="public_html">public_html (domain root)</option>
+                      </select>
+                    </label>
+                    <label class="field">
+                      <span class="sr-only">Application root</span>
+                      <input
+                        :value="newAppName"
+                        type="text"
+                        :placeholder="(newAppRootPlacement || 'apps') === 'public_html' ? 'public_html' : 'e.g. student-api'"
+                        :disabled="(newAppRootPlacement || 'apps') === 'public_html'"
+                        @input="emit('update:newAppName', ($event.target as HTMLInputElement).value)"
+                      />
+                    </label>
+                    <label
+                      v-if="(newAppRootPlacement || 'apps') !== 'public_html'"
+                      class="app-serve-check"
+                    >
+                      <input
+                        type="checkbox"
+                        :checked="Boolean(newAppServeAtDomain)"
+                        @change="emit('update:newAppServeAtDomain', ($event.target as HTMLInputElement).checked)"
+                      />
+                      Point this domain at this app (apex /)
+                    </label>
+                  </div>
                 </div>
 
                 <div class="app-control-row rounded-xl border border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-950/80">
                   <div class="app-control-meta">
                     <span class="app-control-title">Application URL</span>
-                    <p class="app-control-help">Domain or subdomain that should serve this app.</p>
+                    <p class="app-control-help">Domain or subdomain on this hosting that should serve this app.</p>
                   </div>
                   <label class="field app-control-input">
                     <span class="sr-only">Application URL</span>
-                    <select :value="activeEnv.id" @change="emit('selectEnv', ($event.target as HTMLSelectElement).value)">
-                      <option v-for="e in environments" :key="e.id" :value="e.id">
-                        {{ e.domain || e.id }}
+                    <select
+                      :value="displaySiteDomain"
+                      @change="onSiteDomainChange(($event.target as HTMLSelectElement).value)"
+                    >
+                      <option v-for="d in siteDomainOptions" :key="d.name" :value="d.name">
+                        {{ d.name }}{{ d.isPrimary ? '' : d.type === 'subdomain' ? ' (subdomain)' : ' (addon)' }}
                       </option>
                     </select>
                   </label>
                 </div>
+
+                <div
+                  v-if="appFamily === 'python'"
+                  class="app-control-row rounded-xl border border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-950/80"
+                >
+                  <div class="app-control-meta">
+                    <span class="app-control-title">Passenger log file</span>
+                    <p class="app-control-help">
+                      Path plus filename for application stdout/stderr
+                      (e.g. <code>/home3/{{ activeEnv.hosting_name || 'user' }}/logs/passenger.log</code>).
+                    </p>
+                  </div>
+                  <label class="field app-control-input">
+                    <span class="sr-only">Passenger log file</span>
+                    <input
+                      :value="newAppLogPath || ''"
+                      type="text"
+                      :placeholder="passengerLogPlaceholder"
+                      spellcheck="false"
+                      @input="emit('update:newAppLogPath', ($event.target as HTMLInputElement).value)"
+                    />
+                  </label>
+                </div>
+
+                <div
+                  v-if="appFamily === 'php'"
+                  class="app-control-row rounded-xl border border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-950/80"
+                >
+                  <div class="app-control-meta">
+                    <span class="app-control-title">How PHP is hosted</span>
+                    <p class="app-control-help">
+                      Composer install runs on Deploy. Nginx serves PHP-FPM from the document root
+                      (Laravel: <code>public/</code>). There is no Gunicorn, Passenger, or private-port process.
+                    </p>
+                  </div>
+                </div>
               </div>
             </div>
 
-            <div v-if="appFamily === 'python' && (newAppFramework === 'python' || newAppFramework === 'fastapi')" class="mt-1">
+            <div
+              v-if="appFamily === 'python' && ['python', 'fastapi', 'django', 'flask'].includes(String(newAppFramework || ''))"
+              class="mt-1"
+            >
               <div class="app-form-section rounded-xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-900/60">
-                <div class="app-section-label mb-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">ASGI startup</div>
+                <div class="app-section-label mb-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">
+                  {{ newAppFramework === 'django' || newAppFramework === 'flask' ? 'WSGI startup' : 'ASGI startup' }}
+                </div>
                 <div class="app-control-list">
                   <div class="app-control-row rounded-xl border border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-950/80">
                     <div class="app-control-meta">
                       <span class="app-control-title">Application startup file</span>
-                      <p class="app-control-help">Module path, for example <code>app.main</code>.</p>
+                      <p class="app-control-help">
+                        Module path, for example
+                        <code>{{ newAppFramework === 'django' ? 'config.wsgi' : 'app.main' }}</code>.
+                        Leave blank to auto-detect from your project files.
+                      </p>
                     </div>
                     <label class="field app-control-input">
-                      <span class="sr-only">ASGI module</span>
+                      <span class="sr-only">Startup module</span>
                       <input
                         :value="newAppPythonModule"
                         type="text"
-                        placeholder="app.main"
+                        :placeholder="newAppFramework === 'django' ? 'config.wsgi' : 'app.main'"
                         spellcheck="false"
                         @input="emit('update:newAppPythonModule', ($event.target as HTMLInputElement).value)"
                       />
@@ -1302,14 +1972,18 @@ function formatBytes(n?: number | null) {
                   <div class="app-control-row rounded-xl border border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-950/80">
                     <div class="app-control-meta">
                       <span class="app-control-title">Application entry point</span>
-                      <p class="app-control-help">Callable object, for example <code>app</code>.</p>
+                      <p class="app-control-help">
+                        Callable object, for example
+                        <code>{{ newAppFramework === 'django' ? 'application' : 'app' }}</code>.
+                        Leave blank to auto-detect.
+                      </p>
                     </div>
                     <label class="field app-control-input">
-                      <span class="sr-only">ASGI app variable</span>
+                      <span class="sr-only">App variable</span>
                       <input
                         :value="newAppPythonObject"
                         type="text"
-                        placeholder="app"
+                        :placeholder="newAppFramework === 'django' ? 'application' : 'app'"
                         spellcheck="false"
                         @input="emit('update:newAppPythonObject', ($event.target as HTMLInputElement).value)"
                       />
@@ -1319,10 +1993,48 @@ function formatBytes(n?: number | null) {
               </div>
             </div>
 
+            <div class="app-form-section mt-1 rounded-xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-900/60">
+              <div class="app-env-head">
+                <div>
+                  <div class="app-section-label text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                    Environment variables
+                  </div>
+                  <p class="app-env-help">Optional KEY=value pairs{{ appFamily === 'php' ? ' (e.g. for .env-style keys)' : ' injected when the app starts' }}.</p>
+                </div>
+                <button type="button" class="app-act app-act-add" @click="emit('addEnvVarRow', 'new')">
+                  <i class="fas fa-plus" /> Add variable
+                </button>
+              </div>
+              <div v-if="!(newAppEnvVars || []).length" class="app-env-empty">No variables yet.</div>
+              <div
+                v-for="(row, idx) in newAppEnvVars || []"
+                :key="`new-env-${idx}`"
+                class="app-env-row"
+              >
+                <input
+                  :value="row.key"
+                  type="text"
+                  placeholder="KEY"
+                  spellcheck="false"
+                  @input="emit('updateEnvVarRow', 'new', idx, 'key', ($event.target as HTMLInputElement).value)"
+                />
+                <input
+                  :value="row.value"
+                  type="text"
+                  placeholder="value"
+                  spellcheck="false"
+                  @input="emit('updateEnvVarRow', 'new', idx, 'value', ($event.target as HTMLInputElement).value)"
+                />
+                <button type="button" class="app-act app-act-remove" title="Remove" @click="emit('removeEnvVarRow', 'new', idx)">
+                  <i class="fas fa-times" />
+                </button>
+              </div>
+            </div>
+
             <button
               type="button"
               class="btn-primary btn-create-app mt-1 rounded-xl px-4 py-3 text-sm font-semibold"
-              :disabled="appBusy || !(newAppName || '').trim()"
+              :disabled="appBusy || ((newAppRootPlacement || 'apps') !== 'public_html' && !(newAppName || '').trim())"
               @click="emit('createApplication')"
             >
               {{ appBusy ? 'Creating…' : 'Create Application' }}
@@ -1402,9 +2114,9 @@ function formatBytes(n?: number | null) {
 
       <div class="pack-soft mt">
         <h3>On {{ activePlan?.name || 'this package' }}</h3>
-        <p class="muted">Runtimes included with this package.</p>
+        <p class="muted">Runtimes included with this package. Limited items are faded.</p>
         <ul class="stack-pick pack">
-          <li v-for="s in packStacks" :key="s.id" :class="{ faded: s.level === 'limited' }">
+          <li v-for="s in packStacks" :key="s.id" :class="{ faded: s.level !== 'yes' }">
             <ServiceBrandMark :name="s.id" :size="36" />
             <strong>{{ s.label }}</strong>
             <em>{{ s.level === 'limited' ? 'Limited' : 'Included' }}</em>
@@ -1444,9 +2156,9 @@ function formatBytes(n?: number | null) {
           </div>
           <div class="install-actions">
             <a
-              v-if="activeEnv.domain"
+              v-if="displaySiteDomain"
               class="btn-primary"
-              :href="publicSiteUrl(activeEnv.domain)"
+              :href="publicSiteUrl(displaySiteDomain)"
               target="_blank"
               rel="noopener"
             >Open site</a>
@@ -1473,38 +2185,39 @@ function formatBytes(n?: number | null) {
         <details class="reinstall mt" open>
           <summary>Stacks on this pack</summary>
           <p class="muted mt">
-            Everything listed here is included with your plan.
-            One-click installers: Static/PHP, WordPress, Laravel, and Node.js.
-            Other runtimes (Python, Django, Flask, and more) deploy via Files or Git.
+            Only stacks on this pack are listed. One-click installers are Static/PHP, WordPress, Laravel, and Node.js when your plan includes them. Other included runtimes deploy from Applications, Files, or Git.
           </p>
           <div class="stack-pick mt">
             <button
-              v-for="s in stacks"
+              v-for="s in installStacks"
               :key="s.id"
               type="button"
               class="stack-opt"
-              :class="{ on: selectedStack === s.id, 'is-matrix': s.one_click === false }"
-              :disabled="stackBusy"
+              :class="{ on: selectedStack === s.id, 'is-matrix': !s.oneClick, faded: !s.allowed }"
+              :disabled="stackBusy || !s.allowed"
               @click="stackModel = s.id"
             >
               <ServiceBrandMark :name="s.icon || s.id" :size="36" />
               <strong>{{ s.name }}</strong>
-              <em v-if="s.one_click === false">Files / Git</em>
+              <em v-if="!s.allowed">Not on this plan</em>
+              <em v-else-if="!s.oneClick">Files / Git</em>
               <em v-else-if="s.level === 'limited'">Limited</em>
               <em v-else>One-click</em>
             </button>
           </div>
-          <p class="muted mt">{{ stacks.find((s) => s.id === selectedStack)?.description }}</p>
+          <p class="muted mt">{{ selectedInstall?.description }}</p>
           <button
             type="button"
             class="btn-primary mt"
-            :disabled="stackBusy || stacks.find((s) => s.id === selectedStack)?.one_click === false"
+            :disabled="stackBusy || !selectedInstall?.oneClick || !selectedInstall?.allowed"
             @click="emit('installStack')"
           >
             {{
-              stacks.find((s) => s.id === selectedStack)?.one_click === false
-                ? 'Use Files or Git'
-                : 'Replace stack'
+              !selectedInstall?.allowed
+                ? 'Not on this plan'
+                : !selectedInstall?.oneClick
+                  ? 'Use Applications or Git'
+                  : 'Replace stack'
             }}
           </button>
         </details>
@@ -1514,40 +2227,42 @@ function formatBytes(n?: number | null) {
       <template v-else>
         <h3>{{ stackOutcome === 'running' ? 'Installing stack' : 'Install stack' }}</h3>
         <p class="muted">
-          Your pack includes the stacks below.
-          One-click: Static/PHP, WordPress, Laravel, Node.js.
-          Others are supported — deploy with Files or Git.
+          Your pack only lists stacks it includes. Faded tiles are limited or not installable here.
+          One-click: Static/PHP, WordPress, Laravel, Node.js — when the plan allows them.
         </p>
         <div class="stack-pick mt">
           <button
-            v-for="s in stacks"
+            v-for="s in installStacks"
             :key="s.id"
             type="button"
             class="stack-opt"
-            :class="{ on: selectedStack === s.id, 'is-matrix': s.one_click === false }"
-            :disabled="stackBusy"
+            :class="{ on: selectedStack === s.id, 'is-matrix': !s.oneClick, faded: !s.allowed }"
+            :disabled="stackBusy || !s.allowed"
             @click="stackModel = s.id"
           >
             <ServiceBrandMark :name="s.icon || s.id" :size="36" />
             <strong>{{ s.name }}</strong>
-            <em v-if="s.one_click === false">Files / Git</em>
+            <em v-if="!s.allowed">Not on this plan</em>
+            <em v-else-if="!s.oneClick">Files / Git</em>
             <em v-else-if="s.level === 'limited'">Limited</em>
             <em v-else>One-click</em>
           </button>
         </div>
-        <p class="muted mt">{{ stacks.find((s) => s.id === selectedStack)?.description }}</p>
+        <p class="muted mt">{{ selectedInstall?.description }}</p>
         <button
           type="button"
           class="btn-primary mt"
-          :disabled="stackBusy || stacks.find((s) => s.id === selectedStack)?.one_click === false"
+          :disabled="stackBusy || !selectedInstall?.oneClick || !selectedInstall?.allowed"
           @click="emit('installStack')"
         >
           {{
             stackBusy
               ? 'Installing…'
-              : stacks.find((s) => s.id === selectedStack)?.one_click === false
-                ? 'Use Files or Git'
-                : 'Install stack'
+              : !selectedInstall?.allowed
+                ? 'Not on this plan'
+                : !selectedInstall?.oneClick
+                  ? 'Use Applications or Git'
+                  : 'Install stack'
           }}
         </button>
 
@@ -2175,7 +2890,7 @@ function formatBytes(n?: number | null) {
     <div v-else-if="siteTab === 'ftp'" class="block">
       <h3>SFTP</h3>
       <p class="muted">
-        Secure file transfer over SSH (port 22). Jailed to this site only — no interactive shell.
+        Secure file transfer over SSH (port 22). Limited to this site’s files only — no interactive shell.
         Use FTP below if your app prefers port 21.
       </p>
       <p v-if="ftpCreds?.sftp_coming_note" class="empty-note mt">{{ ftpCreds.sftp_coming_note }}</p>
@@ -2365,7 +3080,7 @@ function formatBytes(n?: number | null) {
 
       <h3 class="mt">SSH access</h3>
       <p class="muted">
-        Every site gets the shared access host. Jailed SSH (not root) unlocks from ₵{{ sshCreds?.min_price_ghs || 300 }}/month.
+        Every site gets the shared access host. SSH unlocks from ₵{{ sshCreds?.min_price_ghs || 300 }}/month on eligible packs.
         When enabled, SSH uses the same Unix login as SFTP — not the FTP password.
       </p>
       <p v-if="sshCreds?.error" class="empty-note mt err">{{ sshCreds.error }}</p>
@@ -3043,6 +3758,12 @@ function formatBytes(n?: number | null) {
 .stack-opt em { font-style: normal; font-size: 0.62rem; color: var(--p-muted, var(--if-muted)); }
 .stack-opt.on { border-color: var(--p-accent, var(--if-primary)); background: var(--p-accent-soft, #ecfdf5); }
 .stack-opt.is-matrix:not(.on) { opacity: 0.92; border-style: dashed; }
+.stack-opt.faded,
+.stack-opt:disabled {
+  opacity: 0.42;
+  filter: grayscale(0.4);
+  cursor: not-allowed;
+}
 .stack-pick.pack {
   list-style: none;
   margin: 0.65rem 0 0;
@@ -3208,6 +3929,41 @@ function formatBytes(n?: number | null) {
 }
 .app-family-card span,
 .app-family-card em {
+  font-size: 0.85rem;
+  color: #64748b;
+}
+.apps-help-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 52rem;
+}
+.apps-help-hero h3,
+.apps-help-page h3 {
+  margin: 0.25rem 0 0.5rem;
+}
+.apps-help-kicker {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #2563eb;
+}
+.apps-help-steps {
+  margin: 0;
+  padding-left: 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  line-height: 1.45;
+}
+.apps-help-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+.app-family-card em {
   font-size: 0.82rem;
   color: #64748b;
   font-style: normal;
@@ -3317,8 +4073,201 @@ function formatBytes(n?: number | null) {
 }
 .app-card-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
+}
+.app-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 0.5rem;
+  border: 1px solid transparent;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  background: #f8fafc;
+  color: #334155;
+}
+.app-act:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.app-act i {
+  font-size: 0.72rem;
+}
+.app-act-edit {
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+.app-act-edit i { color: #2563eb; }
+.app-act-refresh {
+  color: #0f766e;
+  background: #f0fdfa;
+  border-color: #99f6e4;
+}
+.app-act-refresh i { color: #0d9488; }
+.app-act-restart {
+  color: #b45309;
+  background: #fffbeb;
+  border-color: #fcd34d;
+}
+.app-act-restart i { color: #d97706; }
+.app-act-stop {
+  color: #9a3412;
+  background: #fff7ed;
+  border-color: #fdba74;
+}
+.app-act-stop i { color: #ea580c; }
+.app-act-start,
+.app-act-deploy,
+.app-act-save {
+  color: #166534;
+  background: #f0fdf4;
+  border-color: #86efac;
+}
+.app-act-start i,
+.app-act-deploy i,
+.app-act-save i { color: #16a34a; }
+.app-act-delete {
+  color: #b91c1c;
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+.app-act-delete i { color: #dc2626; }
+.app-act-cancel {
+  color: #475569;
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+.app-edit-panel {
+  width: 100%;
+  flex-basis: 100%;
+  margin-top: 0.35rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 0.75rem;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+}
+.app-edit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.65rem;
+}
+.app-edit-grid .field span {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #64748b;
+  margin-bottom: 0.25rem;
+}
+.app-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.app-env-block {
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #e2e8f0;
+}
+.app-env-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.55rem;
+}
+.app-env-help {
+  margin: 0.2rem 0 0;
+  font-size: 0.75rem;
+  color: #64748b;
+  line-height: 1.35;
+}
+.app-env-empty {
+  font-size: 0.78rem;
+  color: #94a3b8;
+  margin-bottom: 0.35rem;
+}
+.app-env-row {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.9fr) minmax(8rem, 1.2fr) auto;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+.app-env-row input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.55rem;
+  font-size: 0.8rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.app-act-add,
+.app-act-remove {
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  border-radius: 0.5rem;
+  padding: 0.4rem 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+}
+.app-act-remove {
+  padding: 0.4rem 0.55rem;
+  color: #b91c1c;
+}
+.app-path-row {
+  margin-top: 0.25rem;
+  font-size: 0.78rem;
+  opacity: 0.88;
+}
+.app-error-msg {
+  margin: 0.55rem 0 0;
+  padding: 0.55rem 0.65rem;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  border-radius: 0.5rem;
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 10rem;
+  overflow: auto;
+}
+.app-serve-link {
+  color: var(--if-plan, #0b5fff);
+  text-decoration: underline;
+}
+.app-root-tree {
+  margin: 0.5rem 0 0;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  border-radius: 0.55rem;
+  background: #f3f4f6;
+  color: #334155;
+  white-space: pre;
+  overflow-x: auto;
+}
+.app-root-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: min(100%, 15rem);
+}
+.app-serve-check {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+  color: #475569;
 }
 .btn-sm {
   padding: 0.35rem 0.75rem !important;
@@ -4952,5 +5901,173 @@ function formatBytes(n?: number | null) {
   display: flex;
   flex-wrap: wrap;
   gap: 0.65rem;
+}
+
+.git-vc-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+.git-crumbs {
+  font-size: 0.85rem;
+  color: #64748b;
+}
+.git-create-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 1.25rem;
+  align-items: start;
+}
+.git-related {
+  border: 1px solid var(--p-border, #e2e8f0);
+  border-radius: 0.5rem;
+  padding: 0.85rem 1rem;
+  background: #f8fafc;
+}
+.git-related h5 {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+}
+.git-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 650;
+}
+.git-create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.95rem;
+  margin-top: 0.75rem;
+}
+.git-create-form .field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0;
+}
+.git-create-form .field > span {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #334155;
+}
+.git-create-form .field .hint {
+  margin: 0;
+  font-size: 0.74rem;
+  line-height: 1.35;
+  color: #64748b;
+}
+.git-create-form .field input,
+.git-list-toolbar input[type='search'] {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.55rem;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.88rem;
+  color: #0f172a;
+  background: #fff;
+  outline: none;
+}
+.git-create-form .field input:focus,
+.git-list-toolbar input[type='search']:focus {
+  border-color: var(--hp-accent, #2b4c7e);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--hp-accent, #2b4c7e) 18%, transparent);
+}
+.git-create-form .field input:disabled {
+  opacity: 0.65;
+  background: #f8fafc;
+}
+.git-create-card {
+  border: 1px solid var(--p-border, #e2e8f0);
+  border-radius: 0.75rem;
+  padding: 1rem 1.1rem 1.15rem;
+  background: #fff;
+}
+.git-create-card h4 {
+  margin: 0 0 0.65rem;
+  font-size: 1rem;
+}
+.git-create-actions,
+.git-list-toolbar,
+.git-row,
+.git-detail-actions,
+.git-clone-url {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+}
+.git-list-toolbar {
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+.git-row {
+  border: 1px solid var(--p-border, #e2e8f0);
+  border-radius: 0.65rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.5rem;
+  align-items: flex-start;
+}
+.git-row-main {
+  flex: 1;
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.git-row-main code,
+.git-row-detail code {
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+.git-row-detail {
+  width: 100%;
+  border-top: 1px solid var(--p-border, #e2e8f0);
+  padding-top: 0.75rem;
+}
+.git-row-detail dl {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 0.35rem 0.75rem;
+}
+.git-row-detail dt {
+  color: #64748b;
+  font-size: 0.8rem;
+}
+.git-clone-url input {
+  flex: 1;
+  min-width: 12rem;
+}
+.git-history-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+.git-empty {
+  padding: 1.25rem;
+  color: #64748b;
+  border: 1px dashed var(--p-border, #cbd5e1);
+  border-radius: 0.65rem;
+}
+.git-another {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+@media (max-width: 800px) {
+  .git-create-layout {
+    grid-template-columns: 1fr;
+  }
+  .git-row-detail dl {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

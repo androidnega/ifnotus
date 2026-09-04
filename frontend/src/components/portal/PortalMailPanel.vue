@@ -50,9 +50,7 @@ const busyId = ref('')
 // Create Form State
 const selectedDomain = ref('')
 const newUsername = ref('')
-const passwordMode = ref<'set' | 'link'>('set')
 const newPassword = ref('')
-const alternateEmail = ref('')
 const showPassword = ref(false)
 const showHelp = ref(true)
 const showOptionalSettings = ref(false)
@@ -73,10 +71,7 @@ const manageBusy = ref(false)
 const connectTarget = ref<MailboxRow | null>(null)
 
 // Stats calculation
-const totalUsedCount = computed(() => {
-  // Real mailboxes + 1 default system account
-  return mailboxes.value.length + 1
-})
+const totalUsedCount = computed(() => mailboxes.value.length)
 
 const maxAvailableCount = computed(() => {
   if (props.mailboxLimit != null) return props.mailboxLimit
@@ -108,17 +103,9 @@ const passwordStrengthLabel = computed(() => {
 })
 
 const allMailboxItems = computed<MailboxRow[]>(() => {
-  const dom = primaryDomain.value || props.domain || 'yourdomain.com'
-  const sys: MailboxRow = {
-    id: '__system__',
-    email: `${systemUsername.value}@${dom}`,
-    local_part: systemUsername.value,
-    quota_mb: null,
-    used_mb: 3.65,
-    suspended: false,
-    is_system: true,
-  }
-  return [sys, ...mailboxes.value]
+  // Only real IMAP mailboxes — do not invent a "system" address (unix_username@domain)
+  // that cannot authenticate in Dovecot/Roundcube.
+  return [...mailboxes.value]
 })
 
 const filteredMailboxes = computed(() => {
@@ -194,6 +181,7 @@ async function load() {
       const data = mailRes.value.data
     mailboxes.value = data.mailboxes || []
     aliases.value = data.aliases || []
+      // Prefer the Domain row used by Dovecot (mailboxes), not a mismatched env.domain.
       primaryDomain.value = data.domain?.name || props.domain || ''
       const fallbackWebmail = primaryDomain.value ? tenantMailUrl(primaryDomain.value) : 'https://mail.ifnotus.space/'
       webmailUrl.value = data.webmail_url || data.clients?.webmail_url || fallbackWebmail || 'https://mail.ifnotus.space/'
@@ -202,7 +190,8 @@ async function load() {
 
     if (domRes.status === 'fulfilled' && domRes.value.data) {
       const domData = domRes.value.data
-      if (domData.primary_domain) primaryDomain.value = domData.primary_domain
+      // Do not overwrite mail domain with a different env primary — that breaks login addresses.
+      if (!primaryDomain.value && domData.primary_domain) primaryDomain.value = domData.primary_domain
       if (domData.unix_username) systemUsername.value = domData.unix_username
       const domList = (domData.items || []).map((i) => i.domain_name.trim().toLowerCase()).filter(Boolean)
       attachedDomains.value = Array.from(new Set([primaryDomain.value, ...domList])).filter(Boolean)
@@ -226,7 +215,9 @@ async function createAccount() {
     msg.value = { type: 'err', text: 'Username is required.' }
     return
   }
-  if (passwordMode.value === 'set' && newPassword.value.length < 8) {
+  // Always require a real mailbox password (Roundcube/IMAP). "Send link" without a
+  // password previously left users unable to log in.
+  if (newPassword.value.length < 8) {
     msg.value = { type: 'err', text: 'Password must be at least 8 characters long.' }
     return
   }
@@ -674,27 +665,7 @@ onMounted(load)
             <!-- Password Options -->
             <div class="form-group">
               <label class="form-label">Password</label>
-              <div class="radio-options-stack">
-                <label class="radio-item">
-                  <input
-                    v-model="passwordMode"
-                    type="radio"
-                    value="set"
-                  />
-                  <span>Set password now.</span>
-                </label>
-                <label class="radio-item">
-                  <input
-                    v-model="passwordMode"
-                    type="radio"
-                    value="link"
-                  />
-                  <span>Send login link to alternate email address.</span>
-                </label>
-              </div>
-
-              <!-- Password Input Wrap -->
-              <div v-if="passwordMode === 'set'" class="mt-2">
+              <div class="mt-2">
                 <div class="password-input-group">
                   <input
                     v-model="newPassword"
@@ -737,16 +708,6 @@ onMounted(load)
                     Strength: {{ passwordStrengthLabel }} ({{ passwordStrength }} / 100)
                   </span>
                 </div>
-              </div>
-
-              <div v-else class="mt-2">
-                <input
-                  v-model="alternateEmail"
-                  type="email"
-                  class="cp-input"
-                  placeholder="Alternate email address"
-                  required
-                />
               </div>
             </div>
 

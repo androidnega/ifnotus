@@ -80,12 +80,22 @@ class StaffPlatformService:
                     AiCreditAccount.customer_id == c.id
                 )
             )
+            from app.services.platform.payment_queue import awaiting_confirm_clause, unpaid_invoice_clause
+
             awaiting = await self._session.scalar(
                 select(func.count())
                 .select_from(Order)
                 .where(
                     Order.customer_id == c.id,
-                    Order.payment_status == "submitted",
+                    awaiting_confirm_clause(),
+                )
+            )
+            unpaid = await self._session.scalar(
+                select(func.count())
+                .select_from(Order)
+                .where(
+                    Order.customer_id == c.id,
+                    unpaid_invoice_clause(),
                 )
             )
             setting_up = await self._session.scalar(
@@ -94,12 +104,14 @@ class StaffPlatformService:
                 .where(
                     Order.customer_id == c.id,
                     Order.payment_status == "paid",
-                    Order.provisioning_status.in_(("pending", "queued", "running")),
+                    Order.provisioning_status.in_(
+                        ("pending", "queued", "running", "ready_for_activation")
+                    ),
                 )
             )
             live = [e for e in envs if (e.status or "").lower() == "active"]
             suspended = [e for e in envs if (e.status or "").lower() == "suspended"]
-            if awaiting:
+            if awaiting or unpaid:
                 hosting_status = "awaiting_payment"
             elif setting_up:
                 hosting_status = "setting_up"
@@ -434,6 +446,7 @@ class StaffPlatformService:
         mask_financials: bool = False,
     ) -> list[dict]:
         from app.models.user import User
+        from app.services.platform.payment_queue import awaiting_confirm_clause, unpaid_invoice_clause
 
         limit = max(1, min(limit, 500))
         stmt = (
@@ -444,7 +457,11 @@ class StaffPlatformService:
             .order_by(Order.created_at.desc())
             .limit(limit)
         )
-        if payment_status:
+        if payment_status == "awaiting_confirm":
+            stmt = stmt.where(awaiting_confirm_clause())
+        elif payment_status == "pending":
+            stmt = stmt.where(unpaid_invoice_clause())
+        elif payment_status:
             stmt = stmt.where(Order.payment_status == payment_status)
         if provisioning_status:
             stmt = stmt.where(Order.provisioning_status == provisioning_status)
@@ -485,7 +502,7 @@ class StaffPlatformService:
 
     async def ops_inbox(self, *, paid_within_hours: int = 48, mask_financials: bool = False) -> dict:
         """Staff cPanel inbox: MoMo awaiting confirm + hosting ready for activation."""
-        submitted = await self.list_orders(payment_status="submitted", limit=50, mask_financials=mask_financials)
+        submitted = await self.list_orders(payment_status="awaiting_confirm", limit=50, mask_financials=mask_financials)
         ready = await self.list_orders(
             payment_status="paid",
             provisioning_status="ready_for_activation",
@@ -654,17 +671,29 @@ class StaffPlatformService:
             bandwidth_tb=Decimal(str(bandwidth)),
             ai_credits=int(ai_credits or 0),
             price_monthly=price,
-            price_yearly=(
-                Decimal(str(data["price_yearly"])) if data.get("price_yearly") is not None else None
-            ),
+            price_yearly=None,
             currency=(data.get("currency") or "GHS").upper()[:8],
             features=data.get("features") or {},
             sort_order=int(data.get("sort_order") or 0),
             is_active=bool(data.get("is_active", True)),
         )
+        self._sync_plan_yearly_price(plan)
         self._session.add(plan)
         await self._session.flush()
         return plan
+
+    def _sync_plan_yearly_price(self, plan: HostingPlan) -> None:
+        """Keep ``price_yearly`` derived from monthly × billing terms (never a stale hardcoded yearly)."""
+        from app.services.platform.billing_terms_store import yearly_price_from_monthly
+
+        plan.price_yearly = yearly_price_from_monthly(self._settings, plan.price_monthly)
+
+    async def sync_all_plan_yearly_prices(self) -> list[HostingPlan]:
+        plans = await self.list_plans(include_inactive=True)
+        for plan in plans:
+            self._sync_plan_yearly_price(plan)
+        await self._session.flush()
+        return plans
 
     async def update_plan(self, plan_id: UUID, data: dict) -> HostingPlan:
         from app.services.platform.plan_sizing import resources_from_price
@@ -701,10 +730,8 @@ class StaffPlatformService:
             plan.bandwidth_tb = Decimal(str(data["bandwidth_tb"]))
         if "price_monthly" in data and data["price_monthly"] is not None:
             plan.price_monthly = Decimal(str(data["price_monthly"]))
-        if "price_yearly" in data:
-            plan.price_yearly = (
-                Decimal(str(data["price_yearly"])) if data["price_yearly"] is not None else None
-            )
+        # price_yearly is always derived from billing terms — ignore manual overrides.
+        data.pop("price_yearly", None)
         # Re-derive resources from price when asked, or when price changes without cpu/ram.
         should_size = bool(data.get("size_from_price")) or (
             "price_monthly" in data
@@ -721,6 +748,7 @@ class StaffPlatformService:
                 plan.bandwidth_tb = Decimal(str(sized["bandwidth_tb"]))
             if "ai_credits" not in data or data.get("size_from_price"):
                 plan.ai_credits = int(sized["ai_credits"])
+        self._sync_plan_yearly_price(plan)
         await self._session.flush()
         return plan
 

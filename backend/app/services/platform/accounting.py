@@ -4,13 +4,21 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+BUSINESS_TZ = ZoneInfo("Africa/Accra")
 
 from app.core.config import Settings
 from app.models.platform import Customer, HostingPlan, Order
 from app.models.user import User
+from app.services.platform.payment_queue import (
+    awaiting_confirm_clause,
+    is_awaiting_confirm,
+    unpaid_invoice_clause,
+)
 
 
 def _is_cash(order: Order) -> bool:
@@ -43,11 +51,35 @@ def _money(order: Order) -> Decimal:
     return Decimal(str(order.total_price or 0))
 
 
+def _business_today() -> date:
+    return datetime.now(BUSINESS_TZ).date()
+
+
+def _paid_effective_at(order: Order) -> datetime | None:
+    """Best-effort payment timestamp for period rollups."""
+    return order.paid_at or order.payment_confirmed_at or order.created_at
+
+
+def _paid_in_range(order: Order, start_dt: datetime, end_dt: datetime) -> bool:
+    ts = _paid_effective_at(order)
+    if ts is None:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return start_dt <= ts < end_dt
+
+
+def _period_label(start: date, end: date) -> str:
+    if start.year == end.year and start.month == end.month:
+        return start.strftime("%B %Y")
+    return f"{start.isoformat()} – {end.isoformat()}"
+
+
 def _entry_type(order: Order) -> str:
     status = (order.payment_status or "").lower()
     if status == "paid":
         return "cash" if _is_cash(order) else "complimentary"
-    if status == "submitted":
+    if status == "submitted" or is_awaiting_confirm(order):
         return "awaiting_confirm"
     if status == "pending":
         return "receivable"
@@ -67,11 +99,19 @@ class AccountingService:
         date_from: date | None = None,
         date_to: date | None = None,
     ) -> dict:
-        today = datetime.now(UTC).date()
-        start = date_from or today.replace(day=1)
-        end = date_to or today
-        start_dt = datetime.combine(start, datetime.min.time(), tzinfo=UTC)
-        end_dt = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+        today = _business_today()
+        explicit_range = date_from is not None or date_to is not None
+        if explicit_range:
+            start = date_from or today.replace(day=1)
+            end = date_to or today
+        else:
+            # Dashboard / orders widgets: rolling 30 days so stats stay meaningful early in the month.
+            end = today
+            start = end - timedelta(days=29)
+        start_dt = datetime.combine(start, datetime.min.time(), tzinfo=BUSINESS_TZ).astimezone(UTC)
+        end_dt = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=BUSINESS_TZ).astimezone(UTC)
+
+        paid_ts = func.coalesce(Order.paid_at, Order.payment_confirmed_at, Order.created_at)
 
         active = select(Order).where(Order.payment_status != "cancelled")
         paid_in_period = list(
@@ -79,9 +119,9 @@ class AccountingService:
                 await self._session.execute(
                     active.where(
                         Order.payment_status == "paid",
-                        Order.paid_at.is_not(None),
-                        Order.paid_at >= start_dt,
-                        Order.paid_at < end_dt,
+                        paid_ts.is_not(None),
+                        paid_ts >= start_dt,
+                        paid_ts < end_dt,
                     )
                 )
             )
@@ -89,12 +129,12 @@ class AccountingService:
             .all()
         )
         submitted = list(
-            (await self._session.execute(active.where(Order.payment_status == "submitted")))
+            (await self._session.execute(active.where(awaiting_confirm_clause())))
             .scalars()
             .all()
         )
         pending = list(
-            (await self._session.execute(active.where(Order.payment_status == "pending")))
+            (await self._session.execute(active.where(unpaid_invoice_clause())))
             .scalars()
             .all()
         )
@@ -125,7 +165,15 @@ class AccountingService:
         comp_period = sum((_comp_value(o) for o in paid_in_period if not _is_cash(o)), Decimal("0"))
         cash_all = sum((_cash_amount(o) for o in all_paid if _is_cash(o)), Decimal("0"))
         comp_all = sum((_comp_value(o) for o in all_paid if not _is_cash(o)), Decimal("0"))
+        invoiced_all = sum((Decimal(str(o.total_price or 0)) for o in all_paid), Decimal("0"))
         invoiced_period = sum((Decimal(str(o.total_price or 0)) for o in paid_in_period), Decimal("0"))
+
+        month_start = today.replace(day=1)
+        month_start_dt = datetime.combine(month_start, datetime.min.time(), tzinfo=BUSINESS_TZ).astimezone(UTC)
+        month_end_dt = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=BUSINESS_TZ).astimezone(UTC)
+        paid_this_month = [o for o in all_paid if _paid_in_range(o, month_start_dt, month_end_dt)]
+        cash_month = sum((_cash_amount(o) for o in paid_this_month if _is_cash(o)), Decimal("0"))
+        invoiced_month = sum((Decimal(str(o.total_price or 0)) for o in paid_this_month), Decimal("0"))
         receivables = sum((Decimal(str(o.total_price or 0)) for o in pending), Decimal("0"))
         awaiting = sum((Decimal(str(o.total_price or 0)) for o in submitted), Decimal("0"))
         ready_activation_total = sum(
@@ -163,9 +211,10 @@ class AccountingService:
             }
             cursor += timedelta(days=1)
         for o in paid_in_period:
-            if not o.paid_at:
+            ts = _paid_effective_at(o)
+            if not ts:
                 continue
-            key = o.paid_at.astimezone(UTC).date().isoformat()
+            key = ts.astimezone(BUSINESS_TZ).date().isoformat()
             if key not in day_map:
                 day_map[key] = {
                     "date": key,
@@ -191,8 +240,14 @@ class AccountingService:
         if paid_in_period:
             currency = paid_in_period[0].currency or "GHS"
 
+        period_kind = "calendar" if explicit_range else "rolling_30d"
         return {
-            "period": {"from": start.isoformat(), "to": end.isoformat()},
+            "period": {
+                "from": start.isoformat(),
+                "to": end.isoformat(),
+                "label": _period_label(start, end),
+                "kind": period_kind,
+            },
             "currency": currency,
             "totals": {
                 # Cash that hit the merchant MoMo / bank — the real number for ops.
@@ -203,6 +258,12 @@ class AccountingService:
                 "complimentary_all_time": float(comp_all),
                 # Invoices issued that became paid (cash + comp face value).
                 "invoiced_paid_period": float(invoiced_period),
+                "invoiced_paid_all_time": float(invoiced_all),
+                # Calendar month-to-date (Africa/Accra) — separate from widget default period.
+                "cash_collected_month": float(cash_month),
+                "invoiced_paid_month": float(invoiced_month),
+                "paid_count_month": len(paid_this_month),
+                "month_label": _period_label(month_start, today),
                 # Pipeline
                 "awaiting_confirm": float(awaiting),
                 "awaiting_confirm_count": len(submitted),
@@ -212,9 +273,10 @@ class AccountingService:
                 "outstanding_count": len(pending),
                 "failed_count": len(failed),
                 "paid_count_period": len(paid_in_period),
+                "paid_count_all_time": len(all_paid),
                 "cash_count_period": sum(1 for o in paid_in_period if _is_cash(o)),
                 # Back-compat aliases used by older UI
-                "collected_period": float(invoiced_period),
+                "collected_period": float(cash_period),
                 "collected_all_time": float(cash_all + comp_all),
             },
             "by_kind": {k: float(v) for k, v in sorted(by_kind.items())},
@@ -277,7 +339,11 @@ class AccountingService:
             )
             .limit(limit)
         )
-        if payment_status:
+        if payment_status == "awaiting_confirm" or payment_status == "submitted":
+            stmt = stmt.where(awaiting_confirm_clause())
+        elif payment_status == "pending":
+            stmt = stmt.where(unpaid_invoice_clause())
+        elif payment_status:
             stmt = stmt.where(Order.payment_status == payment_status)
         if cash_only:
             stmt = stmt.where(

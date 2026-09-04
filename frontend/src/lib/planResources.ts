@@ -10,6 +10,18 @@ export function formatRamGb(ramGb: number | string): string {
   return `${nice} GB`
 }
 
+/** Format live/enforced RAM from megabytes (MemoryHigh etc.). */
+export function formatRamFromMb(mb: number | string): string {
+  const n = typeof mb === 'string' ? Number(mb) : mb
+  if (!Number.isFinite(n) || n <= 0) return '—'
+  if (n >= 1024) {
+    const gb = n / 1024
+    const nice = Number.isInteger(gb) ? String(gb) : String(Number(gb.toFixed(2)))
+    return `${nice} GB`
+  }
+  return `${Math.round(n)} MB`
+}
+
 export function formatCpu(cpu: number | string): string {
   const n = typeof cpu === 'string' ? Number(cpu) : cpu
   if (!Number.isFinite(n) || n <= 0) return '—'

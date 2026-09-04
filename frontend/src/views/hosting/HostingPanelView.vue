@@ -7,19 +7,10 @@ import PortalFilesView from '@/views/portal/PortalFilesView.vue'
 import PortalAiPanel from '@/components/ai/PortalAiPanel.vue'
 import PortalDomainTools from '@/components/portal/PortalDomainTools.vue'
 import PortalTerminalPanel from '@/components/portal/PortalTerminalPanel.vue'
+import ApplicationInstallGuideView from '@/views/hosting/ApplicationInstallGuideView.vue'
 import { usePortalSiteTools, type PortalSiteTab } from '@/composables/usePortalSiteTools'
 import { getApiErrorMessage } from '@/lib/apiError'
-import { formatCpu, formatRamGb } from '@/lib/planResources'
-
-function formatRamFromMb(mb: number): string {
-  if (!Number.isFinite(mb) || mb <= 0) return '—'
-  if (mb >= 1024) {
-    const gb = mb / 1024
-    const nice = Number.isInteger(gb) ? String(gb) : String(Number(gb.toFixed(2)))
-    return `${nice} GB`
-  }
-  return `${Math.round(mb)} MB`
-}
+import { formatCpu, formatRamFromMb, formatRamGb } from '@/lib/planResources'
 import {
   processPct,
   resourceStatusClass,
@@ -40,6 +31,7 @@ type HostingTab =
   | 'terminal'
   | 'stack'
   | 'apps'
+  | 'apps-guide'
   | 'cron'
   | 'backups'
   | 'logs'
@@ -56,6 +48,8 @@ const TABS = computed(() => {
     if (t.id === 'email') return envCan(env.value, 'mail')
     if (t.id === 'transfer') return envCan(env.value, 'sftp')
     if (t.id === 'cron') return envCan(env.value, 'cron')
+    if (t.id === 'git') return envCan(env.value, 'git')
+    if (t.id === 'ai') return aiFeatureVisible.value
     if (t.id === 'terminal') {
       const mode = String(env.value?.capabilities?.ssh_mode || '')
       return ['limited', 'jail', 'root'].includes(mode)
@@ -72,6 +66,7 @@ const HOSTING_TO_SITE: Partial<Record<HostingTab, PortalSiteTab>> = {
   transfer: 'ftp',
   stack: 'stack',
   apps: 'applications',
+  'apps-guide': 'applications',
   cron: 'cron',
   logs: 'logs',
   git: 'git',
@@ -115,6 +110,59 @@ const environmentId = computed(() => {
 const previewThemeId = ref<string | null>(null)
 const themePendingPurchase = ref<string | null>(null)
 
+const DEFAULT_PANEL_THEME_COLORS: Record<string, string> = {
+  accent: '#2b4c7e',
+  accent_hover: '#213b63',
+  ink: '#1e293b',
+  paper: '#f4f5f7',
+  surface: '#ffffff',
+  muted: '#64748b',
+  border: '#d8dee6',
+  sidebar_start: '#f7f8fa',
+  sidebar_end: '#eef0f3',
+  sidebar_text: '#1e293b',
+  sidebar_muted: '#64748b',
+}
+
+function themeStorageKey(envId: string) {
+  return `hp_panel_theme_${envId}`
+}
+
+function readCachedPanelTheme(envId: string) {
+  if (!envId || typeof window === 'undefined') return null
+  try {
+    const raw = localStorage.getItem(themeStorageKey(envId))
+    if (!raw) return null
+    return JSON.parse(raw) as typeof panelTheme.value
+  } catch {
+    return null
+  }
+}
+
+function writeCachedPanelTheme(envId: string, data: NonNullable<typeof panelTheme.value>) {
+  try {
+    localStorage.setItem(themeStorageKey(envId), JSON.stringify(data))
+  } catch {
+    // ignore
+  }
+}
+
+// Paint sidebar with last-known theme immediately (before dashboard API).
+if (typeof window !== 'undefined') {
+  const cachedEnv =
+    String(
+      (typeof window !== 'undefined' &&
+        (window.location.pathname.match(/\/hosting\/([^/]+)/)?.[1] ||
+          localStorage.getItem('tenant_env_id') ||
+          '')) ||
+        '',
+    ) || ''
+  const cached = cachedEnv ? readCachedPanelTheme(cachedEnv) : null
+  if (cached?.theme?.colors) {
+    panelTheme.value = cached
+  }
+}
+
 const effectiveTheme = computed(() => {
   if (previewThemeId.value && panelTheme.value) {
     const found = panelTheme.value.catalog.find((p) => p.id === previewThemeId.value)
@@ -136,9 +184,7 @@ const isPreviewActive = computed(() => {
   )
 })
 
-const hostingThemeStyle = computed(() => {
-  const colors = effectiveTheme.value?.colors as Record<string, string> | undefined
-  if (!colors) return undefined
+function colorsToHostingStyle(colors: Record<string, string>) {
   return {
     '--p-accent': colors.accent,
     '--p-accent-hover': colors.accent_hover || colors.accent,
@@ -159,11 +205,17 @@ const hostingThemeStyle = computed(() => {
     '--hp-ink': colors.ink,
     '--hp-muted': colors.muted,
     '--hp-border': colors.border,
-    '--hp-side-start': colors.sidebar_start || '#18263f',
-    '--hp-side-end': colors.sidebar_end || '#152238',
-    '--hp-side-text': colors.sidebar_text || '#d7dee8',
-    '--hp-side-muted': colors.sidebar_muted || '#8b97a8',
+    '--hp-side-start': colors.sidebar_start || '#f7f8fa',
+    '--hp-side-end': colors.sidebar_end || '#eef0f3',
+    '--hp-side-text': colors.sidebar_text || '#1e293b',
+    '--hp-side-muted': colors.sidebar_muted || '#64748b',
   } as Record<string, string>
+}
+
+const hostingThemeStyle = computed(() => {
+  const colors =
+    (effectiveTheme.value?.colors as Record<string, string> | undefined) || DEFAULT_PANEL_THEME_COLORS
+  return colorsToHostingStyle(colors)
 })
 
 async function loadPanelTheme() {
@@ -171,8 +223,9 @@ async function loadPanelTheme() {
   try {
     const { data } = await customersApi.getPanelTheme(environmentId.value)
     panelTheme.value = data
+    writeCachedPanelTheme(environmentId.value, data)
   } catch {
-    panelTheme.value = null
+    if (!panelTheme.value) panelTheme.value = null
   }
 }
 
@@ -208,6 +261,7 @@ async function activatePanelTheme(themeId: string) {
   try {
     const { data } = await customersApi.setPanelTheme(environmentId.value, themeId)
     panelTheme.value = data
+    writeCachedPanelTheme(environmentId.value, data)
     previewThemeId.value = null
     themePendingPurchase.value = null
     themeMsg.value = 'Theme applied and saved to this hosting workspace.'
@@ -318,6 +372,22 @@ const {
   newAppGitUrl,
   newAppPythonModule,
   newAppPythonObject,
+  newAppRootPlacement,
+  newAppServeAtDomain,
+  newAppLogPath,
+  showAppCreateForm,
+  editingAppId,
+  editAppName,
+  editAppLogPath,
+  editAppPythonModule,
+  editAppPythonObject,
+  editAppServeAtDomain,
+  editAppRuntimeVersion,
+  editAppEnvVars,
+  newAppEnvVars,
+  addEnvVarRow,
+  removeEnvVarRow,
+  updateEnvVarRow,
   setActiveEnvId,
   selectEnv,
   hydrateActiveEnv,
@@ -355,10 +425,19 @@ const {
   loadBackups,
   createBackup,
   restoreBackup,
+  downloadBackup,
+  deleteBackup,
   loadAppCatalog,
   loadApplications,
   createApplication,
   deployApplication,
+  restartApplication,
+  stopApplication,
+  startApplication,
+  refreshApplication,
+  beginEditApplication,
+  cancelEditApplication,
+  saveEditApplication,
   deleteApplication,
   installStack,
   clearStack,
@@ -368,9 +447,22 @@ const {
   gitMsg,
   gitCloneUrl,
   gitCloneBranch,
+  gitView,
+  gitCloneRemote,
+  gitRepoName,
+  gitRepoPath,
+  gitCreateAnother,
+  gitServeAsWebsite,
+  gitExpandedId,
+  gitSearch,
+  gitHistory,
+  gitHistoryPath,
   loadGitStatus,
   cloneGitRepo,
+  activateGitWebsite,
   pullGitRepo,
+  loadGitHistory,
+  removeGitRepo,
   loadLogs,
   loadCron,
   addCron,
@@ -380,6 +472,48 @@ const {
 } = usePortalSiteTools(dash, { lockEnvId: environmentId })
 
 const env = computed<CustomerEnvironment | null>(() => activeEnv.value)
+
+/** Domains for this hosting only (matches Domains tab — not other account hostings). */
+const hostingDomains = ref<
+  Array<{ domain_name: string; domain_type?: string; is_primary?: boolean }>
+>([])
+
+async function loadHostingDomains() {
+  const id = environmentId.value || env.value?.id
+  if (!id) {
+    hostingDomains.value = []
+    return
+  }
+  try {
+    const { data } = await customersApi.listEnvDomainItems(id)
+    const items = (data.items || []).map((d) => ({
+      domain_name: d.domain_name,
+      domain_type: d.domain_type,
+      is_primary: d.is_primary,
+    }))
+    if (items.length) {
+      hostingDomains.value = items
+      return
+    }
+    const primary = data.primary_domain || env.value?.domain
+    hostingDomains.value = primary
+      ? [{ domain_name: primary, domain_type: 'primary', is_primary: true }]
+      : []
+  } catch {
+    const primary = env.value?.domain
+    hostingDomains.value = primary
+      ? [{ domain_name: primary, domain_type: 'primary', is_primary: true }]
+      : []
+  }
+}
+
+/** Show AI when the pack includes it or the account still has credits. */
+const aiFeatureVisible = computed(() => {
+  if (!env.value) return true
+  if (envCan(env.value, 'ai')) return true
+  const remaining = Number(dash.value?.credits?.credits_remaining ?? 0)
+  return remaining > 0
+})
 
 const plan = computed(() => {
   const e = env.value
@@ -392,14 +526,18 @@ const plan = computed(() => {
 const spec = computed(() => {
   const e = env.value
   const p = plan.value
-  // Prefer live enforced MemoryHigh/Max from usage snapshot when available.
+  // Prefer live enforced MemoryHigh/Max; else policy-aligned plan RAM (not stale env.ram_limit_gb).
   const liveMb = usageSnapshot.value?.memory_limit_mb
+  const planGb = Number(p?.ram_gb ?? 0)
+  const envGb = Number(e?.ram_limit_gb ?? 0)
+  // Business / shared packs may show policy floor (env synced) — never prefer tiny legacy env over plan.
+  const fallbackGb = Math.max(planGb, envGb)
   const ram =
     liveMb && liveMb > 0
       ? formatRamFromMb(liveMb)
-      : formatRamGb(e?.ram_limit_gb ?? p?.ram_gb ?? 0)
+      : formatRamGb(fallbackGb)
   return {
-    cpu: formatCpu(e?.cpu_limit ?? p?.cpu_cores ?? 0),
+    cpu: formatCpu(Math.max(Number(e?.cpu_limit ?? 0), Number(p?.cpu_cores ?? 0))),
     ram,
     disk: e?.storage_limit_gb ?? p?.storage_gb ?? 0,
   }
@@ -442,6 +580,7 @@ const allNavManage = [
   { id: 'terminal' as HostingTab, label: 'Terminal', icon: 'fa-terminal' },
   { id: 'stack' as HostingTab, label: 'One-Click Stacks', icon: 'fa-layer-group' },
   { id: 'apps' as HostingTab, label: 'Applications', icon: 'fa-cubes' },
+  { id: 'git' as HostingTab, label: 'Git', icon: 'fa-code-branch' },
   { id: 'ai' as HostingTab, label: 'AI Engineer', icon: 'fa-wand-magic-sparkles' },
   { id: 'cron' as HostingTab, label: 'Scheduled Tasks', icon: 'fa-clock' },
   { id: 'backups' as HostingTab, label: 'Backups & Snapshots', icon: 'fa-cloud-arrow-up' },
@@ -457,6 +596,8 @@ const navManage = computed(() => {
     if (t.id === 'transfer') return envCan(env.value, 'sftp')
     if (t.id === 'cron') return envCan(env.value, 'cron')
     if (t.id === 'terminal') return terminalEnabled.value
+    if (t.id === 'ai') return aiFeatureVisible.value
+    if (t.id === 'git') return envCan(env.value, 'git')
     return true
   })
 })
@@ -487,6 +628,7 @@ const quickTools = computed(() => {
     if (t.id === 'cron') return envCan(env.value, 'cron')
     if (t.id === 'git') return envCan(env.value, 'git')
     if (t.id === 'terminal') return terminalEnabled.value
+    if (t.id === 'ai') return aiFeatureVisible.value
     return true
   })
 })
@@ -510,17 +652,43 @@ const siteInitialTab = computed<PortalSiteTab>(() => {
 })
 
 const showSitePanel = computed(
-  () => tab.value !== 'overview' && tab.value !== 'backups' && tab.value !== 'files' && tab.value !== 'domains' && tab.value !== 'ai',
+  () =>
+    tab.value !== 'overview' &&
+    tab.value !== 'backups' &&
+    tab.value !== 'files' &&
+    tab.value !== 'domains' &&
+    tab.value !== 'ai' &&
+    tab.value !== 'apps-guide',
 )
 
 function resolveTabFromRoute(): HostingTab {
+  const routeable: HostingTab[] = [
+    'overview',
+    'files',
+    'databases',
+    'domains',
+    'email',
+    'transfer',
+    'terminal',
+    'stack',
+    'apps',
+    'apps-guide',
+    'ai',
+    'git',
+    'cron',
+    'backups',
+    'logs',
+  ]
   if (route.name === 'hosting-files' || route.name === 'cpanel-files' || route.meta.hostingTab === 'files' || route.path === '/files') return 'files'
+  if (route.name === 'cpanel-apps-guide' || route.path === '/apps/guide' || route.meta.hostingTab === 'apps-guide') {
+    return 'apps-guide'
+  }
   const pathPart = route.path.replace(/^\//, '').split('/')[0] as HostingTab
-  if (TABS.value.some((t) => t.id === pathPart)) return pathPart
+  if (routeable.includes(pathPart)) return pathPart
   const metaTab = route.meta.hostingTab as HostingTab | undefined
-  if (metaTab && TABS.value.some((t) => t.id === metaTab)) return metaTab
+  if (metaTab && routeable.includes(metaTab)) return metaTab
   const raw = typeof route.query.tab === 'string' ? route.query.tab : ''
-  if (TABS.value.some((t) => t.id === raw)) return raw as HostingTab
+  if (routeable.includes(raw as HostingTab)) return raw as HostingTab
   return 'overview'
 }
 
@@ -539,6 +707,8 @@ function goTab(next: HostingTab) {
   if (isCustomerCpanelHost()) {
     if (next === 'overview') {
       void router.replace('/')
+    } else if (next === 'apps-guide') {
+      void router.replace('/apps/guide')
     } else {
       void router.replace(`/${next}`)
     }
@@ -552,7 +722,22 @@ function formatBytes(n?: number | null) {
   if (n == null || Number.isNaN(n)) return '—'
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+function backupLabel(b: { filename?: string; created_at?: string | null; status?: string }) {
+  const base = (b.filename || '').split('/').pop() || 'backup'
+  return base
+}
+
+function formatBackupWhen(iso?: string | null) {
+  if (!iso) return ''
+  try {
+    return new Date(iso).toLocaleString()
+  } catch {
+    return iso
+  }
 }
 
 async function load() {
@@ -603,8 +788,10 @@ async function load() {
     }
     resolvedEnvId.value = owned.id
     setActiveEnvId(owned.id)
+    // Theme can paint from cache already; refresh in parallel — do not block shell.
+    void loadPanelTheme()
     await hydrateActiveEnv()
-    await loadPanelTheme()
+    void loadHostingDomains()
     if (tab.value === 'stack') void loadStacks()
     if (tab.value === 'apps') {
       void loadAppCatalog()
@@ -628,7 +815,11 @@ watch(
   { immediate: true },
 )
 
-watch(environmentId, () => {
+watch(environmentId, (id) => {
+  if (id) {
+    const cached = readCachedPanelTheme(id)
+    if (cached?.theme?.colors) panelTheme.value = cached
+  }
   void load()
 })
 
@@ -638,12 +829,17 @@ watch(tab, (next) => {
   if (next === 'apps') {
     void loadAppCatalog()
     void loadApplications()
+    void loadHostingDomains()
   }
   if (next === 'stack') void loadStacks()
   if (next === 'cron') void loadCron()
   if (next === 'logs') void loadLogs()
   if (next === 'databases') void loadDbList()
-  if (next === 'domains') void loadDns()
+  if (next === 'domains') {
+    void loadDns()
+    void loadHostingDomains()
+  }
+  if (next === 'git') void loadGitStatus()
   if (next === 'transfer') {
     void loadFtp(true)
     void loadSftp(true)
@@ -668,6 +864,11 @@ function toggleCollapse() {
 }
 
 onMounted(() => {
+  if (environmentId.value) {
+    const cached = readCachedPanelTheme(environmentId.value)
+    if (cached?.theme?.colors) panelTheme.value = cached
+  }
+  void loadPanelTheme()
   void load()
 })
 </script>
@@ -765,13 +966,9 @@ onMounted(() => {
                 <p class="lbl"><span>RAM Usage</span> <em class="rs-badge" :class="resourceStatusClass(rs?.memory)">{{ resourceStatusLabel(rs?.memory) }}</em></p>
                 <p class="val">{{ memPct != null ? Math.round(memPct) + '%' : '—' }}</p>
                 <p class="hint">
-                  {{ Math.round(usageSnapshot?.memory_usage_mb || 0) }}
+                  {{ formatRamFromMb(usageSnapshot?.memory_usage_mb || 0) }}
                   /
-                  {{
-                    usageSnapshot?.memory_limit_mb
-                      ? formatRamFromMb(usageSnapshot.memory_limit_mb)
-                      : spec.ram
-                  }}
+                  {{ spec.ram }}
                 </p>
               </div>
             </article>
@@ -1062,24 +1259,49 @@ onMounted(() => {
         <section v-else-if="tab === 'backups'" class="hp-card pad">
           <p class="kicker">Backups</p>
           <h2>Restore points</h2>
-          <p class="muted">{{ backupMsg || 'Save a restore point of your site files.' }}</p>
+          <p class="muted">{{ backupMsg || 'Save a restore point of your site files (and database when linked).' }}</p>
           <div class="actions">
             <button type="button" class="hp-btn ghost" @click="loadBackups">Refresh</button>
             <button type="button" class="hp-btn primary" @click="createBackup">Back up now</button>
           </div>
           <ul v-if="backups.length" class="backup-list">
             <li v-for="b in backups" :key="b.id">
-              <span>{{ b.status }} · {{ formatBytes(b.file_size) }} · {{ b.filename }}</span>
-              <button
-                v-if="b.status === 'success'"
-                type="button"
-                class="hp-btn ghost"
-                @click="restoreBackup(b.id)"
-              >
-                Restore
-              </button>
+              <div class="backup-meta">
+                <strong class="backup-name">{{ backupLabel(b) }}</strong>
+                <span class="backup-line">
+                  <span class="backup-status" :data-status="b.status">{{ b.status }}</span>
+                  · {{ formatBytes(b.file_size) }}
+                  <template v-if="b.created_at"> · {{ formatBackupWhen(b.created_at) }}</template>
+                </span>
+              </div>
+              <div class="backup-actions">
+                <button
+                  v-if="b.status === 'success'"
+                  type="button"
+                  class="hp-btn ghost"
+                  @click="downloadBackup(b.id, b.filename)"
+                >
+                  Download
+                </button>
+                <button
+                  v-if="b.status === 'success'"
+                  type="button"
+                  class="hp-btn ghost"
+                  @click="restoreBackup(b.id)"
+                >
+                  Restore
+                </button>
+                <button
+                  type="button"
+                  class="hp-btn ghost"
+                  @click="deleteBackup(b.id)"
+                >
+                  Delete
+                </button>
+              </div>
             </li>
           </ul>
+          <p v-else class="muted" style="margin-top: 1rem">No restore points yet. Click <strong>Back up now</strong> to create one.</p>
         </section>
 
         <section v-else-if="tab === 'files'" class="hp-files-embed">
@@ -1140,10 +1362,18 @@ onMounted(() => {
           </div>
         </section>
 
-        <div v-else-if="showSitePanel" class="hp-embed">
+        <section v-else-if="tab === 'apps-guide'" class="hp-guide-embed">
+          <ApplicationInstallGuideView />
+        </section>
+
+        <div v-else-if="showSitePanel && env" class="hp-embed">
           <PortalSitePanel
           hide-subnav
-          :environments="dash?.environments?.length ? dash.environments : [env]"
+          :environments="[env]"
+          :hosting-domains="hostingDomains"
+          :display-cpu="spec.cpu"
+          :display-ram="spec.ram"
+          :display-storage-gb="spec.disk"
           :active-env="env"
           :active-plan="plan"
           :initial-tab="siteInitialTab"
@@ -1188,6 +1418,16 @@ onMounted(() => {
           :git-msg="gitMsg"
           :git-clone-url="gitCloneUrl"
           :git-clone-branch="gitCloneBranch"
+          :git-view="gitView"
+          :git-clone-remote="gitCloneRemote"
+          :git-repo-name="gitRepoName"
+          :git-repo-path="gitRepoPath"
+          :git-create-another="gitCreateAnother"
+          :git-serve-as-website="gitServeAsWebsite"
+          :git-expanded-id="gitExpandedId"
+          :git-search="gitSearch"
+          :git-history="gitHistory"
+          :git-history-path="gitHistoryPath"
           :ftp-info="ftpInfo"
           :ftp-creds="ftpCreds"
           :sftp-creds="sftpCreds"
@@ -1213,12 +1453,32 @@ onMounted(() => {
           :new-app-git-url="newAppGitUrl"
           :new-app-python-module="newAppPythonModule"
           :new-app-python-object="newAppPythonObject"
+          :new-app-root-placement="newAppRootPlacement"
+          :new-app-serve-at-domain="newAppServeAtDomain"
+          :new-app-log-path="newAppLogPath"
+          :show-app-create-form="showAppCreateForm"
+          :editing-app-id="editingAppId"
+          :edit-app-name="editAppName"
+          :edit-app-log-path="editAppLogPath"
+          :edit-app-python-module="editAppPythonModule"
+          :edit-app-python-object="editAppPythonObject"
+          :edit-app-serve-at-domain="editAppServeAtDomain"
+          :edit-app-runtime-version="editAppRuntimeVersion"
+          :edit-app-env-vars="editAppEnvVars"
+          :new-app-env-vars="newAppEnvVars"
           @select-env="selectEnv"
           @load-files="loadFiles"
           @load-logs="loadLogs"
           @load-applications="() => { loadAppCatalog(); loadApplications() }"
           @create-application="createApplication"
           @deploy-application="deployApplication"
+          @restart-application="restartApplication"
+          @stop-application="stopApplication"
+          @start-application="startApplication"
+          @refresh-application="refreshApplication"
+          @edit-application="beginEditApplication"
+          @save-edit-application="saveEditApplication"
+          @cancel-edit-application="cancelEditApplication"
           @delete-application="deleteApplication"
           @update:new-app-name="(v) => (newAppName = v)"
           @update:new-app-framework="(v) => (newAppFramework = v)"
@@ -1226,6 +1486,19 @@ onMounted(() => {
           @update:new-app-git-url="(v) => (newAppGitUrl = v)"
           @update:new-app-python-module="(v) => (newAppPythonModule = v)"
           @update:new-app-python-object="(v) => (newAppPythonObject = v)"
+          @update:new-app-root-placement="(v) => (newAppRootPlacement = v)"
+          @update:new-app-serve-at-domain="(v) => (newAppServeAtDomain = v)"
+          @update:new-app-log-path="(v) => (newAppLogPath = v)"
+          @update:show-app-create-form="(v) => (showAppCreateForm = v)"
+          @update:edit-app-name="(v) => (editAppName = v)"
+          @update:edit-app-log-path="(v) => (editAppLogPath = v)"
+          @update:edit-app-python-module="(v) => (editAppPythonModule = v)"
+          @update:edit-app-python-object="(v) => (editAppPythonObject = v)"
+          @update:edit-app-serve-at-domain="(v) => (editAppServeAtDomain = v)"
+          @update:edit-app-runtime-version="(v) => (editAppRuntimeVersion = v)"
+          @add-env-var-row="addEnvVarRow"
+          @remove-env-var-row="removeEnvVarRow"
+          @update-env-var-row="updateEnvVarRow"
           @go-up="goUp"
           @open-entry="openEntry"
           @save-file="saveFile"
@@ -1251,9 +1524,21 @@ onMounted(() => {
           @update:new-db-password="(v) => (newDbPassword = v)"
           @load-git-status="loadGitStatus"
           @clone-git-repo="cloneGitRepo"
+          @activate-git-website="activateGitWebsite"
           @pull-git-repo="pullGitRepo"
+          @load-git-history="loadGitHistory"
+          @remove-git-repo="removeGitRepo"
+          @open-hosting-tab="goTab"
           @update:git-clone-url="(v) => (gitCloneUrl = v)"
           @update:git-clone-branch="(v) => (gitCloneBranch = v)"
+          @update:git-view="(v) => (gitView = v)"
+          @update:git-clone-remote="(v) => (gitCloneRemote = v)"
+          @update:git-repo-name="(v) => (gitRepoName = v)"
+          @update:git-repo-path="(v) => (gitRepoPath = v)"
+          @update:git-create-another="(v) => (gitCreateAnother = v)"
+          @update:git-serve-as-website="(v) => (gitServeAsWebsite = v)"
+          @update:git-expanded-id="(v) => (gitExpandedId = v)"
+          @update:git-search="(v) => (gitSearch = v)"
           @run-db-query="runDbQuery"
           @update-db-sql="(v) => (dbSql = v)"
           @load-ftp="loadFtp"
@@ -1287,14 +1572,15 @@ onMounted(() => {
 
 <style scoped>
 .hp {
-  --hp-side: #111a28;
-  --hp-side-text: #cbd5e1;
+  --hp-side-start: #f7f8fa;
+  --hp-side-end: #eef0f3;
+  --hp-side-text: #1e293b;
   --hp-side-muted: #64748b;
-  --hp-paper: var(--p-paper, #f1f4f8);
+  --hp-paper: var(--p-paper, #f4f5f7);
   --hp-surface: var(--p-surface, #ffffff);
   --hp-ink: var(--p-ink, #1e293b);
   --hp-muted: var(--p-muted, #64748b);
-  --hp-border: var(--p-border, #cbd5e1);
+  --hp-border: var(--p-border, #d8dee6);
   --hp-accent: var(--p-accent, #2b4c7e);
   display: grid;
   grid-template-columns: 15.5rem minmax(0, 1fr);
@@ -1310,17 +1596,18 @@ onMounted(() => {
 }
 
 .hp-side {
-  background: linear-gradient(180deg, var(--hp-side-start, #18263f) 0%, var(--hp-side-end, var(--hp-side, #152238)) 100%);
-  color: var(--hp-side-text, #d7dee8);
-  padding: 1.1rem 0.85rem 1rem;
+  background: linear-gradient(180deg, var(--hp-side-start) 0%, var(--hp-side-end) 100%);
+  color: var(--hp-side-text);
+  border-right: 1px solid var(--hp-border);
+  padding: 0.75rem 0.55rem 0.7rem;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.45rem;
   position: sticky;
   top: 0;
   height: 100vh;
   overflow: hidden;
-  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: width 0.22s cubic-bezier(0.16, 1, 0.3, 1), padding 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .hp-side.collapsed {
@@ -1332,9 +1619,9 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.55rem;
-  padding: 0.25rem 0.35rem 0.75rem;
-  border-bottom: 1px solid rgb(255 255 255 / 0.08);
+  gap: 0.45rem;
+  padding: 0.15rem 0.25rem 0.55rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--hp-border, #d8dee6) 85%, transparent);
 }
 
 .hp-side.collapsed .hp-brand {
@@ -1378,7 +1665,7 @@ onMounted(() => {
   font-weight: 800;
   letter-spacing: -0.03em;
   font-size: 0.98rem;
-  color: #fff;
+  color: var(--hp-side-text);
 }
 
 .hp-subword {
@@ -1390,8 +1677,8 @@ onMounted(() => {
 }
 
 .hp-collapse-btn {
-  background: rgb(255 255 255 / 0.06);
-  border: 1px solid rgb(255 255 255 / 0.1);
+  background: color-mix(in srgb, var(--hp-side-text) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--hp-side-text) 12%, transparent);
   color: var(--hp-side-muted);
   width: 1.85rem;
   height: 1.85rem;
@@ -1400,14 +1687,14 @@ onMounted(() => {
   place-items: center;
   cursor: pointer;
   font-size: 0.78rem;
-  transition: all 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
   flex-shrink: 0;
 }
 
 .hp-collapse-btn:hover {
-  background: rgb(255 255 255 / 0.15);
-  color: #fff;
-  border-color: rgb(255 255 255 / 0.2);
+  background: color-mix(in srgb, var(--hp-accent) 12%, transparent);
+  color: var(--hp-side-text);
+  border-color: color-mix(in srgb, var(--hp-accent) 28%, transparent);
 }
 
 .hp-side.collapsed .hp-collapse-btn {
@@ -1435,8 +1722,8 @@ onMounted(() => {
 }
 
 .hp-nav-label {
-  margin: 0.85rem 0.5rem 0.35rem;
-  font-size: 0.62rem;
+  margin: 0.55rem 0.4rem 0.2rem;
+  font-size: 0.58rem;
   font-weight: 800;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -1446,16 +1733,16 @@ onMounted(() => {
 .hp-nav-item {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.55rem;
   border: none;
   background: transparent;
-  color: var(--hp-side-text, #d7dee8);
+  color: var(--hp-side-text, #1e293b);
   text-decoration: none;
   font: inherit;
-  font-size: 0.86rem;
+  font-size: 0.8rem;
   font-weight: 600;
-  padding: 0.58rem 0.75rem;
-  border-radius: 0.65rem;
+  padding: 0.42rem 0.55rem;
+  border-radius: 0.5rem;
   cursor: pointer;
   text-align: left;
   transition: all 0.15s ease;
@@ -1464,38 +1751,38 @@ onMounted(() => {
 
 .hp-side.collapsed .hp-nav-item {
   justify-content: center;
-  padding: 0.6rem;
-  width: 2.65rem;
-  height: 2.65rem;
-  border-radius: 0.65rem;
+  padding: 0.45rem;
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 0.5rem;
 }
 
 .hp-nav-icon-wrap {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.35rem;
+  width: 1.2rem;
   flex-shrink: 0;
-  font-size: 0.92rem;
-  opacity: 0.85;
+  font-size: 0.84rem;
+  opacity: 0.8;
   transition: all 0.15s ease;
 }
 
 .hp-nav-item:hover {
-  background: rgb(255 255 255 / 0.08);
-  color: #fff;
+  background: color-mix(in srgb, var(--hp-accent) 10%, #fff);
+  color: var(--hp-ink, #1e293b);
 }
 
 .hp-nav-item:hover .hp-nav-icon-wrap {
   opacity: 1;
-  transform: scale(1.08);
+  transform: scale(1.05);
 }
 
 .hp-nav-item.on {
   background: var(--hp-accent);
   color: #fff;
   font-weight: 700;
-  box-shadow: 0 4px 14px color-mix(in srgb, var(--hp-accent) 40%, transparent);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--hp-accent) 28%, transparent);
 }
 
 .hp-nav-item.on .hp-nav-icon-wrap {
@@ -1506,14 +1793,14 @@ onMounted(() => {
   margin-top: auto;
   color: var(--hp-side-muted);
   text-decoration: none;
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   font-weight: 600;
-  padding: 0.6rem 0.75rem;
-  border-radius: 0.65rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 0.5rem;
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  border-top: 1px solid rgb(255 255 255 / 0.08);
+  gap: 0.55rem;
+  border-top: 1px solid color-mix(in srgb, var(--hp-border, #d8dee6) 85%, transparent);
   transition: all 0.15s ease;
 }
 
@@ -1525,8 +1812,8 @@ onMounted(() => {
 }
 
 .hp-side-foot:hover {
-  background: rgb(255 255 255 / 0.08);
-  color: #fff;
+  background: color-mix(in srgb, var(--hp-accent) 10%, transparent);
+  color: var(--hp-side-text);
 }
 .hp-main { min-width: 0; padding: 1rem 1.15rem 2rem; }
 .hp-top {
@@ -1936,9 +2223,19 @@ h2 { margin: 0.2rem 0 0.45rem; font-family: Sora, sans-serif; font-size: 1.1rem;
 .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.85rem; }
 .backup-list { list-style: none; margin: 1rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.55rem; }
 .backup-list li {
-  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.5rem;
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 0.65rem;
   padding: 0.75rem 0.85rem; border: 1px solid var(--hp-border); border-radius: 0.75rem; font-size: 0.86rem;
 }
+.backup-meta { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; flex: 1; }
+.backup-name { font-size: 0.88rem; word-break: break-all; }
+.backup-line { color: var(--hp-muted); font-size: 0.8rem; }
+.backup-status { text-transform: capitalize; font-weight: 650; }
+.backup-status[data-status='success'] { color: #047857; }
+.backup-status[data-status='failed'] { color: #b91c1c; }
+.backup-status[data-status='queued'],
+.backup-status[data-status='pending'],
+.backup-status[data-status='running'] { color: #4338ca; }
+.backup-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 .theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: 0.75rem; margin-top: 1rem; }
 .theme-pack {
   display: flex; flex-direction: column; gap: 0.45rem; text-align: left;

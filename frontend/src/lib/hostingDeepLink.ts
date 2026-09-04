@@ -1,4 +1,4 @@
-/** Account → Hosting Panel deeplinks (Phase H). Opens tenant /cpanel in a new tab. */
+/** Account → Hosting Panel deeplinks. */
 
 import { openTenantCpanel, tenantCpanelUrl } from '@/lib/platformHosts'
 
@@ -11,9 +11,12 @@ export type HostingPanelTab =
   | 'transfer'
   | 'stack'
   | 'apps'
+  | 'ai'
+  | 'git'
   | 'cron'
   | 'backups'
   | 'logs'
+  | 'terminal'
 
 /** Map legacy Account site-workspace tabs to Hosting Panel tabs. */
 export function siteTabToHostingTab(tab?: string | null): HostingPanelTab {
@@ -27,7 +30,10 @@ export function siteTabToHostingTab(tab?: string | null): HostingPanelTab {
   if (t === 'backups' || t === 'backup') return 'backups'
   if (t === 'cron' || t === 'crons' || t === 'scheduler') return 'cron'
   if (t === 'stack' || t === 'stacks' || t === 'install' || t === 'wordpress') return 'stack'
-  if (t === 'applications' || t === 'apps' || t === 'ai') return 'apps'
+  if (t === 'ai' || t === 'ai-engineer' || t === 'companion') return 'ai'
+  if (t === 'git' || t === 'deploy') return 'git'
+  if (t === 'applications' || t === 'apps') return 'apps'
+  if (t === 'terminal' || t === 'ssh-terminal') return 'terminal'
   if (t === 'overview' || t === 'home' || !t) return 'overview'
   return 'overview'
 }
@@ -50,19 +56,19 @@ export function hostingLocation(
   }
 }
 
-/** Open the tenant hosting panel from the account (via single-use SSO handoff to cpanel.<domain>). */
-export function openHostingFromAccount(
+/** Open the tenant hosting panel from the account (via single-use SSO handoff). */
+export async function openHostingFromAccount(
   domain: string | null | undefined,
   tab?: string | null,
   environmentId?: string | null,
-): boolean {
+): Promise<boolean> {
   if (!domain && !environmentId) return false
-  void openTenantCpanel(
+  return openTenantCpanel(
     domain || '',
     tab && tab !== 'overview' ? siteTabToHostingTab(tab) : null,
     environmentId,
+    true,
   )
-  return true
 }
 
 export function accountHostingHref(domain: string | null | undefined, tab?: string | null): string | null {
